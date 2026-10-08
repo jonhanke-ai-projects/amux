@@ -4547,19 +4547,15 @@ pub async fn create_session_legacy(
     {
         pairs.push(("CC_ISOLATED", "1".to_string()));
     }
-    // WORKTREE AT CREATE TIME (AMUX-4911), same reason as CC_ISOLATED directly
-    // above and written the same way: only when true, because absence already
-    // means "shared checkout" to the one reader that matters
-    // (`cfg.get_or("CC_WORKTREE", "") == "1"` in session_verbs::start).
+    // WORKTREE AT CREATE TIME (AMUX-4911). An explicit "0" overrides group-level
+    // workspace isolation so the create modal's unchecked checkbox is respected.
     if worktree {
         pairs.push(("CC_WORKTREE", "1".to_string()));
-        // SPARSE PROFILE (AMUX-5341): which folders the worktree checks out,
-        // for a repo that ships scripts/worktree.sh. Absent = the repo's own
-        // default profile. Only meaningful with a worktree, so only written
-        // with one.
         if !worktree_profile.is_empty() {
             pairs.push(("CC_WORKTREE_PROFILE", worktree_profile.clone()));
         }
+    } else {
+        pairs.push(("CC_WORKTREE", "0".to_string()));
     }
     // ACCEPT tags AS AN ARRAY, which is what the dashboard and API send
     // (AMUX-3114). `s("tags")` only matched a STRING, so `{"tags":["gtm"]}` read

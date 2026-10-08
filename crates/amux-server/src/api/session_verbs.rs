@@ -14833,7 +14833,10 @@ pub(crate) async fn start_session(
     let fanout = cfg.get("CC_EPHEMERAL") == Some("1") && !project_shared_checkout;
     // Workspace isolation implies an own worktree, except for project workers,
     // whose project already owns one checkout for all of them.
-    let isolation_worktree = cfg.get("CC_PROJECT").is_none() && workspace_isolation_on(name);
+    // CC_WORKTREE=0 is an explicit opt-out that overrides group-level workspace
+    // isolation, so the create modal's unchecked checkbox is respected.
+    let explicit_worktree_off = cfg.get("CC_WORKTREE") == Some("0");
+    let isolation_worktree = !explicit_worktree_off && cfg.get("CC_PROJECT").is_none() && workspace_isolation_on(name);
     let worktree_enabled = fanout || cfg.get_or("CC_WORKTREE", "") == "1" || isolation_worktree;
     if isolation_worktree {
         tracing::info!(session = name, measured = true, n_considered = 1,

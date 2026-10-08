@@ -29832,12 +29832,10 @@ function _selectProvider(p) {
   if (_ollamaBtn) _ollamaBtn.classList.toggle('selected', p === 'ollama');
   const _museBtn = document.getElementById('create-provider-muse');
   if (_museBtn) _museBtn.classList.toggle('selected', p === 'muse');
-  // Hide branch/template/session-name options for non-Claude providers since they use different mechanics
-  const isClaude = p === 'claude';
   const _typeHasWorktree = _workerTypeInfo(_createWorkerType).worktree !== 'unsupported';
-  document.getElementById('create-branch-enabled').closest('.field-group').style.display = isClaude && _typeHasWorktree ? '' : 'none';
-  document.getElementById('create-worktree-field').style.display = isClaude && _createDirIsGit && _typeHasWorktree ? '' : 'none';
-  document.getElementById('create-template-field').style.display = isClaude ? '' : 'none';
+  document.getElementById('create-branch-enabled').closest('.field-group').style.display = _typeHasWorktree ? '' : 'none';
+  document.getElementById('create-worktree-field').style.display = _createDirIsGit && _typeHasWorktree ? '' : 'none';
+  document.getElementById('create-template-field').style.display = '';
   // Every provider uses the same model surface. Blank delegates to that CLI's
   // own default; custom keeps tomorrow's model usable before this catalog is
   // refreshed.
