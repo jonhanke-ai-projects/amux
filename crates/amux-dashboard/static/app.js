@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1321';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1322';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -42615,17 +42615,41 @@ async function pingServer() {
   renderDebugInfo();
 }
 
-let _skillsData = { db: [], file: [], builtin: [], usage: {} };
+let _skillsData = { db: [], file: [], builtin: [], usage: {}, daily: [], windowDays: 30 };
 // Sort and pins (Ethan, 2026-09-29: "order by name or most frequently used",
 // "let me pin skills"). Usage comes from /api/skills/usage (transcripts: the
-// model's Skill calls and typed slash commands). A pin IS a slash chip in the
+// model's Skill calls and typed slash commands), which also returns a per-day
+// series and per-worker counts for the window. A pin IS a slash chip in the
 // composer's quick bar (ui_chips, synced server-side), so pinning shows the
 // skill first here and one tap away in every worker's composer.
-function _skillsSort() { try { return localStorage.getItem('skills_sort') || 'name'; } catch(e) { return 'name'; } }
-function _skillsSortSet(v) {
-  try { localStorage.setItem('skills_sort', v); } catch(e) {}
-  _skillsFilter((document.getElementById('skills-search') || {}).value || '');
+function _skillsPref(k, d) { try { return localStorage.getItem('skills_' + k) || d; } catch(e) { return d; } }
+function _skillsPrefSet(k, v) { try { localStorage.setItem('skills_' + k, v); } catch(e) {} }
+function _skillsSort() { const s = _skillsPref('sort', 'used'); return s === 'name' || s === 'recent' ? s : 'used'; }
+function _skillsQ() { return ((document.getElementById('skills-search') || {}).value || '').toLowerCase(); }
+function _skillsRerender() { _skillsRender(_skillsQ(), document.getElementById('skills-count'), document.getElementById('skills-tab-sections')); }
+function _skillsSortSet(v) { _skillsPrefSet('sort', v); _skillsRerender(); }
+const _skillsFilters = { type: '', status: '', worker: '' };
+function _skillsFilterSet(k, v) { _skillsFilters[k] = v; _skillsRerender(); }
+function _skillsLayoutSet(v) {
+  _skillsPrefSet('layout', v);
+  const list = v !== 'grid';
+  const l = document.getElementById('skills-view-list'), g = document.getElementById('skills-view-grid');
+  if (l) { l.setAttribute('aria-pressed', String(list)); l.classList.toggle('active', list); }
+  if (g) { g.setAttribute('aria-pressed', String(!list)); g.classList.toggle('active', !list); }
+  _skillsRerender();
 }
+function _skillsWindowSet(v) { _skillsPrefSet('window', v); _skillsTabLoad(true); }
+function _skillsTipDismiss() { _skillsPrefSet('tip_dismissed', '1'); const t = document.getElementById('skills-tip'); if (t) t.style.display = 'none'; }
+function _skillsSectionToggle(key) {
+  const k = 'collapsed_' + key;
+  _skillsPrefSet(k, _skillsPref(k, '') === '1' ? '' : '1');
+  _skillsRerender();
+}
+function _skillsSectionAll(key) {
+  _skillsExpanded[key] = !_skillsExpanded[key];
+  _skillsRerender();
+}
+const _skillsExpanded = {};
 function _skillKey(cmd) { return String(cmd || '').replace(/^\//, '').toLowerCase(); }
 function _skillPinned() {
   return new Set(_getChips().filter(c => c.action === 'slash').map(c => _skillKey(c.value)));
@@ -42639,32 +42663,61 @@ function _skillPinToggle(cmd) {
   _saveChips(chips);
   if (typeof refreshAllChipBars === 'function') refreshAllChipBars();
   showToast(i >= 0 ? 'Unpinned /' + key : 'Pinned /' + key + ' to the quick bar');
-  _skillsFilter((document.getElementById('skills-search') || {}).value || '');
+  _skillsRerender();
 }
 
-async function _skillsTabLoad() {
+// Cmd/Ctrl-K focuses the search while the Skills view is open.
+document.addEventListener('keydown', e => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || (e.key || '').toLowerCase() !== 'k') return;
+  const view = document.getElementById('skills-view');
+  if (!view || view.style.display === 'none') return;
+  const s = document.getElementById('skills-search');
+  if (!s) return;
+  e.preventDefault();
+  s.focus();
+  s.select();
+});
+
+async function _skillsTabLoad(keepQuery) {
   const container = document.getElementById('skills-tab-sections');
-  const countEl = document.getElementById('skills-count');
   const searchEl = document.getElementById('skills-search');
   if (!container) return;
-  container.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 0;">Loading...</div>';
-  if (searchEl) searchEl.value = '';
+  if (!keepQuery) container.innerHTML = '<div class="sk-empty">Loading...</div>';
+  if (searchEl && !keepQuery) searchEl.value = '';
+  const days = +_skillsPref('window', '30') || 30;
   try {
     const [cmds, dbSkills, usage] = await Promise.all([
       fetch(API + '/api/slash-commands').then(r => r.json()),
       fetch(API + '/api/skills').then(r => r.json()),
-      fetch(API + '/api/skills/usage', { headers: _authHeaders() }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(API + '/api/skills/usage?days=' + days, { headers: _authHeaders() }).then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     _skillsData.usage = (usage && usage.skills) || {};
-    const sortEl = document.getElementById('skills-sort');
-    if (sortEl) sortEl.value = _skillsSort();
+    _skillsData.daily = (usage && usage.daily) || [];
+    _skillsData.usageMeasured = !!(usage && usage.measured);
+    _skillsData.windowDays = days;
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    set('skills-sort', _skillsSort());
+    set('skills-window', String(days));
     const dbNames = new Set(dbSkills.map(s => '/' + s.name));
     _skillsData.db = dbSkills;
     _skillsData.file = cmds.filter(c => c.cmd && !dbNames.has(c.cmd) && !_isBuiltinCmd(c.cmd));
     _skillsData.builtin = cmds.filter(c => _isBuiltinCmd(c.cmd));
-    _skillsRender('', countEl, container);
+    // Worker filter: every worker the window's usage names, "" = unattributed.
+    const workers = new Set();
+    for (const u of Object.values(_skillsData.usage)) for (const w of Object.keys(u.workers || {})) workers.add(w);
+    const wsel = document.getElementById('skills-f-worker');
+    if (wsel) {
+      const cur = _skillsFilters.worker;
+      wsel.innerHTML = '<option value="">All workers</option>' + [...workers].sort((a, b) => (a === '') - (b === '') || a.localeCompare(b))
+        .map(w => '<option value="' + esc(w || '__unattributed__') + '">' + esc(w || 'Unattributed') + '</option>').join('');
+      wsel.value = cur && (workers.has(cur === '__unattributed__' ? '' : cur)) ? cur : '';
+      if (wsel.value !== cur) _skillsFilters.worker = wsel.value;
+    }
+    const tip = document.getElementById('skills-tip');
+    if (tip) tip.style.display = _skillsPref('tip_dismissed', '') === '1' ? 'none' : '';
+    _skillsLayoutSet(_skillsPref('layout', 'list'));
   } catch(e) {
-    container.innerHTML = '<div style="color:var(--red);font-size:0.85rem;padding:20px 0;">Failed to load skills</div>';
+    container.innerHTML = '<div class="sk-empty sk-err">Failed to load skills</div>';
   }
 }
 
@@ -42674,70 +42727,198 @@ function _skillsFilter(q) {
   _skillsRender(q.toLowerCase(), countEl, container);
 }
 
+function _skillsAgo(sec) {
+  if (!sec) return '';
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - sec));
+  if (s < 3600) return Math.max(1, Math.floor(s / 60)) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  if (s < 86400 * 60) return Math.floor(s / 86400) + 'd ago';
+  return Math.floor(s / (86400 * 30)) + 'mo ago';
+}
+
 function _skillsRender(q, countEl, container) {
-  const match = item => {
-    if (!q) return true;
-    const name = (item.name || item.cmd || '').toLowerCase();
-    const desc = (item.description || item.desc || '').toLowerCase();
-    const hint = (item.hint || '').toLowerCase();
-    return name.includes(q) || desc.includes(q) || hint.includes(q);
-  };
+  if (!container) return;
   const pinned = _skillPinned();
   const use = cmd => _skillsData.usage[_skillKey(cmd)] || null;
-  const byUse = (a, b) => ((use(b) || {}).recent || 0) - ((use(a) || {}).recent || 0)
-    || ((use(b) || {}).n || 0) - ((use(a) || {}).n || 0);
-  const sortBy = (items, cmdOf) => items.slice().sort((a, b) =>
-    (_skillsSort() === 'used' ? byUse(cmdOf(a), cmdOf(b)) : 0) || cmdOf(a).localeCompare(cmdOf(b)));
-  const dbCmd = s => '/' + s.name, fileCmd = c => c.cmd;
   const isPinned = cmd => pinned.has(_skillKey(cmd));
-  const allDb = _skillsData.db.filter(match), allFile = _skillsData.file.filter(match), allBuiltin = _skillsData.builtin.filter(match);
-  const db = sortBy(allDb.filter(s => !isPinned(dbCmd(s))), dbCmd);
-  const file = sortBy(allFile.filter(c => !isPinned(fileCmd(c))), fileCmd);
-  const builtin = sortBy(allBuiltin.filter(c => !isPinned(fileCmd(c))), fileCmd);
-  const pinnedItems = sortBy([
-    ...allDb.filter(s => isPinned(dbCmd(s))).map(s => ({ cmd: dbCmd(s), desc: s.description, hint: s.hint, editable: true, key: 'db:' + s.name })),
-    ...allFile.filter(c => isPinned(c.cmd)).map(c => ({ cmd: c.cmd, desc: c.desc, hint: c.hint || '', editable: false, key: 'file:' + c.cmd.replace(/^\//, '') })),
-    ...allBuiltin.filter(c => isPinned(c.cmd)).map(c => ({ cmd: c.cmd, desc: c.desc, hint: '', editable: false, key: '' })),
-  ], p => p.cmd);
-  const total = allDb.length + allFile.length;
-  if (countEl) countEl.textContent = total + ' skill' + (total === 1 ? '' : 's');
+  const wf = _skillsFilters.worker === '__unattributed__' ? '' : _skillsFilters.worker;
+  const all = [
+    ..._skillsData.db.map(s => ({ cmd: '/' + s.name, desc: s.description || '', hint: s.hint || '', type: 'custom', editable: true, key: 'db:' + s.name })),
+    ..._skillsData.file.map(c => ({ cmd: c.cmd, desc: c.desc || '', hint: c.hint || '', type: 'project', editable: false, key: 'file:' + c.cmd.replace(/^\//, '') })),
+    ..._skillsData.builtin.map(c => ({ cmd: c.cmd, desc: c.desc || '', hint: '', type: 'builtin', editable: false, key: '' })),
+  ];
+  const keep = it => {
+    if (q) {
+      const hay = (it.cmd + ' ' + it.desc + ' ' + it.hint).toLowerCase();
+      if (!hay.includes(q.replace(/^\//, '')) && !hay.includes(q)) return false;
+    }
+    if (_skillsFilters.type && it.type !== _skillsFilters.type) return false;
+    const u = use(it.cmd), recent = (u && u.recent) || 0;
+    switch (_skillsFilters.status) {
+      case 'pinned': if (!isPinned(it.cmd)) return false; break;
+      case 'unpinned': if (isPinned(it.cmd)) return false; break;
+      case 'used': if (!recent) return false; break;
+      case 'unused': if (recent) return false; break;
+    }
+    if (_skillsFilters.worker && !(u && u.workers && (u.workers[wf] || 0) > 0)) return false;
+    return true;
+  };
+  const shown = all.filter(keep);
+  const sort = _skillsSort();
+  const score = it => { const u = use(it.cmd) || {}; return wf && _skillsFilters.worker ? ((u.workers || {})[wf] || 0) : (u.recent || 0); };
+  shown.sort((a, b) => {
+    if (sort === 'used') return score(b) - score(a) || ((use(b.cmd) || {}).n || 0) - ((use(a.cmd) || {}).n || 0) || a.cmd.localeCompare(b.cmd);
+    if (sort === 'recent') return ((use(b.cmd) || {}).last_ts || 0) - ((use(a.cmd) || {}).last_ts || 0) || a.cmd.localeCompare(b.cmd);
+    return a.cmd.localeCompare(b.cmd);
+  });
+  const nonBuiltin = all.filter(i => i.type !== 'builtin').length;
+  if (countEl) countEl.textContent = (shown.length === all.length ? nonBuiltin + ' skills' : shown.length + ' of ' + all.length);
 
-  const section = (title, items, renderFn) => items.length === 0 ? '' :
-    '<div style="margin-bottom:20px;">' +
-      '<div style="font-size:0.7rem;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">' + title + '</div>' +
-      '<div style="display:flex;flex-direction:column;gap:6px;">' + items.map(renderFn).join('') + '</div>' +
-    '</div>';
+  const groups = [
+    { key: 'pinned', title: 'Pinned', items: shown.filter(i => isPinned(i.cmd)) },
+    { key: 'custom', title: 'Custom skills', items: shown.filter(i => !isPinned(i.cmd) && i.type === 'custom') },
+    { key: 'project', title: 'Project commands', hint: '(.claude/commands)', items: shown.filter(i => !isPinned(i.cmd) && i.type === 'project') },
+    { key: 'builtin', title: 'Built-in', items: shown.filter(i => !isPinned(i.cmd) && i.type === 'builtin') },
+  ];
+  const grid = _skillsPref('layout', 'list') === 'grid';
+  const badge = { custom: 'Custom', project: 'Project', builtin: 'Built-in' };
+  const LIMIT = 8;
 
-  const card = (cmd, desc, hint, editable, fetchKey) => {
-    const id = 'sc-' + cmd.replace(/[^a-z0-9]/gi,'_');
-    const safeCmd = cmd.replace(/'/g,"\\'");
-    const usage = hint ? cmd + ' ' + hint : cmd;
-    const u = use(cmd);
-    const badge = u && u.n ? '<span class="skill-card-uses" title="' + esc(u.n + ' uses (model ' + u.model + ', typed ' + u.user + '); ' + u.recent + ' in the last 30 days') + '" style="font-size:0.68rem;color:var(--dim);margin-left:6px;">' + u.n + '\u00d7</span>' : '';
-    const pin = isPinned(cmd);
-    return '<div class="skill-card" id="' + id + '">' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
-        '<span><span class="skill-card-name" style="cursor:pointer;" onclick="_skillToggle(\'' + id + '\',\'' + esc(fetchKey || '') + '\')">' + esc(cmd) + '</span>' + badge + '</span>' +
-        '<div style="display:flex;gap:4px;flex-shrink:0;">' +
-          '<button class="btn skill-pin' + (pin ? ' active' : '') + '" style="font-size:0.7rem;padding:2px 8px;' + (pin ? '' : 'opacity:0.55;') + '" aria-pressed="' + pin + '" title="' + (pin ? 'Unpin' : 'Pin to the quick bar') + '" onclick="event.stopPropagation();_skillPinToggle(\'' + safeCmd + '\')">\u{1F4CC}</button>' +
-          (editable ? '<button class="btn" style="font-size:0.65rem;padding:2px 8px;" onclick="event.stopPropagation();editSkill(\'' + esc(cmd.replace(/^\//,'')) + '\')">Edit</button>' : '') +
-          '<button class="btn" style="font-size:0.65rem;padding:2px 8px;" onclick="event.stopPropagation();navigator.clipboard.writeText(\'' + esc(usage) + '\');showToast(\'Copied!\')">Copy</button>' +
-          '<button class="btn" style="font-size:0.65rem;padding:2px 6px;" onclick="_skillToggle(\'' + id + '\',\'' + esc(fetchKey || '') + '\')" title="Expand">▾</button>' +
-        '</div>' +
+  const row = it => {
+    const id = 'sc-' + it.cmd.replace(/[^a-z0-9]/gi, '_');
+    const safeCmd = it.cmd.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const u = use(it.cmd);
+    const pin = isPinned(it.cmd);
+    const n = u ? (wf && _skillsFilters.worker ? (u.workers || {})[wf] || 0 : u.recent || 0) : 0;
+    const usesTitle = u ? (u.recent || 0) + ' in the last ' + _skillsData.windowDays + ' days, ' + u.n + ' all time (model ' + u.model + ', typed ' + u.user + ')' : 'No recorded use';
+    const fk = esc(it.key || '');
+    return '<div class="skill-card sk-row sk-' + it.type + (pin ? ' is-pinned' : '') + '" id="' + id + '">' +
+      '<div class="sk-row-main" onclick="_skillToggle(\'' + id + '\',\'' + fk + '\')">' +
+        '<button class="sk-pin' + (pin ? ' active' : '') + '" aria-pressed="' + pin + '" aria-label="' + (pin ? 'Unpin ' : 'Pin ') + esc(it.cmd) + '" title="' + (pin ? 'Unpin' : 'Pin to the quick bar') + '" onclick="event.stopPropagation();_skillPinToggle(\'' + safeCmd + '\')">\u{1F4CC}</button>' +
+        '<span class="skill-card-name sk-name">' + esc(it.cmd) + '</span>' +
+        '<span class="sk-desc" title="' + esc(it.desc) + '">' + esc(it.desc || (it.hint ? it.cmd + ' ' + it.hint : '')) + '</span>' +
+        '<span class="sk-badge sk-badge-' + it.type + '">' + badge[it.type] + '</span>' +
+        '<span class="sk-meta"><span class="sk-uses" title="' + esc(usesTitle) + '">' + n + ' ×</span>' +
+        '<span class="sk-ago" title="Last used">' + esc(u && u.last_ts ? _skillsAgo(u.last_ts) : 'never') + '</span></span>' +
+        '<span class="sk-actions" onclick="event.stopPropagation()">' +
+          (it.editable
+            ? '<button class="btn sk-edit" onclick="editSkill(\'' + esc(it.cmd.replace(/^\//, '')) + '\')">Edit</button>'
+            : '<button class="btn sk-edit" onclick="_skillToggle(\'' + id + '\',\'' + fk + '\')">View</button>') +
+          '<span class="sk-menu-wrap"><button class="btn sk-more" aria-haspopup="menu" aria-label="More actions for ' + esc(it.cmd) + '" onclick="_skillsMenu(this)">⋯</button>' +
+            '<span class="sk-menu" role="menu">' +
+              '<button role="menuitem" onclick="_skillsMenuClose();_skillPinToggle(\'' + safeCmd + '\')">' + (pin ? 'Unpin' : 'Pin to quick bar') + '</button>' +
+              '<button role="menuitem" onclick="_skillsMenuClose();_skillCopy(\'' + safeCmd + '\',\'' + esc(it.hint.replace(/\\/g, '\\\\').replace(/'/g, "\\'")) + '\')">Copy command</button>' +
+              '<button role="menuitem" onclick="_skillsMenuClose();_skillToggle(\'' + id + '\',\'' + fk + '\')">Details and examples</button>' +
+              (it.editable ? '<button role="menuitem" onclick="_skillsMenuClose();editSkill(\'' + esc(it.cmd.replace(/^\//, '')) + '\')">Edit</button>' : '') +
+            '</span></span>' +
+          '<button class="btn sk-expand" title="Expand" aria-label="Expand ' + esc(it.cmd) + '" onclick="_skillToggle(\'' + id + '\',\'' + fk + '\')">▾</button>' +
+        '</span>' +
       '</div>' +
-      (desc ? '<div class="skill-card-desc">' + esc(desc) + '</div>' : '') +
-      (hint ? '<div class="skill-card-hint" style="font-family:monospace;font-size:0.75rem;color:var(--dim);">' + esc(cmd + ' ' + hint) + '</div>' : '') +
-      '<div class="skill-expand" id="' + id + '-body" style="display:none;margin-top:8px;"></div>' +
+      '<div class="skill-expand" id="' + id + '-body" style="display:none;"></div>' +
     '</div>';
   };
 
-  const html =
-    section('Pinned', pinnedItems, p => card(p.cmd, p.desc, p.hint, p.editable, p.key)) +
-    section('Custom skills', db, s => card('/' + s.name, s.description, s.hint, true, 'db:' + s.name)) +
-    section('Project commands (.claude/commands)', file, c => card(c.cmd, c.desc, c.hint || '', false, 'file:' + c.cmd.replace(/^\//,''))) +
-    section('Built-in', builtin, c => card(c.cmd, c.desc, '', false, ''));
+  const section = g => {
+    if (!g.items.length) return '';
+    const collapsed = _skillsPref('collapsed_' + g.key, '') === '1';
+    const more = g.items.length > LIMIT && !_skillsExpanded[g.key];
+    const items = more ? g.items.slice(0, LIMIT) : g.items;
+    return '<section class="sk-section' + (collapsed ? ' collapsed' : '') + '" data-section="' + g.key + '">' +
+      '<div class="sk-section-head">' +
+        '<button class="sk-section-toggle" aria-expanded="' + !collapsed + '" onclick="_skillsSectionToggle(\'' + g.key + '\')">' +
+          '<span class="sk-caret">' + (collapsed ? '▸' : '▾') + '</span>' + esc(g.title) + (g.hint ? ' <span class="sk-section-hint">' + esc(g.hint) + '</span>' : '') + ' <span class="sk-section-count">' + g.items.length + '</span></button>' +
+        (g.items.length > LIMIT && !collapsed ? '<button class="sk-viewall" onclick="_skillsSectionAll(\'' + g.key + '\')">' + (more ? 'View all' : 'Show less') + '</button>' : '') +
+      '</div>' +
+      (collapsed ? '' : '<div class="sk-rows' + (grid ? ' sk-grid' : '') + '">' + items.map(row).join('') + '</div>') +
+    '</section>';
+  };
 
-  container.innerHTML = html || '<div style="color:var(--dim);font-size:0.85rem;padding:20px 0;">No skills match "' + esc(q) + '"</div>';
+  const html = groups.map(section).join('');
+  container.innerHTML = html || '<div class="sk-empty">No skills match' + (q ? ' "' + esc(q) + '"' : ' these filters') + '</div>';
+  _skillsRenderSide(all, pinned);
+}
+
+function _skillsMenuClose() { document.querySelectorAll('.sk-menu.open').forEach(m => m.classList.remove('open')); }
+function _skillsMenu(btn) {
+  const m = btn.nextElementSibling;
+  const open = m && !m.classList.contains('open');
+  _skillsMenuClose();
+  if (open) m.classList.add('open');
+}
+document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('.sk-menu-wrap')) _skillsMenuClose(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') _skillsMenuClose(); });
+function _skillCopy(cmd, hint) {
+  const text = hint ? cmd + ' ' + hint : cmd;
+  Promise.resolve().then(() => navigator.clipboard.writeText(text))
+    .then(() => showToast('Copied ' + text), () => showToast('Copy failed: the browser refused clipboard access'));
+}
+
+function _skillsRenderSide(all, pinned) {
+  const days = _skillsData.windowDays;
+  const chart = document.getElementById('skills-chart');
+  if (chart) {
+    const d = _skillsData.daily || [];
+    if (!_skillsData.usageMeasured) {
+      chart.innerHTML = '<div class="sk-empty">Usage is not available from this server.</div>';
+    } else {
+      const max = Math.max(1, ...d.map(x => x.n));
+      const total = d.reduce((s, x) => s + x.n, 0);
+      const W = 280, H = 110, padL = 26, padB = 18, bw = (W - padL) / Math.max(1, d.length);
+      const ticks = [0, Math.round(max / 2), max];
+      let svg = '<svg viewBox="0 0 ' + W + ' ' + (H + padB) + '" role="img" aria-label="' + total + ' skill uses in the last ' + days + ' days" preserveAspectRatio="none">';
+      for (const t of ticks) {
+        const y = H - (t / max) * (H - 6);
+        svg += '<line x1="' + padL + '" x2="' + W + '" y1="' + y + '" y2="' + y + '" class="sk-grid-line"/>' +
+          '<text x="' + (padL - 4) + '" y="' + (y + 3) + '" class="sk-axis" text-anchor="end">' + t + '</text>';
+      }
+      d.forEach((x, i) => {
+        const h = (x.n / max) * (H - 6);
+        svg += '<rect class="sk-bar" x="' + (padL + i * bw + bw * 0.18) + '" y="' + (H - h) + '" width="' + Math.max(1, bw * 0.64) + '" height="' + Math.max(0, h) + '"><title>' + esc(x.day) + ': ' + x.n + '</title></rect>';
+      });
+      const step = Math.max(1, Math.ceil(d.length / 5));
+      d.forEach((x, i) => {
+        if (i % step) return;
+        const dt = new Date(x.day + 'T00:00:00Z');
+        const lbl = dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+        svg += '<text x="' + (padL + i * bw + bw / 2) + '" y="' + (H + 13) + '" class="sk-axis" text-anchor="middle">' + esc(lbl) + '</text>';
+      });
+      svg += '</svg>';
+      chart.innerHTML = '<div class="sk-chart-total"><b>' + total + '</b> uses in the last ' + days + ' days</div>' + svg;
+    }
+  }
+  const top = document.getElementById('skills-top');
+  if (top) {
+    const ranked = Object.entries(_skillsData.usage).map(([k, u]) => [k, u.recent || 0]).filter(x => x[1] > 0)
+      .sort((a, b) => b[1] - a[1]).slice(0, 5);
+    top.innerHTML = ranked.length ? ranked.map(([k, n], i) =>
+      '<li><button class="sk-top-item" onclick="_skillsJump(\'/' + esc(k) + '\')"><span class="sk-rank">' + (i + 1) + '</span><span class="sk-top-name">/' + esc(k) + '</span><span class="sk-top-n">' + n.toLocaleString() + ' ×</span></button></li>').join('')
+      : '<li class="sk-empty">No skill used in the last ' + days + ' days</li>';
+  }
+  const grp = document.getElementById('skills-groups');
+  if (grp) {
+    const count = t => all.filter(i => i.type === t).length;
+    const rows = [
+      ['pinned', 'Pinned', all.filter(i => pinned.has(_skillKey(i.cmd))).length, () => "_skillsGroupPick('status','pinned')"],
+      ['custom', 'Custom', count('custom'), () => "_skillsGroupPick('type','custom')"],
+      ['project', 'Project commands', count('project'), () => "_skillsGroupPick('type','project')"],
+      ['builtin', 'Built-in', count('builtin'), () => "_skillsGroupPick('type','builtin')"],
+    ];
+    grp.innerHTML = rows.map(([k, label, n, act]) =>
+      '<li><button class="sk-group-item" onclick="' + act() + '"><span class="sk-dot sk-dot-' + k + '"></span><span>' + label + '</span><span class="sk-group-n">' + n + '</span></button></li>').join('');
+  }
+}
+function _skillsGroupPick(k, v) {
+  _skillsFilters.type = ''; _skillsFilters.status = '';
+  _skillsFilters[k] = v;
+  const t = document.getElementById('skills-f-type'), s = document.getElementById('skills-f-status');
+  if (t) t.value = _skillsFilters.type;
+  if (s) s.value = _skillsFilters.status;
+  _skillsRerender();
+}
+function _skillsJump(cmd) {
+  const s = document.getElementById('skills-search');
+  if (s) s.value = cmd;
+  _skillsFilter(cmd);
 }
 
 const _skillContentCache = {};
