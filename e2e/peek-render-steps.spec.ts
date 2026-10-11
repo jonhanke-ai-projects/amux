@@ -48,7 +48,10 @@ test.beforeEach(async ({ page }) => {
 
 test('Claude output runs the Claude pipeline: tool calls collapse, and the steps say so', async ({ page }) => {
   await openPeekOn(page, 'render-claude', { path: 'claude-transcript', steps: ['tmux-capture', 'strip-scroll-pill', 'claude-transcript', 'collapse-blank-runs'] });
-  await expect(page.locator('#peek-body .ptc.collapsed')).toHaveCount(1);   // the Bash call, folded
+  // The Bash call becomes a fold block. It is the newest block, so it starts
+  // expanded (#280: the newest tool call is what the worker is doing now).
+  await expect(page.locator('#peek-body .ptc')).toHaveCount(1);
+  await expect(page.locator('#peek-body .ptc.collapsed')).toHaveCount(0);
   const text = await renderSteps(page);
   expect(text).toContain('claude (pipeline: claude)');
   expect(text).toContain('Server: history from claude-transcript');

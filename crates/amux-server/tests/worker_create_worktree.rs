@@ -81,6 +81,17 @@ async fn a_worktree_create_writes_the_variable_the_start_path_reads() {
         "absence already means shared checkout; a second spelling of the default is not written:\n{env}"
     );
 
+    // The dialog's UNCHECKED box sends worktree:false. That is an explicit
+    // opt-out of group-level workspace isolation, so it is written as "0";
+    // only a request that does not mention a worktree writes nothing.
+    let status = create(&app, json!({"name":"no-wt-lane","dir":"/tmp","worktree":false})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let env = env_of(home.path(), "no-wt-lane");
+    assert!(
+        env.contains("CC_WORKTREE=\"0\""),
+        "an unchecked worktree box must reach the env as an explicit opt-out:\n{env}"
+    );
+
     // Project executors record a repository-local worktree. The worker API
     // must expose the same path the project uses, not the individual-worker
     // default under AMUX_HOME/worktrees.

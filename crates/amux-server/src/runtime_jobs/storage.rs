@@ -403,6 +403,17 @@ pub const SPECS: &[SweepSpec] = &[
         env: "AMUX_STEERING_HISTORY_RETAIN_DAYS",
         default_days: 30.0,
     },
+    // _amux_invariant_result is not listed: invariants/store.rs already trims
+    // it to 7 days (1 hour for passing rows) on every monitor pass.
+    // ~1.2M rows, 187MB. Policy receipt records. 30d is enough for audit.
+    // `created_at` is ISO-8601 TEXT like `_amux_state_events.at`.
+    SweepSpec {
+        table: "_amux_policy_receipts",
+        ts_col: "created_at",
+        unit: TsUnit::IsoText,
+        env: "AMUX_POLICY_RECEIPTS_RETAIN_DAYS",
+        default_days: 30.0,
+    },
 ];
 
 /// `<ENV>`: process env wins, then `server.env`, then the spec default — the

@@ -14072,7 +14072,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1331';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1332';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16941,18 +16941,26 @@ function _wrapToolCalls(html) {
     // default"). A reply ("⏺ Done. The fix…") stays open, since it is the
     // answer. A block the reader toggled keeps their choice.
     const isToolCall = /^\s*⏺\s+[\w:.-]+(?:\s*\(MCP\))?\(/.test(t);
-    const collapsed = id in _peekToolCollapsed ? _peekToolCollapsed[id] : isToolCall;
     if (hasBody) {
-      out.push('<div class="ptc' + (collapsed ? ' collapsed' : '') + '" id="ptc-' + id + '">'
-        + '<div class="ptc-head" onclick="_peekToggleTool(' + id + ', event)">'
-        + '<span class="ptc-caret"></span>' + lines[i] + '</div>'
-        + '<div class="ptc-body">' + lines.slice(i + 1, end).join('\n') + '</div></div>');
+      out.push({ id, isToolCall, head: lines[i], body: lines.slice(i + 1, end).join('\n') });
     } else {
       out.push(lines[i]);
     }
     i = end;
   }
-  return out.join('\n');
+  // THE NEWEST BLOCK STAYS OPEN (Ethan, 2026-10-05, fc767cfa, never pushed
+  // until 2026-10-11): tool calls start collapsed, but the last one is what the
+  // worker is doing now, so it renders expanded unless the reader toggled it.
+  let last = -1;
+  for (let k = out.length - 1; k >= 0; k--) if (typeof out[k] === 'object') { last = k; break; }
+  return out.map((b, k) => {
+    if (typeof b !== 'object') return b;
+    const collapsed = b.id in _peekToolCollapsed ? _peekToolCollapsed[b.id] : (b.isToolCall && k !== last);
+    return '<div class="ptc' + (collapsed ? ' collapsed' : '') + '" id="ptc-' + b.id + '">'
+      + '<div class="ptc-head" onclick="_peekToggleTool(' + b.id + ', event)">'
+      + '<span class="ptc-caret"></span>' + b.head + '</div>'
+      + '<div class="ptc-body">' + b.body + '</div></div>';
+  }).join('\n');
 }
 // FORMAT FOR THE SCREEN LIKE A TERMINAL (Ethan, 2026-09-24: "make peek look
 // like the underlying terminal but format for the screen"). The browser wraps
@@ -30027,12 +30035,10 @@ function _selectProvider(p) {
   if (_ollamaBtn) _ollamaBtn.classList.toggle('selected', p === 'ollama');
   const _museBtn = document.getElementById('create-provider-muse');
   if (_museBtn) _museBtn.classList.toggle('selected', p === 'muse');
-  // Hide branch/template/session-name options for non-Claude providers since they use different mechanics
-  const isClaude = p === 'claude';
   const _typeHasWorktree = _workerTypeInfo(_createWorkerType).worktree !== 'unsupported';
-  document.getElementById('create-branch-enabled').closest('.field-group').style.display = isClaude && _typeHasWorktree ? '' : 'none';
-  document.getElementById('create-worktree-field').style.display = isClaude && _createDirIsGit && _typeHasWorktree ? '' : 'none';
-  document.getElementById('create-template-field').style.display = isClaude ? '' : 'none';
+  document.getElementById('create-branch-enabled').closest('.field-group').style.display = _typeHasWorktree ? '' : 'none';
+  document.getElementById('create-worktree-field').style.display = _createDirIsGit && _typeHasWorktree ? '' : 'none';
+  document.getElementById('create-template-field').style.display = '';
   // Every provider uses the same model surface. Blank delegates to that CLI's
   // own default; custom keeps tomorrow's model usable before this catalog is
   // refreshed.
@@ -30429,6 +30435,12 @@ async function submitCreate() {
     createBody.worktree = true;
     const wtProfile = document.getElementById('create-worktree-profile')?.value || '';
     if (wtProfile) createBody.worktree_profile = wtProfile;
+  } else if (document.getElementById('create-worktree-field').style.display !== 'none') {
+    // The box was offered (its field is shown) and left unchecked: say so, so
+    // group-level workspace isolation does not give this worker a worktree
+    // anyway. (_typeHasWorktree is local to _selectProvider; reading it here
+    // threw a ReferenceError and failed every such create.)
+    createBody.worktree = false;
   }
   const _groups = _createGroupsFrom((document.getElementById('create-group') || {}).value);
   if (_groups.length) createBody.tags = _groups;

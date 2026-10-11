@@ -28,3 +28,22 @@ test('tool calls start collapsed, replies stay open, and a toggle sticks', async
   await page.evaluate(() => { (window as any)._peekToggleToolNow(0); });
   expect((await state())[0].collapsed).toBe(false);
 });
+
+// fc767cfa (Ethan, 2026-10-05): the NEWEST block is what the worker is doing
+// now, so a tool call at the bottom renders expanded; older calls stay folded,
+// and folding the newest one by hand sticks.
+test('the newest tool call stays expanded while older ones fold', async ({ page }) => {
+  const raw = '⏺ Bash(git status)\n  ⎿  clean\n\n⏺ Read(src/main.rs)\n  ⎿  Read 40 lines\n';
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any)._peekHtml === 'function');
+  const state = () => page.evaluate((r) => {
+    let body = document.getElementById('ptc-probe2');
+    if (!body) { body = document.createElement('div'); body.id = 'ptc-probe2'; document.body.appendChild(body); }
+    body.innerHTML = (window as any)._peekHtml(r);
+    return [...body.querySelectorAll('.ptc')].map(el => el.classList.contains('collapsed'));
+  }, raw);
+  expect(await state()).toEqual([true, false]);
+  await page.evaluate(() => { (window as any)._peekToggleToolNow(1); });
+  expect(await state()).toEqual([true, true]);
+});
