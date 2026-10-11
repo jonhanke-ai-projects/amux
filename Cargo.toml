@@ -126,3 +126,9 @@ inherits = "release"
 lto = false
 incremental = true
 codegen-units = 256
+# Keep the SYMBOL TABLE on the binary this host runs (Mac CPU RCA
+# 20261011-094606): amux-server-rs was the top CPU consumer at 147-357% and
+# `sample` could name none of its frames, because release's strip = "symbols"
+# left one text symbol. "debuginfo" drops the DWARF but keeps function names,
+# so the next RCA can attribute the server's time to code.
+strip = "debuginfo"
