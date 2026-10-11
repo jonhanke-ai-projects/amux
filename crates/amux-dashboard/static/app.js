@@ -55216,7 +55216,11 @@ async function _cvPoll(full) {
     if (!r.ok) { document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">' + esc(d.error || ('HTTP ' + r.status)) + '</div>'; return; }
   } catch (e) { return; }
   if (sel !== _cv.sel) return;
+  const hadInfo = !!_cv.info;
   _cv.info = d;
+  // Typing "@" before the member list arrived left the picker empty; offer
+  // it again now that the names are here.
+  if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
   if (full) _cv.posts = d.posts || [];
   else if ((d.posts || []).length) _cv.posts = _cv.posts.concat(d.posts);
   // Deliveries are written back after a post lands: refresh recent ones that are still pending.

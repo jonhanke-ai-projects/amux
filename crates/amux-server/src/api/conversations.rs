@@ -261,6 +261,14 @@ fn person_allows(scope: &MemberScope, worker: &str, lanes: &[Lane]) -> bool {
 }
 
 fn may_read(who: &Who, conv: &Conv, lanes: &[Lane]) -> bool {
+    // A channel exists only for a real group (or #general). Without this a
+    // workspace-wide member could post to any `g:<typo>` and create a
+    // conversation nobody lists.
+    if let Conv::Group(g) = conv {
+        if g != GENERAL && !lanes.iter().any(|l| l.groups.contains(g)) {
+            return false;
+        }
+    }
     match (who, conv) {
         (Who::Person { scope, .. }, Conv::Group(g)) if g == GENERAL => scope.is_global(),
         (Who::Person { scope, .. }, Conv::Group(g)) => person_sees_group(scope, g),
@@ -659,10 +667,20 @@ fn conv_label(conv: &Conv) -> String {
 /// The text a worker receives. It names where it came from and how to answer
 /// there, since the worker cannot see the Messages tab.
 fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
-    let label = conv_label(conv);
+    // Addressed to the worker, in the second person. The first version
+    // ("[#chan] who: body (From amux Messages...)") read as a third party's
+    // message: a live worker on sandbox.amux.io asked "are you asking me
+    // to...?" in its own pane instead of answering, so the person waiting in
+    // the channel saw nothing (2026-10-11).
+    let (opening, place) = match conv {
+        Conv::Group(g) => (format!("{author} mentioned you in #{g} (amux Messages):"), format!("#{g}")),
+        Conv::Worker(_) => (format!("{author} wrote to you in your amux Messages thread:"), "your thread".to_string()),
+        Conv::People(..) => (format!("{author} wrote to you in amux Messages:"), "that conversation".to_string()),
+    };
     format!(
-        "[{label}] {author}: {body}\n\n(From amux Messages. To reply in {label}, post plain text: \
-         curl -sk --data-binary @- -H \"X-Amux-Session: $AMUX_SESSION\" \"$AMUX_URL/api/conversations/{}/posts\" <<'EOF' ... EOF)",
+        "{opening}\n\n{body}\n\nThis is addressed to you: act on it now. Your answer must be posted to {place}, \
+         because that is where {author} is reading (this pane is not). Post it with:\n\
+         amux post {} <<'EOF'\n<your answer>\nEOF",
         conv.key()
     )
 }
@@ -909,6 +927,15 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_must_be_a_real_group() {
+        let lanes = vec![lane("ed", &["wexus"])];
+        let owner = person("owner", MemberScope::Global);
+        assert!(may_read(&owner, &Conv::Group("wexus".into()), &lanes));
+        assert!(may_read(&owner, &Conv::Group(GENERAL.into()), &lanes));
+        assert!(!may_read(&owner, &Conv::Group("nope-nothing".into()), &lanes));
+    }
+
+    #[test]
     fn workers_read_their_groups_and_own_thread_only() {
         let lanes = vec![lane("ed", &["wexus"]), lane("other", &["mtp"])];
         let ed = Who::Worker { name: "ed".into(), groups: ["wexus".to_string()].into() };
@@ -985,8 +1012,12 @@ mod tests {
     #[test]
     fn delivery_text_names_the_source_and_the_reply_route() {
         let t = delivery_text(&Conv::Group("wexus".into()), "elliot", "@ed run 10/11");
-        assert!(t.starts_with("[#wexus] elliot: @ed run 10/11"));
-        assert!(t.contains("/api/conversations/g:wexus/posts"));
-        assert!(t.contains("X-Amux-Session: $AMUX_SESSION"));
+        assert!(t.starts_with("elliot mentioned you in #wexus"), "{t}");
+        assert!(t.contains("\n\n@ed run 10/11\n\n"));
+        assert!(t.contains("addressed to you"), "a worker must read it as its own task");
+        assert!(t.contains("amux post g:wexus <<'EOF'"));
+        // Claude Code asks before running a command with unverifiable
+        // variables, so the reply recipe must not contain any.
+        assert!(!t.contains('$'), "{t}");
     }
 }
