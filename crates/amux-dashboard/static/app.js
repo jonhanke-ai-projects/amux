@@ -14076,7 +14076,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1344';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1345';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -24934,7 +24934,11 @@ async function _renderPdf(data, body) {
   // Range-capable raw stream, at any size. Touch devices keep pdf.js: iOS shows
   // only a first-page snapshot of a framed PDF.
   const rawSrc = data.raw_url ? _authUrl(API + data.raw_url) : (data.path ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(data.path)) : '');
-  if (rawSrc && !(window.matchMedia && matchMedia('(pointer: coarse)').matches)) {
+  // localStorage amux_pdf_viewer = 'pdfjs' keeps the in-page renderer on desktop
+  // too (page-by-page canvases, the 30-page preview cap and its notice).
+  let forcePdfjs = false;
+  try { forcePdfjs = localStorage.getItem('amux_pdf_viewer') === 'pdfjs'; } catch (e) {}
+  if (rawSrc && !forcePdfjs && !(window.matchMedia && matchMedia('(pointer: coarse)').matches)) {
     if (!current()) return;
     body.innerHTML = '';
     const frame = document.createElement('iframe');
