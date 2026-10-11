@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2582,
+  "n_considered": 2589,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2168,12 +2168,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_peekHtml": {
-      "kind": "command._peekHtml",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_peekIdentityDiscard": {
       "kind": "command._peekIdentityDiscard",
       "feedback_required": true,
@@ -2200,12 +2194,6 @@
     },
     "_peekKickFast": {
       "kind": "command._peekKickFast",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_peekLiveHtml": {
-      "kind": "command._peekLiveHtml",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

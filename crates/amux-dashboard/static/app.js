@@ -7159,6 +7159,9 @@ function _renderPeekWorkerActions(s) {
     + '<div class="peek-more-item" id="peek-focus-btn" role="menuitem" '
     + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
     + '<span class="mi">&#x25B4;</span>Focus mode</div>'
+    + '<div class="peek-more-item" id="peek-render-steps-btn" role="menuitem" '
+    + 'onclick="event.stopPropagation();_closePeekMore();_peekShowRenderSteps()">'
+    + '<span class="mi">&#x2699;</span>Rendering steps</div>'
     + _peekChatMenuItem(s);
   const previous = _peekActionTemplates.get(menu);
   if (previous === html && menu.firstChild) {
@@ -16703,9 +16706,179 @@ let _peekModePainted = null;
 // .peek-prompt element, so every filter and the up/down message keys report
 // "No matching ... messages" over a pane full of them. The tag is the one
 // change peek may make; the text inside stays exactly as drawn.
+// ── PEEK RENDER STEPS: the one list (Ethan, 2026-10-11: "make the list of
+// peek transformations consolidated/easy to understand/audit") ──
+//
+// Every change the dashboard makes to a worker's terminal text is a named step
+// here, and the pipelines below are the ONLY order they run in: _peekHtml and
+// _peekLiveHtml call _peekRun, never the functions directly. Each frame
+// records which steps ran, how much text each changed and how long it took
+// (_peekTrace), and the peek's ⋮ menu → Rendering steps shows that next to the
+// server's own steps (`render` on the peek response, PEEK_SERVER_STEPS).
+// docs/peek-rendering.md is checked against both lists by
+// tests/peek-render-registry.test.mjs, so a step cannot be added without
+// being written down.
+const PEEK_STEPS = {
+  'ansi-to-html': { what: 'Escape the text as HTML; terminal colours become styled spans; URLs and terminal hyperlinks become links', fn: s => ansiToHtml(s) },
+  'link-paths': { what: 'File and folder paths become links that open in the viewer, resolved against the worker folder', fn: s => _linkifyPaths(s) },
+  'tag-prompts': { what: 'Wrap each prompt as a navigable message labelled with who sent it (Human, Harness, a peer), for the filters and up/down keys. Prompt marker per provider: Claude ❯, Codex ›, Gemini >; the Codex composer (workspace/sandbox/model line) is recognised here', fn: s => highlightPrompts(s) },
+  'tag-prompts-thin': { what: 'Thin mode: label each prompt with its sender, leaving the text exactly as the terminal drew it', fn: s => highlightPrompts(s, { thin: true }) },
+  'collapse-tool-calls': { what: 'Claude Code: each tool call (⏺ Bash(…), ⏺ Read(…)) becomes a collapsed accordion; replies stay open', fn: s => _wrapToolCalls(s) },
+  'fit-rules': { what: 'Horizontal rules (the input box border) are resized to the width instead of scrolling', fn: s => _fitRules(s) },
+  'scroll-box-blocks': { what: 'Tables and framed boxes get their own horizontal scroller so their columns stay aligned', fn: s => wrapBoxBlocks(s) },
+  'hang-indent': { what: 'A wrapped list or indented line continues under its own text, as the terminal draws it', fn: s => _hangIndent(s) },
+};
+// PER PROVIDER (Ethan, 2026-10-11: "they should of course be model specific
+// too since for example claude code spits out different shit than codex").
+// Each CLI draws its own terminal: Claude Code marks tool calls with ⏺ and
+// frames its input box with rules over a ⏵/shift+tab footer; Codex marks
+// prompts with › and has no ⏺ calls; Gemini uses >. A provider without its
+// own entry uses `default`, which is the full set (what every provider ran
+// before this list existed). `composer` names how the live screen's input box
+// is found: 'claude' (❯ between rules, then the footer) or 'none' (the
+// provider's composer is recognised inside tag-prompts, or it has none).
+const _PEEK_FULL = ['ansi-to-html', 'link-paths', 'tag-prompts', 'collapse-tool-calls', 'fit-rules', 'scroll-box-blocks', 'hang-indent'];
+const _PEEK_FULL_NO_CALLS = _PEEK_FULL.filter(id => id !== 'collapse-tool-calls');
+const _PEEK_COMMON = { thin: ['ansi-to-html', 'link-paths', 'fit-rules', 'tag-prompts-thin'], 'thin-composer': ['ansi-to-html', 'link-paths', 'fit-rules'], footer: ['ansi-to-html'] };
+const PEEK_PIPELINES = {
+  claude: Object.assign({ full: _PEEK_FULL, composer: 'claude' }, _PEEK_COMMON),
+  codex: Object.assign({ full: _PEEK_FULL_NO_CALLS, composer: 'none' }, _PEEK_COMMON),
+  gemini: Object.assign({ full: _PEEK_FULL_NO_CALLS, composer: 'none' }, _PEEK_COMMON),
+  default: Object.assign({ full: _PEEK_FULL, composer: 'claude' }, _PEEK_COMMON),
+};
+function _peekProviderNow() {
+  const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
+  return s ? sessionProvider(s) : 'claude';
+}
+function _peekPipelines(provider) { return PEEK_PIPELINES[provider] || PEEK_PIPELINES.default; }
+// Decisions about the whole frame rather than passes over its text.
+const PEEK_FRAME_STEPS = {
+  'wrap-at-pane-width': 'Wrap text at the worker terminal width (pane_cols), not the browser window, so its own line breaks survive',
+  'trim-live-overlap': 'Drop the start of the live screen that repeats the end of the history already shown',
+  'split-composer': 'Separate the input box at the bottom of the screen from the messages above it',
+  'show-draft': 'Show text typed in the input box but not yet sent',
+  'hide-steering-echo': 'Hide input-box text that is a queued Steering message, or the "Press up to edit queued messages" hint',
+  'skip-unchanged': 'Nothing changed since the last frame, so nothing was re-rendered',
+  'hold-while-reading': 'New output is kept off screen while you are scrolled up, searching or pressing, and painted when you return',
+  'chat-owns-body': 'The Chat tab is showing, so the terminal frame was updated in the background and not painted',
+  'painted': 'The frame was painted',
+};
+(function _peekStepsSelfCheck() {
+  // A pipeline naming a step that does not exist would throw on the first
+  // frame; say which one at load instead.
+  for (const [provider, modes] of Object.entries(PEEK_PIPELINES)) {
+    for (const [mode, ids] of Object.entries(modes)) {
+      if (!Array.isArray(ids)) continue;
+      for (const id of ids) if (!PEEK_STEPS[id]) console.error('[peek] ' + provider + ' pipeline ' + mode + ' names unregistered step ' + id);
+    }
+  }
+})();
+
+// What the CURRENT frame did, and the last finished one (shown by Rendering steps).
+// _peekTrace is the latest poll, which is usually "skip-unchanged"; the text
+// passes shown are each region's most recent actual render (_peekLastRegion).
+let _peekTraceCur = null, _peekTrace = null, _peekTraceRegion = 'history';
+let _peekLastRegion = {};
+// The server's stamp for the last FULL fetch (where history came from) and the
+// last live poll (always tmux-live), kept apart: live polls arrive every
+// half-second, and showing only the latest would hide the history's source.
+let _peekServerFull = null, _peekServerLive = null;
+function _peekTraceBegin(meta) {
+  if (_peekTrace && meta && meta.name !== _peekTrace.name) { _peekLastRegion = {}; _peekServerFull = null; _peekServerLive = null; }
+  if (meta && meta.server) {
+    const stamp = Object.assign({ at: Date.now() }, meta.server);
+    if (meta.live_only) _peekServerLive = stamp; else _peekServerFull = stamp;
+  }
+  const provider = _peekProviderNow();
+  _peekTraceCur = Object.assign({ at: Date.now(), provider, pipeline: PEEK_PIPELINES[provider] ? provider : 'default', regions: {}, frame: [] }, meta);
+}
+function _peekTraceFrame(id, note) {
+  if (_peekTraceCur) _peekTraceCur.frame.push({ id, note: note || '' });
+}
+function _peekTraceEnd(outcome, note) {
+  if (!_peekTraceCur) return;
+  _peekTraceFrame(outcome, note);
+  for (const [region, runs] of Object.entries(_peekTraceCur.regions)) _peekLastRegion[region] = { at: _peekTraceCur.at, runs };
+  _peekTrace = _peekTraceCur;
+  _peekTraceCur = null;
+}
+function _peekRun(mode, raw) {
+  let out = String(raw);
+  const steps = [];
+  for (const id of _peekPipelines(_peekProviderNow())[mode]) {
+    const t0 = performance.now(), before = out.length;
+    out = PEEK_STEPS[id].fn(out);
+    steps.push({ id, chars_in: before, chars_out: out.length, ms: Math.round((performance.now() - t0) * 100) / 100 });
+  }
+  if (_peekTraceCur) (_peekTraceCur.regions[_peekTraceRegion] = _peekTraceCur.regions[_peekTraceRegion] || []).push({ mode, steps });
+  return out;
+}
+
 function _peekHtml(raw) {
-  if (_peekThin) return highlightPrompts(_fitRules(_linkifyPaths(ansiToHtml(raw))), {thin: true});
-  return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
+  return _peekRun(_peekThin ? 'thin' : 'full', raw);
+}
+
+// ⋮ → Rendering steps: what the server and the dashboard did to the frame on
+// screen, in order, beside every registered step that did not run.
+let _peekServerSteps = null;
+async function _peekShowRenderSteps() {
+  if (!_peekServerSteps) {
+    try {
+      const r = await fetch(API + '/api/peek/steps');
+      const d = r.ok ? await r.json() : null;
+      _peekServerSteps = d && Array.isArray(d.steps) ? d.steps : [];
+    } catch (e) { _peekServerSteps = []; }
+  }
+  const t = _peekTrace;
+  const row = (on, name, what, note) =>
+    '<tr style="' + (on ? '' : 'opacity:0.45;') + '"><td style="padding:2px 8px 2px 0;white-space:nowrap;">' + (on ? '&#x2713;' : '&middot;')
+    + ' <code>' + esc(name) + '</code></td><td style="padding:2px 0;">' + esc(what) + (note ? '<div style="color:var(--dim);font-size:0.75rem;">' + esc(note) + '</div>' : '') + '</td></tr>';
+  const table = rows => '<table style="width:100%;border-collapse:collapse;font-size:0.8rem;margin:4px 0 10px;">' + rows.join('') + '</table>';
+  const h = text => '<div style="font-weight:700;margin-top:8px;">' + esc(text) + '</div>';
+  const folded = (label, inner) => '<details style="margin:0 0 10px;"><summary style="cursor:pointer;color:var(--dim);font-size:0.8rem;min-height:32px;">' + esc(label) + '</summary>' + inner + '</details>';
+  let html = '<div style="font-weight:700;font-size:0.95rem;margin-bottom:6px;">Rendering steps</div>';
+  if (!t) {
+    html += '<div style="color:var(--dim);font-size:0.85rem;">No frame has been rendered in this peek yet.</div>';
+  } else {
+    html += '<div style="color:var(--dim);font-size:0.8rem;">' + esc(t.name || '') + ' &middot; ' + esc(t.provider) + ' (pipeline: ' + esc(t.pipeline) + ') &middot; '
+      + (t.thin ? 'thin pass-through' : 'full') + ' &middot; ' + (t.live_only ? 'live poll' : 'full fetch') + ' &middot; ' + esc(new Date(t.at).toLocaleTimeString()) + '</div>';
+    const full = _peekServerFull, live = _peekServerLive;
+    const when = x => x ? ' (' + new Date(x.at).toLocaleTimeString() + ')' : '';
+    html += h('1. Server: history from ' + (full ? full.path : 'not fetched yet') + when(full)
+      + (live ? '; live screen from ' + live.path + when(live) : ''));
+    const ran = new Set([...((full && full.steps) || []), ...((live && live.steps) || [])]);
+    if (!full && !live) html += '<div style="color:var(--dim);font-size:0.8rem;">This server did not report its steps (older server).</div>';
+    // What ran, in order, first; the rest folded so a phone is not a scroll
+    // through greyed rows to find what happened.
+    const ranRows = _peekServerSteps.filter(st => ran.has(st.id)).map(st => row(true, st.id, st.what,
+      [full && full.steps.includes(st.id) ? 'history' : '', live && live.steps.includes(st.id) ? 'live' : ''].filter(Boolean).join(' + ')));
+    const notRun = _peekServerSteps.filter(st => !ran.has(st.id));
+    html += table(ranRows);
+    if (notRun.length) html += folded('Not run on the server (' + notRun.length + ')', table(notRun.map(st => row(false, st.id, st.what))));
+    html += h('2. Dashboard: text passes');
+    for (const region of ['history', 'live']) {
+      const last = _peekLastRegion[region];
+      for (const run of (last ? last.runs : [])) {
+        html += '<div style="font-size:0.8rem;margin-top:4px;">' + esc(region) + ' &middot; ' + esc(run.mode) + ' &middot; rendered ' + esc(new Date(last.at).toLocaleTimeString()) + '</div>';
+        html += table(run.steps.map(st => row(true, st.id, PEEK_STEPS[st.id].what, st.chars_in + ' \u2192 ' + st.chars_out + ' chars, ' + st.ms + ' ms')));
+      }
+    }
+    const usedText = new Set(Object.values(_peekLastRegion).flatMap(r => r.runs).flatMap(run => run.steps.map(st => st.id)));
+    const idle = Object.keys(PEEK_STEPS).filter(id => !usedText.has(id));
+    if (idle.length) html += folded('Not in this pipeline (' + idle.length + ')', table(idle.map(id => row(false, id, PEEK_STEPS[id].what))));
+    html += h('3. Dashboard: frame decisions (latest poll)');
+    const seen = new Map(t.frame.map(f => [f.id, f.note]));
+    const fids = Object.keys(PEEK_FRAME_STEPS);
+    html += table(fids.filter(id => seen.has(id)).map(id => row(true, id, PEEK_FRAME_STEPS[id], seen.get(id) || '')));
+    const fIdle = fids.filter(id => !seen.has(id));
+    if (fIdle.length) html += folded('Did not apply (' + fIdle.length + ')', table(fIdle.map(id => row(false, id, PEEK_FRAME_STEPS[id]))));
+  }
+  return new Promise(resolve => {
+    _modalResolve = resolve;
+    document.getElementById('modal-msg').innerHTML = '<div style="max-height:70vh;overflow:auto;text-align:left;">' + html + '</div>';
+    document.getElementById('modal-btns').innerHTML = '<button class="btn primary" onclick="_modalClose(true)">Close</button>';
+    document.getElementById('modal-backdrop').classList.add('open');
+  });
 }
 
 const _peekToolCollapsed = {};
@@ -16838,10 +17011,14 @@ function _peekLiveHtml(raw) {
     for (let i = plain.length - 1; i > 0; i--) {
       if (/^\s*❯(?:\s|$)/.test(plain[i]) && rule(plain[i - 1])) { cut = i - 1; break; }
     }
-    const head = cut > 0 ? highlightPrompts(_fitRules(_linkifyPaths(ansiToHtml(lines.slice(0, cut).join('\n')))), {thin: true}) : '';
-    const tail = cut < lines.length ? _fitRules(_linkifyPaths(ansiToHtml(lines.slice(cut).join('\n')))) : '';
+    if (cut < lines.length) _peekTraceFrame('split-composer', 'input box kept as terminal UI, not a message');
+    const head = cut > 0 ? _peekRun('thin', lines.slice(0, cut).join('\n')) : '';
+    const tail = cut < lines.length ? _peekRun('thin-composer', lines.slice(cut).join('\n')) : '';
     return head + (head && tail ? '\n' : '') + tail;
   }
+  // Claude Code's input box: ❯ between two rules, then its ⏵/shift+tab footer.
+  // Other providers' composers are recognised inside tag-prompts.
+  if (_peekPipelines(_peekProviderNow()).composer !== 'claude') return _peekHtml(raw);
   for (let i = plain.length - 1; i > 0; i--) {
     if (!/^\s*❯(?:\s|$)/.test(plain[i]) || !rule(plain[i - 1])) continue;
     const end = plain.findIndex((line, n) => n > i && rule(line));
@@ -16854,9 +17031,12 @@ function _peekLiveHtml(raw) {
     // A genuinely typed-but-unsent draft (nothing matching in the queue) still
     // shows, so the terminal never hides what only it knows.
     const showDraft = input && !_draftEchoesSteering(input);
+    _peekTraceFrame('split-composer', 'input box and footer separated from the messages');
+    if (showDraft) _peekTraceFrame('show-draft', input.length + ' characters typed, not sent');
+    else if (input) _peekTraceFrame('hide-steering-echo', 'matches a queued Steering message');
     const draft = showDraft ? '<div class="peek-queued-msg"><span class="peek-queued-prompt">❯</span> ' + esc(input) + '</div>' : '';
     return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
-      + '<div class="peek-worker-footer">' + ansiToHtml(lines.slice(end + 1).join('\n')) + '</div>';
+      + '<div class="peek-worker-footer">' + _peekRun('footer', lines.slice(end + 1).join('\n')) + '</div>';
   }
   return _peekHtml(raw);
 }
@@ -17827,9 +18007,11 @@ async function _refreshPeekFrame(liveOnly, request) {
       _peekStaleReported = true;
       _peekPollBeacon('stale-live-suppressed', name, { verdict: 'newer_frame_retained', measured: true, n_considered: 1 });
     }
+    _peekTraceBegin({ name, live_only: !!liveOnly, server: data.render || null });
     if (!staleLive && data.pane_cols > 0) {
       const b = document.getElementById('peek-body');
       if (b) b.style.setProperty('--peek-cols', data.pane_cols);
+      _peekTraceFrame('wrap-at-pane-width', data.pane_cols + ' columns');
     }
     const rawOutput = (data.live != null) ? data.live : (data.output || '(no output)');
     const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
@@ -17841,6 +18023,8 @@ async function _refreshPeekFrame(liveOnly, request) {
     // newer live frame. Trim against the history actually displayed here;
     // live requests skip the server's expensive transcript read entirely.
     const output = _peekThin ? (staleLive ? _lastPeekRaw : rawOutput) : _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
+    if (_peekTraceCur) _peekTraceCur.thin = _peekThin;
+    if (!_peekThin && !staleLive && output.length < rawOutput.length) _peekTraceFrame('trim-live-overlap', (rawOutput.length - output.length) + ' characters already in history');
     const acceptFrame = () => {
       if (!_peekFrameSequence) {
         _peekPollBeacon('first-frame', name, { elapsed_ms: Math.round(performance.now() - _peekFirstFrameAt),
@@ -17859,12 +18043,15 @@ async function _refreshPeekFrame(liveOnly, request) {
     // the current match every tick (the "force-scroll back to result" bug on idle sessions).
     if (!modeChanged && output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
       acceptFrame();
+      _peekTraceEnd('skip-unchanged');
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
     // Prepare both regions before committing the raw-frame dedupe keys. A
     // failed conversion must remain retryable just like a failed body read.
+    _peekTraceRegion = 'live';
     const newHTML = _peekLiveHtml(output);
+    _peekTraceRegion = 'history';
     let histChanged = false;
     if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
       const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
@@ -17896,7 +18083,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // Chat tab owns #peek-body: keep the terminal data fresh, touch no DOM
     // and no scroll position (the chat was being replaced by terminal output).
     const chatOwnsBody = body.classList.contains('peek-chat');
-    if (chatOwnsBody) _peekChatPaintSkips++;
+    if (chatOwnsBody) { _peekChatPaintSkips++; _peekTraceEnd('chat-owns-body'); }
     else {
     if (_peekScrollLocked || hasSearch || _peekPressHold) _peekBufferedOutput = true;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
@@ -17940,6 +18127,9 @@ async function _refreshPeekFrame(liveOnly, request) {
         _hideScrollLockBadge(body);
       });
     }
+    if (_peekPressHold || (_peekBufferedOutput && (_peekScrollLocked || hasSearch))) {
+      _peekTraceEnd('hold-while-reading', _peekPressHold ? 'pressing in the peek' : hasSearch ? 'a search is active' : 'scrolled up');
+    } else _peekTraceEnd('painted', histChanged ? 'history and live' : 'live only');
     }   // !chatOwnsBody
     if (performance.now() > _peekGeoHold) statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
     acceptFrame();
