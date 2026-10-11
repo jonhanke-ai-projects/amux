@@ -16779,8 +16779,16 @@ const PEEK_FRAME_STEPS = {
 // passes shown are each region's most recent actual render (_peekLastRegion).
 let _peekTraceCur = null, _peekTrace = null, _peekTraceRegion = 'history';
 let _peekLastRegion = {};
+// The server's stamp for the last FULL fetch (where history came from) and the
+// last live poll (always tmux-live), kept apart: live polls arrive every
+// half-second, and showing only the latest would hide the history's source.
+let _peekServerFull = null, _peekServerLive = null;
 function _peekTraceBegin(meta) {
-  if (_peekTrace && meta && meta.name !== _peekTrace.name) _peekLastRegion = {};
+  if (_peekTrace && meta && meta.name !== _peekTrace.name) { _peekLastRegion = {}; _peekServerFull = null; _peekServerLive = null; }
+  if (meta && meta.server) {
+    const stamp = Object.assign({ at: Date.now() }, meta.server);
+    if (meta.live_only) _peekServerLive = stamp; else _peekServerFull = stamp;
+  }
   const provider = _peekProviderNow();
   _peekTraceCur = Object.assign({ at: Date.now(), provider, pipeline: PEEK_PIPELINES[provider] ? provider : 'default', regions: {}, frame: [] }, meta);
 }
@@ -16833,9 +16841,14 @@ async function _peekShowRenderSteps() {
   } else {
     html += '<div style="color:var(--dim);font-size:0.8rem;">' + esc(t.name || '') + ' &middot; ' + esc(t.provider) + ' (pipeline: ' + esc(t.pipeline) + ') &middot; '
       + (t.thin ? 'thin pass-through' : 'full') + ' &middot; ' + (t.live_only ? 'live poll' : 'full fetch') + ' &middot; ' + esc(new Date(t.at).toLocaleTimeString()) + '</div>';
-    const ran = new Set((t.server && t.server.steps) || []);
-    html += h('1. Server: ' + ((t.server && t.server.path) || 'path not reported (older server)'));
-    html += table(_peekServerSteps.map(st => row(ran.has(st.id), st.id, st.what)));
+    const full = _peekServerFull, live = _peekServerLive;
+    const when = x => x ? ' (' + new Date(x.at).toLocaleTimeString() + ')' : '';
+    html += h('1. Server: history from ' + (full ? full.path : 'not fetched yet') + when(full)
+      + (live ? '; live screen from ' + live.path + when(live) : ''));
+    const ran = new Set([...((full && full.steps) || []), ...((live && live.steps) || [])]);
+    if (!full && !live) html += '<div style="color:var(--dim);font-size:0.8rem;">This server did not report its steps (older server).</div>';
+    html += table(_peekServerSteps.map(st => row(ran.has(st.id), st.id, st.what,
+      [full && full.steps.includes(st.id) ? 'history' : '', live && live.steps.includes(st.id) ? 'live' : ''].filter(Boolean).join(' + '))));
     html += h('2. Dashboard: text passes');
     for (const region of ['history', 'live']) {
       const last = _peekLastRegion[region];

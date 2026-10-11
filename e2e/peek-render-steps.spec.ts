@@ -50,7 +50,7 @@ test('Claude output runs the Claude pipeline: tool calls collapse, and the steps
   await expect(page.locator('#peek-body .ptc.collapsed')).toHaveCount(1);   // the Bash call, folded
   const text = await renderSteps(page);
   expect(text).toContain('claude (pipeline: claude)');
-  expect(text).toContain('Server: claude-transcript');
+  expect(text).toContain('Server: history from claude-transcript');
   expect(text).toMatch(/✓\s*collapse-tool-calls/);
   // The latest poll either painted or found nothing new; both are honest outcomes.
   expect(text).toMatch(/✓\s*(painted|skip-unchanged)/);
@@ -62,7 +62,7 @@ test('Codex output runs the Codex pipeline: no Claude tool-call collapsing', asy
   await expect(page.locator('#peek-body .ptc')).toHaveCount(0);   // the same frame, left as drawn
   const text = await renderSteps(page);
   expect(text).toContain('codex (pipeline: codex)');
-  expect(text).toContain('Server: codex-rollout');
+  expect(text).toContain('Server: history from codex-rollout');
   expect(text).not.toMatch(/✓\s*collapse-tool-calls/);
   expect(text).toMatch(/·\s*collapse-tool-calls/);
   expect(text).toMatch(/✓\s*ansi-to-html/);
@@ -72,5 +72,5 @@ test('the menu offers Rendering steps', async ({ page }) => {
   await openPeekOn(page, 'render-claude', { path: 'tmux-scrollback', steps: ['tmux-scrollback'] });
   await page.locator('#peek-worker-menu-btn').click();
   await page.locator('#peek-render-steps-btn').click();
-  await expect(page.locator('#modal-msg')).toContainText('Server: tmux-scrollback');
+  await expect(page.locator('#modal-msg')).toContainText('Server: history from tmux-scrollback');
 });
