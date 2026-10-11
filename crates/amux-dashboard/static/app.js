@@ -14072,7 +14072,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1329';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1331';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -22967,7 +22967,12 @@ function _cmdHistItemHTML(e, ctx) {
     ? ''   // delivery chip below carries direct/queued for every kind now
     : (origin ? ' &middot; ' + _linkifyScheduleIds(origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32)) : '');
   const tag = `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;">${km.label}${originTxt}</span>`;
-  const sessTag = session ? `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
+  // On the global Messages page the worker name OPENS THAT WORKER and does
+  // nothing else; the row's own click inserts the text into its composer, and
+  // a click on the name used to fall through to that (Ethan, 2026-10-11).
+  const sessTag = !session ? '' : ctx.onOpen
+    ? `<button type="button" class="msg-sess-link" onclick="event.stopPropagation();openPeek('${escJs(session)}')" title="Open ${esc(session)}">${esc(session)}</button>`
+    : `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`;
   const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
   // Copyable message id, matching the scheduler's SCHED-N badge (Ethan
   // 2026-08-12). Only when the row has a real id — legacy string entries and
@@ -54236,7 +54241,7 @@ document.addEventListener('keydown', e => {
 // ── Messages: conversations (server: api/conversations.rs) ──────────────────
 // Channels are groups; People are direct messages; Workers are each worker's
 // shared thread. "All messages" is the original message log, unchanged.
-const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: null,
+const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: null, pending: [], history: [],
   listT: null, typingAt: 0, ac: { items: [], i: 0, open: false }, loading: false };
 function _cvViewOn() { const v = document.getElementById('messages-view'); return !!v && v.style.display !== 'none'; }
 function _cvMobile() { return window.matchMedia && window.matchMedia('(max-width: 600px)').matches; }
@@ -54310,7 +54315,12 @@ function _cvEnter() {
     const b = document.createElement('button'); b.className = 'btn cv-back'; b.innerHTML = '&#x2039; Conversations';
     b.style.alignSelf = 'flex-start'; b.style.marginBottom = '8px'; b.onclick = _cvBack; lp.prepend(b);
   }
+  _cvFit();
+  _cv.picked = false;
   _cvLoadList().then(() => {
+    // A conversation picked while the list was loading stays open: going back
+    // to the list here yanked it away and hid the posts on phones.
+    if (_cv.picked) return;
     if (_cvMobile()) { document.getElementById('messages-view').classList.remove('cv-open'); _cvRenderSide(); return; }
     let sel = _cv.sel || localStorage.getItem('amux_cv_sel') || '';
     const L = _cv.list || {}; const known = c => [...(L.channels || []), ...(L.people || []), ...(L.workers || [])].some(x => x.conv === c);
@@ -54325,6 +54335,7 @@ function _cvEnter() {
 function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
   _cv.sel = sel; try { localStorage.setItem('amux_cv_sel', sel); } catch (e) {}
+  if (!auto) _cv.picked = true;
   if (!auto || !_cvMobile()) document.getElementById('messages-view').classList.add('cv-open');
   clearInterval(_cv.pollT); _cv.pollT = null;
   _cvRenderSide();
@@ -54339,7 +54350,8 @@ function _cvSelect(sel, auto) {
   if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');
   if (sel === '@unread') return _cvRenderUnread();
   if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
-  _cv.posts = []; _cv.lastId = 0; _cv.info = null;
+  _cv.posts = []; _cv.lastId = 0; _cv.info = null; _cv.history = [];
+  if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
   document.getElementById('cv-meta').textContent = '';
   document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
@@ -54350,10 +54362,14 @@ function _cvSelect(sel, auto) {
   if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
 }
 function _cvFit() {
-  const pane = document.getElementById('cv-pane'); if (!pane) return;
-  requestAnimationFrame(() => { const top = Math.max(0, pane.getBoundingClientRect().top + window.scrollY); pane.style.setProperty('--cv-top', top + 'px'); });
+  const view = document.getElementById('messages-view'); if (!view) return;
+  requestAnimationFrame(() => {
+    window.scrollTo(0, 0);
+    const top = Math.max(0, view.getBoundingClientRect().top);
+    view.style.setProperty('--mv-top', top + 'px');
+  });
 }
-window.addEventListener('resize', () => { if (_cvViewOn() && _cv.sel) _cvFit(); });
+window.addEventListener('resize', () => { if (_cvViewOn()) _cvFit(); });
 function _cvSearch(q) { q = (q || '').trim(); if (q) _cvSelect('@search:' + q); }
 async function _cvPoll(full) {
   const sel = _cv.sel; if (!sel || sel[0] === '@') return;
@@ -54424,10 +54440,11 @@ function _cvDelivHtml(p) {
 function _cvPostHtml(p, showConv) {
   const worker = p.author_key.indexOf('worker:') === 0;
   const t = new Date(p.ts);
-  return '<div class="cv-post" data-id="' + p.id + '">' + _cvAvatar(p.author_name, worker) + '<div class="cv-post-main"><div class="cv-post-head">' +
+  return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '">' + _cvAvatar(p.author_name, worker) + '<div class="cv-post-main"><div class="cv-post-head">' +
     '<span class="cv-post-who">' + esc(p.author_name) + (p.author_key === _cvMeKey() ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
     (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvSelect(this.dataset.cv)">in ' + esc(_cvFindName(p.conv)) + '</span>' : '') +
+    (p.pending ? '<span class="cv-post-tag">Queued: sends when you are back online</span>' : p.tag ? '<span class="cv-post-tag">' + esc(p.tag) + '</span>' : '') +
     '</div><div class="cv-post-body">' + _cvBodyHtml(p) + '</div>' + _cvDelivHtml(p) + '</div></div>';
 }
 function _cvDayLabel(ts) {
@@ -54436,17 +54453,44 @@ function _cvDayLabel(ts) {
   const s = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   return same(d, today) ? 'Today · ' + s : same(d, y) ? 'Yesterday · ' + s : d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
+// A WORKER'S THREAD SHOWS WHAT REACHED IT (Ethan, 2026-10-11: "when i click a
+// worker i dont see the messages"). Its posts here are only the ones made in
+// this view, so a worker you talk to from its own page read as empty. Its
+// message history (the record All messages shows) is merged in by time, minus
+// the deliveries of this thread's own posts, which would otherwise show twice.
+async function _cvLoadWorkerHistory(sel) {
+  const name = sel.slice(2);
+  try {
+    const r = await fetch(API + '/api/history?limit=100&session=' + encodeURIComponent(name), { headers: _authHeaders() });
+    if (!r.ok || _cv.sel !== sel) return;
+    const rows = await r.json();
+    if (_cv.sel !== sel || !Array.isArray(rows)) return;
+    _cv.history = rows.filter(h => h && h.text && !/\(From amux Messages\. To reply/.test(h.text)).map(h => ({
+      id: 'h' + h.id, conv: sel, history: true, ts: h.ts || 0, body: _msgStripPrefix(h.text),
+      author_key: h.type === 'session' && h.origin ? 'worker:' + h.origin : 'person:' + (h.origin || 'owner'),
+      author_name: h.type === 'session' && h.origin ? h.origin : (h.type === 'schedule' ? 'scheduler' : (h.origin || 'owner')),
+      tag: h.type === 'schedule' ? 'scheduled' : h.type === 'session' ? 'from a worker' : 'sent from its page',
+      mentions: [], deliveries: [] }));
+    _cvRenderPosts(true);
+  } catch (e) {}
+}
 function _cvRenderPosts(scroll) {
   const box = document.getElementById('cv-posts');
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-  if (!_cv.posts.length) {
+  // Queued offline posts drop out once the server has a post with that body.
+  _cv.pending = _cv.pending.filter(q => !_cv.posts.some(p => p.conv === q.conv && p.body === q.body && p.author_key === _cvMeKey()));
+  const all = [..._cv.posts, ...(_cv.history || []).filter(h => h.conv === _cv.sel)]
+    .sort((a, b) => a.ts - b.ts)
+    .concat(_cv.pending.filter(q => q.conv === _cv.sel).map(q => ({ ...q, id: 'q' + q.ts, pending: true,
+      author_key: _cvMeKey(), author_name: (_cv.list && _cv.list.me && _cv.list.me.name) || 'you', mentions: [], deliveries: [] })));
+  if (!all.length) {
     const sel = _cv.sel || '';
     box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
       : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
     return;
   }
   let html = '', day = '';
-  for (const p of _cv.posts) { const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; } html += _cvPostHtml(p, false); }
+  for (const p of all) { const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; } html += _cvPostHtml(p, false); }
   box.innerHTML = html;
   if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
 }
@@ -54512,16 +54556,38 @@ function _cvOnKey(e) {
   }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); _cvSend(); }
 }
+// Attachments use the same chunked, resumable upload as the worker composer
+// (the card sink, keyed for this composer), and ride the post as @path refs.
+const _CV_FILES = '__messages__';
+function _cvAttach(files) { for (const f of (files || [])) _enqueueUpload(f, _cardSink(_CV_FILES)); }
+function _cvPaste(e) {
+  const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+  if (!files.length) return;
+  e.preventDefault(); _cvAttach(files);
+}
 async function _cvSend() {
   const el = document.getElementById('cv-input'), btn = document.getElementById('cv-send');
-  const body = el.value.trim(); const sel = _cv.sel;
-  if (!body || !sel || sel[0] === '@' || btn.disabled) return;
+  const text = el.value.trim(); const sel = _cv.sel;
+  const cf = _cardFiles[_CV_FILES] || [];
+  if (!sel || sel[0] === '@' || btn.disabled) return;
+  if (_blockedByAttachment(cf)) return;
+  const refs = cf.filter(f => f.path).map(f => '@' + f.path).join(' ');
+  const body = text ? (refs ? text + ' ' + refs : text) : refs;
+  if (!body) return;
   btn.disabled = true;
   try {
     const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { if (typeof showToast === 'function') showToast(d.error || ('Not sent: HTTP ' + r.status), 'error'); return; }
     el.value = ''; el.style.height = ''; _cv.typingAt = 0;
+    _clearCardFiles(_CV_FILES);
+    // OFFLINE: the outbox accepted it and sends it on reconnect. Show it now,
+    // marked, until the server has it, instead of a cleared box and nothing.
+    if (_isLocallyQueued(r)) {
+      _cv.pending.push({ conv: sel, body, ts: Date.now() });
+      _cvRenderPosts(true);
+      return;
+    }
     await _cvPoll(false);
   } catch (e) {
     if (typeof showToast === 'function') showToast('Not sent: ' + e.message, 'error');

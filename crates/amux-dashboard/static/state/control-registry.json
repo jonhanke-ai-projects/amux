@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2620,
+  "n_considered": 2623,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -854,6 +854,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvAttach": {
+      "kind": "command._cvAttach",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvEnter": {
       "kind": "command._cvEnter",
       "feedback_required": true,
@@ -874,6 +880,12 @@
     },
     "_cvOnKey": {
       "kind": "command._cvOnKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvPaste": {
+      "kind": "command._cvPaste",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
