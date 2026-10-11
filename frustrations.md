@@ -5918,3 +5918,14 @@ CARD: none (user authorized PRs only; no live board write)
 SYMPTOM: The declared connector Forget button still uses native confirm(), despite the shared app modal explicitly replacing it for standalone/PWA browsers. The real in-app browser validation loses focus after this action and cannot complete deletion. The text also omits saved-account disconnect and pending-consent cancellation.
 COST: A valid owner deletion cannot be completed/verified reliably through the browser, and its credential consequences are hidden.
 FIX: Use the shared asynchronous danger confirmation, describe the actual account/pending effects and retained environment values, and emit measured connector-forget cancelled/removed/refused/failed receipts. Real browser regression covers Cancel without a DELETE, confirmed deletion, unrelated config/keys preservation, old-grant tombstones, rejected late callback and no resurrection after redeclaration.
+
+## Every dashboard PR conflicts with main on the APP_VER/CACHE line while CI runs
+AREA: gates
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-11
+SESSION: amux-cloud
+CARD: none (amux-cloud is isolated; the board refuses it with 403 isolated_no_board)
+SYMPTOM: PRs #278, #283 and #284 each went CONFLICTING between push and green CI, every time on the same two lines: `const APP_VER = '0.9.N'` in app.js and `CACHE = 'amux-v0.9.N'` in sw.js (plus the regenerated state/ files and docs/ux/button-feedback-audit.md). Main moves N several times an hour, CI takes 25-35 minutes, and two open dashboard PRs can never both merge without a rebase of the second. GitHub runs no checks on a head it cannot merge, so a conflicting PR shows "no checks reported", which reads like a CI outage.
+COST: four extra rebase-and-rerun cycles in one afternoon (about two hours of CI wall clock); one PR sat with no checks for 30 minutes before the conflict was noticed. Auto-merge is disabled on mixpeek/amux, so each green PR also needed a human-or-agent poll to merge before main moved again.
+FIX: derive the version at build or serve time instead of hand-bumping one shared line (e.g. the server stamps APP_VER/CACHE from the build hash it already reports in /health), or enable auto-merge so a green PR lands before the next bump. Either removes the one line every dashboard change edits.
