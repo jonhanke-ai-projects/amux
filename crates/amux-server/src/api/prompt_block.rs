@@ -8,8 +8,12 @@
 //! behind it, and the only log was "steering queue STALLED
 //! blocked_now=busy-past-deadline".
 //!
-//! amux does not answer the prompt (ethos D2: only the rate-limit and resume
-//! prompts are answered for the model). It makes the block visible: the lane
+//! amux answers ONE of these prompts, and only for a yolo lane: Claude Code's
+//! "runs rm and could not be checked" safety prompt (Ethan, AMUX-5850,
+//! 2026-10-11). A yolo lane already approved every command, and an unattended
+//! prompt auto-denies after two minutes, losing the work. See
+//! `yolo_auto_yes_command`. Every other permission prompt stays the human's
+//! (ethos D2). For those it makes the block visible: the lane
 //! reads `waiting` with `waiting_since`, the steering stall line names it, a
 //! WARN fires once per lane per 10 minutes, and after
 //! AMUX_PROMPT_BLOCK_ALERT_S (default 600) the lane's hub gets one message per
@@ -43,6 +47,30 @@ pub fn prompt_line(raw: &str) -> Option<String> {
     }
     let reason = if j > 0 && !tail[j - 1].starts_with('\u{2502}') { tail[j - 1] } else { tail[i] };
     Some(reason.chars().take(160).collect())
+}
+
+/// The command a yolo lane may have approved on its behalf: Some only when the
+/// drawn prompt is the "runs rm and could not be checked" safety prompt and
+/// option 1 reads Yes. The text is the boxed command, for the audit log.
+pub fn yolo_auto_yes_command(raw: &str) -> Option<String> {
+    let reason = prompt_line(raw)?.to_lowercase();
+    if !(reason.contains("could not be checked") && reason.contains(" rm ")) {
+        return None;
+    }
+    let clean = crate::backend::adapter::strip_ansi(raw);
+    let lines: Vec<&str> = clean.lines().map(str::trim).collect();
+    if !lines.iter().any(|l| l.starts_with('\u{276f}') && l.contains("1. Yes")) {
+        return None;
+    }
+    let cmd: Vec<&str> = lines.iter().filter_map(|l| l.strip_prefix('\u{2502}')).map(str::trim).collect();
+    Some(cmd.join(" ").chars().take(600).collect())
+}
+
+/// AMUX_YOLO_AUTO_YES (default on; "0" turns it off), from the lane's scope
+/// first, then the server env.
+pub fn yolo_auto_yes_on(scoped: Option<&str>) -> bool {
+    let v = scoped.map(str::to_string).or_else(|| std::env::var("AMUX_YOLO_AUTO_YES").ok());
+    !matches!(v.as_deref().map(str::trim), Some("0" | "false" | "no" | "off"))
 }
 
 #[derive(Clone, Debug)]
@@ -193,6 +221,19 @@ Do you want to proceed?
         let (_, first) = observe(lane, Some(&screen("1:59")), 1000.0).unwrap();
         let (_, later) = observe(lane, Some(&screen("0:30")), 1090.0).unwrap();
         assert_eq!(first, later, "the same prompt keeps its first-seen time");
+    }
+
+    #[test]
+    fn only_the_rm_safety_prompt_is_eligible_for_yolo_auto_yes() {
+        let cmd = yolo_auto_yes_command(SUBAGENT_PROMPT).expect("the rm safety prompt is eligible");
+        assert!(cmd.contains("rm -f"), "the approved command is logged: {cmd}");
+        assert_eq!(yolo_auto_yes_command(PLAIN_PROMPT), None, "an ordinary permission prompt stays the human's");
+        assert_eq!(yolo_auto_yes_command(SCROLLBACK_ONLY), None, "an answered prompt is never re-answered");
+        let no_yes = SUBAGENT_PROMPT.replace("1. Yes", "1. Allow once");
+        assert_eq!(yolo_auto_yes_command(&no_yes), None, "option 1 must read Yes");
+        assert!(yolo_auto_yes_on(None) || std::env::var("AMUX_YOLO_AUTO_YES").is_ok());
+        assert!(!yolo_auto_yes_on(Some("0")));
+        assert!(yolo_auto_yes_on(Some("1")));
     }
 
     #[test]

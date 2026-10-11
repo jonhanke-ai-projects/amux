@@ -23450,6 +23450,33 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             }
         }
 
+        // YOLO LANE ON CLAUDE CODE'S rm SAFETY PROMPT (Ethan, AMUX-5850): the
+        // lane already approved every command, and this prompt auto-denies in
+        // two minutes. Press 1 (Yes) and log the command. Non-yolo lanes and
+        // every other prompt are untouched; AMUX_YOLO_AUTO_YES=0 turns it off.
+        if is_yolo_enabled(cfg.get_or("CC_FLAGS", ""), &cfg)
+            && crate::api::prompt_block::yolo_auto_yes_on(cfg.get("AMUX_YOLO_AUTO_YES"))
+        {
+            if let Some(command) = crate::api::prompt_block::yolo_auto_yes_command(&pane) {
+                let (ok, msg) = send_keys_op(name, "1").await;
+                tracing::warn!(session = %name, ok, detail = %msg, command = %command, measured = true,
+                    n_considered = 1, verdict = if ok { "yolo_permission_prompt_approved" } else { "yolo_permission_prompt_approve_failed" },
+                    "yolo lane: answered Yes on Claude Code's rm safety prompt (AMUX-5850)");
+                emit_event(
+                    state,
+                    name,
+                    "session.yolo_prompt_approved",
+                    Some(json!({"ok": ok, "detail": msg, "command": command})),
+                    None,
+                    "status",
+                )
+                .await;
+                if ok {
+                    continue;
+                }
+            }
+        }
+
         // INPUT-REQUIRED IS A DISTINCT STATE, and the dashboard has always been
         // able to show it (app.js:2405 renders `needs input`, and there is a
         // filter for it) — no lane ever reached it. The fleet listing derives
