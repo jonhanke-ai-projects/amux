@@ -1658,7 +1658,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="cv-sec" id="cv-people-sec">People</div><div id="cv-people" class="cv-nav"></div>
     <div class="cv-sec">Workers</div><div id="cv-workers" class="cv-nav"></div>
   </aside>
-  <section id="cv-pane" style="display:none;">
+  <section id="cv-pane" style="display:none;" ondragover="cardDragOver(event)" ondragleave="cardDragLeave(event)" ondrop="cardDrop(_CV_FILES, event)">
     <header class="cv-head">
       <button class="btn cv-back" onclick="_cvBack()" aria-label="Back to conversations">&#x2039;</button>
       <div class="cv-head-main">
@@ -1669,10 +1669,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </header>
     <div id="cv-posts" class="cv-posts" aria-live="polite"></div>
     <div id="cv-typing" class="cv-typing"></div>
+    <div class="peek-attach-bar card-attach-bar cv-attach-bar" id="card-attach-__messages__"></div>
     <div class="cv-compose" id="cv-compose">
       <div id="cv-ac" class="cv-ac" role="listbox"></div>
+      <button type="button" class="btn cv-attach" onclick="document.getElementById('cv-file').click()" aria-label="Attach files" title="Attach files">&#x1F4CE;</button>
+      <input type="file" id="cv-file" multiple style="display:none" onchange="_cvAttach(this.files); this.value=''">
       <textarea id="cv-input" class="input" rows="1" placeholder="Message"
-        oninput="_cvOnInput(this)" onkeydown="_cvOnKey(event)"></textarea>
+        oninput="_cvOnInput(this)" onkeydown="_cvOnKey(event)" onpaste="_cvPaste(event)"></textarea>
       <button class="btn primary cv-send" id="cv-send" onclick="_cvSend()" aria-label="Send">&#x27A4;</button>
     </div>
     <div class="cv-hint" id="cv-hint"><span>@person to notify a teammate</span><span>@worker to give a worker a task</span><span>Shift + Enter for a new line</span></div>
