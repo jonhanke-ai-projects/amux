@@ -47,31 +47,43 @@ TOKEN=$(cat "$WORK/auth-token" 2>/dev/null || echo "")
 # weather and one 284ms outlier more than the code. The thresholds are
 # unchanged; only which statistic they are applied to.
 PERF_SAMPLES="${PERF_SAMPLES:-9}"
-measure() { # name url [auth]
-  local name=$1 url=$2 auth=${3:-}
-  local total=0 worst=0 samples=""
-  for _ in $(seq 1 "$PERF_SAMPLES"); do
-    local t
+# THE MEMORY READING STAYS WHERE IT WAS (AMUX-5833). RSS and dirty are read
+# after FIVE requests per endpoint, as before the median change. Reading them
+# after nine moved the allocator's high-water mark: rss 329-335 MB on the runs
+# before, 345 and 351 MB after (the extra 3.9 MB board reads), and the 350 MB
+# ceiling failed on the sample count, not on the code. So: five samples per
+# endpoint, the memory reading, then the remaining samples; medians over all.
+PERF_RSS_AFTER="${PERF_RSS_AFTER:-5}"
+SAMPLE_DIR="$WORK/perf-samples"; mkdir -p "$SAMPLE_DIR"
+sample() { # name url auth count -> appends ms values to $SAMPLE_DIR/name
+  local name=$1 url=$2 auth=$3 count=$4 t
+  for _ in $(seq 1 "$count"); do
     if [ -n "$auth" ]; then
       t=$(curl -sk -o /dev/null -w '%{time_total}' -H "Authorization: Bearer $TOKEN" "$url")
     else
       t=$(curl -sk -o /dev/null -w '%{time_total}' "$url")
     fi
-    t_ms=$(python3 -c "print(int(float('$t')*1000))")
-    total=$((total + t_ms))
-    samples="$samples $t_ms"
-    [ "$t_ms" -gt "$worst" ] && worst=$t_ms
+    python3 -c "print(int(float('$t')*1000))" >> "$SAMPLE_DIR/$name"
   done
-  local median
-  median=$(printf '%s\n' $samples | sort -n | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}')
-  echo "\"${name}_avg_ms\": $((total / PERF_SAMPLES)), \"${name}_median_ms\": $median, \"${name}_worst_ms\": $worst"
 }
-
-M1=$(measure dashboard "https://localhost:$PORT/")
-M2=$(measure health "https://localhost:$PORT/health")
-M3=$(measure board "https://localhost:$PORT/api/board" auth)
-M4=$(measure board_full "https://localhost:$PORT/api/board?done_limit=0" auth)
-M5=$(measure workers "https://localhost:$PORT/api/workers" auth)
+summarize() { # name -> the JSON fields over every sample taken
+  python3 - "$SAMPLE_DIR/$1" "$1" <<'PY'
+import sys
+v = [int(x) for x in open(sys.argv[1]).read().split()]
+n = sys.argv[2]
+s = sorted(v)
+print(f'"{n}_avg_ms": {sum(v)//len(v)}, "{n}_median_ms": {s[(len(s)+1)//2-1]}, "{n}_worst_ms": {max(v)}')
+PY
+}
+ENDPOINTS=(
+  "dashboard|https://localhost:$PORT/|"
+  "health|https://localhost:$PORT/health|"
+  "board|https://localhost:$PORT/api/board|auth"
+  "board_full|https://localhost:$PORT/api/board?done_limit=0|auth"
+  "workers|https://localhost:$PORT/api/workers|auth"
+)
+first=$(( PERF_SAMPLES < PERF_RSS_AFTER ? PERF_SAMPLES : PERF_RSS_AFTER ))
+for e in "${ENDPOINTS[@]}"; do IFS='|' read -r n u a <<<"$e"; sample "$n" "$u" "$a" "$first"; done
 RSS_MB=$(ps -o rss= -p "$SERVER_PID" | awk '{print int($1/1024)}')
 # DIRTY (live) heap alongside RSS (AMUX-3488). Measured 2026-08-22: across
 # repeated identical 30MB responses RSS climbed 176->229MB while malloc-dirty
@@ -94,6 +106,11 @@ elif command -v vmmap >/dev/null 2>&1; then
     }
     END { if (total > 0) print int(total) }')
 fi
+rest=$(( PERF_SAMPLES - first ))
+if [ "$rest" -gt 0 ]; then
+  for e in "${ENDPOINTS[@]}"; do IFS='|' read -r n u a <<<"$e"; sample "$n" "$u" "$a" "$rest"; done
+fi
+M1=$(summarize dashboard); M2=$(summarize health); M3=$(summarize board); M4=$(summarize board_full); M5=$(summarize workers)
 BOARD_BYTES=$(curl -sk -H "Authorization: Bearer $TOKEN" "https://localhost:$PORT/api/board" | wc -c | tr -d ' ')
 
 echo "{ $M1, $M2, $M3, $M4, $M5, \"rss_mb\": $RSS_MB, \"dirty_mb\": ${DIRTY_MB:-null}, \"board_default_bytes\": $BOARD_BYTES }"
