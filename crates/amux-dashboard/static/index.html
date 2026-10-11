@@ -2649,6 +2649,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
     <button class="peek-tab" id="peek-tab-simple" onclick="setPeekTab('simple')" title="Translate this worker's output — plain English by default, or your own prompt"><span class="tab-ico">◍</span><span class="tab-lbl">Translate</span></button>
     <button class="peek-tab" id="peek-tab-chat" onclick="setPeekTab('chat')" title="Chat about this worker's work: ask its status in plain language and direct it"><span class="tab-ico">&#128172;</span><span class="tab-lbl">Chat</span></button>
+    <button class="peek-tab" id="peek-tab-converse" onclick="setPeekTab('converse')" title="Talk with this worker hands-free by voice; every conversation is logged to replay and expires automatically"><span class="tab-ico">&#x1F399;</span><span class="tab-lbl">Converse</span></button>
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')"><span class="tab-ico">⇉</span><span class="tab-lbl">Steering</span><span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')"><span class="tab-ico">⏱</span><span class="tab-lbl">Schedules</span><span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
     <button class="peek-tab" id="peek-tab-shell" onclick="setPeekTab('shell')" title="This worker's shell schedules: what runs on this machine for it, live and past output"><span class="tab-ico">$</span><span class="tab-lbl">Shell</span></button>
@@ -2975,6 +2976,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div id="peek-simple-body" style="padding:16px;line-height:1.6;color:var(--text);"></div>
   </div>
+  <!-- Converse: hands-free voice conversations with the worker, a replayable
+       log of each, expired after AMUX_CONVERSE_RETENTION_DAYS (Ethan 2026-10-11).
+       Rendered by _vxRender in app.js; stored by api/converse.rs. -->
+  <div id="peek-converse-panel" class="peek-tasks-panel vx-panel"></div>
   <!-- Past read-alouds: replay any clip; auto-flushes after 30 days (Ethan 2026-08-13). -->
   <div id="peek-readalouds-panel" class="peek-tasks-panel" style="padding:0;gap:0;overflow-y:auto;-webkit-overflow-scrolling:touch;">
     <div id="peek-readalouds-list" class="ra-list"></div>
