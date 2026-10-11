@@ -42902,8 +42902,11 @@ async function _skillsTabLoad(keepQuery) {
     set('skills-window', String(days));
     const dbNames = new Set(dbSkills.map(s => '/' + s.name));
     _skillsData.db = dbSkills;
-    _skillsData.file = cmds.filter(c => c.cmd && !dbNames.has(c.cmd) && !_isBuiltinCmd(c.cmd));
-    _skillsData.builtin = cmds.filter(c => _isBuiltinCmd(c.cmd));
+    // The server labels each command's source; the local list is only a
+    // fallback for an older server that does not.
+    const isBuiltin = c => c.source ? c.source === 'builtin' : _isBuiltinCmd(c.cmd);
+    _skillsData.file = cmds.filter(c => c.cmd && !dbNames.has(c.cmd) && !isBuiltin(c) && c.source !== 'table');
+    _skillsData.builtin = cmds.filter(c => c.cmd && isBuiltin(c));
     // Worker filter: every worker the window's usage names, "" = unattributed.
     const workers = new Set();
     for (const u of Object.values(_skillsData.usage)) for (const w of Object.keys(u.workers || {})) workers.add(w);
