@@ -5907,3 +5907,14 @@ CARD: none (owner requested PR-only work; no board mutation)
 SYMPTOM: On live main46da, Google Calendar/Drive/Admin and Granola Test clicks wrote fresh durable receipts but the drawer still showed a three-hour-old Last live test. Closing/reopening retained that cached result until Refresh health. Missing Slack/Telegram/Mattermost tests likewise retained fourteen-hour-old timestamps.
 COST: Eight real browser Test clicks required independent API readback and manual Refresh health to reconcile persisted results with the owner's display.
 FIX: Refresh the authoritative connector catalog after Test, rerender cards and the currently selected drawer, and log a measured connector-test-refresh verdict without provider bodies or credentials. Desktop/mobile actual API/provider success-failure-recovery, reopen/reload, switched-drawer and unconfigured-refusal proof is retained; unmodified main negative controls fail. PR-only candidate pending review.
+
+## Forget connector blocks the embedded browser on a native confirm dialog
+AREA: connectors
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-10
+SESSION: human Codex full E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: The declared connector Forget button still uses native confirm(), despite the shared app modal explicitly replacing it for standalone/PWA browsers. The real in-app browser validation loses focus after this action and cannot complete deletion. The text also omits saved-account disconnect and pending-consent cancellation.
+COST: A valid owner deletion cannot be completed/verified reliably through the browser, and its credential consequences are hidden.
+FIX: Use the shared asynchronous danger confirmation, describe the actual account/pending effects and retained environment values, and emit measured connector-forget cancelled/removed/refused/failed receipts. Real browser regression covers Cancel without a DELETE, confirmed deletion, unrelated config/keys preservation, old-grant tombstones, rejected late callback and no resurrection after redeclaration.
