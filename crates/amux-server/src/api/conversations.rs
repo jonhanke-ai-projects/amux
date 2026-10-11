@@ -656,14 +656,6 @@ fn worker_chain_capped(recent: &[String]) -> bool {
     recent.len() >= WORKER_CHAIN && recent.iter().all(|a| a.starts_with("worker:"))
 }
 
-fn conv_label(conv: &Conv) -> String {
-    match conv {
-        Conv::Group(g) => format!("#{g}"),
-        Conv::Worker(_) => "your thread".into(),
-        Conv::People(..) => "a direct message".into(),
-    }
-}
-
 /// The text a worker receives. It names where it came from and how to answer
 /// there, since the worker cannot see the Messages tab.
 fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
