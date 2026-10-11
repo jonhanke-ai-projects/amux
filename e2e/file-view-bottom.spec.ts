@@ -425,5 +425,5 @@ test('desktop opens a PDF in the native viewer from the raw stream by default', 
     await expect(frame).toHaveCount(1, {timeout: 30000});
     expect(await frame.getAttribute('src')).toContain('/api/file/raw?path=');
     await expect(page.locator('#file-body .pdf-page')).toHaveCount(0);
-  } finally { await rm(dir, {recursive: true, force: true}); }
+  } finally { await cleanup('remove temp folder', () => rm(dir, {recursive: true, force: true})); }
 });
