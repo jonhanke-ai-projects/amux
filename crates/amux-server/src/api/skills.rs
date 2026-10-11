@@ -401,7 +401,7 @@ async fn list_slash_commands(State(state): State<AppState>) -> Response {
         for (cmd, desc) in table_skill_commands(&conn) {
             if seen.insert(cmd.clone()) {
                 let times = command_file_times(cmd.trim_start_matches('/'));
-                cmds.push(with_times(json!({ "cmd": cmd, "desc": desc }), times));
+                cmds.push(with_times(json!({ "cmd": cmd, "desc": desc, "source": "table" }), times));
             }
         }
     }
@@ -411,7 +411,10 @@ async fn list_slash_commands(State(state): State<AppState>) -> Response {
 fn file_slash_commands() -> Vec<serde_json::Value> {
     let mut cmds: Vec<serde_json::Value> = BUILTIN_SLASH_COMMANDS
         .iter()
-        .map(|(c, d)| json!({ "cmd": c, "desc": d }))
+        // `source` says where each entry came from, so a client never has to
+        // guess with its own copy of the builtin list (the Skills tab filed
+        // /add-dir, /agents, /context... under "Project commands" that way).
+        .map(|(c, d)| json!({ "cmd": c, "desc": d, "source": "builtin" }))
         .collect();
     let mut seen: std::collections::BTreeSet<String> = BUILTIN_SLASH_COMMANDS
         .iter()
@@ -443,7 +446,7 @@ fn file_slash_commands() -> Vec<serde_json::Value> {
                 .ok()
                 .map(|t| frontmatter_fields(&t).0)
                 .unwrap_or_default();
-            cmds.push(with_times(json!({ "cmd": name, "desc": desc }), file_times(&f)));
+            cmds.push(with_times(json!({ "cmd": name, "desc": desc, "source": "file" }), file_times(&f)));
         }
     }
     cmds
@@ -478,6 +481,11 @@ mod tests {
         let commands = commands.as_array().unwrap();
         assert!(!commands.iter().any(|c| c["cmd"] == "/diff"));
         assert!(commands.iter().any(|c| c["cmd"] == "/context"));
+        assert!(
+            commands.iter().any(|c| c["cmd"] == "/context" && c["source"] == "builtin"),
+            "a Claude Code builtin is labelled as one"
+        );
+        assert!(commands.iter().all(|c| c["source"].is_string()), "every entry names its source");
     }
 
     #[tokio::test]
