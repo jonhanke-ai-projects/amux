@@ -14078,7 +14078,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1333';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1340';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16747,7 +16747,11 @@ const PEEK_STEPS = {
 // provider's composer is recognised inside tag-prompts, or it has none).
 const _PEEK_FULL = ['ansi-to-html', 'link-paths', 'tag-prompts', 'collapse-tool-calls', 'fit-rules', 'scroll-box-blocks', 'hang-indent'];
 const _PEEK_FULL_NO_CALLS = _PEEK_FULL.filter(id => id !== 'collapse-tool-calls');
-const _PEEK_COMMON = { thin: ['ansi-to-html', 'link-paths', 'fit-rules', 'tag-prompts-thin'], 'thin-composer': ['ansi-to-html', 'link-paths', 'fit-rules'], footer: ['ansi-to-html'] };
+// Thin keeps tables in their own sideways scroller too (Ethan, 2026-10-11,
+// gtm-engine's 173-column "Inbound audit" table): the peek wraps any line wider
+// than the view, and a wrapped table breaks every border and cell mid-row.
+// Last, after prompt tagging, the same order as the full pipeline.
+const _PEEK_COMMON = { thin: ['ansi-to-html', 'link-paths', 'fit-rules', 'tag-prompts-thin', 'scroll-box-blocks'], 'thin-composer': ['ansi-to-html', 'link-paths', 'fit-rules'], footer: ['ansi-to-html'] };
 const PEEK_PIPELINES = {
   claude: Object.assign({ full: _PEEK_FULL, composer: 'claude' }, _PEEK_COMMON),
   codex: Object.assign({ full: _PEEK_FULL_NO_CALLS, composer: 'none' }, _PEEK_COMMON),
