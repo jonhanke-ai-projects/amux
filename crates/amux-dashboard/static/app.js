@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1322';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1324';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -42786,12 +42786,14 @@ function _skillsRender(q, countEl, container) {
 
   const row = it => {
     const id = 'sc-' + it.cmd.replace(/[^a-z0-9]/gi, '_');
-    const safeCmd = it.cmd.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    // escJs, not a bare backslash pass: these go inside onclick="...", so a
+    // name with " or a transcript-derived key with ' must not break out.
+    const safeCmd = escJs(it.cmd);
     const u = use(it.cmd);
     const pin = isPinned(it.cmd);
     const n = u ? (wf && _skillsFilters.worker ? (u.workers || {})[wf] || 0 : u.recent || 0) : 0;
     const usesTitle = u ? (u.recent || 0) + ' in the last ' + _skillsData.windowDays + ' days, ' + u.n + ' all time (model ' + u.model + ', typed ' + u.user + ')' : 'No recorded use';
-    const fk = esc(it.key || '');
+    const fk = escJs(it.key || '');
     return '<div class="skill-card sk-row sk-' + it.type + (pin ? ' is-pinned' : '') + '" id="' + id + '">' +
       '<div class="sk-row-main" onclick="_skillToggle(\'' + id + '\',\'' + fk + '\')">' +
         '<button class="sk-pin' + (pin ? ' active' : '') + '" aria-pressed="' + pin + '" aria-label="' + (pin ? 'Unpin ' : 'Pin ') + esc(it.cmd) + '" title="' + (pin ? 'Unpin' : 'Pin to the quick bar') + '" onclick="event.stopPropagation();_skillPinToggle(\'' + safeCmd + '\')">\u{1F4CC}</button>' +
@@ -42807,7 +42809,7 @@ function _skillsRender(q, countEl, container) {
           '<span class="sk-menu-wrap"><button class="btn sk-more" aria-haspopup="menu" aria-label="More actions for ' + esc(it.cmd) + '" onclick="_skillsMenu(this)">⋯</button>' +
             '<span class="sk-menu" role="menu">' +
               '<button role="menuitem" onclick="_skillsMenuClose();_skillPinToggle(\'' + safeCmd + '\')">' + (pin ? 'Unpin' : 'Pin to quick bar') + '</button>' +
-              '<button role="menuitem" onclick="_skillsMenuClose();_skillCopy(\'' + safeCmd + '\',\'' + esc(it.hint.replace(/\\/g, '\\\\').replace(/'/g, "\\'")) + '\')">Copy command</button>' +
+              '<button role="menuitem" onclick="_skillsMenuClose();_skillCopy(\'' + safeCmd + '\',\'' + escJs(it.hint) + '\')">Copy command</button>' +
               '<button role="menuitem" onclick="_skillsMenuClose();_skillToggle(\'' + id + '\',\'' + fk + '\')">Details and examples</button>' +
               (it.editable ? '<button role="menuitem" onclick="_skillsMenuClose();editSkill(\'' + esc(it.cmd.replace(/^\//, '')) + '\')">Edit</button>' : '') +
             '</span></span>' +
@@ -42891,7 +42893,7 @@ function _skillsRenderSide(all, pinned) {
     const ranked = Object.entries(_skillsData.usage).map(([k, u]) => [k, u.recent || 0]).filter(x => x[1] > 0)
       .sort((a, b) => b[1] - a[1]).slice(0, 5);
     top.innerHTML = ranked.length ? ranked.map(([k, n], i) =>
-      '<li><button class="sk-top-item" onclick="_skillsJump(\'/' + esc(k) + '\')"><span class="sk-rank">' + (i + 1) + '</span><span class="sk-top-name">/' + esc(k) + '</span><span class="sk-top-n">' + n.toLocaleString() + ' ×</span></button></li>').join('')
+      '<li><button class="sk-top-item" onclick="_skillsJump(\'/' + escJs(k) + '\')"><span class="sk-rank">' + (i + 1) + '</span><span class="sk-top-name">/' + esc(k) + '</span><span class="sk-top-n">' + n.toLocaleString() + ' ×</span></button></li>').join('')
       : '<li class="sk-empty">No skill used in the last ' + days + ' days</li>';
   }
   const grp = document.getElementById('skills-groups');
