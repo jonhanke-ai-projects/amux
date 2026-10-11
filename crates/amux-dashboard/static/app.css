@@ -8424,9 +8424,19 @@ body.light #fc-container { color-scheme: light; }
 .cv-post-body { font-size:0.88rem; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
 .cv-mention { background:rgba(88,166,255,0.16); color:var(--accent); border-radius:4px; padding:0 3px; }
 .cv-mention.me { background:rgba(210,153,34,0.22); color:inherit; font-weight:600; }
-.cv-file { display:inline-flex; align-items:center; gap:6px; margin:4px 0 0; padding:6px 10px;
-  border:1px solid var(--border); border-radius:8px; background:var(--card); font-size:0.8rem;
-  cursor:pointer; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* Post bodies are rendered markdown (same pipeline as worker Chat): block
+   whitespace collapses, text inside a paragraph keeps its line breaks. */
+.cv-post-body.cv-md { white-space:normal; }
+.cv-md p, .cv-md blockquote { white-space:pre-wrap; margin:0 0 6px; }
+.cv-md p:last-child { margin-bottom:0; }
+.cv-md pre { max-width:100%; overflow-x:auto; background:rgba(127,127,127,0.12); border-radius:6px; padding:8px 10px; font-size:0.8rem; }
+.cv-md :not(pre) > code { background:rgba(127,127,127,0.14); border-radius:4px; padding:1px 4px; font-size:0.88em; }
+.cv-md img, .cv-md video { max-width:100%; height:auto; border-radius:6px; }
+.cv-md .file-link { color:var(--cyan); border-bottom:1px dashed var(--cyan); cursor:pointer; word-break:break-all; }
+.cv-md .md-link { color:var(--yellow); border-bottom:1px dashed var(--yellow); cursor:pointer; word-break:break-all; }
+.cv-thumbs { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+.cv-md img.cv-thumb { max-width:220px; max-height:160px; object-fit:cover; border:1px solid var(--border); cursor:pointer; }
+@media (max-width: 600px) { .cv-md img.cv-thumb { max-width:46vw; } }
 .cv-deliv { display:flex; gap:6px; flex-wrap:wrap; margin-top:3px; }
 .cv-deliv span { font-size:0.68rem; padding:1px 7px; border-radius:9px; border:1px solid var(--border); color:var(--dim); }
 .cv-deliv span.ok { color:var(--green, #3fb950); border-color:rgba(63,185,80,.45); }
