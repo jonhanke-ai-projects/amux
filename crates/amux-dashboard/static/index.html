@@ -1587,7 +1587,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
-<div id="messages-view" style="display:none;flex-direction:column;flex:1;min-height:0;padding:12px 16px;">
+<div id="messages-view" style="display:none;flex-direction:row;flex:1;min-height:0;">
   <style>
     #messages-view .msg-row { display:flex; align-items:flex-start; gap:10px; padding:9px 12px; background:var(--card);
       border:1px solid var(--border); border-radius:8px; cursor:pointer; transition:border-color .15s; }
@@ -1640,6 +1640,44 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       line-height:1.45; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
     #messages-view .msg-locate { flex-shrink:0; font-size:0.72rem; padding:4px 10px; align-self:center; }
   </style>
+  <!-- Conversations (conversations.rs): channels are groups, plus direct
+       messages with people and one shared thread per worker. The original
+       message log stays below as "All messages". -->
+  <aside id="cv-side" aria-label="Conversations">
+    <div class="cv-side-head">
+      <span class="cv-side-title">Messages</span>
+    </div>
+    <div class="cv-search"><input class="input" id="cv-search" type="search" placeholder="Search messages…" autocomplete="off"
+      onkeydown="if(event.key==='Enter')_cvSearch(this.value)"></div>
+    <nav class="cv-nav">
+      <button class="cv-item" data-cv="@mentions" onclick="_cvSelect('@mentions')"><span class="cv-ico">@</span><span class="cv-lbl">Mentions</span><span class="cv-badge cv-badge-red" id="cv-mentions-n"></span></button>
+      <button class="cv-item" data-cv="@unread" onclick="_cvSelect('@unread')"><span class="cv-ico">&#x25CB;</span><span class="cv-lbl">Unread</span><span class="cv-badge" id="cv-unread-n"></span></button>
+      <button class="cv-item" data-cv="@all" id="cv-all-item" onclick="_cvSelect('@all')"><span class="cv-ico">&#x2709;</span><span class="cv-lbl">All messages</span></button>
+    </nav>
+    <div class="cv-sec">Channels</div><div id="cv-channels" class="cv-nav"></div>
+    <div class="cv-sec" id="cv-people-sec">People</div><div id="cv-people" class="cv-nav"></div>
+    <div class="cv-sec">Workers</div><div id="cv-workers" class="cv-nav"></div>
+  </aside>
+  <section id="cv-pane" style="display:none;">
+    <header class="cv-head">
+      <button class="btn cv-back" onclick="_cvBack()" aria-label="Back to conversations">&#x2039;</button>
+      <div class="cv-head-main">
+        <div class="cv-head-title" id="cv-title"></div>
+        <div class="cv-head-meta" id="cv-meta"></div>
+      </div>
+      <div class="cv-head-people" id="cv-head-people"></div>
+    </header>
+    <div id="cv-posts" class="cv-posts" aria-live="polite"></div>
+    <div id="cv-typing" class="cv-typing"></div>
+    <div class="cv-compose" id="cv-compose">
+      <div id="cv-ac" class="cv-ac" role="listbox"></div>
+      <textarea id="cv-input" class="input" rows="1" placeholder="Message"
+        oninput="_cvOnInput(this)" onkeydown="_cvOnKey(event)"></textarea>
+      <button class="btn primary cv-send" id="cv-send" onclick="_cvSend()" aria-label="Send">&#x27A4;</button>
+    </div>
+    <div class="cv-hint" id="cv-hint"><span>@person to notify a teammate</span><span>@worker to give a worker a task</span><span>Shift + Enter for a new line</span></div>
+  </section>
+  <div id="msgs-log-pane">
   <div style="display:flex;gap:6px;margin-bottom:10px;flex-shrink:0;">
     <button class="msg-mode-btn active" id="msgmode-messages" onclick="_msgSetMode('messages')">Messages</button>
     <button class="msg-mode-btn" id="msgmode-trends" onclick="_msgSetMode('trends')">&#x1F4C8; Trends</button>
@@ -1690,6 +1728,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <!-- AMUX-4666: pages, not an endless "Load older". -->
   <div id="msgs-pager" style="flex-shrink:0;padding-top:8px;display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:wrap;"></div>
+  </div>
 </div>
 
 <div id="terminal-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
@@ -2046,18 +2085,64 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 
 <div id="skills-view" style="display:none;flex-direction:column;flex:1;min-height:0;padding:12px 16px;">
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-shrink:0;">
-    <div class="search-wrap" style="flex:1;">
-      <input class="search-input" id="skills-search" type="text" placeholder="Search skills..." autocomplete="off"
-        oninput="_skillsFilter(this.value)">
+  <div class="sk-scroll">
+    <div class="sk-layout">
+      <div class="sk-main">
+        <div class="sk-top">
+          <div class="search-wrap sk-search">
+            <input class="search-input" id="skills-search" type="search" placeholder="Search skills, e.g. /pr-merge, browser, test" autocomplete="off"
+              aria-label="Search skills" oninput="_skillsFilter(this.value)">
+            <kbd class="sk-kbd" aria-hidden="true">&#x2318;K</kbd>
+          </div>
+          <span class="sk-count" id="skills-count"></span>
+          <button class="btn sk-new" onclick="editSkill()">+ New</button>
+        </div>
+        <div class="sk-filters" role="toolbar" aria-label="Filter skills">
+          <select id="skills-f-type" class="input sk-select" aria-label="Type" onchange="_skillsFilterSet('type', this.value)">
+            <option value="">All types</option><option value="custom">Custom</option><option value="project">Project</option><option value="builtin">Built-in</option>
+          </select>
+          <select id="skills-f-status" class="input sk-select" aria-label="Status" onchange="_skillsFilterSet('status', this.value)">
+            <option value="">All statuses</option><option value="pinned">Pinned</option><option value="unpinned">Not pinned</option><option value="used">Used in window</option><option value="unused">Not used in window</option>
+          </select>
+          <select id="skills-f-worker" class="input sk-select" aria-label="Worker" onchange="_skillsFilterSet('worker', this.value)">
+            <option value="">All workers</option>
+          </select>
+          <select id="skills-sort" class="input sk-select" aria-label="Sort skills" onchange="_skillsSortSet(this.value)">
+            <option value="used">Sort: Usage</option><option value="recent">Sort: Recently used</option><option value="created">Sort: Recently created</option><option value="edited">Sort: Recently edited</option><option value="name">Sort: Name</option>
+          </select>
+          <div class="sk-viewtoggle" role="group" aria-label="Layout">
+            <button class="btn" id="skills-view-list" aria-pressed="true" onclick="_skillsLayoutSet('list')">&#x2630; List</button>
+            <button class="btn" id="skills-view-grid" aria-pressed="false" onclick="_skillsLayoutSet('grid')">&#x25A6; Grid</button>
+          </div>
+        </div>
+        <div id="skills-tab-sections"></div>
+      </div>
+      <aside class="sk-side" aria-label="Skill usage">
+        <section class="sk-panel">
+          <div class="sk-panel-head">
+            <h3>Usage overview</h3>
+            <select id="skills-window" class="input sk-select sk-select-sm" aria-label="Usage window" onchange="_skillsWindowSet(this.value)">
+              <option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option>
+            </select>
+          </div>
+          <div id="skills-chart" class="sk-chart"></div>
+        </section>
+        <section class="sk-panel">
+          <div class="sk-panel-head"><h3>Top skills</h3></div>
+          <ol id="skills-top" class="sk-top-list"></ol>
+        </section>
+        <section class="sk-panel">
+          <div class="sk-panel-head"><h3>Groups</h3></div>
+          <ul id="skills-groups" class="sk-groups"></ul>
+        </section>
+        <section class="sk-panel sk-tip" id="skills-tip">
+          <button class="sk-tip-x" aria-label="Dismiss tip" onclick="_skillsTipDismiss()">&#x2715;</button>
+          <div class="sk-tip-title">&#x1F4A1; Tip</div>
+          <div>Pin the skills you use most: a pinned skill is listed first here and sits one tap away in every worker's composer quick bar.</div>
+        </section>
+      </aside>
     </div>
-    <span style="font-size:0.78rem;color:var(--dim);white-space:nowrap;" id="skills-count"></span>
-    <select id="skills-sort" class="input" aria-label="Sort skills" onchange="_skillsSortSet(this.value)" style="font-size:0.78rem;padding:4px 8px;min-height:36px;width:auto;">
-      <option value="name">Name</option><option value="used">Most used</option>
-    </select>
-    <button class="btn" onclick="editSkill()" style="font-size:0.75rem;padding:4px 12px;flex-shrink:0;">+ New</button>
   </div>
-  <div id="skills-tab-sections" style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;"></div>
 </div>
 
 <!-- Schedule modal -->
