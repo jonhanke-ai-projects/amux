@@ -19361,12 +19361,23 @@ fn fleet_roster() -> String {
         // lane rarely needs and can read from `amux ls`.
         out.push_str(&format!("| `{}` | {} | {} |\n", cell(n, 64), cell(g, 60), cell(d, 90)));
     }
-    out.push_str(&format!(
-        "\n{} discoverable peer worker(s). Cross-group messaging is open by default; \
-         isolation is the explicit opt-out.\n",
-        rows.len()
-    ));
+    out.push_str(&roster_footer(rows.len()));
     out
+}
+
+/// The worker messaging policy in one sentence. `/api/config/cross-group` and
+/// the roster footer injected into every worker read it from here: the footer
+/// used to say "open by default" while the live policy was shared-group-only
+/// (gtm-engine, 2026-10-11), and lanes acted on the footer.
+pub(crate) const WORKER_MESSAGING_POLICY: &str =
+    "Workers may message only workers in a shared group. Owner input remains permitted.";
+
+fn roster_footer(n: usize) -> String {
+    format!(
+        "\n{n} discoverable peer worker(s). {WORKER_MESSAGING_POLICY} To reach a worker outside \
+         your groups, ask the owner on your card (the owner can put you in a shared group); a \
+         refused send is not retried or rerouted.\n"
+    )
 }
 
 /// Rewrite EVERY live worker's composed memory, so the fleet roster in each one
@@ -26891,7 +26902,7 @@ pub(crate) fn cross_group_policy_ok(origin: &str, target: &str) -> Result<&'stat
 async fn get_cross_group_config() -> Response {
     j200(json!({"default_allow":"", "enabled":false, "gate_enforcing":true,
         "editable":false, "policy":"shared-group-only", "measured":true, "n_considered":1,
-        "note":"Workers may message only workers in a shared group. Owner input remains permitted."}))
+        "note": WORKER_MESSAGING_POLICY}))
 }
 
 /// PUT /api/config/cross-group — set the fleet-wide default.
@@ -34908,9 +34919,9 @@ mod tests {
         assert_eq!(r(sha), sha, "git sha must survive: {}", r(sha));
     }
 
-    /// Worker-to-worker messaging is open by default. Configuration may narrow
-    /// an individual worker or a whole group without putting policy in a body
-    /// flag that a caller could forge (AMUX-4015).
+    /// Worker-to-worker messaging is shared-group-only (4617e48d). Configuration
+    /// may narrow an individual worker or a whole group without putting policy
+    /// in a body flag that a caller could forge (AMUX-4015).
     ///
     /// `CC_SEND_ALLOW` and `CC_RECEIVE_ANY` were read through `parse_env`, which
     /// reads `sessions/<worker>.env` and nothing else. `/api/scope` has always
@@ -50331,6 +50342,14 @@ mod roster_tests {
     fn no_worker_memory_block_when_the_lane_recorded_nothing() {
         assert_eq!(compose_worker_block("amux", "   \n  "), "");
         assert_eq!(compose_worker_block("amux", ""), "");
+    }
+
+    #[test]
+    fn the_roster_footer_states_the_live_messaging_policy() {
+        let f = super::roster_footer(3);
+        assert!(f.contains(super::WORKER_MESSAGING_POLICY), "{f}");
+        assert!(!f.to_lowercase().contains("open by default"), "{f}");
+        assert!(f.contains("ask the owner"), "a refused lane needs a truthful next step: {f}");
     }
 
     #[test]
