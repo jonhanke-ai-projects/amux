@@ -264,9 +264,21 @@ async fn pull() -> Response {
     }
 
     let Some(dir) = repo_dir() else {
-        return Json(json!({"ok": false, "channel": "standalone",
-            "output": "No git repo here — updates deploy automatically.\n\
-                       (If this IS a source install, set AMUX_REPO_DIR to the checkout.)"}))
+        // Say only what is known. This used to promise "updates deploy
+        // automatically", which nothing here can check, and on a hand-installed
+        // host (sandbox.amux.io, 2026-10-11) nothing updated it at all.
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "an unknown path".into());
+        tracing::warn!(exe = %exe, measured = true, n_considered = 1, verdict = "pull_no_checkout",
+            "Pull from remote pressed on a server with no git checkout; nothing to update");
+        return Json(json!({"ok": false, "channel": "standalone", "exe": exe,
+            "output": format!(
+                "This server runs a standalone binary ({exe}) with no git checkout, so this \
+                 button has nothing to pull. It updates only when whatever installed that \
+                 binary replaces it.\n\
+                 To update from here: set AMUX_REPO_DIR to an amux checkout and run the amux \
+                 builder (install.sh sets both up); a pull then deploys.")}))
         .into_response();
     };
 
