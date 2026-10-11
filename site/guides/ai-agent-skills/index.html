@@ -22,9 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Skills","item":"https://amux.io/guides/ai-agent-skills/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Skills — Custom Slash Commands for Claude Code, Codex & Gemini CLI (2026)","description":"amux Skills let you define reusable slash commands — /commit, /review-pr, /deploy — that work identically whether your agent is Claude Code, OpenAI Codex, or Gemini CLI. Write the skill once, use it across your whole agent fleet.","url":"https://amux.io/guides/ai-agent-skills/","datePublished":"2026-07-13","dateModified":"2026-07-13","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Create and Use AI Agent Skills in amux","description":"Define custom slash commands (Skills) in amux that work across Claude Code, Codex, and Gemini CLI sessions — write once, run on any session in your fleet.","step":[{"@type":"HowToStep","position":1,"name":"Open the Skills tab","text":"In the amux dashboard (localhost:8824), click the Skills tab. It shows all defined skills and a New Skill button."},{"@type":"HowToStep","position":2,"name":"Click New Skill","text":"Give the skill a name (this becomes the slash command) and optionally a description. The name must be lowercase, no spaces — e.g. 'review-pr' creates /review-pr."},{"@type":"HowToStep","position":3,"name":"Write the skill Markdown","text":"The skill body is a Markdown file with optional YAML frontmatter. Describe the SOP — what the agent should do when you invoke this skill. Be specific: list the steps, the expected output, and any constraints."},{"@type":"HowToStep","position":4,"name":"Save — skills sync to all running sessions","text":"amux auto-syncs the skill to every registered session. For Claude Code sessions it's stored in the session's skills/ directory; for Codex/Gemini it's injected as a system context block."},{"@type":"HowToStep","position":5,"name":"Invoke the skill in any session","text":"In the steering bar, type /skill-name and hit Enter. The skill's SOP is sent as the prompt to that session. Works identically on Claude Code, Codex, and Gemini CLI."}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What's the difference between a skill and CLAUDE.md?","acceptedAnswer":{"@type":"Answer","text":"CLAUDE.md is always-on context — it's loaded into every Claude Code session automatically and shapes every response. A Skill is on-demand: it does nothing until you invoke it with /skill-name. Use CLAUDE.md for persistent project context (coding standards, architecture notes, tool preferences). Use Skills for repeatable SOPs (commit conventions, PR review checklist, deploy sequence) that you want to trigger explicitly."}},{"@type":"Question","name":"Do skills work with Gemini CLI and Codex too?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux Skills are model-agnostic. For Claude Code sessions, skills live in the session's skills/ directory and are invoked with /skill-name. For Codex and Gemini CLI sessions, amux injects the skill body as a system context block when you invoke it via the steering bar. The skill author writes it once; amux handles the provider-specific delivery."}},{"@type":"Question","name":"Can skills call other skills?","acceptedAnswer":{"@type":"Answer","text":"Not directly — a skill is a Markdown SOP, not executable code, so there's no /skill-name syntax inside a skill body. However, you can reference another skill's procedure in the body (e.g. 'first run the /commit checklist, then...') and the agent will follow both. For complex multi-step automation, consider the amux scheduler with a prompt that walks through multiple skills in sequence."}},{"@type":"Question","name":"How do I sync skills to a new session?","acceptedAnswer":{"@type":"Answer","text":"Skills sync automatically when you start or register a session. Existing sessions pick up new or updated skills the next time the session is steered — amux sends the updated skills directory on the next prompt delivery. You can also trigger a manual sync from the Skills tab by clicking Sync All."}},{"@type":"Question","name":"Can I keep a skill private to one session?","acceptedAnswer":{"@type":"Answer","text":"By default, skills defined in the dashboard are global and sync to all sessions. To scope a skill to one session, place the skill Markdown file directly in that session's local skills/ subdirectory rather than defining it via the dashboard. Local session skills override global ones of the same name."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Skills — Custom Slash Commands for Claude Code, Codex & Gemini CLI (2026)","description":"amux Skills let you define reusable slash commands — /commit, /review-pr, /deploy — that work identically whether your agent is Claude Code, OpenAI Codex, or Gemini CLI. Write the skill once, use it across your whole agent fleet.","url":"https://amux.io/guides/ai-agent-skills/","datePublished":"2026-07-13","dateModified":"2026-10-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Create and Use AI Agent Skills in amux","description":"Define custom slash commands (Skills) in amux that work across Claude Code, Codex, and Gemini CLI sessions — write once, run on any session in your fleet.","step":[{"@type":"HowToStep","position":1,"name":"Open the Skills tab","text":"In the amux dashboard (localhost:8824), click the Skills tab. It shows all defined skills and a New Skill button."},{"@type":"HowToStep","position":2,"name":"Click New Skill","text":"Give the skill a name (this becomes the slash command) and optionally a description. The name must be lowercase, no spaces — e.g. 'review-pr' creates /review-pr."},{"@type":"HowToStep","position":3,"name":"Write the skill Markdown with example invocations","text":"The skill body is a Markdown file with optional YAML frontmatter. Add a section with concrete example invocations — amux reads these and surfaces them in the / dropdown and in the expanded skill card. The more specific your examples, the more useful the suggestions."},{"@type":"HowToStep","position":4,"name":"Save — skills sync to all running sessions","text":"amux auto-syncs the skill to every registered session. For Claude Code sessions it's stored in the session's skills/ directory; for Codex/Gemini it's injected as a system context block."},{"@type":"HowToStep","position":5,"name":"Invoke the skill from the / dropdown","text":"In the steering bar, type / to open the command palette. amux shows each skill with its inferred example invocations. Select an example or type /skill-name and hit Enter. Works identically on Claude Code, Codex, and Gemini CLI."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What's the difference between a skill and CLAUDE.md?","acceptedAnswer":{"@type":"Answer","text":"CLAUDE.md is always-on context — it's loaded into every Claude Code session automatically and shapes every response. A Skill is on-demand: it does nothing until you invoke it with /skill-name. Use CLAUDE.md for persistent project context (coding standards, architecture notes, tool preferences). Use Skills for repeatable SOPs (commit conventions, PR review checklist, deploy sequence) that you want to trigger explicitly."}},{"@type":"Question","name":"Do skills work with Gemini CLI and Codex too?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux Skills are model-agnostic. For Claude Code sessions, skills live in the session's skills/ directory and are invoked with /skill-name. For Codex and Gemini CLI sessions, amux injects the skill body as a system context block when you invoke it via the steering bar. The skill author writes it once; amux handles the provider-specific delivery."}},{"@type":"Question","name":"What are skill examples and how does amux infer them?","acceptedAnswer":{"@type":"Answer","text":"Skill examples are concrete invocation samples that amux surfaces in the / dropdown and in the expanded skill card in the dashboard. amux infers them automatically by reading the skill's Markdown — it looks for concrete action phrases in the body text and surfaces them as clickable suggestions. You can also add an 'Examples:' section in your skill Markdown to provide explicit examples. The feature shipped October 2026 (commits b4c191b2 + 2db6fd94)."}},{"@type":"Question","name":"Can skills call other skills?","acceptedAnswer":{"@type":"Answer","text":"Not directly — a skill is a Markdown SOP, not executable code, so there's no /skill-name syntax inside a skill body. However, you can reference another skill's procedure in the body (e.g. 'first run the /commit checklist, then...') and the agent will follow both. For complex multi-step automation, consider the amux scheduler with a prompt that walks through multiple skills in sequence."}},{"@type":"Question","name":"How do I sync skills to a new session?","acceptedAnswer":{"@type":"Answer","text":"Skills sync automatically when you start or register a session. Existing sessions pick up new or updated skills the next time they receive a prompt. You can also click Sync All in the Skills tab or call POST /api/skills/sync to push immediately to all running sessions."}},{"@type":"Question","name":"Can I keep a skill private to one session?","acceptedAnswer":{"@type":"Answer","text":"By default, skills defined in the dashboard are global and sync to all sessions. To scope a skill to one session, place the skill Markdown file directly in that session's local skills/ subdirectory rather than defining it via the dashboard. Local session skills override global ones of the same name."}}]}</script>
 </head>
 <body>
   <header class="site-header">
@@ -43,7 +43,12 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Skills</span></div>
 
     <h1>AI Agent Skills &mdash; Custom Slash Commands for Claude Code, Codex &amp; Gemini CLI</h1>
-    <p class="subtitle">Define reusable SOPs once, invoke them across your entire agent fleet. Updated July 2026.</p>
+    <p class="subtitle">Define reusable SOPs once, invoke them across your entire agent fleet. Updated October 2026.</p>
+
+    <div class="cta-box cta-box--top" style="background:color-mix(in oklab,var(--green) 12%,var(--bg-2));border-color:color-mix(in oklab,var(--green) 40%,transparent)">
+      <strong>Write a skill once, run it across every Claude Code, Codex, and Gemini CLI agent</strong> — with inferred examples surfaced in the / dropdown.
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" onclick="posthog.capture('exp125_skills_guide_topofpage_cta_click')">Get amux on GitHub</a>
+    </div>
 
     <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--blue)">
       <strong>Quick answer:</strong> amux Skills let you define reusable slash commands &mdash; <code>/commit</code>, <code>/review-pr</code>, <code>/deploy</code> &mdash; that work identically whether your agent is Claude Code, OpenAI Codex, or Gemini CLI. Write the skill once as a Markdown SOP, and amux syncs it to every running session. Type <code>/skill-name</code> in the steering bar to invoke it on any agent.
@@ -198,6 +203,29 @@ Do NOT push if tests fail. Do NOT force push. Do NOT skip the build step.</code>
     </ul>
     <p>From the user's perspective, <code>/review-pr</code> works the same in every session, regardless of which AI is running behind it. You can have a Claude Code session and a Codex session both using the same <code>/commit</code> skill with no changes.</p>
 
+    <h2 id="skill-examples">Inferred examples in the / dropdown (October 2026)</h2>
+    <p>The October 2026 update (commits <code>b4c191b2</code> + <code>2db6fd94</code>) added automatic example inference. amux reads each skill's Markdown body and surfaces concrete invocation suggestions in two places:</p>
+    <ul>
+      <li><strong>/ dropdown</strong> — type <code>/</code> in the steering bar of any worker, Chat window, or board card input. amux lists every skill with its inferred examples directly below the skill name. One click sends the example as a prompt.</li>
+      <li><strong>Expanded skill card</strong> — in the Skills tab, expand any skill to see its inferred examples listed with a clipboard copy button. Useful when exploring what a skill does before invoking it.</li>
+    </ul>
+    <p>How inference works: amux scans the skill body for action-oriented phrases (imperative sentences, numbered step verbs, code block triggers) and turns them into example prompts. A <code>/commit</code> skill with steps like "Run <code>git diff</code> to see what changed" becomes an example "Stage and commit changes with a conventional message."</p>
+    <p>To supply explicit examples rather than relying on inference, add an <code>## Examples</code> section to your skill Markdown:</p>
+    <pre><code>---
+name: review-pr
+description: Review staged changes before committing
+---
+
+## Examples
+- Review my staged changes for correctness
+- Check this PR branch for breaking changes
+- Run a security review on my diff
+
+## Steps
+1. Run `git diff --cached`...
+</code></pre>
+    <p>Explicit examples under <code>## Examples</code> take precedence over inferred ones. If both exist, amux shows explicit examples first, then inferred ones up to a total of 5.</p>
+
     <h2 id="fleet-management">Keeping skills in sync across a large fleet</h2>
     <p>When you update a skill in the dashboard, amux marks it dirty and syncs it on the next prompt delivery to each session. For active sessions this is nearly instant. For idle or detached sessions, the sync happens the next time they receive a prompt (whether from the steering bar, the scheduler, or another session via inter-session messaging).</p>
     <p>To force-sync immediately: click <strong>Sync All</strong> in the Skills tab, or use the API:</p>
@@ -226,17 +254,22 @@ Do NOT push if tests fail. Do NOT force push. Do NOT skip the build step.</code>
     </details>
 
     <details class="faq-item">
+      <summary>What are skill examples and how does amux infer them?</summary>
+      <p>Skill examples are concrete invocation suggestions that appear in the <code>/</code> dropdown and in the expanded skill card in the Skills tab. amux infers them by scanning the skill's Markdown body for action-oriented phrases. You can also supply explicit examples by adding an <code>## Examples</code> section to the skill body — explicit examples take precedence over inferred ones. The feature shipped October 2026 (<code>b4c191b2</code> + <code>2db6fd94</code>).</p>
+    </details>
+
+    <details class="faq-item">
       <summary>Can I keep a skill private to one session?</summary>
       <p>By default, skills defined in the dashboard are global and sync to all sessions. To scope a skill to one session, place the skill Markdown file directly in that session's local <code>skills/</code> subdirectory rather than defining it via the dashboard. Local session skills override global ones of the same name.</p>
     </details>
 
     <div class="cta-box">
       <h3>Build a reusable playbook for your AI engineering team</h3>
-      <p>amux is an open-source control plane for AI agent teams &mdash; model-agnostic skills, self-healing, phone-first, single Rust binary, zero external dependencies, MIT licensed.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
+      <p>amux is an open-source control plane for AI agent teams &mdash; model-agnostic skills with inferred examples, self-healing, phone-first, single Rust binary, zero external dependencies, MIT licensed.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject
 amux start myproject
-# Open https://localhost:8824 → Skills tab → New Skill</code></pre>
+# Open http://localhost:8824 &#x2192; Skills tab &#x2192; New Skill</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#9733; Star on GitHub</a>
         <a class="btn" href="/guides/getting-started/">Get started &rarr;</a>
@@ -245,6 +278,7 @@ amux start myproject
 
     <h2>Related guides</h2>
     <ul>
+      <li><a href="/guides/ai-agent-skill-examples/">Writing skill examples — templates and patterns for amux skills</a></li>
       <li><a href="/guides/getting-started/">Install amux and run your first parallel agents</a></li>
       <li><a href="/guides/scheduling-ai-agents/">Schedule AI agents to run automatically on a cron</a></li>
       <li><a href="/features/agent-coordination/">Agent-to-agent coordination with amux</a></li>
