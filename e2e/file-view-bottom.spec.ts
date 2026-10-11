@@ -9,6 +9,10 @@ declare const _xlsxEd: any;
 
 test.beforeEach(async ({page}) => {
   await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({json:[{name:'file-bottom-worker',running:false,provider:'codex',dir:'/tmp'}]}));
+  // These cases measure the pdf.js renderer (pages, cap notice, CDN fallback).
+  // Desktop now opens PDFs in the native viewer (2d02e34d), so they opt into
+  // pdf.js the way a person can; the native default has its own test below.
+  await page.addInitScript(() => { try { localStorage.setItem('amux_pdf_viewer', 'pdfjs'); } catch (e) {} });
 });
 
 const end = 'FILE_VIEW_FINAL_LINE_20261009';
@@ -404,4 +408,22 @@ test('capped PDF and large text disclose their limits and download the complete 
       await download.delete();await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
     }
   }finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
+});
+
+test('desktop opens a PDF in the native viewer from the raw stream by default', async ({page}, info) => {
+  // Skipped runs never load the page, so the shared sessions stub goes unused there.
+  if (info.project.name !== 'desktop') allowUnusedRoute(page, /\/api\/sessions(?:\?.*)?$/);
+  test.skip(info.project.name !== 'desktop', 'touch devices keep pdf.js');
+  const dir = await mkdtemp(join(tmpdir(), 'amux-pdf-native-'));
+  try {
+    await writeFile(join(dir, 'native.pdf'), pdfBytes());
+    await page.addInitScript(() => { try { localStorage.removeItem('amux_pdf_viewer'); } catch (e) {} });
+    await page.goto('/');
+    await page.waitForFunction(() => typeof (window as any).openFilePreview === 'function');
+    await page.evaluate(p => (window as any).openFilePreview(p), join(dir, 'native.pdf'));
+    const frame = page.locator('#file-body iframe.pdf-native');
+    await expect(frame).toHaveCount(1, {timeout: 30000});
+    expect(await frame.getAttribute('src')).toContain('/api/file/raw?path=');
+    await expect(page.locator('#file-body .pdf-page')).toHaveCount(0);
+  } finally { await cleanup('remove temp folder', () => rm(dir, {recursive: true, force: true})); }
 });

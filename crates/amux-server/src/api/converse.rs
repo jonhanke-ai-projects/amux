@@ -363,7 +363,17 @@ pub(crate) fn realtime_session(model: &str, voice: &str, transcribe: &str, instr
 /// session id come back out; the API key never leaves this function, and an
 /// upstream error is scrubbed of it before it is reported.
 pub(crate) async fn mint(base: &str, key: &str, body: &Value) -> Result<Value, (u16, String)> {
-    let scrub = |s: String| s.replace(key, "[redacted]");
+    // The exact key, and any key-shaped token: OpenAI's own 401 echoes a
+    // masked form ("sk-proj-****Dv0A"), and even its last four characters
+    // have no business on the page.
+    let scrub = |s: String| {
+        let s = s.replace(key, "[redacted]");
+        static KEYISH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        KEYISH
+            .get_or_init(|| regex::Regex::new(r"sk-[A-Za-z0-9_*\-]{4,}").expect("static key pattern"))
+            .replace_all(&s, "[redacted]")
+            .into_owned()
+    };
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
@@ -1081,7 +1091,7 @@ mod tests {
             assert_eq!(body["session"]["type"], json!("realtime"));
             assert_eq!(body["session"]["tools"][0]["name"], json!("ask_worker"));
             if echo_key_in_error {
-                (StatusCode::UNAUTHORIZED, Json(json!({"error": {"message": format!("bad credentials {auth}")}})))
+                (StatusCode::UNAUTHORIZED, Json(json!({"error": {"message": format!("bad credentials {auth}; Incorrect API key provided: sk-proj-********Dv0A.")}})))
             } else {
                 (StatusCode::OK, Json(json!({"value": "ek_test_123", "expires_at": 1_800_000_000, "session": {"id": "sess_test"}})))
             }
@@ -1102,6 +1112,7 @@ mod tests {
         let (status, msg) = mint(&stub_openai(true).await, key, &body).await.unwrap_err();
         assert_eq!(status, 401);
         assert!(!msg.contains(key), "upstream error must be scrubbed: {msg}");
+        assert!(!msg.contains("sk-"), "a masked key echo is scrubbed too: {msg}");
         assert!(msg.contains("[redacted]"));
     }
 

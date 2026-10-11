@@ -3313,14 +3313,16 @@ async function _upqCancel(id) {
 // The byte store stays separate: it is chunked IDB, never JSON/localStorage.
 let _uploadSyncPending = false;
 function _upqDrain() { return runSyncBanner(true); }
-async function _syncOneUpload(item) {
+// onProgress(f) is called as chunks land, with f.status ("Uploading 34% ·
+// 34.0 / 100.0 MB") and f.sent; the sync checklist shows it on the row.
+async function _syncOneUpload(item, onProgress) {
   const deliver = async () => {
     const current = (await _upqList()).find(row => row.id === item.id);
     if (!current) throw new Error('Upload changed in another tab — refresh to review');
     if (current.surface === 'directory') {
       const f = {...current, file:_storedUploadFile(current), stored:true, chunk:0};
       // A finish receipt may already be durable if the page closed before removal.
-      if (!f.path || !f.url) await _runUpload(f, {render:() => {}});
+      if (!f.path || !f.url) await _runUpload(f, {render:() => { if (onProgress) onProgress(f); }});
       if (!f.path || !f.url) throw new Error(f.error || 'Server has not confirmed this file');
     } else {
       const fd = new FormData();
@@ -3576,11 +3578,16 @@ async function _runSyncBanner(quiet = false) {
     const done = items.filter(i => i.status === 'done').length;
     const failed = items.filter(i => i.status === 'failed').length;
     titleEl.textContent = 'Syncing ' + done + '/' + items.length + (failed ? ' (' + failed + ' failed)' : '') + (skipped ? ' (' + skipped + ' skipped)' : '');
-    _syncPillText = done < items.length ? 'Syncing ' + done + '/' + items.length : '';
+    const live = items.find(i => i.status === 'running' && i.pct > 0);
+    _syncPillText = done < items.length ? 'Syncing ' + done + '/' + items.length + (live ? ' \u00b7 ' + live.pct + '%' : '') : '';
     updateConnectionStatus();
     itemsEl.innerHTML = items.map(i => {
       const icon = i.status === 'done' ? '&#x2714;' : i.status === 'failed' ? '&#x2718;' : i.status === 'skipped' ? '&mdash;' : '';
-      return '<div data-sync-id="' + esc(i.key) + '" class="sync-item ' + i.status + '"><span class="sync-box" aria-hidden="true">' + icon + '</span>' + esc(i.label) + '</div>';
+      const prog = i.status === 'running' && i.progress
+        ? '<div class="sync-progress"><div class="sync-progress-text">' + esc(i.progress) + '</div>'
+          + '<div class="sync-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + (i.pct || 0) + '"><span style="width:' + (i.pct || 0) + '%"></span></div></div>'
+        : '';
+      return '<div data-sync-id="' + esc(i.key) + '" class="sync-item ' + i.status + '"><span class="sync-box" aria-hidden="true">' + icon + '</span><span class="sync-label">' + esc(i.label) + prog + '</span></div>';
     }).join('');
   }
 
@@ -3739,7 +3746,16 @@ async function _runSyncBanner(quiet = false) {
   }
   for (const item of items.filter(i => i.type === 'upload' && i.replay !== false)) {
     item.status = 'running'; renderBanner();
-    try { await _syncOneUpload(item.file); item.status = 'done'; }
+    // A 100 MB upload sat behind a bare spinner with "Syncing 0/1" for minutes
+    // (Ethan, 2026-10-11). The uploader already counts bytes per chunk; show it
+    // on the row and in the pill, repainted at most once a frame.
+    let raf = 0;
+    const progress = f => {
+      item.progress = f.status || '';
+      item.pct = typeof _uploadPct === 'function' ? _uploadPct(f) : 0;
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderBanner(); });
+    };
+    try { await _syncOneUpload(item.file, progress); item.status = 'done'; item.progress = ''; }
     catch (error) {
       item.status = 'failed'; item.label += ' — ' + String(error.message || error);
       _uploadStorageError('sync-unconfirmed', error);
@@ -24958,7 +24974,11 @@ async function _renderPdf(data, body) {
   // Range-capable raw stream, at any size. Touch devices keep pdf.js: iOS shows
   // only a first-page snapshot of a framed PDF.
   const rawSrc = data.raw_url ? _authUrl(API + data.raw_url) : (data.path ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(data.path)) : '');
-  if (rawSrc && !(window.matchMedia && matchMedia('(pointer: coarse)').matches)) {
+  // localStorage amux_pdf_viewer = 'pdfjs' keeps the in-page renderer on desktop
+  // too (page-by-page canvases, the 30-page preview cap and its notice).
+  let forcePdfjs = false;
+  try { forcePdfjs = localStorage.getItem('amux_pdf_viewer') === 'pdfjs'; } catch (e) {}
+  if (rawSrc && !forcePdfjs && !(window.matchMedia && matchMedia('(pointer: coarse)').matches)) {
     if (!current()) return;
     body.innerHTML = '';
     const frame = document.createElement('iframe');

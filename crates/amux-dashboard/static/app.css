@@ -8861,3 +8861,10 @@ body.light #fc-container { color-scheme: light; }
   #sched-overlay.amux-dialog-viewport > .board-edit-box.sx-create { max-height: calc(var(--dialog-viewport-height, 100dvh) - var(--sw-fail-h, 0px)) !important; }
 }
 .vx-lat { color:var(--accent) !important; margin-left:6px !important; }
+
+/* Upload progress on a sync checklist row (2026-10-11). */
+.sync-label { flex:1; min-width:0; }
+.sync-progress { margin-top:4px; }
+.sync-progress-text { font-size:0.75rem; color:var(--dim); }
+.sync-progress-bar { height:4px; border-radius:2px; background:var(--border); overflow:hidden; margin-top:3px; }
+.sync-progress-bar span { display:block; height:100%; background:var(--accent); transition:width .2s; }
