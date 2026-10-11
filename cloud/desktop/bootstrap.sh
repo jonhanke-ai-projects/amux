@@ -22,6 +22,7 @@
 #   ANTHROPIC_API_KEY=sk-ant-... \
 #   bash bootstrap.sh
 # Optional: AMUX_UPDATES=source (self-updating source install, see below),
+# AMUX_UPDATE_FOLLOW_MIN (with source: fetch main every n minutes),
 # TS_AUTHKEY, AMUX_PASSWORD (the RDP/unix password), SWAP_GB,
 # AMUX_IMAGE, AMUX_TENANT=0 (keeps the server's ops-health cards on the board).
 # A DNS A record for AMUX_DOMAIN must point at this box before Caddy can get a
@@ -42,6 +43,11 @@ DOMAIN="${AMUX_DOMAIN:-}"
 # auto-builder, so "Pull from remote" in the dashboard (or the builder's
 # origin/main authority) updates it like any source install.
 UPDATES="${AMUX_UPDATES:-image}"
+# With source updates, AMUX_UPDATE_FOLLOW_MIN=<n> also fetches origin main every
+# n minutes so the host follows main by itself. The builder never fetches on its
+# own (freshness is a deliberate act), so this is that act, set once by whoever
+# provisions the host. 0 or unset: updates happen when someone presses Pull.
+FOLLOW_MIN="${AMUX_UPDATE_FOLLOW_MIN:-0}"
 WEB_USERS="${AMUX_WEB_USERS:-}"
 LOG=/var/log/amux-desktop-setup.log
 
@@ -276,8 +282,35 @@ if [[ "$UPDATES" == source ]]; then
       < "$SRC/scripts/$t.template" > "$UNIT_DIR/$t"
     chown "$USER_NAME:$USER_NAME" "$UNIT_DIR/$t"
   done
+  if [[ "$FOLLOW_MIN" =~ ^[1-9][0-9]*$ ]]; then
+    cat > "$UNIT_DIR/amux-follow-main.service" <<EOF
+[Unit]
+Description=amux: fetch origin main so the builder can adopt it
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/git -C $SRC fetch -q origin main
+EOF
+    cat > "$UNIT_DIR/amux-follow-main.timer" <<EOF
+[Unit]
+Description=amux: follow origin main every ${FOLLOW_MIN} min
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=${FOLLOW_MIN}min
+[Install]
+WantedBy=timers.target
+EOF
+    chown "$USER_NAME:$USER_NAME" "$UNIT_DIR"/amux-follow-main.*
+  else
+    rm -f "$UNIT_DIR"/amux-follow-main.*
+  fi
   ucl daemon-reload
   ucl enable --now amux-builder.timer >/dev/null
+  if [[ -f "$UNIT_DIR/amux-follow-main.timer" ]]; then
+    ucl enable --now amux-follow-main.timer >/dev/null
+  else
+    ucl disable --now amux-follow-main.timer >/dev/null 2>&1 || true
+  fi
+  log "follow main: $([[ -f "$UNIT_DIR/amux-follow-main.timer" ]] && echo "every ${FOLLOW_MIN}m ($(ucl is-active amux-follow-main.timer))" || echo "off (updates on Pull)")"
   log "source updates on: builder timer $(ucl is-active amux-builder.timer), checkout $SRC at $(as_user git -C "$SRC" rev-parse --short HEAD)"
 fi
 

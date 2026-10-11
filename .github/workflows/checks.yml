@@ -388,6 +388,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-reap-remotion-bundles.sh
+      - name: the deploy builder prunes only superseded incremental trees of crates it rebuilt (RCA 20261011-112249)
+        run: |
+          set -uo pipefail
+          ./scripts/test-prune-superseded-incremental.sh
       - name: the idle worktree reaper only takes a merged, clean, unheld detached checkout (MO-3631/3633)
         run: |
           set -uo pipefail

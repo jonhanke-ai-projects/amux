@@ -720,6 +720,13 @@ fi
   if [ "$BUILD_OK" = 1 ] && [ "$DEPLOY_ELAPSED" -gt "${AMUX_DEPLOY_SLOW_S:-180}" ]; then
     echo "== WARN deploy_build_slow elapsed_s=$DEPLOY_ELAPSED threshold_s=${AMUX_DEPLOY_SLOW_S:-180} jobs=$DEPLOY_JOBS incremental=1 (a cold cache or a dependency bump is expected to be slow once)"
   fi
+  # Disk RCA 20261011-112249: cargo never deletes an incremental tree whose
+  # fingerprint a profile or toolchain change superseded (four amux_server
+  # trees, 9 GB of them dead). Drop the trees of crates this build rewrote.
+  if [ "$BUILD_OK" = 1 ]; then
+    bash "$REPO/scripts/prune-superseded-incremental.sh" \
+      "$HOME/.amux/rust-build-target/deploy/incremental" "$DEPLOY_T0" 2>&1 | sed 's/^/== /' || true
+  fi
   if [ "$BUILD_OK" = 1 ]; then
     tail -3 "$BUILD_OUT"
     # Build the complete replacement beside the live executable, including its
