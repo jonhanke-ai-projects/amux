@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2623,
+  "n_considered": 2683,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3652,6 +3652,138 @@
     },
     "_voiceToggle": {
       "kind": "command._voiceToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxAwaitReply": {
+      "kind": "command._vxAwaitReply",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxCallButton": {
+      "kind": "command._vxCallButton",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxDelete": {
+      "kind": "command._vxDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxEnd": {
+      "kind": "command._vxEnd",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxEnsureAudio": {
+      "kind": "command._vxEnsureAudio",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxFlushUtterance": {
+      "kind": "command._vxFlushUtterance",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxLoadHistory": {
+      "kind": "command._vxLoadHistory",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxNew": {
+      "kind": "command._vxNew",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxOnPeekClose": {
+      "kind": "command._vxOnPeekClose",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxOnPeekOpen": {
+      "kind": "command._vxOnPeekOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxPlayToggle": {
+      "kind": "command._vxPlayToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxRecStart": {
+      "kind": "command._vxRecStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxRender": {
+      "kind": "command._vxRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxSave": {
+      "kind": "command._vxSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxSelect": {
+      "kind": "command._vxSelect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxSendUtterance": {
+      "kind": "command._vxSendUtterance",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxSpeak": {
+      "kind": "command._vxSpeak",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxStart": {
+      "kind": "command._vxStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxSweepNow": {
+      "kind": "command._vxSweepNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxToggleMute": {
+      "kind": "command._vxToggleMute",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxTrack": {
+      "kind": "command._vxTrack",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxTypeSend": {
+      "kind": "command._vxTypeSend",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

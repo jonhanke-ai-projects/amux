@@ -139,6 +139,7 @@ pub mod ids {
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
     pub const LAND_QUEUE: &str = "land-queue";
+    pub const CONVERSE_RETENTION: &str = "converse-retention";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -196,6 +197,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
     ids::LAND_QUEUE,
+    ids::CONVERSE_RETENTION,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -823,6 +825,25 @@ pub const CATALOG: &[Doc] = &[
         }],
         pref: None,
         detail: Some("/api/recordings/config"),
+    },
+    Doc {
+        id: ids::CONVERSE_RETENTION,
+        name: "Converse retention",
+        purpose: "Deletes Converse-tab voice conversations (transcript and recorded audio under AMUX_HOME/converse) once they are older than the retention window, and logs one verdict line per sweep. Without it expired conversations are hidden but their files stay on disk.",
+        env: &[
+            EnvControl {
+                var: "AMUX_CONVERSE_RETENTION_SECS",
+                effect: "tick seconds (default 3600); 0 disables the job",
+                off: Some("0"),
+            },
+            EnvControl {
+                var: "AMUX_CONVERSE_RETENTION_DAYS",
+                effect: "days a conversation is kept (default 30), read on every tick",
+                off: None,
+            },
+        ],
+        pref: None,
+        detail: Some("/api/converse/config"),
     },
     Doc {
         id: ids::MODEL_CATALOG_REFRESH,

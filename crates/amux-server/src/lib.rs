@@ -717,6 +717,8 @@ async fn async_main() {
     // ProviderAdapter::models() serve the vendor's real current list instead
     // of only the hand-typed, dated fallback in provider::model_catalog.
     drop(runtime_jobs::model_catalog_refresh::spawn());
+    // Converse tab: delete voice conversations past AMUX_CONVERSE_RETENTION_DAYS.
+    drop(runtime_jobs::converse_retention::spawn());
 
     // THE SCHEDULE FIRING LOOP (AMUX-2647). `run_scheduler` existed, was
     // documented, was gated behind `AMUX_RS_SCHEDULER=1` — and had ZERO call

@@ -124,6 +124,7 @@ pub mod sql;
 pub mod sse;
 pub mod typing;
 pub mod conversations;
+pub mod converse;
 pub mod static_files;
 pub mod stats;
 pub mod sync;
@@ -392,6 +393,9 @@ pub fn router_with_connector_transport(
         // Record tab (AMUX-4624): device recordings synced into a folder and
         // transcribed locally. The folder is the store; see the module docs.
         .nest("/api/recordings", recordings::routes())
+        // Converse tab: the log of hands-free voice conversations with a
+        // worker, replay and expiry. The folder is the store (api/converse.rs).
+        .merge(converse::routes())
         .nest("/api/dictation", dictation::routes())
         // Transcription lives at the TOP-LEVEL /api/dictate (python parity);
         // the dictation module owns it and answers NATIVELY (AMUX-2598:

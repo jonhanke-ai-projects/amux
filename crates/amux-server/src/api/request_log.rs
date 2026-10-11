@@ -2747,6 +2747,12 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/sessions/{name}/typing",
         methods: &["GET", "POST"],
     },
+    // -- Converse tab: voice conversations with a worker (api/converse.rs)
+    RouteEntry { path: "/api/converse/config", methods: &["GET"] },
+    RouteEntry { path: "/api/converse/sweep", methods: &["POST"] },
+    RouteEntry { path: "/api/converse/{worker}/conversations", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/converse/{worker}/conversations/{id}", methods: &["GET", "DELETE"] },
+    RouteEntry { path: "/api/converse/{worker}/conversations/{id}/audio", methods: &["GET", "PUT"] },
     // -- Messages: channels, direct messages, worker threads (api/conversations.rs)
     RouteEntry { path: "/api/conversations", methods: &["GET"] },
     RouteEntry { path: "/api/conversations/search", methods: &["GET"] },

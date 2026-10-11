@@ -12244,6 +12244,12 @@ function setPeekTab(tab) {
     if (tab === 'readalouds') { raPanel.classList.add('active'); _raRender(); }
     else { raPanel.classList.remove('active'); }
   }
+  document.getElementById('peek-tab-converse')?.classList.toggle('active', tab === 'converse');
+  const vxPanel = document.getElementById('peek-converse-panel');
+  if (vxPanel) {
+    if (tab === 'converse') { vxPanel.classList.add('active'); _vxRender(); }
+    else vxPanel.classList.remove('active');
+  }
   document.getElementById('peek-tab-simple')?.classList.toggle('active', tab === 'simple');
   const simpleP = document.getElementById('peek-simple-panel');
   if (simpleP) {
@@ -14072,7 +14078,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1332';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1333';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15071,6 +15077,7 @@ function _selectWorkerType(id) {
 
 function openPeek(name, opts) {
   _peekAgentsReset();
+  _vxOnPeekOpen(name);   // switching worker ends another worker's live conversation
   if (_chat.name && _chat.name !== name) _chatUnmount();
   _bindPeekScrollAffordance();
   requestAnimationFrame(_peekScrollAffordance);
@@ -15384,6 +15391,7 @@ async function _peekAgentRefresh() {
 
 function closePeek() {
   _chatUnmount();
+  _vxOnPeekClose();   // a live Converse conversation must not keep the mic open
   _peekFollowBottom = false;
   _peekStopBottomWatch();
   _peekAgentsReset();
@@ -54608,3 +54616,1022 @@ async function _cvSend() {
 // The tab badge stays current in every view, not only while Messages is open.
 setInterval(() => { if (!document.hidden && !_cvViewOn()) _cvLoadList(); }, 20000);
 setTimeout(_cvLoadList, 3000);
+
+// ── Converse tab: hands-free voice conversations with a worker ──────────────
+// Ethan, 2026-10-11: "create a new tab in the worker details page called
+// 'converse' ... chat with your worker so I can be hands free ... a log of the
+// interactions and I should be able to replay any ... an expiration".
+//
+// THE WORKER ANSWERS. Speech becomes text in the browser (Web Speech API), each
+// finished utterance goes through doSend (the composer's own send path) and
+// the reply is read from /api/sessions/<name>/last-message (read-aloud's
+// source), then spoken. Nothing here calls a model. The server half
+// (api/converse.rs) only keeps the log: transcript turns plus the session audio
+// MediaRecorder captured, expired after AMUX_CONVERSE_RETENTION_DAYS.
+//
+// ENGINES. "browser" always works where the browser has speech recognition.
+// "personaplex" (NVIDIA PersonaPlex) needs an NVIDIA GPU server; the server
+// reports whether AMUX_PERSONAPLEX_URL is set and answering, and the selector
+// shows that verdict rather than pretending to connect.
+//
+// SIGNALS (two-fix rule): every failure a person would otherwise only feel
+// (no reply, recognition refused, save or upload refused) is beaconed with
+// amuxTrack('converse_*', {measured, n_considered, ...}) and the server logs a
+// `[converse]` line for every stored conversation and every retention sweep.
+var _VX_SPEEDS = [1, 1.25, 1.5, 2, 0.75];
+var _VX_REPLY_WAIT_MS = 10 * 60 * 1000;
+var _VX_POLL_MS = 1500;
+var _VX_PERSONALITIES = {
+  default: { label: 'Default', hint: '(Voice conversation from the Converse tab: reply in two or three short spoken sentences, no markdown.)' },
+  detailed: { label: 'Detailed', hint: '(Voice conversation from the Converse tab: reply in plain spoken prose, no markdown, tables or code blocks.)' },
+  casual: { label: 'Casual', hint: '(Voice conversation from the Converse tab: reply casually and briefly, like talking to a teammate.)' },
+  raw: { label: 'Exact words', hint: '' },
+};
+var _vx = { active: false };
+var _vxCfg = null;
+var _vxCfgFor = null;
+var _vxList = [];
+var _vxListMeta = null;
+var _vxShowAll = false;
+var _vxMenuOpen = null;
+var _vxDeleteArmed = null;
+var _vxServerVoices = null;
+var _vxP = null;            // the replay player
+var _vxPlayerTab = 'transcript';
+
+function _vxPref(k, dflt) { try { const v = localStorage.getItem('amux_vx_' + k); return v === null ? dflt : v; } catch (e) { return dflt; } }
+function _vxSetPref(k, v) { try { localStorage.setItem('amux_vx_' + k, v); } catch (e) {} }
+function _vxRecognitionCtor() { return window.SpeechRecognition || window.webkitSpeechRecognition || null; }
+function _vxApi(worker, rest) { return API + '/api/converse/' + encodeURIComponent(worker) + '/conversations' + (rest || ''); }
+function _vxClock(ms) {
+  ms = Math.max(0, Math.round(ms || 0));
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(r).padStart(2, '0');
+}
+function _vxDur(ms) {
+  const s = Math.round((ms || 0) / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  return m < 60 ? m + 'm ' + String(s % 60).padStart(2, '0') + 's' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+function _vxWhen(ms) {
+  const d = new Date(ms), now = new Date();
+  const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return 'Today, ' + t;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function _vxExpires(rec) {
+  const n = rec && rec.expires_in_days;
+  if (n === undefined || n === null) return '';
+  return n <= 1 ? 'Expires in 1 day' : 'Expires in ' + n + ' days';
+}
+// amuxTrack reaches PostHog only, so each failure is also posted to the
+// server's client-debug beacon, which logs it as `kind=converse` in
+// server-rs.log where a log sweep sees it.
+function _vxTrack(event, extra) {
+  const fields = Object.assign({ measured: true, n_considered: 1, worker: (_vx && _vx.worker) || peekSession || '' }, extra || {});
+  try { amuxTrack(event, fields); } catch (e) {}
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(Object.assign({ kind: 'converse', verdict: event, ver: APP_VER }, fields)) }).catch(() => {});
+  } catch (e) {}
+}
+// Text that reads well aloud: no code, no markdown punctuation, no raw URLs.
+function _vxSpeechText(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' (code omitted) ')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, 'a link')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\|.*\|\s*$/gm, '')
+    .replace(/[*_~>#|]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 2400);
+}
+// Is what the mic heard just the worker's own voice coming back from the
+// speaker? Word overlap with the text being spoken.
+function _vxIsEcho(heard) {
+  if (!_vx.speaking || !_vx.speakingText) return false;
+  const words = String(heard).toLowerCase().match(/[a-z0-9']+/g) || [];
+  if (!words.length) return true;
+  const spoken = new Set(_vx.speakingText.toLowerCase().match(/[a-z0-9']+/g) || []);
+  const hit = words.filter(w => spoken.has(w)).length;
+  return hit / words.length >= 0.6;
+}
+
+// ── panel skeleton ──────────────────────────────────────────────────────────
+var _VX_ROBOT = '<svg viewBox="0 0 64 64" width="44" height="44" aria-hidden="true"><rect x="12" y="18" width="40" height="30" rx="10" fill="currentColor"/><rect x="29" y="8" width="6" height="10" rx="3" fill="currentColor"/><circle cx="32" cy="8" r="4" fill="currentColor"/><circle cx="24" cy="32" r="5" fill="var(--card)"/><circle cx="40" cy="32" r="5" fill="var(--card)"/><rect x="24" y="40" width="16" height="3" rx="1.5" fill="var(--card)"/><rect x="6" y="28" width="5" height="12" rx="2.5" fill="currentColor"/><rect x="53" y="28" width="5" height="12" rx="2.5" fill="currentColor"/></svg>';
+function _vxSkeleton(worker) {
+  const w = esc(worker);
+  return '<div class="vx-wrap" data-worker="' + w + '">'
+    + '<section class="vx-main">'
+    +   '<div class="vx-top"><span class="vx-conn" id="vx-conn"><span class="vx-dot"></span><span id="vx-conn-lbl">Ready</span></span>'
+    +   '<span class="vx-powered" id="vx-powered"></span></div>'
+    +   '<div class="vx-hero">'
+    +     '<div class="vx-avatar" id="vx-avatar"><div class="vx-avatar-in">' + _VX_ROBOT + '</div></div>'
+    +     '<h3 class="vx-title">Chat with your worker</h3>'
+    +     '<p class="vx-sub">Have natural, hands-free conversations with <b>' + w + '</b>.</p>'
+    +     '<div class="vx-chips"><span class="vx-chip">&#x1F399; Natural voice</span><span class="vx-chip">&#x26A1; Real-time</span>'
+    +     '<span class="vx-chip">&#x270B; Interrupt anytime</span><span class="vx-chip">&#x2699; Same capabilities</span></div>'
+    +   '</div>'
+    +   '<div class="vx-wave-row"><span class="vx-elapsed" id="vx-elapsed">0:00</span>'
+    +     '<canvas class="vx-wave" id="vx-wave" height="44" aria-hidden="true"></canvas>'
+    +     '<span class="vx-state" id="vx-state">Ready</span></div>'
+    +   '<div class="vx-live" id="vx-live" aria-live="polite"></div>'
+    +   '<div class="vx-controls">'
+    +     '<div class="vx-ctl"><button class="vx-round" id="vx-mute" onclick="_vxToggleMute()" aria-label="Mute" disabled>&#x1F507;</button><span id="vx-mute-lbl">Mute</span></div>'
+    +     '<div class="vx-ctl"><button class="vx-round vx-call" id="vx-call" onclick="_vxCallButton()" aria-label="Start conversation">&#x260E;</button><span id="vx-call-lbl">Start</span></div>'
+    +     '<div class="vx-ctl"><button class="vx-round" id="vx-voice-btn" onclick="_vxToggleSettings()" aria-label="Voice settings" aria-expanded="true">&#x2699;</button><span>Voice</span></div>'
+    +   '</div>'
+    +   '<form class="vx-type" onsubmit="event.preventDefault();_vxTypeSend()"><input class="input" id="vx-type-input" placeholder="Or type to ' + w + '" autocomplete="off"><button class="btn" type="submit">Send</button></form>'
+    +   '<div class="vx-settings" id="vx-settings">'
+    +     '<label class="vx-sel"><span>Voice</span><select class="input" id="vx-voice" onchange="_vxSetPref(\'voice\', this.value)"></select></label>'
+    +     '<label class="vx-sel"><span>Personality</span><select class="input" id="vx-personality" onchange="_vxSetPref(\'personality\', this.value)">'
+    +       Object.entries(_VX_PERSONALITIES).map(([k, p]) => '<option value="' + k + '">' + esc(p.label) + '</option>').join('')
+    +     '</select></label>'
+    +     '<label class="vx-sel"><span>Audio device</span><select class="input" id="vx-device" onchange="_vxSetPref(\'device\', this.value)"><option value="">Default microphone</option></select></label>'
+    +     '<label class="vx-sel"><span>Engine</span><select class="input" id="vx-engine" onchange="_vxEngineChanged(this.value)"></select></label>'
+    +   '</div>'
+    +   '<div class="vx-engine-note" id="vx-engine-note"></div>'
+    +   '<div class="vx-foot"><span id="vx-retention-line">Conversations are stored for 30 days and then automatically deleted.</span>'
+    +     '<button class="btn" onclick="_vxRetentionToggle()">Manage retention</button></div>'
+    +   '<div class="vx-retention" id="vx-retention" hidden></div>'
+    + '</section>'
+    + '<aside class="vx-side">'
+    +   '<div class="vx-side-head"><h4>Conversation history</h4><button class="btn" id="vx-new" onclick="_vxNew()">+ New</button></div>'
+    +   '<div class="vx-list" id="vx-list"></div>'
+    +   '<div class="vx-player" id="vx-player"></div>'
+    + '</aside>'
+    + '</div>';
+}
+
+async function _vxRender() {
+  const panel = document.getElementById('peek-converse-panel');
+  const worker = peekSession;
+  if (!panel || !worker) return;
+  if (panel.dataset.worker !== worker) {
+    if (_vx.active && _vx.worker !== worker) await _vxEnd();
+    _vxPlayerStop();
+    _vxP = null; _vxShowAll = false; _vxMenuOpen = null;
+    panel.dataset.worker = worker;
+    panel.innerHTML = _vxSkeleton(worker);
+    const pers = document.getElementById('vx-personality');
+    if (pers) pers.value = _vxPref('personality', 'default');
+  }
+  _vxPaintLive();
+  _vxFillVoices();
+  _vxFillDevices();
+  _vxLoadConfig(worker);
+  _vxLoadHistory(worker);
+  _vxDrawWave();
+}
+
+async function _vxLoadConfig(worker) {
+  try {
+    if (!_vxCfg || _vxCfgFor !== worker) {
+      const r = await fetch(API + '/api/converse/config?worker=' + encodeURIComponent(worker), { headers: _authHeaders() });
+      _vxCfg = await r.json();
+      _vxCfgFor = worker;
+    }
+  } catch (e) { _vxCfg = null; }
+  const sel = document.getElementById('vx-engine');
+  if (!sel) return;
+  const engines = (_vxCfg && _vxCfg.engines) || [{ id: 'browser', label: 'Browser speech', available: true }];
+  const want = _vxPref('engine', 'browser');
+  sel.innerHTML = engines.map(e => '<option value="' + esc(e.id) + '"' + (e.available ? '' : ' disabled') + '>'
+    + esc(e.label) + (e.available ? '' : ' (unavailable)') + '</option>').join('');
+  const ok = engines.find(e => e.id === want && e.available);
+  sel.value = ok ? want : 'browser';
+  _vxEngineNote();
+  const days = (_vxCfg && _vxCfg.retention_days) || 30;
+  const line = document.getElementById('vx-retention-line');
+  if (line) line.textContent = 'Conversations are stored for ' + days + ' day' + (days === 1 ? '' : 's') + ' and then automatically deleted.';
+}
+function _vxEngineChanged(v) { _vxSetPref('engine', v); _vxEngineNote(); }
+function _vxEngineNote() {
+  const note = document.getElementById('vx-engine-note');
+  const badge = document.getElementById('vx-powered');
+  const engines = (_vxCfg && _vxCfg.engines) || [];
+  const pp = engines.find(e => e.id === 'personaplex');
+  const sel = document.getElementById('vx-engine');
+  const chosen = sel ? sel.value : 'browser';
+  if (badge) badge.innerHTML = chosen === 'personaplex'
+    ? 'Powered by <b>NVIDIA PersonaPlex</b>'
+    : 'Engine: <b>Browser speech</b>';
+  if (!note) return;
+  let html = '';
+  if (!_vxRecognitionCtor()) html += '<div>This browser has no speech recognition, so speak-to-send is off. Type below instead, or use Chrome, Edge or Safari.</div>';
+  if (pp && !pp.available) html += '<div>NVIDIA PersonaPlex: ' + esc(pp.reason || 'unavailable') + '</div>';
+  if (pp && pp.available && chosen === 'personaplex') {
+    html += '<div>PersonaPlex answered at <a href="' + esc(pp.url) + '" target="_blank" rel="noopener">' + esc(pp.url)
+      + '</a>. Routing its speech to this worker is not built yet, so this conversation still uses browser speech, and the worker still answers.</div>';
+  }
+  note.innerHTML = html;
+}
+
+async function _vxFillVoices() {
+  const sel = document.getElementById('vx-voice');
+  if (!sel) return;
+  const browser = (window.speechSynthesis && speechSynthesis.getVoices) ? (speechSynthesis.getVoices() || []) : [];
+  if (_vxServerVoices === null) {
+    _vxServerVoices = [];
+    fetch(API + '/api/tts/voices', { headers: _authHeaders() }).then(r => r.ok ? r.json() : null).then(d => {
+      _vxServerVoices = (d && d.voices) || [];
+      _vxFillVoices();
+    }).catch(() => {});
+  }
+  const want = _vxPref('voice', '');
+  let html = '<option value="">Browser default voice</option>';
+  html += browser.map(v => '<option value="b:' + esc(v.name) + '">' + esc(v.name) + (v.lang ? ' (' + esc(v.lang) + ')' : '') + '</option>').join('');
+  if (_vxServerVoices.length) {
+    html += '<optgroup label="Server voices (included in the recording)">'
+      + _vxServerVoices.map(v => '<option value="s:' + esc(v.voice_id) + '">' + esc(v.name || v.voice_id) + '</option>').join('')
+      + '</optgroup>';
+  }
+  sel.innerHTML = html;
+  sel.value = [...sel.options].some(o => o.value === want) ? want : '';
+}
+if (window.speechSynthesis && 'onvoiceschanged' in speechSynthesis) {
+  try { speechSynthesis.addEventListener('voiceschanged', () => { if (_peekTab === 'converse') _vxFillVoices(); }); } catch (e) {}
+}
+async function _vxFillDevices() {
+  const sel = document.getElementById('vx-device');
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default');
+    const want = _vxPref('device', '');
+    sel.innerHTML = '<option value="">Default microphone</option>'
+      + devs.map((d, i) => '<option value="' + esc(d.deviceId) + '">' + esc(d.label || ('Microphone ' + (i + 1))) + '</option>').join('');
+    sel.value = [...sel.options].some(o => o.value === want) ? want : '';
+  } catch (e) {}
+}
+function _vxToggleSettings() {
+  const s = document.getElementById('vx-settings');
+  const b = document.getElementById('vx-voice-btn');
+  if (!s) return;
+  const open = s.classList.toggle('vx-collapsed') === false;
+  if (b) b.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+async function _vxRetentionToggle() {
+  const box = document.getElementById('vx-retention');
+  if (!box) return;
+  box.hidden = !box.hidden;
+  if (box.hidden) return;
+  const days = (_vxCfg && _vxCfg.retention_days) || 30;
+  const src = (_vxCfg && _vxCfg.retention_source) === 'env' ? 'set by AMUX_CONVERSE_RETENTION_DAYS' : 'the default';
+  box.innerHTML = '<div>Kept for <b>' + days + ' days</b> (' + esc(src) + '). Set AMUX_CONVERSE_RETENTION_DAYS in ~/.amux/server.env to change it; it applies on the next read, with no restart. An expired conversation disappears from this list at once and its files are deleted within the hour.</div>'
+    + '<button class="btn" id="vx-sweep-btn" onclick="_vxSweepNow()">Delete expired now</button>';
+}
+async function _vxSweepNow() {
+  try {
+    const r = await fetch(API + '/api/converse/sweep', { method: 'POST', headers: _authHeaders(), _skipOutbox: true });
+    const d = await r.json();
+    if (!r.ok || !d.measured) throw new Error(d.why_unmeasured || ('HTTP ' + r.status));
+    showToast(d.removed ? 'Deleted ' + d.removed + ' expired conversation' + (d.removed === 1 ? '' : 's') : 'Nothing has expired yet');
+    _vxLoadHistory(peekSession);
+  } catch (e) { showToast('Retention sweep failed: ' + (e.message || e)); }
+}
+
+// ── live conversation ───────────────────────────────────────────────────────
+function _vxSetState(label) {
+  _vx.state = label;
+  const s = document.getElementById('vx-state');
+  if (s) { s.textContent = label; s.dataset.state = label; }
+  const conn = document.getElementById('vx-conn');
+  const lbl = document.getElementById('vx-conn-lbl');
+  if (conn) conn.classList.toggle('on', !!_vx.active);
+  if (lbl) lbl.textContent = _vx.active ? 'Connected' : 'Ready';
+  const av = document.getElementById('vx-avatar');
+  if (av) {
+    av.classList.toggle('listening', !!_vx.active && !_vx.muted && !_vx.speaking);
+    av.classList.toggle('speaking', !!_vx.speaking);
+  }
+}
+function _vxPaintLive() {
+  const call = document.getElementById('vx-call');
+  const callLbl = document.getElementById('vx-call-lbl');
+  const mute = document.getElementById('vx-mute');
+  const muteLbl = document.getElementById('vx-mute-lbl');
+  if (call) {
+    call.classList.toggle('vx-end', !!_vx.active);
+    call.setAttribute('aria-label', _vx.active ? 'End conversation' : 'Start conversation');
+  }
+  if (callLbl) callLbl.textContent = _vx.active ? 'End' : 'Start';
+  if (mute) {
+    mute.disabled = !_vx.active;
+    mute.classList.toggle('on', !!_vx.muted);
+    mute.setAttribute('aria-pressed', _vx.muted ? 'true' : 'false');
+  }
+  if (muteLbl) muteLbl.textContent = _vx.muted ? 'Unmute' : 'Mute';
+  _vxSetState(_vx.active ? (_vx.state && _vx.state !== 'Ready' ? _vx.state : 'Listening...') : 'Ready');
+  const live = document.getElementById('vx-live');
+  if (!live) return;
+  const turns = (_vx.active || _vx.lastTurns) ? (_vx.turns || _vx.lastTurns || []) : [];
+  const worker = _vx.worker || peekSession || 'Worker';
+  let html = turns.slice(-6).map(t => '<div class="vx-turn vx-turn-' + esc(t.role) + '"><span class="vx-who">'
+    + (t.role === 'user' ? 'You' : t.role === 'worker' ? esc(worker) : 'Note') + ' <i>' + _vxClock(t.t_ms) + '</i></span>'
+    + '<span class="vx-said">' + esc(t.text) + '</span></div>').join('');
+  if (_vx.active && _vx.interim) html += '<div class="vx-turn vx-turn-user vx-interim"><span class="vx-who">You</span><span class="vx-said">' + esc(_vx.interim) + '</span></div>';
+  if (!html) html = '<div class="vx-hint">' + (_vx.active ? 'Listening. Just start talking.' : 'Press Start and talk. ' + esc(worker) + ' answers out loud, and you can interrupt it any time.') + '</div>';
+  live.innerHTML = html;
+  live.scrollTop = live.scrollHeight;
+}
+function _vxCallButton() { if (_vx.active) _vxEnd(); else _vxStart(); }
+function _vxNew() {
+  if (_vx.active) { _vxEnd().then(() => _vxStart()); return; }
+  _vxStart();
+}
+function _vxPickMime() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+  return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find(m => MediaRecorder.isTypeSupported(m)) || '';
+}
+async function _vxStart() {
+  const worker = peekSession;
+  if (!worker || _vx.active) return;
+  _vxPlayerStop();
+  const id = 'vx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  _vx = { active: true, worker, id, startedAt: Date.now(), turns: [], muted: false, speaking: false, speakingText: '',
+          interim: '', pending: '', lastSeen: '', candidate: '', replyWaiters: 0, chunks: [], saved: false,
+          state: 'Starting...', engine: (document.getElementById('vx-engine') || {}).value || 'browser', workerVoiceRecorded: false };
+  _vxPaintLive();
+  const row = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === worker);
+  if (row && row.running === false) _vxNote(worker + ' is not running. Your first message will offer to start it.');
+  // The baseline reply: whatever the worker last said BEFORE this conversation
+  // must never be spoken as if it answered.
+  fetch(API + '/api/sessions/' + encodeURIComponent(worker) + '/last-message', { headers: _authHeaders() })
+    .then(r => r.json()).then(d => { if (_vx.id === id && !_vx.lastSeen) _vx.lastSeen = (d.text || '').trim(); }).catch(() => {});
+  const device = _vxPref('device', '');
+  const constraints = { audio: Object.assign({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }, device ? { deviceId: { exact: device } } : {}) };
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) _vx.stream = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (e) {
+    _vxTrack('converse_mic_unavailable', { error: String(e && e.name || e) });
+    _vxNote('Microphone unavailable (' + (e && e.name || e) + '). Type below to talk to the worker.');
+  }
+  if (_vx.id !== id) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) {
+      _vx.ctx = new Ctx();
+      if (_vx.ctx.state === 'suspended') { try { await _vx.ctx.resume(); } catch (e) {} }
+      _vx.dest = _vx.ctx.createMediaStreamDestination();
+      if (_vx.stream) {
+        _vx.src = _vx.ctx.createMediaStreamSource(_vx.stream);
+        _vx.analyser = _vx.ctx.createAnalyser();
+        _vx.analyser.fftSize = 512;
+        _vx.src.connect(_vx.analyser);
+        _vx.src.connect(_vx.dest);
+      }
+    }
+  } catch (e) { _vx.ctx = null; _vx.dest = null; }
+  if (_vx.stream && window.MediaRecorder) {
+    try {
+      const mime = _vxPickMime();
+      const recStream = _vx.dest ? _vx.dest.stream : _vx.stream;
+      _vx.recorder = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
+      _vx.recorder.ondataavailable = e => { if (e.data && e.data.size) _vx.chunks.push(e.data); };
+      _vx.recorder.start(1000);
+    } catch (e) {
+      _vx.recorder = null;
+      _vxTrack('converse_recorder_unavailable', { error: String(e && e.message || e) });
+    }
+  }
+  _vx.levels = [];
+  _vx.timer = setInterval(() => {
+    const el = document.getElementById('vx-elapsed');
+    if (el && _vx.active) el.textContent = _vxClock(Date.now() - _vx.startedAt);
+  }, 500);
+  if (_vxRecognitionCtor()) _vxRecStart();
+  else _vxNote('No speech recognition in this browser; type below.');
+  _vxSetState('Listening...');
+  _vxPaintLive();
+  _vxDrawWave();
+  _vxSave();
+}
+function _vxNote(text) {
+  if (!_vx.active) { showToast(text); return; }
+  _vx.turns.push({ role: 'system', text, t_ms: Date.now() - _vx.startedAt });
+  _vxPaintLive();
+}
+function _vxRecStart() {
+  const Ctor = _vxRecognitionCtor();
+  if (!Ctor || !_vx.active || _vx.muted || _vx.rec) return;
+  const id = _vx.id;
+  let r;
+  try { r = new Ctor(); } catch (e) { _vxNote('Speech recognition could not start: ' + e.message); return; }
+  r.continuous = true;
+  r.interimResults = true;
+  r.lang = navigator.language || 'en-US';
+  r.onresult = ev => {
+    if (_vx.id !== id) return;
+    let interim = '', fin = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const res = ev.results[i];
+      const t = (res[0] && res[0].transcript) || '';
+      if (res.isFinal) fin += t; else interim += t;
+    }
+    const heard = (fin || interim).trim();
+    // INTERRUPT ANYTIME: the person talking over the worker stops its voice,
+    // unless what the mic heard is the worker's own voice from the speaker.
+    if (heard && _vx.speaking && !_vxIsEcho(heard)) _vxInterrupt();
+    if (fin.trim() && !(_vx.speaking && _vxIsEcho(fin))) {
+      _vx.pending = (_vx.pending + ' ' + fin).trim();
+      clearTimeout(_vx.sendTimer);
+      _vx.sendTimer = setTimeout(_vxFlushUtterance, 1100);
+    }
+    _vx.interim = interim.trim();
+    _vxPaintLive();
+  };
+  r.onerror = e => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
+      _vx.recBlocked = true;
+      _vxTrack('converse_recognition_blocked', { error: e.error });
+      _vxNote('Speech recognition was refused (' + e.error + '). Type below instead.');
+    } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
+      _vxTrack('converse_recognition_error', { error: e.error });
+    }
+  };
+  r.onend = () => {
+    if (_vx.rec === r) _vx.rec = null;
+    // Continuous recognition still ends on silence or a network blip; keep it
+    // listening for as long as the conversation is on.
+    if (_vx.id === id && _vx.active && !_vx.muted && !_vx.recBlocked) setTimeout(() => { if (_vx.id === id) _vxRecStart(); }, 250);
+  };
+  try { r.start(); _vx.rec = r; } catch (e) { _vxTrack('converse_recognition_error', { error: String(e && e.message || e) }); }
+}
+function _vxFlushUtterance() {
+  const text = (_vx.pending || '').trim();
+  _vx.pending = '';
+  _vx.interim = '';
+  if (text) _vxSendUtterance(text);
+}
+function _vxTypeSend() {
+  const inp = document.getElementById('vx-type-input');
+  const text = (inp && inp.value || '').trim();
+  if (!text) return;
+  inp.value = '';
+  if (!_vx.active) { _vxStart().then(() => _vxSendUtterance(text)); return; }
+  _vxSendUtterance(text);
+}
+async function _vxSendUtterance(text) {
+  if (!_vx.active) return;
+  const id = _vx.id, worker = _vx.worker;
+  _vxInterrupt();
+  _vx.turns.push({ role: 'user', text, t_ms: Date.now() - _vx.startedAt });
+  _vxSetState('Sending...');
+  _vxPaintLive();
+  _vxSave();
+  const persona = _VX_PERSONALITIES[(document.getElementById('vx-personality') || {}).value || 'default'] || _VX_PERSONALITIES.default;
+  const message = persona.hint ? text + '\n\n' + persona.hint : text;
+  let result = 'failed';
+  try { result = await doSend(worker, message, {}); } catch (e) { result = 'exception'; }
+  if (_vx.id !== id) return;
+  if (result !== 'sent' && result !== 'queued') {
+    _vxTrack('converse_send_failed', { result });
+    _vxNote('Not delivered to ' + worker + ' (' + result + '). Say it again or type it.');
+    _vxSetState('Listening...');
+    return;
+  }
+  _vxSetState('Waiting for ' + worker + '...');
+  _vxAwaitReply(id);
+}
+// Poll the worker's latest full message until a NEW one appears and holds
+// still for one poll (a reply being written is not spoken half-done). Each new
+// message is one worker turn; polling continues while the worker is busy so a
+// "let me check" followed by the answer are both heard.
+async function _vxAwaitReply(id) {
+  _vx.replyDeadline = Date.now() + _VX_REPLY_WAIT_MS;
+  // A loop already running keeps going: owed tells it a newer utterance is
+  // still unanswered, so it must not stop on the previous reply's quiet.
+  _vx.owed = (_vx.owed || 0) + 1;
+  if (_vx.polling) return;
+  _vx.polling = true;
+  const worker = _vx.worker;
+  let polls = 0, replies = 0, quiet = 0;
+  try {
+    while (_vx.id === id && _vx.active && Date.now() < _vx.replyDeadline) {
+      await new Promise(r => setTimeout(r, _VX_POLL_MS));
+      if (_vx.id !== id || !_vx.active) break;
+      polls++;
+      let text = '';
+      try {
+        const r = await fetch(API + '/api/sessions/' + encodeURIComponent(worker) + '/last-message', { headers: _authHeaders() });
+        text = ((await r.json()).text || '').trim();
+      } catch (e) { continue; }
+      if (_vx.id !== id) break;
+      if (text && text !== _vx.lastSeen) {
+        quiet = 0;
+        if (text === _vx.candidate) {
+          _vx.lastSeen = text;
+          _vx.candidate = '';
+          replies++;
+          _vx.owed = 0;
+          _vx.turns.push({ role: 'worker', text, t_ms: Date.now() - _vx.startedAt });
+          _vxPaintLive();
+          _vxSave();
+          _vxSpeak(text);
+        } else {
+          _vx.candidate = text;
+        }
+        continue;
+      }
+      quiet++;
+      const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === worker) || {};
+      const busy = ['active', 'running', 'working'].includes(s.status);
+      if (replies && !_vx.owed && !busy && quiet >= 2) break;
+    }
+    if (_vx.id === id && _vx.active && _vx.owed) {
+      _vxTrack('converse_reply_timeout', { n_considered: polls, wait_ms: _VX_REPLY_WAIT_MS });
+      _vxNote('No reply from ' + worker + ' yet. It may still be working; check the Terminal tab.');
+    }
+  } finally {
+    if (_vx.id === id) {
+      _vx.polling = false;
+      if (_vx.active && !_vx.speaking) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
+    }
+  }
+}
+function _vxVoiceFor(name) {
+  const vs = (window.speechSynthesis && speechSynthesis.getVoices) ? speechSynthesis.getVoices() : [];
+  return vs.find(v => v.name === name) || null;
+}
+async function _vxSpeak(text) {
+  const clean = _vxSpeechText(text);
+  if (!clean || !_vx.active) return;
+  const id = _vx.id;
+  const pref = (document.getElementById('vx-voice') || {}).value || '';
+  _vx.speaking = true;
+  _vx.speakingText = clean;
+  _vxSetState('Speaking...');
+  const done = () => {
+    if (_vx.id !== id || _vx.speakingText !== clean) return;
+    _vx.speaking = false; _vx.speakingText = ''; _vx.srcNode = null;
+    if (_vx.active) _vxSetState(_vx.muted ? 'Muted' : (_vx.polling ? 'Waiting for ' + _vx.worker + '...' : 'Listening...'));
+  };
+  // A server voice is played through the conversation's audio graph, so the
+  // recording holds both sides. A browser voice cannot be captured; replay
+  // speaks those turns again instead.
+  if (pref.startsWith('s:') && _vx.ctx && _vx.dest) {
+    try {
+      const r = await fetch(API + '/api/tts', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ text: clean, voice_id: pref.slice(2) }), _skipOutbox: true });
+      const d = await r.json();
+      if (!r.ok || !d.url) throw new Error(d.error || ('HTTP ' + r.status));
+      const buf = await (await fetch(d.url)).arrayBuffer();
+      const audio = await _vx.ctx.decodeAudioData(buf);
+      if (_vx.id !== id || _vx.speakingText !== clean) return;
+      const node = _vx.ctx.createBufferSource();
+      node.buffer = audio;
+      node.connect(_vx.ctx.destination);
+      node.connect(_vx.dest);
+      node.onended = done;
+      _vx.srcNode = node;
+      _vx.workerVoiceRecorded = true;
+      node.start();
+      return;
+    } catch (e) {
+      _vxTrack('converse_server_voice_failed', { error: String(e && e.message || e) });
+    }
+  }
+  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') { done(); return; }
+  const u = new SpeechSynthesisUtterance(clean);
+  if (pref.startsWith('b:')) { const v = _vxVoiceFor(pref.slice(2)); if (v) u.voice = v; }
+  u.onend = done;
+  u.onerror = done;
+  try { speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { done(); }
+}
+function _vxInterrupt() {
+  if (!_vx.speaking) return;
+  _vx.speaking = false;
+  _vx.speakingText = '';
+  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
+  try { if (_vx.srcNode) _vx.srcNode.stop(); } catch (e) {}
+  _vx.srcNode = null;
+  if (_vx.active) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
+}
+function _vxToggleMute() {
+  if (!_vx.active) return;
+  _vx.muted = !_vx.muted;
+  if (_vx.stream) _vx.stream.getAudioTracks().forEach(t => { t.enabled = !_vx.muted; });
+  if (_vx.muted) {
+    clearTimeout(_vx.sendTimer); _vx.pending = ''; _vx.interim = '';
+    try { if (_vx.rec) _vx.rec.abort(); } catch (e) {}
+    _vx.rec = null;
+    _vxSetState('Muted');
+  } else {
+    _vxRecStart();
+    _vxSetState('Listening...');
+  }
+  _vxPaintLive();
+}
+function _vxRecordBody(final) {
+  const now = Date.now();
+  return {
+    id: _vx.id, engine: _vx.engine || 'browser',
+    voice: (document.getElementById('vx-voice') || {}).value || '',
+    personality: (document.getElementById('vx-personality') || {}).value || 'default',
+    started_at: _vx.startedAt,
+    ended_at: final ? now : null,
+    duration_ms: now - _vx.startedAt,
+    turns: _vx.turns.filter(t => t.role !== 'system' || final),
+  };
+}
+async function _vxSave(final) {
+  if (!_vx.id || !_vx.worker) return null;
+  const body = _vxRecordBody(final);
+  if (!body.turns.some(t => t.role !== 'system')) return null;   // nothing said yet
+  try {
+    const r = await fetch(_vxApi(_vx.worker), { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body), _skipOutbox: true });
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).slice(0, 160));
+    _vx.saved = true;
+    return await r.json();
+  } catch (e) {
+    _vxTrack('converse_save_failed', { error: String(e && e.message || e) });
+    return null;
+  }
+}
+async function _vxEnd() {
+  if (!_vx.active) return;
+  const c = _vx;
+  c.active = false;
+  clearTimeout(c.sendTimer);
+  if (c.pending) { c.turns.push({ role: 'user', text: c.pending, t_ms: Date.now() - c.startedAt }); c.pending = ''; }
+  clearInterval(c.timer);
+  try { if (c.rec) c.rec.abort(); } catch (e) {}
+  c.rec = null;
+  _vxInterrupt();
+  c.speaking = false;
+  let blob = null;
+  if (c.recorder && c.recorder.state !== 'inactive') {
+    blob = await new Promise(res => {
+      c.recorder.onstop = () => res(c.chunks.length ? new Blob(c.chunks, { type: c.recorder.mimeType || c.chunks[0].type || 'audio/webm' }) : null);
+      try { c.recorder.stop(); } catch (e) { res(null); }
+      setTimeout(() => res(c.chunks.length ? new Blob(c.chunks, { type: c.recorder.mimeType || 'audio/webm' }) : null), 3000);
+    });
+  }
+  if (c.recorder && !(blob && blob.size)) _vxTrack('converse_recording_empty', { mime: c.recorder.mimeType || '', chunks: c.chunks.length });
+  try { if (c.stream) c.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  try { if (c.ctx) c.ctx.close(); } catch (e) {}
+  c.lastTurns = c.turns;
+  _vxSetState('Saving...');
+  _vxPaintLive();
+  const saved = await _vxSave(true);
+  if (saved && blob && blob.size) {
+    try {
+      const r = await fetch(_vxApi(c.worker, '/' + encodeURIComponent(c.id) + '/audio'), { method: 'PUT',
+        headers: _authHeaders({ 'Content-Type': blob.type || 'audio/webm', 'X-Converse-Worker-Voice': c.workerVoiceRecorded ? '1' : '0' }),
+        body: blob, _skipOutbox: true });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+    } catch (e) {
+      _vxTrack('converse_audio_upload_failed', { error: String(e && e.message || e), bytes: blob.size });
+      showToast('Conversation saved without its audio: ' + (e.message || e));
+    }
+  }
+  _vxSetState('Ready');
+  _vxPaintLive();
+  _vxDrawWave();
+  const el = document.getElementById('vx-elapsed');
+  if (el) el.textContent = _vxClock(Date.now() - c.startedAt);
+  if (saved && peekSession === c.worker) {
+    await _vxLoadHistory(c.worker);
+    _vxSelect(c.id);
+  }
+}
+
+// ── waveform ────────────────────────────────────────────────────────────────
+function _vxDrawWave() {
+  const cv = document.getElementById('vx-wave');
+  if (!cv) return;
+  const w = Math.max(80, Math.floor(cv.clientWidth || 240));
+  const dpr = window.devicePixelRatio || 1;
+  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = 44 * dpr; }
+  const g = cv.getContext('2d');
+  if (!g) return;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, 44);
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#5b8def';
+  const bars = Math.floor(w / 4);
+  if (_vx.active && _vx.analyser) {
+    const data = new Uint8Array(_vx.analyser.fftSize);
+    _vx.analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+    const level = _vx.muted ? 0 : Math.min(1, Math.sqrt(sum / data.length) * 4);
+    _vx.levels.push(_vx.speaking ? Math.max(level, 0.25 + Math.random() * 0.5) : level);
+    if (_vx.levels.length > bars) _vx.levels.splice(0, _vx.levels.length - bars);
+  }
+  const levels = (_vx.active && _vx.levels) ? _vx.levels : [];
+  g.fillStyle = accent;
+  for (let i = 0; i < bars; i++) {
+    const lv = levels[levels.length - bars + i];
+    const h = lv === undefined ? 2 : Math.max(2, lv * 40);
+    g.globalAlpha = lv === undefined ? 0.35 : 0.55 + Math.min(0.45, lv);
+    g.fillRect(i * 4, 22 - h / 2, 2, h);
+  }
+  g.globalAlpha = 1;
+  if (_vx.active && _peekTab === 'converse') {
+    cancelAnimationFrame(_vx.raf);
+    _vx.raf = requestAnimationFrame(_vxDrawWave);
+  }
+}
+
+// ── history and replay ──────────────────────────────────────────────────────
+async function _vxLoadHistory(worker) {
+  const el = document.getElementById('vx-list');
+  if (!el || !worker) return;
+  try {
+    const r = await fetch(_vxApi(worker) + '?limit=500', { headers: _authHeaders() });
+    const d = await r.json();
+    if (peekSession !== worker) return;
+    if (!r.ok || d.measured === false) throw new Error(d.why_unmeasured || d.error || ('HTTP ' + r.status));
+    _vxList = d.conversations || [];
+    _vxListMeta = d;
+  } catch (e) {
+    el.innerHTML = '<div class="vx-empty">Could not load the history: ' + esc(e.message || e) + '</div>';
+    return;
+  }
+  _vxRenderList();
+  if (_vxP && !_vxList.some(c => c.id === _vxP.rec.id)) { _vxPlayerStop(); _vxP = null; }
+  if (!_vxP && _vxList.length) _vxSelect(_vxList[0].id, { quiet: true });
+  if (!_vxList.length) _vxRenderPlayer();
+}
+function _vxRenderList() {
+  const el = document.getElementById('vx-list');
+  if (!el) return;
+  if (!_vxList.length) {
+    el.innerHTML = '<div class="vx-empty">No conversations yet. Press Start and talk; each conversation is saved here to replay.</div>';
+    return;
+  }
+  const rows = _vxShowAll ? _vxList : _vxList.slice(0, 5);
+  el.innerHTML = rows.map(c => {
+    const sel = _vxP && _vxP.rec.id === c.id;
+    const open = _vxMenuOpen === c.id;
+    const armed = _vxDeleteArmed === c.id;
+    return '<div class="vx-row' + (sel ? ' selected' : '') + '" data-vx-id="' + esc(c.id) + '">'
+      + '<button class="vx-row-play" aria-label="Play ' + esc(c.title) + '" onclick="_vxSelect(\'' + escJs(c.id) + '\',{play:true})">&#x25B6;</button>'
+      + '<button class="vx-row-main" onclick="_vxSelect(\'' + escJs(c.id) + '\')">'
+      +   '<span class="vx-row-title">' + esc(c.title || 'Conversation') + '</span>'
+      +   '<span class="vx-row-meta">' + esc(_vxWhen(c.started_at)) + ' &middot; ' + esc(_vxDur(c.duration_ms)) + '</span>'
+      +   '<span class="vx-row-exp">' + esc(_vxExpires(c)) + (c.audio ? '' : ' &middot; transcript only') + '</span>'
+      + '</button>'
+      + '<button class="vx-row-more" aria-label="More actions" aria-expanded="' + (open ? 'true' : 'false') + '" onclick="event.stopPropagation();_vxToggleMenu(\'' + escJs(c.id) + '\')">&#x22EF;</button>'
+      + (open ? '<div class="vx-menu" role="menu">'
+          + '<button role="menuitem" onclick="_vxDownload(\'' + escJs(c.id) + '\',\'transcript\')">Download transcript</button>'
+          + (c.audio ? '<button role="menuitem" onclick="_vxDownload(\'' + escJs(c.id) + '\',\'audio\')">Download audio</button>' : '')
+          + '<button role="menuitem" class="vx-danger" onclick="_vxDelete(\'' + escJs(c.id) + '\')">' + (armed ? 'Tap again to delete' : 'Delete') + '</button>'
+          + '</div>' : '')
+      + '</div>';
+  }).join('')
+  + (_vxList.length > 5 ? '<button class="vx-more" onclick="_vxShowAll=!_vxShowAll;_vxRenderList()">'
+      + (_vxShowAll ? 'Show less' : 'Show more (' + (_vxList.length - 5) + ')') + '</button>' : '');
+}
+function _vxToggleMenu(id) {
+  _vxMenuOpen = _vxMenuOpen === id ? null : id;
+  _vxDeleteArmed = null;
+  _vxRenderList();
+}
+async function _vxDelete(id) {
+  if (_vxDeleteArmed !== id) { _vxDeleteArmed = id; _vxRenderList(); return; }
+  const worker = peekSession;
+  _vxDeleteArmed = null; _vxMenuOpen = null;
+  try {
+    const r = await fetch(_vxApi(worker, '/' + encodeURIComponent(id)), { method: 'DELETE', headers: _authHeaders(), _skipOutbox: true });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (_vxP && _vxP.rec.id === id) { _vxPlayerStop(); _vxP = null; }
+    showToast('Conversation deleted');
+  } catch (e) { showToast('Delete failed: ' + (e.message || e)); }
+  _vxLoadHistory(worker);
+}
+async function _vxFetchRecord(id) {
+  const r = await fetch(_vxApi(peekSession, '/' + encodeURIComponent(id)), { headers: _authHeaders() });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  return d;
+}
+async function _vxDownload(id, kind) {
+  _vxMenuOpen = null; _vxRenderList();
+  try {
+    const rec = (_vxP && _vxP.rec.id === id && _vxP.rec.turns) ? _vxP.rec : await _vxFetchRecord(id);
+    const base = (rec.title || 'conversation').replace(/[^\w.-]+/g, '-').slice(0, 60) || 'conversation';
+    let blob;
+    if (kind === 'audio' && rec.audio) {
+      const r = await fetch(API + rec.audio.url, { headers: _authHeaders() });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      blob = await r.blob();
+    } else {
+      const who = t => t.role === 'user' ? 'You' : t.role === 'worker' ? (rec.worker || 'Worker') : 'Note';
+      const text = rec.title + '\n' + new Date(rec.started_at).toLocaleString() + ' (' + _vxDur(rec.duration_ms) + ')\n\n'
+        + (rec.turns || []).map(t => who(t) + ' ' + _vxClock(t.t_ms) + '\n' + t.text).join('\n\n') + '\n';
+      blob = new Blob([text], { type: 'text/plain' });
+    }
+    const ext = kind === 'audio' && rec.audio ? (rec.audio.file.split('.').pop() || 'webm') : 'txt';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = base + '.' + ext;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  } catch (e) { showToast('Download failed: ' + (e.message || e)); }
+}
+async function _vxSelect(id, opts) {
+  opts = opts || {};
+  if (opts.play) { try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {} }
+  if (_vxP && _vxP.rec.id === id && _vxP.rec.turns) {
+    if (opts.play) _vxPlayToggle(true);
+    return;
+  }
+  _vxPlayerStop();
+  let rec;
+  try { rec = await _vxFetchRecord(id); }
+  catch (e) { if (!opts.quiet) showToast('Could not open that conversation: ' + (e.message || e)); return; }
+  _vxP = { rec, pos: 0, rate: 1, playing: false, audio: null, spoken: new Set(), loading: false };
+  _vxMenuOpen = null;
+  _vxRenderList();
+  _vxRenderPlayer();
+  if (opts.play) _vxPlayToggle(true);
+}
+function _vxDuration() {
+  if (!_vxP) return 0;
+  const r = _vxP.rec;
+  const last = (r.turns || []).reduce((m, t) => Math.max(m, t.t_ms || 0), 0);
+  return Math.max(r.duration_ms || 0, last + 1500);
+}
+function _vxRenderPlayer() {
+  const el = document.getElementById('vx-player');
+  if (!el) return;
+  if (!_vxP) { el.innerHTML = ''; return; }
+  const r = _vxP.rec, worker = r.worker || peekSession;
+  const D = _vxDuration();
+  const turns = r.turns || [];
+  const transcript = turns.map((t, i) => '<div class="vx-pturn" data-i="' + i + '" onclick="_vxSeek(' + (t.t_ms || 0) + ')">'
+    + '<span class="vx-pavatar vx-pavatar-' + esc(t.role) + '">' + (t.role === 'user' ? 'Y' : t.role === 'worker' ? 'W' : 'i') + '</span>'
+    + '<div><div class="vx-who">' + (t.role === 'user' ? 'You' : t.role === 'worker' ? esc(worker) : 'Note') + ' <i>' + _vxClock(t.t_ms) + '</i></div>'
+    + '<div class="vx-said">' + esc(t.text) + '</div></div></div>').join('') || '<div class="vx-empty">No turns recorded.</div>';
+  const a = r.audio;
+  const details = [
+    ['Worker', worker], ['Engine', r.engine || 'browser'], ['Started', new Date(r.started_at).toLocaleString()],
+    ['Ended', r.ended_at ? new Date(r.ended_at).toLocaleString() : 'not ended (saved mid-conversation)'],
+    ['Duration', _vxDur(r.duration_ms)], ['Turns', String(turns.length)],
+    ['Audio', a ? (a.mime + ', ' + Math.round((a.bytes || 0) / 1024) + ' KB' + (a.has_worker_voice ? ', both voices' : ', your voice; worker turns are re-spoken on replay')) : 'none (replay speaks the transcript)'],
+    ['Voice', r.voice || 'Browser default'], ['Personality', r.personality || 'default'],
+    ['Expires', new Date(r.expires_at).toLocaleString() + ' (' + _vxExpires(r) + ')'], ['Id', r.id],
+  ].map(([k, v]) => '<div class="vx-drow"><span>' + esc(k) + '</span><span>' + esc(v) + '</span></div>').join('');
+  el.innerHTML = '<div class="vx-ptitle">' + esc(r.title || 'Conversation') + '</div>'
+    + '<div class="vx-pmeta">' + esc(_vxWhen(r.started_at)) + ' &middot; ' + esc(_vxDur(r.duration_ms)) + ' &middot; <span class="vx-pexp">' + esc(_vxExpires(r)) + '</span></div>'
+    + '<input type="range" class="vx-scrub" id="vx-scrub" min="0" max="' + Math.round(D) + '" step="100" value="' + Math.round(_vxP.pos) + '" aria-label="Seek" oninput="_vxSeek(+this.value)">'
+    + '<div class="vx-ptimes"><span id="vx-pos">' + _vxClock(_vxP.pos) + '</span><span>' + _vxClock(D) + '</span></div>'
+    + '<div class="vx-pctl">'
+    +   '<button class="vx-pbtn" id="vx-speed" onclick="_vxSpeed()" aria-label="Playback speed">' + _vxP.rate + '&times;</button>'
+    +   '<button class="vx-pbtn" onclick="_vxSeek(_vxP.pos-15000)" aria-label="Back 15 seconds">&#x21BA;15</button>'
+    +   '<button class="vx-pbtn vx-pplay" id="vx-pplay" onclick="_vxPlayToggle()" aria-label="' + (_vxP.playing ? 'Pause' : 'Play') + '">' + (_vxP.playing ? '&#x275A;&#x275A;' : '&#x25B6;') + '</button>'
+    +   '<button class="vx-pbtn" onclick="_vxSeek(_vxP.pos+15000)" aria-label="Forward 15 seconds">15&#x21BB;</button>'
+    +   '<button class="vx-pbtn" onclick="_vxDownload(\'' + escJs(r.id) + '\',\'' + (a ? 'audio' : 'transcript') + '\')" aria-label="Download">&#x2B07;</button>'
+    + '</div>'
+    + '<div class="vx-ptabs"><button class="vx-ptab' + (_vxPlayerTab === 'transcript' ? ' active' : '') + '" onclick="_vxPlayerTab=\'transcript\';_vxRenderPlayer()">Transcript</button>'
+    + '<button class="vx-ptab' + (_vxPlayerTab === 'details' ? ' active' : '') + '" onclick="_vxPlayerTab=\'details\';_vxRenderPlayer()">Details</button></div>'
+    + '<div class="vx-pbody" id="vx-pbody">' + (_vxPlayerTab === 'details' ? details : transcript) + '</div>';
+  _vxPaintPos();
+}
+function _vxPaintPos() {
+  if (!_vxP) return;
+  const s = document.getElementById('vx-scrub');
+  if (s && document.activeElement !== s) s.value = String(Math.round(_vxP.pos));
+  const p = document.getElementById('vx-pos');
+  if (p) p.textContent = _vxClock(_vxP.pos);
+  const b = document.getElementById('vx-pplay');
+  if (b) { b.innerHTML = _vxP.playing ? '&#x275A;&#x275A;' : '&#x25B6;'; b.setAttribute('aria-label', _vxP.playing ? 'Pause' : 'Play'); }
+  const turns = _vxP.rec.turns || [];
+  let cur = -1;
+  turns.forEach((t, i) => { if ((t.t_ms || 0) <= _vxP.pos) cur = i; });
+  document.querySelectorAll('#vx-pbody .vx-pturn').forEach(el => el.classList.toggle('active', _vxP.playing && +el.dataset.i === cur));
+}
+// Which turns replay must SPEAK: with no audio, all of them; with audio that
+// lacks the worker's voice (browser speech cannot be recorded), the worker's.
+function _vxShouldSpeak(t) {
+  const a = _vxP.rec.audio;
+  if (!a) return t.role !== 'system';
+  return t.role === 'worker' && !a.has_worker_voice;
+}
+async function _vxEnsureAudio() {
+  const a = _vxP.rec.audio;
+  if (!a || _vxP.audio || _vxP.loading) return !!_vxP.audio;
+  _vxP.loading = true;
+  const p = _vxP;
+  try {
+    const r = await fetch(API + a.url, { headers: _authHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    if (_vxP !== p) return false;
+    p.blobUrl = URL.createObjectURL(blob);
+    p.audio = new Audio(p.blobUrl);
+    p.audio.preload = 'auto';
+    p.audio.playbackRate = p.rate;
+    p.audio.onended = () => { if (_vxP === p) { p.pos = _vxDuration(); _vxPlayToggle(false); } };
+    return true;
+  } catch (e) {
+    _vxTrack('converse_replay_audio_failed', { error: String(e && e.message || e) });
+    showToast('Audio unavailable, replaying the transcript instead');
+    p.rec.audio = null;
+    return false;
+  } finally { p.loading = false; }
+}
+async function _vxPlayToggle(force) {
+  if (!_vxP) return;
+  const want = force === undefined ? !_vxP.playing : !!force;
+  if (!want) {
+    _vxP.playing = false;
+    clearInterval(_vxP.tick);
+    try { if (_vxP.audio) _vxP.audio.pause(); } catch (e) {}
+    try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
+    _vxPaintPos();
+    return;
+  }
+  if (_vx.active) { showToast('End the live conversation to replay'); return; }
+  const D = _vxDuration();
+  if (_vxP.pos >= D - 50) _vxSeek(0);
+  _vxP.playing = true;
+  _vxPaintPos();
+  await _vxEnsureAudio();
+  if (!_vxP || !_vxP.playing) return;
+  if (_vxP.audio) {
+    try { _vxP.audio.currentTime = _vxP.pos / 1000; } catch (e) {}
+    _vxP.audio.playbackRate = _vxP.rate;
+    try { await _vxP.audio.play(); } catch (e) { _vxTrack('converse_replay_play_refused', { error: String(e && e.name || e) }); }
+  }
+  _vxP.last = performance.now();
+  clearInterval(_vxP.tick);
+  const p = _vxP;
+  p.tick = setInterval(() => {
+    if (_vxP !== p || !p.playing) { clearInterval(p.tick); return; }
+    const now = performance.now();
+    const audioClock = p.audio && !p.audio.paused && isFinite(p.audio.currentTime);
+    p.pos = audioClock ? p.audio.currentTime * 1000 : p.pos + (now - p.last) * p.rate;
+    p.last = now;
+    (p.rec.turns || []).forEach((t, i) => {
+      if (!p.spoken.has(i) && (t.t_ms || 0) <= p.pos) {
+        p.spoken.add(i);
+        if (_vxShouldSpeak(t)) _vxReplaySpeak(t);
+      }
+    });
+    if (p.pos >= _vxDuration() && !(p.audio && !p.audio.paused)) {
+      p.pos = _vxDuration();
+      _vxPlayToggle(false);
+      return;
+    }
+    _vxPaintPos();
+  }, 200);
+}
+function _vxReplaySpeak(t) {
+  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return;
+  const u = new SpeechSynthesisUtterance(_vxSpeechText(t.text));
+  u.rate = Math.min(2, Math.max(0.5, _vxP.rate));
+  if (t.role === 'user') u.pitch = 1.15;
+  const pref = _vxP.rec.voice || '';
+  if (t.role === 'worker' && pref.startsWith('b:')) { const v = _vxVoiceFor(pref.slice(2)); if (v) u.voice = v; }
+  try { speechSynthesis.speak(u); } catch (e) {}
+}
+function _vxSeek(ms) {
+  if (!_vxP) return;
+  const D = _vxDuration();
+  _vxP.pos = Math.max(0, Math.min(D, ms));
+  // Turns before the new position count as heard; the rest replay from here.
+  _vxP.spoken = new Set((_vxP.rec.turns || []).map((t, i) => (t.t_ms || 0) < _vxP.pos ? i : -1).filter(i => i >= 0));
+  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
+  if (_vxP.audio) { try { _vxP.audio.currentTime = _vxP.pos / 1000; } catch (e) {} }
+  _vxP.last = performance.now();
+  _vxPaintPos();
+}
+function _vxSpeed() {
+  if (!_vxP) return;
+  const i = _VX_SPEEDS.indexOf(_vxP.rate);
+  _vxP.rate = _VX_SPEEDS[(i + 1) % _VX_SPEEDS.length];
+  if (_vxP.audio) _vxP.audio.playbackRate = _vxP.rate;
+  const b = document.getElementById('vx-speed');
+  if (b) b.innerHTML = _vxP.rate + '&times;';
+}
+function _vxPlayerStop() {
+  if (!_vxP) return;
+  _vxP.playing = false;
+  clearInterval(_vxP.tick);
+  try { if (_vxP.audio) _vxP.audio.pause(); } catch (e) {}
+  try { if (_vxP.blobUrl) URL.revokeObjectURL(_vxP.blobUrl); } catch (e) {}
+  _vxP.audio = null; _vxP.blobUrl = null;
+  try { if (window.speechSynthesis && !_vx.active) speechSynthesis.cancel(); } catch (e) {}
+}
+// The peek closing (or switching worker) ends a live conversation: the mic must
+// never stay open behind a closed view. `_vx` is a `var` and these guards read
+// it defensively because closePeek/openPeek can run before this block has
+// executed during startup.
+function _vxOnPeekClose() {
+  if (_vx && _vx.active) _vxEnd();
+  _vxPlayerStop();
+  const panel = document.getElementById('peek-converse-panel');
+  if (panel) panel.dataset.worker = '';
+}
+function _vxOnPeekOpen(name) {
+  if (_vx && _vx.active && _vx.worker !== name) _vxEnd();
+}
