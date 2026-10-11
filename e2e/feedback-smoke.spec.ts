@@ -95,6 +95,9 @@ test('schedule enable toggle: card visibly re-renders into the disabled lane', a
   expect(id, 'created schedule returns an id').toBeTruthy();
 
   await page.click('#tab-scheduler');
+  // The redesigned list shows a handful of rows per group until narrowed
+  // (2026-10-11), so find the row the way a user would: search for it.
+  await page.fill('#sched-search', title);
   const card = page.locator(`[data-sched-id="${id}"]`);
   await expect(card).toBeVisible({ timeout: 10_000 });
   const box = card.locator('.sched-toggle-label input');
@@ -123,6 +126,7 @@ test('schedule id copy button: toast confirms the copy', async ({ page, request,
   const id = (await created.json()).id;
 
   await page.click('#tab-scheduler');
+  await page.fill('#sched-search', title);   // see the toggle test above
   const badge = page.locator(`[data-sched-id="${id}"] .sched-id-badge`);
   await expect(badge).toBeVisible({ timeout: 10_000 });
   await badge.click();

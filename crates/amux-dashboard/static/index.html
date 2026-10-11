@@ -779,19 +779,48 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 <!-- Scheduler view -->
 <div id="scheduler-view" style="display:none;">
-  <div style="padding:10px 12px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);">
-    <span style="font-weight:600;font-size:0.9rem;">Scheduler</span>
-    <span id="sched-stats" style="font-size:0.7rem;color:var(--dim);flex:1;"></span>
-    <button class="btn" onclick="openSchedModal()" style="font-size:0.78rem;padding:4px 10px;">+ New</button>
-  </div>
-  <div style="padding:8px 12px 0;">
-    <div class="search-wrap" id="sched-search-wrap" style="width:100%;">
-      <input class="search-input" id="sched-search" type="text" placeholder="Search schedules — title, worker, command, cadence…" autocomplete="off"
-        oninput="schedSearchQuery=this.value;document.getElementById('sched-search-wrap').classList.toggle('has-value',!!this.value);renderScheduler()">
-      <button class="search-clear" onclick="document.getElementById('sched-search').value='';schedSearchQuery='';document.getElementById('sched-search-wrap').classList.remove('has-value');renderScheduler()">&#x2715;</button>
+  <div class="sx-head">
+    <div class="sx-head-title">
+      <h2>Scheduler</h2>
+      <span id="sched-stats" class="sx-summary"></span>
     </div>
+    <button class="btn primary sx-new" onclick="openSchedModal()">+ New schedule</button>
   </div>
-  <div id="scheduler-list" style="padding:10px 12px;display:flex;flex-direction:column;gap:6px;overflow-y:auto;"></div>
+  <!-- Segmented filter: one pill per group, with counts. Rendered by
+       _sxRenderPills so the counts come from the same predicate the groups use. -->
+  <div class="sx-pills" id="sched-pills" role="tablist" aria-label="Schedule groups"></div>
+  <div class="sx-toolbar">
+    <div class="search-wrap sx-search" id="sched-search-wrap">
+      <input class="search-input" id="sched-search" type="text" placeholder="Search schedules..." autocomplete="off" aria-label="Search schedules by title, worker, command, cadence or id"
+        oninput="schedSearchQuery=this.value;document.getElementById('sched-search-wrap').classList.toggle('has-value',!!this.value);renderScheduler()">
+      <button class="search-clear" aria-label="Clear search" onclick="document.getElementById('sched-search').value='';schedSearchQuery='';document.getElementById('sched-search-wrap').classList.remove('has-value');renderScheduler()">&#x2715;</button>
+    </div>
+    <select id="sched-f-worker" class="input sx-filter" aria-label="Filter by worker" onchange="_sxFilters.worker=this.value;renderScheduler()"><option value="">All workers</option></select>
+    <select id="sched-f-type" class="input sx-filter" aria-label="Filter by type" onchange="_sxFilters.type=this.value;renderScheduler()">
+      <option value="">All types</option>
+      <option value="tmux">Trigger a worker</option>
+      <option value="shell">Run a command</option>
+    </select>
+    <select id="sched-f-status" class="input sx-filter" aria-label="Filter by status" onchange="_sxFilters.status=this.value;renderScheduler()">
+      <option value="">All statuses</option>
+      <option value="running">Running</option>
+      <option value="scheduled">Scheduled</option>
+      <option value="failing">Failing</option>
+      <option value="overdue">Overdue</option>
+      <option value="paused">Paused</option>
+      <option value="unparsed">Unparsed</option>
+    </select>
+  </div>
+  <!-- Bulk bar: appears when rows are selected. Every action here is the
+       same per-row endpoint, called once per selected schedule. -->
+  <div class="sx-bulk" id="sched-bulk" hidden>
+    <span id="sched-bulk-n"></span>
+    <button class="btn" onclick="_sxBulk('pause')">Pause</button>
+    <button class="btn" onclick="_sxBulk('resume')">Resume</button>
+    <button class="btn danger" onclick="_sxBulk('delete')">Delete</button>
+    <button class="btn" onclick="_sxClearSelection()">Clear</button>
+  </div>
+  <div id="scheduler-list" class="sx-list"></div>
   <!-- SYSTEM JOBS (AMUX-2703) — amux's own background loops, below the user's
        schedules and visually separated from them. They are NOT schedules:
        no run-now, no edit, no delete. See runtime_jobs/registry.rs. -->
@@ -2148,132 +2177,163 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
-<!-- Schedule modal -->
+<!-- Schedule details: a side panel on desktop, a full-screen sheet on phones.
+     One panel for the Scheduler tab AND the worker peek's Schedules tab, so the
+     two can never show a schedule differently. Rendered by openSchedDetail. -->
+<div id="sched-detail" class="sx-detail-overlay" hidden onclick="if(event.target===this)closeSchedDetail()">
+  <aside class="sx-detail" role="dialog" aria-modal="true" aria-labelledby="sched-detail-title">
+    <div class="sx-detail-head">
+      <span class="sx-detail-ico" aria-hidden="true">&#x25B6;</span>
+      <code class="sched-id-badge" id="sched-detail-id" title="Schedule id: click to copy"></code>
+      <span id="sched-detail-status"></span>
+      <button class="modal-close sx-detail-close" onclick="closeSchedDetail()" aria-label="Close details">&#x2715;</button>
+    </div>
+    <h3 id="sched-detail-title" class="sx-detail-title"></h3>
+    <div class="sx-tabs" role="tablist" aria-label="Schedule detail sections">
+      <button role="tab" class="sx-tab active" data-tab="details" onclick="_sxDetailTab('details')">Details</button>
+      <button role="tab" class="sx-tab" data-tab="history" onclick="_sxDetailTab('history')">History</button>
+      <button role="tab" class="sx-tab" data-tab="runs" onclick="_sxDetailTab('runs')">Runs</button>
+      <button role="tab" class="sx-tab" data-tab="logs" onclick="_sxDetailTab('logs')">Logs</button>
+    </div>
+    <div class="sx-detail-body" id="sched-detail-body"></div>
+  </aside>
+</div>
+<!-- The row and detail "more" menu. One element, re-anchored to whichever
+     trigger opened it. -->
+<div id="sched-menu" class="sx-menu" role="menu" hidden></div>
+
+<!-- Schedule modal: create AND edit (openSchedModal(id) edits). -->
 <div id="sched-overlay" class="board-edit-overlay" onclick="if(event.target===this)closeSchedModal()" style="display:none;">
-  <div class="board-edit-box" style="max-width:640px;width:100%;height:auto;max-height:92dvh;padding:0;overflow:hidden;display:flex;flex-direction:column;">
-    <!-- Header: title, mode, session -->
-    <div style="padding:12px 16px 8px;flex-shrink:0;border-bottom:1px solid var(--border);">
-      <div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x23F0; Scheduled Task</div>
-      <div class="field-group" style="margin-bottom:8px;">
-        <label class="field-label">Title</label>
-        <input id="sched-title" type="text" placeholder="What should run?" autocomplete="off">
+  <div class="board-edit-box sx-create" role="dialog" aria-modal="true" aria-labelledby="sched-modal-title">
+    <div class="sx-create-head">
+      <div class="sx-create-head-text">
+        <h3 id="sched-modal-title">Create Schedule</h3>
+        <p id="sched-modal-sub">Set up a new scheduled task to run a command or trigger a worker.</p>
       </div>
-      <div class="sched-mode-seg" style="margin-bottom:8px;">
-        <button type="button" class="sched-mode-btn" data-mode="loop" onclick="setSchedMode('loop')"><span class="sched-mode-ico">&#x21BB;</span>Loop</button>
-        <button type="button" class="sched-mode-btn" data-mode="routine" onclick="setSchedMode('routine')"><span class="sched-mode-ico">&#x2600;</span>Routine</button>
-        <!-- A "Trigger" mode sat here (wake on session_idle / board change).
-             It wrote trigger_on/trigger_cooldown/trigger_sessions, which this
-             server reads nowhere — the Python event loop was never ported, and
-             across 20,618 recorded runs not one was ever sourced `trigger:*`,
-             so it never fired under Python either. Removed rather than left
-             offered; the capability is carded (AMUX-2680) to be rebuilt as a
-             runtime job with a named consumer, not as columns on a form. -->
-        <button type="button" class="sched-mode-btn" data-mode="once" onclick="setSchedMode('once')"><span class="sched-mode-ico">&#x25B6;</span>Once</button>
-      </div>
-      <div style="display:flex;gap:10px;align-items:flex-end;">
-        <div id="sched-session-group" style="flex:1;">
-          <label class="field-label">Worker</label>
-          <select id="sched-session" class="board-detail-session-select" style="width:100%;margin-bottom:0;"></select>
-        </div>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.72rem;color:var(--dim);white-space:nowrap;padding-bottom:7px;" title="Run a shell command on the host instead of sending to a Claude worker">
-          <input type="checkbox" id="sched-kind-shell" style="width:auto;accent-color:var(--accent);" onchange="updateSchedKindUI()">
-          shell cmd
-        </label>
-        <select id="sched-kind" style="display:none;"><option value="tmux"></option><option value="shell"></option></select>
-      </div>
+      <button class="modal-close" onclick="closeSchedModal()" aria-label="Close">&#x2715;</button>
     </div>
-    <!-- Command: the primary editing area — grows with the viewport, drag-resizable -->
-    <div id="sched-command-section" style="flex:1 1 auto;display:flex;flex-direction:column;padding:10px 16px;min-height:140px;overflow:hidden;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-shrink:0;gap:8px;">
-        <label class="field-label" id="sched-command-label" style="margin-bottom:0;">Command</label>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span id="sched-command-count" style="font-size:0.66rem;color:var(--dim);"></span>
-          <button type="button" class="sched-expand-btn" id="sched-expand-btn" onclick="toggleSchedCmdFullscreen()" title="Expand editor (fills the modal)">&#x2922;</button>
-          <div class="notes-mode-tabs" id="sched-command-tabs" style="margin:0;">
-            <button class="notes-mode-tab active" id="sched-cmd-tab-edit" onclick="schedCmdSwitchMode('edit')">Edit</button>
-            <button class="notes-mode-tab" id="sched-cmd-tab-preview" onclick="schedCmdSwitchMode('preview')">Preview</button>
+    <div class="sx-create-main">
+      <nav class="sx-create-nav" aria-label="Schedule form sections">
+        <button type="button" class="sx-nav-btn active" data-sec="basic" onclick="_sxCreateSection('basic')"><b>Basic</b><span>Common options</span></button>
+        <button type="button" class="sx-nav-btn" data-sec="advanced" onclick="_sxCreateSection('advanced')"><b>Advanced</b><span>Expression, isolation</span></button>
+        <button type="button" class="sx-nav-btn" data-sec="template" id="sched-nav-template" onclick="_sxCreateSection('template')"><b>From Template</b><span>Use a prebuilt template</span></button>
+      </nav>
+      <div class="sx-create-body">
+        <!-- BASIC -->
+        <section class="sx-sec" id="sched-sec-basic">
+          <div class="ui-field">
+            <label class="field-label" for="sched-title">Name <span class="sx-req">*</span></label>
+            <input id="sched-title" class="input" type="text" placeholder="e.g. Nightly backup check" autocomplete="off">
           </div>
-        </div>
+          <div class="ui-field">
+            <span class="field-label" id="sched-type-label">Type</span>
+            <div class="sx-type-cards" role="radiogroup" aria-labelledby="sched-type-label">
+              <label class="sx-type-card" for="sched-kind-shell">
+                <input type="radio" name="sched-kind" id="sched-kind-shell" value="shell" onchange="updateSchedKindUI()">
+                <span class="sx-type-ico sx-ico-shell" aria-hidden="true">$</span>
+                <span class="sx-type-text"><b>Run a command</b><span>Execute a shell command on this machine. No model turn, no cost per run.</span></span>
+              </label>
+              <label class="sx-type-card" for="sched-kind-tmux">
+                <input type="radio" name="sched-kind" id="sched-kind-tmux" value="tmux" checked onchange="updateSchedKindUI()">
+                <span class="sx-type-ico sx-ico-tmux" aria-hidden="true">&#x2709;</span>
+                <span class="sx-type-text"><b>Trigger a worker</b><span>Send a message to a worker. Every run is a full model turn, which costs money.</span></span>
+              </label>
+            </div>
+          </div>
+          <div class="ui-field">
+            <div class="sx-cmd-bar">
+              <label class="field-label" id="sched-command-label" for="sched-command">Message <span class="sx-req">*</span></label>
+              <span id="sched-command-count" class="sx-dim-sm"></span>
+              <button type="button" class="sched-expand-btn" id="sched-copy-btn" onclick="_sxCopyCommand()" title="Copy" aria-label="Copy command">&#x2398;</button>
+              <button type="button" class="sched-expand-btn" id="sched-expand-btn" onclick="toggleSchedCmdFullscreen()" title="Expand editor (fills the modal)" aria-label="Expand editor">&#x2922;</button>
+              <div class="notes-mode-tabs" id="sched-command-tabs">
+                <button type="button" class="notes-mode-tab active" id="sched-cmd-tab-edit" onclick="schedCmdSwitchMode('edit')">Edit</button>
+                <button type="button" class="notes-mode-tab" id="sched-cmd-tab-preview" onclick="schedCmdSwitchMode('preview')">Preview</button>
+              </div>
+            </div>
+            <div id="sched-command-editor-wrap" class="sx-cmd-wrap">
+              <span class="sx-cmd-prefix" id="sched-cmd-prefix" aria-hidden="true">$</span>
+              <textarea id="sched-command" placeholder="e.g. /status, or a full multi-paragraph prompt" autocomplete="off" spellcheck="false" oninput="_schedCmdCount()"></textarea>
+            </div>
+            <div id="sched-command-preview" class="md-content sx-cmd-preview" style="display:none;"></div>
+          </div>
+          <div class="ui-field">
+            <label class="field-label" id="sched-session-label" for="sched-session">Worker</label>
+            <select id="sched-session" class="input"></select>
+            <span class="ui-help" id="sched-session-help"></span>
+          </div>
+          <div class="ui-field">
+            <span class="field-label" id="sched-preset-label">Schedule</span>
+            <div class="sx-presets" role="radiogroup" aria-labelledby="sched-preset-label" id="sched-presets">
+              <button type="button" class="sx-preset" data-preset="minute" onclick="_sxSetPreset('minute')">Every minute</button>
+              <button type="button" class="sx-preset" data-preset="everyN" onclick="_sxSetPreset('everyN')">Every N minutes</button>
+              <button type="button" class="sx-preset" data-preset="hour" onclick="_sxSetPreset('hour')">Every hour</button>
+              <button type="button" class="sx-preset" data-preset="daily" onclick="_sxSetPreset('daily')">Daily</button>
+              <button type="button" class="sx-preset" data-preset="weekdays" onclick="_sxSetPreset('weekdays')">Weekdays</button>
+              <button type="button" class="sx-preset" data-preset="weekly" onclick="_sxSetPreset('weekly')">Weekly</button>
+              <button type="button" class="sx-preset" data-preset="monthly" onclick="_sxSetPreset('monthly')">Monthly</button>
+              <button type="button" class="sx-preset" data-preset="once" onclick="_sxSetPreset('once')">Once</button>
+              <button type="button" class="sx-preset" data-preset="custom" onclick="_sxSetPreset('custom')">Custom (cron)</button>
+            </div>
+            <div class="sx-preset-fields">
+              <label class="sx-pf" data-for="everyN">Every
+                <input id="sched-every-n" class="input sx-num" type="number" min="1" max="999" value="30" oninput="_sxSchedTouched()">
+                <select id="sched-every-unit" class="input sx-unit" onchange="_sxSchedTouched()"><option value="m">minutes</option><option value="h">hours</option><option value="d">days</option></select>
+              </label>
+              <label class="sx-pf" data-for="weekly">Day
+                <select id="sched-weekday" class="input" onchange="_sxSchedTouched()">
+                  <option value="monday">Monday</option><option value="tuesday">Tuesday</option><option value="wednesday">Wednesday</option>
+                  <option value="thursday">Thursday</option><option value="friday">Friday</option><option value="saturday">Saturday</option><option value="sunday">Sunday</option>
+                </select>
+              </label>
+              <label class="sx-pf" data-for="monthly">Day of month
+                <input id="sched-monthday" class="input sx-num" type="number" min="1" max="28" value="1" oninput="_sxSchedTouched()">
+              </label>
+              <label class="sx-pf" data-for="daily weekdays weekly monthly">Time
+                <input id="sched-time" class="input" type="time" value="09:00" oninput="_sxSchedTouched()">
+              </label>
+              <label class="sx-pf sx-pf-wide" data-for="once">Run at
+                <input id="sched-run-at" type="datetime-local" class="input amux-dp" oninput="_sxSchedTouched()">
+              </label>
+              <label class="sx-pf sx-pf-wide" data-for="custom">Expression
+                <input id="sched-expr" class="input sx-mono" type="text" placeholder='"0 9 * * 1-5", "every 45m", "every morning"' autocomplete="off" oninput="_sxSchedTouched()">
+              </label>
+              <div class="sx-tz" id="sched-tz"></div>
+            </div>
+            <div class="sx-preview" id="sched-preview" aria-live="polite"></div>
+          </div>
+        </section>
+        <!-- ADVANCED: only what the server stores AND reads. -->
+        <section class="sx-sec" id="sched-sec-advanced" hidden>
+          <div class="ui-field">
+            <label class="field-label" for="sched-expr-adv">Schedule expression</label>
+            <input id="sched-expr-adv" class="input sx-mono" type="text" autocomplete="off" placeholder="0 9 * * 1-5" oninput="_sxAdvExpr(this.value)">
+            <span class="ui-help">Typing here switches the schedule to Custom. Accepted: <code>every Nm/Nh/Nd</code>, <code>daily at HH:MM</code>, <code>every weekday at HH:MM</code>, <code>weekly on monday at HH:MM</code>, <code>monthly on 1-28 at HH:MM</code>, <code>every morning/evening</code>, or 5-field cron (minute hour day month weekday).</span>
+          </div>
+          <label class="sx-check">
+            <input type="checkbox" id="sched-worktree">
+            <span><b>Worktree isolation</b><span class="ui-help">Create an ephemeral worktree for each run, commit and push the result, then tear it down.</span></span>
+          </label>
+          <div class="ui-help sx-unsupported">Retries, timeouts, environment variables and notifications are not settings this scheduler has, so they are not offered here. A shell command reports a failure to its owner worker on a non-zero exit.</div>
+        </section>
+        <!-- TEMPLATES: client-side prefills; nothing is saved until Create. -->
+        <section class="sx-sec" id="sched-sec-template" hidden>
+          <div class="sx-templates" id="sched-templates"></div>
+          <div class="ui-field">
+            <label class="field-label" for="sched-template-copy">Or start from an existing schedule</label>
+            <select id="sched-template-copy" class="input" onchange="_sxTemplateFromExisting(this.value)"></select>
+          </div>
+        </section>
       </div>
-      <div id="sched-command-editor-wrap" style="flex:1;display:flex;min-height:0;">
-        <textarea id="sched-command" placeholder="e.g. /status, npm run build, or a full multi-paragraph prompt…" autocomplete="off" spellcheck="false"
-          oninput="_schedCmdCount()"
-          style="flex:1;resize:vertical;box-sizing:border-box;font-size:0.86rem;line-height:1.6;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;min-height:0;width:100%;tab-size:2;"></textarea>
-      </div>
-      <div id="sched-command-preview" class="md-content" style="display:none;flex:1;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow-y:auto;font-size:0.88rem;line-height:1.65;color:var(--text);min-height:0;"></div>
     </div>
-    <!-- Footer: mode-specific schedule panels + buttons (scrollable) -->
-    <div class="sched-modal-footer" style="flex-shrink:1;min-height:0;border-top:1px solid var(--border);overflow-y:auto;max-height:300px;padding:12px 16px 14px;">
-      <!-- LOOP -->
-      <div id="sched-panel-loop" class="sched-panel" style="display:none;">
-        <label class="field-label">Repeat every</label>
-        <div class="sched-chip-row" id="sched-loop-chips">
-          <button type="button" class="sched-chip" data-every="15m" onclick="setLoopEvery('15m')">15m</button>
-          <button type="button" class="sched-chip" data-every="30m" onclick="setLoopEvery('30m')">30m</button>
-          <button type="button" class="sched-chip" data-every="1h" onclick="setLoopEvery('1h')">1h</button>
-          <button type="button" class="sched-chip" data-every="2h" onclick="setLoopEvery('2h')">2h</button>
-          <button type="button" class="sched-chip" data-every="4h" onclick="setLoopEvery('4h')">4h</button>
-          <input id="sched-loop-every" type="text" placeholder="custom (e.g. 45m)" autocomplete="off"
-            style="width:120px;font-size:0.72rem;padding:5px 8px;" oninput="markLoopChipActive(this.value)">
-        </div>
-        <!-- "Stop when output matches" (done_pattern + done_action) lived
-             here. It promised the loop would end itself when a regex matched
-             the worker's pane; nothing in this server reads either column, so
-             the box saved and did nothing. Not re-implemented as written
-             either: regex-matching a rendered terminal to guess whether a
-             model has finished is exactly the scraping the harness is meant
-             to stop doing, and a worker can already report its own completion
-             (POST /api/sessions/<name>/report). See AMUX-2680. -->
-        <div class="sched-mode-help"><b>Loop</b> — sends the command to the worker over and over on a fixed interval. Disable it here, or have the worker disable it, when the work is done.</div>
-      </div>
-      <!-- ROUTINE -->
-      <div id="sched-panel-routine" class="sched-panel" style="display:none;">
-        <label class="field-label">When</label>
-        <input id="sched-expr" type="text" placeholder='e.g. "daily at 9am", "every weekday at 9am", "0 9 * * 1-5"' autocomplete="off">
-        <div class="sched-chip-row" id="sched-routine-chips">
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('daily at 9am')">daily 9am</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('daily at 6pm')">daily 6pm</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('every weekday at 9am')">weekdays 9am</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('every morning')">mornings</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('weekly on monday at 09:00')">weekly Mon</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('0 9,17 * * 1-5')">2&times;/weekday</button>
-        </div>
-        <div class="sched-mode-help"><b>Routine</b> — runs on a fixed daily or weekly schedule. Accepts natural language ("daily at 9am") or cron.</div>
-      </div>
-      <!-- ONCE -->
-      <div id="sched-panel-once" class="sched-panel" style="display:none;">
-        <label class="field-label">Run at</label>
-        <input id="sched-run-at" type="datetime-local" class="board-detail-session-select amux-dp" style="width:100%;margin-bottom:0;">
-        <div class="sched-mode-help"><b>Once</b> — runs a single time, then disables itself.</div>
-      </div>
-      <!-- The hidden sched-watch / sched-watch-timeout carriers were here.
-           They existed only to keep two dead columns in the save payload. -->
-      <!-- Execution mode toggles -->
-      <div id="sched-exec-modes" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
-        <label class="field-label" style="font-size:0.68rem;">Model for child workers</label>
-          <select id="sched-fan-out-model" style="font-size:0.76rem;padding:4px 8px;">
-            <option value="haiku">haiku (fast/cheap)</option>
-            <option value="sonnet">sonnet</option>
-            <option value="opus">opus</option>
-          </select>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.78rem;color:var(--text);" title="Create an ephemeral worktree for each firing, commit/push results, then tear down">
-          <input type="checkbox" id="sched-worktree" style="width:auto;accent-color:var(--accent);">
-          <span>Worktree isolation</span>
-          <span style="font-size:0.66rem;color:var(--dim);">(ephemeral per firing)</span>
-        </label>
-      </div><!-- /schedule panels (scrollable) -->
-    <!-- Action row — PINNED, and a SIBLING of the scrolling panel region
-         rather than its last child. As a child it scrolled out of view: at
-         1280x720 the panel region is squeezed to 112px with 189px of content,
-         so Save laid out at y=713 on a 720px viewport and the only way to
-         reach it was to zoom the browser out. That is the reported bug.
-         flex-shrink:0 holds it on desktop, where the box is a capped flex
-         column; position:sticky holds it on mobile, where the box itself is
-         the scroller (see the max-width:600px block). -->
+    <!-- Action row: PINNED, and a SIBLING of the scrolling body rather than
+         its last child. As a child it scrolled out of view at 1280x720 (the
+         original "I have to zoom out to reach Save" report). flex-shrink:0
+         holds it on desktop; on phones the box is a full-screen flex column
+         and the row sits above the home indicator via the safe-area inset. -->
     <div class="sched-modal-foot">
       <button class="btn" onclick="closeSchedModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSchedModal()" id="sched-save-btn">Save</button>
+      <button class="btn primary" onclick="saveSchedModal()" id="sched-save-btn">Create Schedule</button>
     </div>
   </div>
 </div>

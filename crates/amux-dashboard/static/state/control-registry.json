@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2683,
+  "n_considered": 2744,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3410,6 +3410,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_sxBulk": {
+      "kind": "command._sxBulk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_sxOpenWorker": {
+      "kind": "command._sxOpenWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_syncBannerBeacon": {
       "kind": "command._syncBannerBeacon",
       "feedback_required": true,
@@ -4222,6 +4234,12 @@
     },
     "doStop": {
       "kind": "command.doStop",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "duplicateSchedule": {
+      "kind": "command.duplicateSchedule",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
