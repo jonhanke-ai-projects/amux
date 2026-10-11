@@ -1,5 +1,59 @@
 [
   {
+    "hash": "b4c191b2a2f03cf37a3b06fe15c0b7ccdb893245",
+    "short": "b4c191b",
+    "title": "Skill examples shown when a skill is expanded, inferred from its Markdown",
+    "date": "2026-10-10",
+    "type": "feat",
+    "tags": ["dashboard", "skills", "examples"],
+    "description": "Expanding a skill in the Skills tab now shows example invocations for that skill. amux infers these automatically by reading the skill's Markdown body — imperative sentences, numbered step verbs, and code block trigger descriptions are turned into clickable example phrases. You can also supply explicit examples by adding an ## Examples section to the skill body. Explicit examples take precedence over inferred ones; amux shows up to 5 total. A clipboard button copies any example to paste elsewhere."
+  },
+  {
+    "hash": "2db6fd94c761df8ad236c2ac58b8700e6eba73e5",
+    "short": "2db6fd9",
+    "title": "Skill examples appear in the / dropdown across the whole dashboard",
+    "date": "2026-10-10",
+    "type": "feat",
+    "tags": ["dashboard", "skills", "examples"],
+    "description": "Type / in any steering bar — worker, Chat, or board card input — to open the command palette. Every skill now lists its inferred or explicit example invocations as clickable suggestions directly below its name. Click an example to send it as a prompt to the session. This makes skills discoverable without memorizing exact command names or reading skill bodies."
+  },
+  {
+    "hash": "88d041b72f0d34d575627303100e1d77c01b1eef",
+    "short": "88d041b",
+    "title": "Calendar shows every Google Calendar, Google-Calendar visual style, mobile-first, refreshes every minute",
+    "date": "2026-10-10",
+    "type": "feat",
+    "tags": ["calendar", "google-calendar", "mobile"],
+    "description": "The amux calendar tab now syncs every Google Calendar you own — not just the primary calendar. Each calendar keeps its color from Google. The week and day view grids use a Google-Calendar-style layout with time-block rendering, so events look the same whether you're viewing them in Google Calendar or in the amux dashboard. The view is mobile-first and fits any screen. The calendar feed now refreshes every minute automatically without requiring a page reload."
+  },
+  {
+    "hash": "88d926f47c0a42287926626dc0c775780dadc7b6",
+    "short": "88d926f",
+    "title": "Google Calendar sync: all occurrences in a time window, calendar colors, your own RSVP status",
+    "date": "2026-10-10",
+    "type": "feat",
+    "tags": ["calendar", "google-calendar"],
+    "description": "The Google Calendar read is now windowed: amux fetches every occurrence of every event (including recurring events) within the current view's time window, not just the first instance. Each event shows the calendar color it has in Google. For events with an invite, amux shows your RSVP status (accepted, tentative, declined) directly on the event block."
+  },
+  {
+    "hash": "c4c3c81ad58553cb0d695e76c316eb9118e8957c",
+    "short": "c4c3c81",
+    "title": "Connectors: Forget button confirms in-modal before removing credentials",
+    "date": "2026-10-10",
+    "type": "fix",
+    "tags": ["connectors", "dashboard"],
+    "description": "The Forget button in the connector detail modal previously removed credentials immediately without asking for confirmation. It now shows an in-modal confirmation step before removing. The modal also confirms that the credentials were actually removed before it closes, so you can be confident the connector is fully disconnected."
+  },
+  {
+    "hash": "d8938ed3c2df136689e4e088720f487a0e14fd6a",
+    "short": "d8938ed",
+    "title": "Connectors: Test saves the health result back to the panel without a refresh",
+    "date": "2026-10-10",
+    "type": "fix",
+    "tags": ["connectors", "dashboard"],
+    "description": "After clicking Test on a connector in the dashboard, the health status previously showed stale data until you left and returned to the panel. The connector health state is now saved back immediately after a browser-side Test, so the panel reflects the current health without requiring a reload."
+  },
+  {
     "hash": "df85488e9fbd2c4c86fb14c1cacc73ce025124a5",
     "short": "df85488",
     "title": "Scratchpad tab, tab search, companion chat uses worker model",
