@@ -110,7 +110,8 @@ async fn list_skills(State(state): State<AppState>) -> Response {
         {
             for (name, content) in rows.flatten() {
                 let (description, hint) = frontmatter_fields(&content);
-                out.push(json!({ "name": name, "description": description, "hint": hint }));
+                let times = command_file_times(&name);
+                out.push(with_times(json!({ "name": name, "description": description, "hint": hint }), times));
             }
         }
     }
@@ -208,6 +209,45 @@ fn claude_config_dir() -> std::path::PathBuf {
     }
 }
 
+/// When the skill's command file was created and last edited (unix seconds),
+/// for the Skills tab's "Recently created/edited" sorts. Creation time is the
+/// filesystem's birth time where it records one; otherwise only `modified_at`
+/// is known and `created_at` is absent rather than guessed.
+fn file_times(path: &std::path::Path) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    let secs = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+    };
+    if let Ok(md) = std::fs::metadata(path) {
+        if let Some(c) = secs(md.created()) {
+            out.insert("created_at".into(), json!(c));
+        }
+        if let Some(m) = secs(md.modified()) {
+            out.insert("modified_at".into(), json!(m));
+        }
+    }
+    out
+}
+
+fn command_file_times(name: &str) -> serde_json::Map<String, Value> {
+    command_dirs()
+        .into_iter()
+        .map(|d| d.join(format!("{name}.md")))
+        .find(|p| p.exists())
+        .map(|p| file_times(&p))
+        .unwrap_or_default()
+}
+
+/// Merge extra keys into a JSON object row.
+fn with_times(mut row: Value, times: serde_json::Map<String, Value>) -> Value {
+    if let Some(obj) = row.as_object_mut() {
+        obj.extend(times);
+    }
+    row
+}
+
 pub(super) fn command_dirs() -> Vec<std::path::PathBuf> {
     vec![
         claude_config_dir().join("commands"),
@@ -292,7 +332,8 @@ async fn list_slash_commands(State(state): State<AppState>) -> Response {
             .collect();
         for (cmd, desc) in table_skill_commands(&conn) {
             if seen.insert(cmd.clone()) {
-                cmds.push(json!({ "cmd": cmd, "desc": desc }));
+                let times = command_file_times(cmd.trim_start_matches('/'));
+            cmds.push(with_times(json!({ "cmd": cmd, "desc": desc }), times));
             }
         }
     }
@@ -334,7 +375,7 @@ fn file_slash_commands() -> Vec<serde_json::Value> {
                 .ok()
                 .map(|t| frontmatter_fields(&t).0)
                 .unwrap_or_default();
-            cmds.push(json!({ "cmd": name, "desc": desc }));
+            cmds.push(with_times(json!({ "cmd": name, "desc": desc }), file_times(&f)));
         }
     }
     cmds
@@ -549,6 +590,23 @@ mod write_tests {
         assert_eq!(std::fs::read_to_string(dir.join("kept.md")).unwrap(), "edited outside amux");
         assert!(!dir.join("../x.md").exists());
         assert_eq!(materialize_missing(&conn, &dir), (0, 3), "idempotent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_command_file_reports_when_it_was_edited() {
+        let dir = std::env::temp_dir().join(format!("amux-skill-times-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("t.md");
+        std::fs::write(&f, "x").unwrap();
+        let t = file_times(&f);
+        let now = chrono::Utc::now().timestamp();
+        let m = t["modified_at"].as_i64().unwrap();
+        assert!((now - m).abs() < 60, "modified_at {m} vs now {now}");
+        if let Some(c) = t.get("created_at") {
+            assert!(c.as_i64().unwrap() <= m);
+        }
+        assert!(file_times(&dir.join("missing.md")).is_empty(), "no file, no invented times");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

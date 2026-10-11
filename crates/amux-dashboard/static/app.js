@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1321';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1323';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -42627,6 +42627,14 @@ function _skillsSortSet(v) {
   _skillsFilter((document.getElementById('skills-search') || {}).value || '');
 }
 function _skillKey(cmd) { return String(cmd || '').replace(/^\//, '').toLowerCase(); }
+// Command-file times from /api/skills and /api/slash-commands, by skill key,
+// so a sort can read them whichever section (or the pinned row) holds the skill.
+function _skillsTimes() {
+  const map = {};
+  for (const s of (_skillsData.db || [])) map[_skillKey(s.name)] = s;
+  for (const c of (_skillsData.file || [])) map[_skillKey(c.cmd)] = map[_skillKey(c.cmd)] || c;
+  return cmd => map[_skillKey(cmd)] || {};
+}
 function _skillPinned() {
   return new Set(_getChips().filter(c => c.action === 'slash').map(c => _skillKey(c.value)));
 }
@@ -42686,8 +42694,19 @@ function _skillsRender(q, countEl, container) {
   const use = cmd => _skillsData.usage[_skillKey(cmd)] || null;
   const byUse = (a, b) => ((use(b) || {}).recent || 0) - ((use(a) || {}).recent || 0)
     || ((use(b) || {}).n || 0) - ((use(a) || {}).n || 0);
+  // Newest first by one timestamp; a skill without that time (built-ins, a
+  // never-used skill) sorts after every skill that has one, then by name.
+  const times = _skillsTimes();
+  const newest = key => (a, b) => (times(b)[key] || 0) - (times(a)[key] || 0);
+  const lastUsed = cmd => ({ used_at: (use(cmd) || {}).last_ts || 0 });
+  const order = {
+    used: byUse,
+    'recent-used': (a, b) => lastUsed(b).used_at - lastUsed(a).used_at,
+    'recent-created': newest('created_at'),
+    'recent-edited': newest('modified_at'),
+  }[_skillsSort()];
   const sortBy = (items, cmdOf) => items.slice().sort((a, b) =>
-    (_skillsSort() === 'used' ? byUse(cmdOf(a), cmdOf(b)) : 0) || cmdOf(a).localeCompare(cmdOf(b)));
+    (order ? order(cmdOf(a), cmdOf(b)) : 0) || cmdOf(a).localeCompare(cmdOf(b)));
   const dbCmd = s => '/' + s.name, fileCmd = c => c.cmd;
   const isPinned = cmd => pinned.has(_skillKey(cmd));
   const allDb = _skillsData.db.filter(match), allFile = _skillsData.file.filter(match), allBuiltin = _skillsData.builtin.filter(match);
