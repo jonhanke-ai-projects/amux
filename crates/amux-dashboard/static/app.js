@@ -14078,7 +14078,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1333';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1347';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -22807,6 +22807,9 @@ function _msgNorm(x) {
   const t = (x.time !== undefined && x.time !== null) ? x.time : x.ts;
   return { id: x.id, msg_id:x.msg_id, text: x.text, type: x.type, session: x.session,
            time: t, ts: t, origin: x.origin || '', kind: x.kind,
+           // WHO sent it, derived server-side from the stamped origin
+           // (history.rs sender_sql). Absent on optimistic local rows.
+           ...(x.sender ? {sender: x.sender} : {}),
            queued: x.queued, delivery: x.delivery, queued_at: x.queued_at,
            delivered_at: x.delivered_at, queue_wait_ms: x.queue_wait_ms,
            submit_verdict: x.submit_verdict, card_id: x.card_id || '',
@@ -22979,9 +22982,15 @@ function _cmdHistItemHTML(e, ctx) {
   // Badge carries the specific origin: "Session · mvs-infra", "Scheduled · Nightly gate".
   // For a human message the origin is you, so instead we surface the delivery
   // path — "Human · queued" vs plain "Human".
-  const originTxt = kind === 'human'
+  // WHO SENT IT (Ethan, 2026-10-11: "show WHO sent it not just that its
+  // human"). The server derives `sender` from the stamped origin; when a row
+  // carries it, it is shown as "sender → worker" and the badge stops repeating
+  // the origin. Rows without it (optimistic local echoes) keep the old badge.
+  const sender = typeof e === 'string' ? '' : (e.sender || '');
+  const originTxt = (kind === 'human' || sender)
     ? ''   // delivery chip below carries direct/queued for every kind now
     : (origin ? ' &middot; ' + _linkifyScheduleIds(origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32)) : '');
+  const senderTag = _msgSenderTag(sender, origin, !!session);
   const tag = `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;">${km.label}${originTxt}</span>`;
   // On the global Messages page the worker name OPENS THAT WORKER and does
   // nothing else; the row's own click inserts the text into its composer, and
@@ -22998,7 +23007,7 @@ function _cmdHistItemHTML(e, ctx) {
   const idTag = _mid
     ? `<code class="msg-id-badge" title="Message id — click to copy" onclick="event.stopPropagation();_copyMsgId('${esc(_mid)}')">MSG-${esc(_mid)}</code>`
     : '';
-  const meta = tag + _msgDeliveryChip(e) + _msgSubmitChip(e) + sessTag + tsTag
+  const meta = tag + _msgDeliveryChip(e) + _msgSubmitChip(e) + senderTag + sessTag + tsTag
     + _msgContextChip(e) + idTag
     + _msgCardChips(e);
   const locSess = (session || (typeof peekSession !== 'undefined' ? peekSession : '') || '').replace(/'/g,'');
@@ -23012,6 +23021,21 @@ function _cmdHistItemHTML(e, ctx) {
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
   return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+}
+// The sender half of "owner → cowork-bot". `owner` is the server's own login
+// (no team-member or gateway identity on the send); the tooltip says so, and
+// says the full origin when the visible name is a shortened one (a schedule's
+// SCHED-n stands for "[SCHED-n] title").
+function _msgSenderTag(sender, origin, hasTarget) {
+  if (!sender) return '';
+  const why = sender === 'owner'
+    ? 'Sent by the owner: the server\'s own login, with no team-member or gateway identity attached'
+    : sender === 'unknown' ? 'No sender was recorded for this message'
+    : sender === 'harness' ? 'Sent by amux itself, with no named component recorded'
+    : 'Sent by ' + sender + (origin && origin !== sender ? ' (' + origin + ')' : '');
+  return '<span class="msg-sender" title="' + esc(why) + '">'
+    + _linkifyScheduleIds(esc(sender.length > 40 ? sender.slice(0, 40) + '\u2026' : sender)) + '</span>'
+    + (hasTarget ? '<span class="msg-sender-arrow" aria-hidden="true">\u2192</span>' : '');
 }
 function _peekMessagesFor() {
   if (!peekSession) return [];
@@ -38910,6 +38934,7 @@ function _bdOpenMessage(id) {
   _msgsKind = 'all';
   _msgsDeepQ = displayId;
   _msgsGroup = '';
+  _msgsSender = '';
   _msgsCounts = null;
   const search = document.getElementById('msgs-search');
   if (search) search.value = displayId;
@@ -48358,6 +48383,7 @@ async function _messagesLoad(reset, presetSession) {
     let _u = API + '/api/history?limit=' + _msgsPageSize + '&offset=' + _msgsOffset;
     if (_msgsKind !== 'all') _u += '&kind=' + encodeURIComponent(_msgsKind);
     if (_sf) _u += '&session=' + encodeURIComponent(_sf);
+    if (_msgsSender) _u += '&sender=' + encodeURIComponent(_msgsSender);
     // Deep search (Enter in the box): the SERVER scans all history, so hits
     // older than the loaded page exist. Typing still filters the loaded page
     // instantly — two speeds, one box (AMUX-2426).
@@ -48371,8 +48397,11 @@ async function _messagesLoad(reset, presetSession) {
     // than no pager.
     const _t = r.headers && r.headers.get('x-amux-total');
     _msgsTotal = _t === null || _t === undefined || _t === '' ? null : +_t;
-    fetch(API + '/api/history?counts=1' + (_sf ? '&session=' + encodeURIComponent(_sf) : ''))
-      .then(x => x.json()).then(c => { _msgsCounts = c; _msgsRenderChips(); }).catch(() => {});
+    // `senders_for` scopes only the SENDERS facet (the per-kind chip totals
+    // stay kind-free), so the From menu lists who sent THIS kind.
+    fetch(API + '/api/history?counts=1' + (_sf ? '&session=' + encodeURIComponent(_sf) : '')
+          + (_msgsKind !== 'all' ? '&senders_for=' + encodeURIComponent(_msgsKind) : ''))
+      .then(x => x.json()).then(c => { _msgsCounts = c; _msgsRenderChips(); _msgsRenderSenders(); }).catch(() => {});
     if (!Array.isArray(rows)) return;
     // A newer reset (_msgsGen bumped) started and already replaced _msgsData
     // while this fetch was in flight — applying this stale page would append
@@ -48466,6 +48495,28 @@ function _msgLocate(session, encText) {
 // It also makes the first load SMALLER: kind is applied at the server, so the
 // opening page is 3094 candidates instead of 8555, which matters on mobile.
 let _msgsKind = 'human';        // all | human | session | schedule
+// Who sent it ('' = anyone). Applied by the SERVER (?sender=), composing with
+// the kind, the worker and the search, for the same reason the kind is: a
+// client-side filter over one page reports a page share as the answer.
+let _msgsSender = '';
+function _msgsSetSender(v) {
+  _msgsSender = v || '';
+  _messagesLoad(true, document.getElementById('msgs-session-filter')?.value || '');
+}
+function _msgsRenderSenders() {
+  const sel = document.getElementById('msgs-sender-filter');
+  if (!sel) return;
+  const list = (_msgsCounts && Array.isArray(_msgsCounts.senders)) ? _msgsCounts.senders : null;
+  if (!list) return;   // facet not reported (old server): leave the menu as is
+  // The selected sender stays listed even when this kind has none of theirs,
+  // so the control never silently shows a value it is not applying.
+  const rows = list.slice();
+  if (_msgsSender && !rows.some(r => r.sender === _msgsSender)) rows.unshift({ sender: _msgsSender, count: 0 });
+  sel.innerHTML = '<option value="">From anyone</option>' + rows.map(r =>
+    '<option value="' + esc(r.sender) + '"' + (r.sender === _msgsSender ? ' selected' : '') + '>'
+    + esc(r.sender) + ' (' + (+r.count || 0).toLocaleString() + ')</option>').join('');
+  sel.value = _msgsSender;
+}
 let _msgsCounts = null;         // true per-kind totals from the server
 function _msgsSetKind(k) {
   _msgsKind = k;
@@ -48588,12 +48639,14 @@ function _messagesRender() {
   _msgsRenderChips();
   let rows = _msgsData;
   if (sessF) rows = rows.filter(m => (m.session || '') === sessF);
+  if (_msgsSender) rows = rows.filter(m => !m.sender || m.sender === _msgsSender);
   // No client-side kind filter: the fetch is already kind-scoped, so the page
   // is 500 rows OF THAT KIND rather than 500 mixed rows filtered down to a
   // handful — the same crowding that showed 48 human messages out of 6547.
   if (_msgsKind !== 'all') rows = rows.filter(m => _msgKind(m) === _msgsKind);
   if (q) rows = rows.filter(m => (m.text || '').toLowerCase().includes(q)
     || (m.session || '').toLowerCase().includes(q)
+    || (m.sender || '').toLowerCase().includes(q)
     || ('msg-' + String(m.id || '')).toLowerCase() === q);
   // Selection toolbar (AMUX-2318). Only rendered when something is selected,
   // so the default view is unchanged - a persistent bar for a rare action is
@@ -48639,7 +48692,7 @@ function _messagesRender() {
                : 'No matches in the ' + _msgsData.length + ' loaded messages. '
                  + '<a href="#" onclick="event.preventDefault();_msgsDeepQ=document.getElementById(\'msgs-search\').value.trim();_messagesLoad(true);" '
                  + 'style="color:var(--accent);">Search all history</a> (or press Enter).')
-           : kl ? 'No ' + kl.toLowerCase() + ' messages' + (sessF ? ' for ' + esc(sessF) : '') + '.'
+           : kl ? 'No ' + kl.toLowerCase() + ' messages' + (_msgsSender ? ' from ' + esc(_msgsSender) : '') + (sessF ? ' for ' + esc(sessF) : '') + '.'
                 : (sessF ? 'No messages for ' + esc(sessF) + '.' : 'No messages yet.')) + '</div>';
     return;
   }

@@ -1701,6 +1701,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <select id="msgs-session-filter" onchange="_msgsCounts=null;_messagesLoad(true,this.value)" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
       <option value="">All workers</option>
     </select>
+    <!-- Who SENT it (Ethan 2026-10-11). Options come from the server's
+         senders facet, so it only offers names that select something. -->
+    <select id="msgs-sender-filter" aria-label="Filter by sender" title="Who sent the message" onchange="_msgsSetSender(this.value)" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+      <option value="">From anyone</option>
+    </select>
     <input type="date" id="msgs-date-jump" class="amux-dp" onchange="_msgsJumpToDate(this.value)" title="Jump to a date" style="font-size:0.82rem;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);color-scheme:dark;">
     <span id="msgs-count" style="font-size:0.75rem;color:var(--dim);white-space:nowrap;"></span>
   </div>

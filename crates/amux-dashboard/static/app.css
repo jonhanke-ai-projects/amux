@@ -8403,6 +8403,8 @@ body.light #fc-container { color-scheme: light; }
 .cv-attach-bar { padding:0 16px; flex-shrink:0; }
 .cv-post.pending { opacity:0.65; }
 .cv-post-tag { font-size:0.66rem; padding:1px 6px; border-radius:9px; border:1px solid var(--border); color:var(--dim); }
+.msg-sender { font-size:0.7rem; font-weight:600; color:var(--text); margin-right:4px; overflow-wrap:anywhere; }
+.msg-sender-arrow { font-size:0.7rem; color:var(--dim); margin-right:4px; }
 .msg-sess-link { background:none; border:none; padding:0; margin-right:6px; font:inherit; font-size:0.7rem; color:var(--accent); cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
 .cv-head { display:flex; align-items:center; gap:10px; padding:10px 16px;
   border-bottom:1px solid var(--border); flex-shrink:0; }
@@ -8460,6 +8462,10 @@ body.light #fc-container { color-scheme: light; }
   .cv-hint { display:none; }
   .cv-head-people { display:none; }
   #msgs-log-pane { padding:8px 10px; }
+  /* Worker and From filters share one row at 375px and stay 44px tall. */
+  /* WebKit ignores min-height on a native menulist select, so the control
+     drops its native chrome here and draws its own chevron. */
+  #msgs-session-filter, #msgs-sender-filter { flex:1 1 0; min-width:0; max-width:none !important; min-height:44px; -webkit-appearance:none; appearance:none; padding-right:26px !important; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E") !important; background-repeat:no-repeat !important; background-position:right 10px center !important; }
   .cv-attach-bar { padding:0 10px; }
 }
 
