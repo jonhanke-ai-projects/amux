@@ -37,6 +37,19 @@ pub fn prompt_line(raw: &str) -> Option<String> {
     if after.iter().any(|l| l.contains("\u{23f5}\u{23f5}") || l.to_lowercase().contains("bypass permissions on")) {
         return None;
     }
+    // THE PROMPT MUST BE THE BOTTOM OF THE PANE (AMUX-5850 e2e, 2026-10-11).
+    // Output printed after an answered prompt leaves the question in the tail
+    // with no status bar below it; read as live, that lane was answered twice
+    // (a stray "1" into the composer) and kept a PERMISSION PROMPT badge. The
+    // last line of a drawn prompt is one of its options or its footer.
+    let last = after.last().map(|l| l.to_lowercase()).unwrap_or_default();
+    let is_option = |l: &str| {
+        let l = l.trim_start_matches('\u{276f}').trim_start();
+        l.split_once('.').is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    };
+    if !(last.contains("esc to cancel") || is_option(&last)) {
+        return None;
+    }
     // Claude Code may draw a countdown line above the question ("will
     // automatically deny this request in 1:59 ..."); it changes every second,
     // so it is never the reason line (gs12-extra-2, 2026-10-07: 50 warnings
@@ -221,6 +234,15 @@ Do you want to proceed?
         let (_, first) = observe(lane, Some(&screen("1:59")), 1000.0).unwrap();
         let (_, later) = observe(lane, Some(&screen("0:30")), 1090.0).unwrap();
         assert_eq!(first, later, "the same prompt keeps its first-seen time");
+    }
+
+    #[test]
+    fn output_printed_after_an_answered_prompt_means_it_is_no_longer_live() {
+        let answered = format!("{SUBAGENT_PROMPT}\nprobe: received key [1], continuing");
+        assert_eq!(prompt_line(&answered), None, "a prompt with output below it was already answered");
+        assert_eq!(yolo_auto_yes_command(&answered), None, "never answer the same prompt twice");
+        assert!(prompt_line(SUBAGENT_PROMPT).is_some(), "the footer as last line is a live prompt");
+        assert!(prompt_line(PLAIN_PROMPT).is_some(), "an option as last line is a live prompt");
     }
 
     #[test]
