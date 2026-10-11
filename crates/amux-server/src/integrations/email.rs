@@ -475,6 +475,23 @@ pub struct ReplyPlan {
     pub references: String,
 }
 
+/// The caller's own `cc` merged into a reply's computed one (gtm-engine,
+/// 2026-10-11: `{"cc":"ethan@mixpeek.com"}` on a reply was silently dropped,
+/// because the plan always set cc from the thread alone). Order kept, no
+/// duplicates (case-insensitive), and nobody already in To is copied again.
+pub fn merge_reply_cc(computed: &str, extra: &str, to: &str) -> String {
+    let to_lc: Vec<String> = parse_addresses(to).iter().map(|a| a.to_lowercase()).collect();
+    let mut out: Vec<String> = Vec::new();
+    for a in parse_addresses(computed).into_iter().chain(parse_addresses(extra)) {
+        let al = a.to_lowercase();
+        if to_lc.contains(&al) || out.iter().any(|o| o.to_lowercase() == al) {
+            continue;
+        }
+        out.push(a);
+    }
+    out.join(", ")
+}
+
 /// Derive recipients + threading headers for a reply, given the original
 /// message's headers (LOWERCASE keys). Ported exactly, including:
 /// - the reply goes to the EXTERNAL party, never one of our own accounts
@@ -1687,6 +1704,19 @@ impl GmailClient {
         reply_all: bool,
         allow_self: bool,
     ) -> Result<(String, String, String), String> {
+        self.resolve_reply_recipients_cc(account, rfc822_message_id, reply_all, allow_self, "").await
+    }
+
+    /// `resolve_reply_recipients` with the caller's own cc merged in, so the
+    /// approval preview shows exactly who the send will reach.
+    pub async fn resolve_reply_recipients_cc(
+        &self,
+        account: &str,
+        rfc822_message_id: &str,
+        reply_all: bool,
+        allow_self: bool,
+        extra_cc: &str,
+    ) -> Result<(String, String, String), String> {
         let mut orig = self
             .find_message_by_rfc822(account, rfc822_message_id)
             .await;
@@ -1714,7 +1744,8 @@ impl GmailClient {
             reply_all,
             allow_self,
         )?;
-        Ok((plan.to, plan.cc, plan.subject))
+        let cc = merge_reply_cc(&plan.cc, extra_cc, &plan.to);
+        Ok((plan.to, cc, plan.subject))
     }
 
     /// Python `_gmail_reply_send`: reply in-thread (clean body + signature,
@@ -1732,6 +1763,22 @@ impl GmailClient {
         reply_all: bool,
         allow_self: bool,
         attachments: &[Attachment],
+    ) -> Result<Value, String> {
+        self.reply_send_cc(account, rfc822_message_id, body, include_signature, reply_all, allow_self, attachments, "").await
+    }
+
+    /// `reply_send` with the caller's own cc merged into the thread's.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reply_send_cc(
+        &self,
+        account: &str,
+        rfc822_message_id: &str,
+        body: &str,
+        include_signature: bool,
+        reply_all: bool,
+        allow_self: bool,
+        attachments: &[Attachment],
+        extra_cc: &str,
     ) -> Result<Value, String> {
         let mut orig = self
             .find_message_by_rfc822(account, rfc822_message_id)
@@ -1766,7 +1813,7 @@ impl GmailClient {
             String::new()
         };
         let connected = self.connected_accounts();
-        let plan = derive_reply_plan(
+        let mut plan = derive_reply_plan(
             &headers,
             rfc822_message_id,
             account,
@@ -1774,6 +1821,7 @@ impl GmailClient {
             reply_all,
             allow_self,
         )?;
+        plan.cc = merge_reply_cc(&plan.cc, extra_cc, &plan.to);
         let mut res = self
             .compose_send(
                 account,
@@ -3579,6 +3627,42 @@ mod tests {
         assert!(decoded.contains("Subject: Re: Deal\r\n"));
         assert!(decoded.contains("In-Reply-To: <orig@ext>\r\n"));
         assert!(decoded.contains("References: <root@ext> <orig@ext>\r\n"));
+    }
+
+    #[test]
+    fn a_callers_reply_cc_is_merged_not_dropped() {
+        assert_eq!(merge_reply_cc("", "ethan@mixpeek.com", "p@customer.com"), "ethan@mixpeek.com");
+        assert_eq!(merge_reply_cc("a@x.com", "b@y.com, A@x.com", "p@customer.com"), "a@x.com, b@y.com", "no duplicates");
+        assert_eq!(merge_reply_cc("", "p@customer.com", "p@customer.com"), "", "nobody in To is copied again");
+    }
+
+    #[tokio::test]
+    async fn reply_send_cc_puts_the_callers_cc_on_the_wire() {
+        let home = temp_home_with_token("acct@example.com", true);
+        let orig = json!({
+            "id": "g1", "threadId": "T1",
+            "payload": { "headers": [
+                { "name": "Message-ID", "value": "<orig@ext>" },
+                { "name": "Subject", "value": "Deal" },
+                { "name": "From", "value": "P <p@customer.com>" },
+                { "name": "To", "value": "acct@example.com" },
+            ]},
+        });
+        let http = MockHttp::new(vec![
+            ("GET", "q=rfc822msgid", 200, json!({ "messages": [{ "id": "g1" }] })),
+            ("GET", "/messages/g1", 200, orig),
+            ("POST", "/messages/send", 200, json!({ "id": "m3", "threadId": "T1" })),
+        ]);
+        let client = GmailClient::new(http.clone(), home.path().to_path_buf());
+        let res = client
+            .reply_send_cc("acct@example.com", "<orig@ext>", "thanks!", false, false, false, &[], "ethan@mixpeek.com")
+            .await
+            .unwrap();
+        assert_eq!(res["cc"], json!("ethan@mixpeek.com"));
+        let calls = http.calls.lock().unwrap();
+        let (_, _, body) = calls.iter().find(|(m, u, _)| m == "POST" && u.contains("/messages/send")).unwrap();
+        let decoded = String::from_utf8(base64url_decode(body.as_ref().unwrap()["raw"].as_str().unwrap()).unwrap()).unwrap();
+        assert!(decoded.contains("Cc: ethan@mixpeek.com\r\n"), "{decoded}");
     }
 
     #[tokio::test]

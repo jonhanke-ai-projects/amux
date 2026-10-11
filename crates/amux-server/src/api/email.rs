@@ -771,6 +771,9 @@ pub async fn reply(
         Ok(a) => a,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
     };
+    // The caller's own cc on a reply: merged into the thread's (it used to be
+    // dropped), shown in the approval preview and carried through approval.
+    let extra_cc = body_str(&body, "cc");
     if !gmail_from.is_empty() && connected.contains(&gmail_from) {
         let allow_self = body.get("allow_self").map(truthy).unwrap_or(false);
         // EXTERNAL-SEND APPROVAL GATE (AMUX-3510), the /reply half — STRICTER
@@ -783,7 +786,7 @@ pub async fn reply(
             if !crate::api::email_approval::external_email_allowed(&home, &lane) {
                 let (r_to, r_cc, r_subject) = match ctx
                     .client
-                    .resolve_reply_recipients(&gmail_from, &message_id, reply_all, allow_self)
+                    .resolve_reply_recipients_cc(&gmail_from, &message_id, reply_all, allow_self, &extra_cc)
                     .await
                 {
                     Ok(v) => v,
@@ -805,7 +808,7 @@ pub async fn reply(
                     let payload = json!({
                         "from": gmail_from, "message_id": message_id,
                         "body": reply_body, "reply_all": reply_all,
-                        "allow_self": allow_self,
+                        "allow_self": allow_self, "cc": extra_cc,
                         "signature": body.get("signature").cloned().unwrap_or(Value::Null),
                         "attachments": body.get("attachments").cloned().unwrap_or(Value::Null),
                     });
@@ -846,7 +849,7 @@ pub async fn reply(
         }
         let res = ctx
             .client
-            .reply_send(
+            .reply_send_cc(
                 &gmail_from,
                 &message_id,
                 &reply_body,
@@ -854,6 +857,7 @@ pub async fn reply(
                 reply_all,
                 allow_self,
                 &attachments,
+                &extra_cc,
             )
             .await;
         report_outcome(
@@ -1289,7 +1293,7 @@ pub async fn approve(
             let reply_all = payload.get("reply_all").map(truthy).unwrap_or(false);
             let allow_self = payload.get("allow_self").map(truthy).unwrap_or(false);
             ctx.client
-                .reply_send(
+                .reply_send_cc(
                     &p("from"),
                     &p("message_id"),
                     &p("body"),
@@ -1297,6 +1301,7 @@ pub async fn approve(
                     reply_all,
                     allow_self,
                     &attachments,
+                    &p("cc"),
                 )
                 .await
         }
