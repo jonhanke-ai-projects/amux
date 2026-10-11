@@ -69,6 +69,14 @@ impl Who {
     }
 }
 
+fn gateway_email(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-amux-user-email")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+}
+
 fn who(headers: &HeaderMap, lanes: &[Lane]) -> Who {
     if let Some(email) = org::local_member_actor(headers) {
         // The verified actor is `member:<email>`; people are keyed by email.
@@ -81,6 +89,13 @@ fn who(headers: &HeaderMap, lanes: &[Lane]) -> Who {
     let claimed = super::groups::hdr_worker(headers);
     if let Some(lane) = lanes.iter().find(|l| l.name == claimed) {
         return Who::Worker { name: lane.name.clone(), groups: lane.groups.clone() };
+    }
+    // CLOUD: several people share one org container, and the gateway (the sole
+    // writer of X-Amux-*) names each with X-Amux-User-Email. Falling through
+    // to "owner" made them one person, so each could read the others' direct
+    // messages and post as them. Locally the header is absent.
+    if let Some(email) = gateway_email(headers) {
+        return Who::Person { email, scope: MemberScope::Global };
     }
     Who::Person { email: "owner".into(), scope: MemberScope::Global }
 }
@@ -112,6 +127,11 @@ fn lanes() -> Vec<Lane> {
             let env = crate::config::parse_env_file(&p);
             let unq = |k: &str| env.get(k).map(|v| v.trim().trim_matches('"').to_string()).unwrap_or_default();
             if matches!(unq("CC_ARCHIVED").to_ascii_lowercase().as_str(), "1" | "true" | "yes") {
+                return None;
+            }
+            // ISOLATED lanes get no amux routing, and every delivery carries
+            // a reply route; they have no thread and cannot be @mentioned.
+            if matches!(unq("CC_ISOLATED").to_ascii_lowercase().as_str(), "1" | "true" | "yes") {
                 return None;
             }
             let groups = unq("CC_TAGS")
@@ -598,9 +618,16 @@ fn body_text(headers: &HeaderMap, bytes: &Bytes) -> String {
 
 /// Headers that make an internal send carry the poster's identity: a member's
 /// verified identity, a worker's session, or nothing (the owner).
-fn send_headers(who: &Who) -> HeaderMap {
+fn send_headers(who: &Who, req: &HeaderMap) -> HeaderMap {
     let mut h = HeaderMap::new();
     match who {
+        // A cloud user is not a local member: carry the gateway's own identity
+        // header rather than minting member headers they never had.
+        Who::Person { email, .. } if org::local_member_actor(req).is_none() && gateway_email(req).as_ref() == Some(email) => {
+            if let Ok(v) = HeaderValue::from_str(email) {
+                h.insert("x-amux-user-email", v);
+            }
+        }
         Who::Person { email, scope } if email != "owner" => {
             org::stamp_member_headers(&mut h, email, scope);
         }
@@ -612,6 +639,13 @@ fn send_headers(who: &Who) -> HeaderMap {
         Who::Person { .. } => {}
     }
     h
+}
+
+const WORKER_CHAIN: usize = 4;
+
+/// True when the newest WORKER_CHAIN posts (newest first) are all workers'.
+fn worker_chain_capped(recent: &[String]) -> bool {
+    recent.len() >= WORKER_CHAIN && recent.iter().all(|a| a.starts_with("worker:"))
 }
 
 fn conv_label(conv: &Conv) -> String {
@@ -686,6 +720,19 @@ async fn create_post(
     if let Who::Worker { name, .. } = &me {
         targets.retain(|t| t != name);
         mentions.retain(|m| m != &format!("worker:{name}"));
+        // Two workers @mentioning each other would reply forever. A worker's
+        // post still lands, but delivers nothing once WORKER_CHAIN posts in a
+        // row have been workers'; a person posting resets it.
+        let recent: Vec<String> = state.store.read().ok().and_then(|c| {
+            let mut q = c.prepare("SELECT author_key FROM conversation_posts WHERE conv=?1 ORDER BY id DESC LIMIT ?2").ok()?;
+            let rows = q.query_map(rusqlite::params![conv.key(), WORKER_CHAIN as i64], |r| r.get::<_, String>(0)).ok()?;
+            Some(rows.filter_map(Result::ok).collect())
+        }).unwrap_or_default();
+        if !targets.is_empty() && worker_chain_capped(&recent) {
+            tracing::warn!(conv = %conv.key(), author = %name, held = targets.len(), measured = true, n_considered = recent.len(),
+                verdict = "conversation_worker_chain_capped", "worker-to-worker mentions held: no person has posted in this chain");
+            targets.clear();
+        }
     }
     let (key, author_key, ts) = (conv.key(), me.key(), now_ms());
     let id_cell = Arc::new(Mutex::new(0i64));
@@ -726,9 +773,9 @@ async fn create_post(
     // Deliver to workers in the background; the post exists either way, and
     // each outcome is written back onto it.
     if !targets.is_empty() {
-        let (st, me2, conv2, author, text_body) = (state.clone(), me.clone(), conv.clone(), author_name.clone(), body.clone());
+        let hdrs = send_headers(&me, &headers);
+        let (st, conv2, author, text_body) = (state.clone(), conv.clone(), author_name.clone(), body.clone());
         tokio::spawn(async move {
-            let hdrs = send_headers(&me2);
             let text = delivery_text(&conv2, &author, &text_body);
             let mut outcomes = Vec::new();
             for w in targets {
@@ -908,6 +955,31 @@ mod tests {
         assert!(matches!(me, Who::Person { scope: MemberScope::Group(ref g), .. } if g == "wexus"));
         let people = vec![Person { email: "ann@test.io".into(), name: "ann".into(), scope: MemberScope::Global }];
         assert_eq!(resolve_mentions("@ann look", &[], &people), vec![me.key()]);
+    }
+
+    #[test]
+    fn a_cloud_user_is_their_gateway_email_never_the_owner() {
+        let mut a = HeaderMap::new();
+        a.insert("x-amux-user-email", HeaderValue::from_static("Ann@Org.io"));
+        let mut b = HeaderMap::new();
+        b.insert("x-amux-user-email", HeaderValue::from_static("bob@org.io"));
+        let (ann, bob) = (who(&a, &[]), who(&b, &[]));
+        assert_eq!(ann.key(), "person:ann@org.io");
+        assert_ne!(ann.key(), bob.key(), "two cloud users are two people");
+        let dm = Conv::People("bob@org.io".into(), "carol@org.io".into());
+        assert!(!may_read(&ann, &dm, &[]), "ann cannot read bob and carol's DM");
+        assert_eq!(who(&HeaderMap::new(), &[]).key(), "person:owner", "locally the owner stays the owner");
+        let h = send_headers(&ann, &a);
+        assert_eq!(h.get("x-amux-user-email").and_then(|v| v.to_str().ok()), Some("ann@org.io"));
+        assert!(org::local_member_actor(&h).is_none(), "no member identity is minted for a cloud user");
+    }
+
+    #[test]
+    fn a_worker_only_chain_stops_delivering() {
+        let w = |n: &str| format!("worker:{n}");
+        assert!(worker_chain_capped(&[w("a"), w("b"), w("a"), w("b")]));
+        assert!(!worker_chain_capped(&[w("a"), w("b"), "person:owner".into(), w("b")]), "a person resets it");
+        assert!(!worker_chain_capped(&[w("a"), w("b")]), "short chains deliver");
     }
 
     #[test]
