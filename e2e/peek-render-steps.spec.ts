@@ -32,7 +32,8 @@ async function renderSteps(page: Page) {
   await page.evaluate(() => { (window as any)._peekShowRenderSteps(); });
   const modal = page.locator('#modal-msg');
   await expect(modal).toContainText('Rendering steps');
-  const text = await modal.innerText();
+  // textContent, so steps folded into a closed <details> are still read.
+  const text = (await modal.textContent()) || '';
   await page.evaluate(() => (window as any)._modalClose(true));
   return text;
 }
@@ -55,6 +56,7 @@ test('Claude output runs the Claude pipeline: tool calls collapse, and the steps
   // The latest poll either painted or found nothing new; both are honest outcomes.
   expect(text).toMatch(/✓\s*(painted|skip-unchanged)/);
   expect(text).toMatch(/history · full/);
+  expect(text).toMatch(/Not run on the server \(\d+\)/);
 });
 
 test('Codex output runs the Codex pipeline: no Claude tool-call collapsing', async ({ page }) => {
@@ -64,7 +66,7 @@ test('Codex output runs the Codex pipeline: no Claude tool-call collapsing', asy
   expect(text).toContain('codex (pipeline: codex)');
   expect(text).toContain('Server: history from codex-rollout');
   expect(text).not.toMatch(/✓\s*collapse-tool-calls/);
-  expect(text).toMatch(/·\s*collapse-tool-calls/);
+  expect(text).toMatch(/Not in this pipeline \(\d+\)[\s\S]*·\s*collapse-tool-calls/);
   expect(text).toMatch(/✓\s*ansi-to-html/);
 });
 

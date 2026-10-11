@@ -16835,6 +16835,7 @@ async function _peekShowRenderSteps() {
     + ' <code>' + esc(name) + '</code></td><td style="padding:2px 0;">' + esc(what) + (note ? '<div style="color:var(--dim);font-size:0.75rem;">' + esc(note) + '</div>' : '') + '</td></tr>';
   const table = rows => '<table style="width:100%;border-collapse:collapse;font-size:0.8rem;margin:4px 0 10px;">' + rows.join('') + '</table>';
   const h = text => '<div style="font-weight:700;margin-top:8px;">' + esc(text) + '</div>';
+  const folded = (label, inner) => '<details style="margin:0 0 10px;"><summary style="cursor:pointer;color:var(--dim);font-size:0.8rem;min-height:32px;">' + esc(label) + '</summary>' + inner + '</details>';
   let html = '<div style="font-weight:700;font-size:0.95rem;margin-bottom:6px;">Rendering steps</div>';
   if (!t) {
     html += '<div style="color:var(--dim);font-size:0.85rem;">No frame has been rendered in this peek yet.</div>';
@@ -16847,8 +16848,13 @@ async function _peekShowRenderSteps() {
       + (live ? '; live screen from ' + live.path + when(live) : ''));
     const ran = new Set([...((full && full.steps) || []), ...((live && live.steps) || [])]);
     if (!full && !live) html += '<div style="color:var(--dim);font-size:0.8rem;">This server did not report its steps (older server).</div>';
-    html += table(_peekServerSteps.map(st => row(ran.has(st.id), st.id, st.what,
-      [full && full.steps.includes(st.id) ? 'history' : '', live && live.steps.includes(st.id) ? 'live' : ''].filter(Boolean).join(' + '))));
+    // What ran, in order, first; the rest folded so a phone is not a scroll
+    // through greyed rows to find what happened.
+    const ranRows = _peekServerSteps.filter(st => ran.has(st.id)).map(st => row(true, st.id, st.what,
+      [full && full.steps.includes(st.id) ? 'history' : '', live && live.steps.includes(st.id) ? 'live' : ''].filter(Boolean).join(' + ')));
+    const notRun = _peekServerSteps.filter(st => !ran.has(st.id));
+    html += table(ranRows);
+    if (notRun.length) html += folded('Not run on the server (' + notRun.length + ')', table(notRun.map(st => row(false, st.id, st.what))));
     html += h('2. Dashboard: text passes');
     for (const region of ['history', 'live']) {
       const last = _peekLastRegion[region];
@@ -16859,10 +16865,13 @@ async function _peekShowRenderSteps() {
     }
     const usedText = new Set(Object.values(_peekLastRegion).flatMap(r => r.runs).flatMap(run => run.steps.map(st => st.id)));
     const idle = Object.keys(PEEK_STEPS).filter(id => !usedText.has(id));
-    if (idle.length) html += table(idle.map(id => row(false, id, PEEK_STEPS[id].what, 'not in this frame\u2019s pipeline')));
+    if (idle.length) html += folded('Not in this pipeline (' + idle.length + ')', table(idle.map(id => row(false, id, PEEK_STEPS[id].what))));
     html += h('3. Dashboard: frame decisions (latest poll)');
     const seen = new Map(t.frame.map(f => [f.id, f.note]));
-    html += table(Object.keys(PEEK_FRAME_STEPS).map(id => row(seen.has(id), id, PEEK_FRAME_STEPS[id], seen.get(id) || '')));
+    const fids = Object.keys(PEEK_FRAME_STEPS);
+    html += table(fids.filter(id => seen.has(id)).map(id => row(true, id, PEEK_FRAME_STEPS[id], seen.get(id) || '')));
+    const fIdle = fids.filter(id => !seen.has(id));
+    if (fIdle.length) html += folded('Did not apply (' + fIdle.length + ')', table(fIdle.map(id => row(false, id, PEEK_FRAME_STEPS[id]))));
   }
   return new Promise(resolve => {
     _modalResolve = resolve;
