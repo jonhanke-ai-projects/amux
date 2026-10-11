@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1321';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1325';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16768,18 +16768,26 @@ function _wrapToolCalls(html) {
     // default"). A reply ("⏺ Done. The fix…") stays open, since it is the
     // answer. A block the reader toggled keeps their choice.
     const isToolCall = /^\s*⏺\s+[\w:.-]+(?:\s*\(MCP\))?\(/.test(t);
-    const collapsed = id in _peekToolCollapsed ? _peekToolCollapsed[id] : isToolCall;
     if (hasBody) {
-      out.push('<div class="ptc' + (collapsed ? ' collapsed' : '') + '" id="ptc-' + id + '">'
-        + '<div class="ptc-head" onclick="_peekToggleTool(' + id + ', event)">'
-        + '<span class="ptc-caret"></span>' + lines[i] + '</div>'
-        + '<div class="ptc-body">' + lines.slice(i + 1, end).join('\n') + '</div></div>');
+      out.push({ id, isToolCall, head: lines[i], body: lines.slice(i + 1, end).join('\n') });
     } else {
       out.push(lines[i]);
     }
     i = end;
   }
-  return out.join('\n');
+  // THE NEWEST BLOCK STAYS OPEN (Ethan, 2026-10-05, fc767cfa, never pushed
+  // until 2026-10-11): tool calls start collapsed, but the last one is what the
+  // worker is doing now, so it renders expanded unless the reader toggled it.
+  let last = -1;
+  for (let k = out.length - 1; k >= 0; k--) if (typeof out[k] === 'object') { last = k; break; }
+  return out.map((b, k) => {
+    if (typeof b !== 'object') return b;
+    const collapsed = b.id in _peekToolCollapsed ? _peekToolCollapsed[b.id] : (b.isToolCall && k !== last);
+    return '<div class="ptc' + (collapsed ? ' collapsed' : '') + '" id="ptc-' + b.id + '">'
+      + '<div class="ptc-head" onclick="_peekToggleTool(' + b.id + ', event)">'
+      + '<span class="ptc-caret"></span>' + b.head + '</div>'
+      + '<div class="ptc-body">' + b.body + '</div></div>';
+  }).join('\n');
 }
 // FORMAT FOR THE SCREEN LIKE A TERMINAL (Ethan, 2026-09-24: "make peek look
 // like the underlying terminal but format for the screen"). The browser wraps

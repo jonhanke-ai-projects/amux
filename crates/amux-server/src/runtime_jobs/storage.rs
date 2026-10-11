@@ -403,17 +403,8 @@ pub const SPECS: &[SweepSpec] = &[
         env: "AMUX_STEERING_HISTORY_RETAIN_DAYS",
         default_days: 30.0,
     },
-    // 364k rows in 7 days, ~2.3 KB/row, ~50k rows/day. Invariant probe results
-    // are diagnostic snapshots: useful for recent trend analysis, not historical.
-    // 7d x 50,000 x 2,300B = ~805MB steady state. Was 830MB with zero retention
-    // after 7 days of accumulation (discovered 2026-10-05 disk audit).
-    SweepSpec {
-        table: "_amux_invariant_result",
-        ts_col: "ts",
-        unit: TsUnit::Secs,
-        env: "AMUX_INVARIANT_RESULT_RETAIN_DAYS",
-        default_days: 7.0,
-    },
+    // _amux_invariant_result is not listed: invariants/store.rs already trims
+    // it to 7 days (1 hour for passing rows) on every monitor pass.
     // ~1.2M rows, 187MB. Policy receipt records. 30d is enough for audit.
     // `created_at` is ISO-8601 TEXT like `_amux_state_events.at`.
     SweepSpec {
