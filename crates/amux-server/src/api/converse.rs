@@ -22,12 +22,16 @@
 //! it expires and the `converse-retention` job deletes its files on its next
 //! tick, logging one `verdict=` line per sweep.
 //!
-//! ENGINES. `browser` (Web Speech in, speechSynthesis out) always works.
-//! `personaplex` (NVIDIA PersonaPlex, a 7B full-duplex speech model) needs an
-//! NVIDIA GPU server; it is offered only when `AMUX_PERSONAPLEX_URL` resolves
-//! (server.env, then the worker > group > global scope) AND that server
-//! answers. `/api/converse/config` says which, and why, every time; it never
-//! reports a connection it did not make.
+//! ENGINES. `openai` (default when `OPENAI_API_KEY` is set) is OpenAI's
+//! Realtime API over browser WebRTC. This server mints a short-lived client
+//! secret per conversation (`POST /api/converse/{worker}/realtime-session`)
+//! carrying instructions built from the worker's own records (no model call)
+//! and one function tool, `ask_worker`, which the browser answers by asking
+//! the worker's chat companion (`<worker>@chat`, the Chat tab's lane). The API
+//! key never reaches the page or the log. `browser` (Web Speech in,
+//! speechSynthesis out, replies also from the chat companion) is the free
+//! fallback. Neither engine ever uses the worker's terminal send path, so a
+//! conversation never interrupts the worker.
 
 use super::AppState;
 use axum::body::Bytes;
@@ -42,7 +46,19 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const RETENTION_KEY: &str = "AMUX_CONVERSE_RETENTION_DAYS";
-pub const PERSONAPLEX_KEY: &str = "AMUX_PERSONAPLEX_URL";
+pub const OPENAI_KEY: &str = "OPENAI_API_KEY";
+pub const MODEL_KEY: &str = "AMUX_CONVERSE_REALTIME_MODEL";
+pub const VOICE_KEY: &str = "AMUX_CONVERSE_REALTIME_VOICE";
+pub const TRANSCRIBE_KEY: &str = "AMUX_CONVERSE_TRANSCRIBE_MODEL";
+/// Overrides the OpenAI API base (tests point it at a local stub).
+pub const BASE_KEY: &str = "AMUX_CONVERSE_OPENAI_BASE";
+const DEFAULT_MODEL: &str = "gpt-realtime-2.1";
+const DEFAULT_VOICE: &str = "marin";
+const DEFAULT_TRANSCRIBE: &str = "gpt-4o-mini-transcribe";
+const OPENAI_BASE: &str = "https://api.openai.com/v1";
+/// A client secret only has to live long enough to open the WebRTC call.
+const SECRET_TTL_SECS: u64 = 120;
+const CONTEXT_MAX_CHARS: usize = 3000;
 const DEFAULT_RETENTION_DAYS: u32 = 30;
 const DAY_MS: i64 = 86_400_000;
 /// A long conversation at opus bitrates is a few MB per 10 minutes; 200 MB is
@@ -55,6 +71,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/converse/config", get(config))
         .route("/api/converse/sweep", post(sweep_now))
+        .route("/api/converse/{worker}/realtime-session", post(realtime_session_route))
         .route(
             "/api/converse/{worker}/conversations",
             get(list).post(upsert),
@@ -198,100 +215,242 @@ fn summary(v: &Value) -> Value {
         o.remove("turns");
     }
     s["turn_count"] = json!(turns.len());
+    s["latency"] = latency_summary(&turns);
     s["preview"] = json!(preview);
     s
 }
 
 // ---- config -----------------------------------------------------------------
 
-#[derive(Deserialize, Default)]
-struct ConfigQuery {
-    worker: Option<String>,
+/// The OpenAI key, read server-side only. Never returned, never logged.
+fn openai_key(home: &Path) -> Option<String> {
+    super::settings::effective_env(home, OPENAI_KEY).map(|k| k.trim().to_string()).filter(|k| !k.is_empty())
 }
 
-fn personaplex_url(home: &Path, worker: Option<&str>) -> (Option<String>, &'static str) {
-    if let Some(v) = super::settings::effective_env(home, PERSONAPLEX_KEY) {
-        return (Some(v.trim().to_string()), "server_env");
-    }
-    if let Some(w) = worker.filter(|w| valid_worker(w)) {
-        if let Some(v) = super::session_verbs::scoped_setting_in(home, w, PERSONAPLEX_KEY) {
-            return (Some(v), "scope");
-        }
-    }
-    (None, "unset")
+fn knob(home: &Path, key: &str, dflt: &str) -> String {
+    super::settings::effective_env(home, key)
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| dflt.to_string())
 }
 
-async fn probe(url: &str) -> Result<u16, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        // moshi/PersonaPlex servers commonly run on a self-signed cert.
-        .danger_accept_invalid_certs(true)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let r = client.get(url).send().await.map_err(|e| e.to_string())?;
-    Ok(r.status().as_u16())
-}
-
-async fn config(Query(q): Query<ConfigQuery>) -> Response {
+async fn config() -> Response {
     let home = crate::config::amux_home();
     let (days, days_source) = retention_days(&home);
-    let (url, url_source) = personaplex_url(&home, q.worker.as_deref());
-    let personaplex = match url.as_deref() {
-        None => json!({
-            "id": "personaplex",
-            "label": "NVIDIA PersonaPlex",
-            "available": false,
-            "configured": false,
-            "probed": false,
-            "reason": format!("Needs a PersonaPlex server on an NVIDIA GPU. Set {PERSONAPLEX_KEY} to its address."),
-        }),
-        Some(u) if !(u.starts_with("http://") || u.starts_with("https://")) => json!({
-            "id": "personaplex",
-            "label": "NVIDIA PersonaPlex",
-            "available": false,
-            "configured": true,
-            "probed": false,
-            "url": u,
-            "url_source": url_source,
-            "reason": format!("{PERSONAPLEX_KEY} must be an http(s) URL; it is {u:?}."),
-        }),
-        Some(u) => {
-            let res = probe(u).await;
-            let (ok, reason) = match &res {
-                Ok(code) if *code < 500 => (true, format!("PersonaPlex server answered HTTP {code}.")),
-                Ok(code) => (false, format!("{PERSONAPLEX_KEY} is set but the server answered HTTP {code}.")),
-                Err(e) => (false, format!("{PERSONAPLEX_KEY} is set but the server did not answer: {e}")),
-            };
-            if !ok {
-                tracing::warn!(url = %u, verdict = "personaplex_unreachable", measured = true,
-                    n_considered = 1, "[converse] {reason}");
-            }
-            json!({
-                "id": "personaplex",
-                "label": "NVIDIA PersonaPlex",
-                "available": ok,
-                "configured": true,
-                "probed": true,
-                "url": u,
-                "url_source": url_source,
-                "reason": reason,
-            })
-        }
-    };
+    let has_key = openai_key(&home).is_some();
+    let model = knob(&home, MODEL_KEY, DEFAULT_MODEL);
+    let voice = knob(&home, VOICE_KEY, DEFAULT_VOICE);
     Json(json!({
         "measured": true,
         "n_considered": 2,
         "engines": [
+            {"id": "openai", "label": "OpenAI Realtime", "available": has_key, "default": true,
+             "model": model, "voice": voice,
+             "reason": if has_key {
+                 format!("Speech to speech over WebRTC with {model}; billed per audio minute.")
+             } else {
+                 format!("{OPENAI_KEY} is not set in ~/.amux/server.env, so browser speech is used.")
+             }},
             {"id": "browser", "label": "Browser speech", "available": true,
-             "reason": "Speech recognition and synthesis built into this browser."},
-            personaplex,
+             "reason": "Free fallback: speech recognition and synthesis built into this browser."},
         ],
         "retention_days": days,
         "retention_source": days_source,
         "retention_key": RETENTION_KEY,
-        "personaplex_key": PERSONAPLEX_KEY,
     }))
     .into_response()
+}
+
+// ---- OpenAI Realtime --------------------------------------------------------
+
+/// What the voice model knows about the worker before it asks anything:
+/// computed from amux's own records, no model call, bounded.
+pub(crate) fn worker_context(conn: Option<&rusqlite::Connection>, worker: &str) -> String {
+    fn clip(s: &str, n: usize) -> String {
+        let t = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if t.chars().count() > n { format!("{}...", t.chars().take(n).collect::<String>()) } else { t }
+    }
+    let mut out = vec![format!("Worker: {worker}")];
+    let env_exists = super::session_verbs::env_path(worker).exists();
+    if !env_exists {
+        out.push("(No amux worker by this name exists; you have no worker context.)".to_string());
+    } else {
+        let env = super::session_verbs::parse_env(worker);
+        let desc = env.get_or("CC_DESC", "");
+        if !desc.trim().is_empty() {
+            out.push(format!("What it does: {}", clip(desc, 400)));
+        }
+        if let Some(conn) = conn {
+            let card: Option<(String, String, String)> = conn
+                .query_row(
+                    "SELECT id, COALESCE(title,''), COALESCE(desc,'') FROM issues WHERE session=?1 AND status='doing' \
+                     AND deleted IS NULL AND COALESCE(archived,0)=0 ORDER BY updated DESC LIMIT 1",
+                    [worker],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .ok();
+            match card {
+                Some((id, title, desc)) => out.push(format!("Current card: {id} {}. {}", clip(&title, 160), clip(&desc, 300))),
+                None => out.push("Current card: none in progress.".to_string()),
+            }
+            if let Ok(mut st) = conn.prepare("SELECT text FROM cmd_history WHERE session=?1 ORDER BY id DESC LIMIT 3") {
+                let recent: Vec<String> = st
+                    .query_map([worker], |r| r.get::<_, String>(0))
+                    .map(|it| it.flatten().map(|t| clip(&t, 200)).collect())
+                    .unwrap_or_default();
+                if !recent.is_empty() {
+                    out.push(format!("Recent messages sent to it, newest first: {}", recent.join(" | ")));
+                }
+            }
+        }
+        let last = super::session_verbs::last_assistant_message(worker, 2000);
+        if !last.trim().is_empty() {
+            out.push(format!("Its last reply: {}", clip(&last, 600)));
+        }
+    }
+    let s = out.join("\n");
+    s.chars().take(CONTEXT_MAX_CHARS).collect()
+}
+
+pub(crate) fn instructions(worker: &str, context: &str) -> String {
+    format!(
+        "You are the voice of the amux worker \"{worker}\", talking with its owner hands-free. \
+         Reply in short, natural spoken sentences with no markdown, lists or code. \
+         The context below is all you know directly. For anything about the worker's real current \
+         state, its files, code, board or progress, or to get it to do something, call the \
+         ask_worker tool with one clear request. That goes to the worker's chat companion, which \
+         can look deeper and relay to the worker without interrupting its current work. Say a \
+         short filler such as \"Let me check\" before calling it. Never claim something was done \
+         unless ask_worker said so.\n\nContext:\n{context}"
+    )
+}
+
+pub(crate) fn ask_worker_tool() -> Value {
+    json!({
+        "type": "function",
+        "name": "ask_worker",
+        "description": "Ask the worker's chat companion a question or hand it a request. It answers with what it found or did, and relays to the worker only when needed, without interrupting it. Use for anything beyond the context you were given.",
+        "parameters": {
+            "type": "object",
+            "properties": {"request": {"type": "string", "description": "The question or request, in plain words."}},
+            "required": ["request"],
+        },
+    })
+}
+
+pub(crate) fn realtime_session(model: &str, voice: &str, transcribe: &str, instructions: &str) -> Value {
+    json!({
+        "expires_after": {"anchor": "created_at", "seconds": SECRET_TTL_SECS},
+        "session": {
+            "type": "realtime",
+            "model": model,
+            "instructions": instructions,
+            "tools": [ask_worker_tool()],
+            "tool_choice": "auto",
+            "audio": {
+                "input": {
+                    "transcription": {"model": transcribe},
+                    "turn_detection": {"type": "server_vad", "silence_duration_ms": 450,
+                                       "create_response": true, "interrupt_response": true},
+                },
+                "output": {"voice": voice},
+            },
+        },
+    })
+}
+
+/// Mint a short-lived client secret. Only `value`, `expires_at` and the
+/// session id come back out; the API key never leaves this function, and an
+/// upstream error is scrubbed of it before it is reported.
+pub(crate) async fn mint(base: &str, key: &str, body: &Value) -> Result<Value, (u16, String)> {
+    // The exact key, and any key-shaped token: OpenAI's own 401 echoes a
+    // masked form ("sk-proj-****Dv0A"), and even its last four characters
+    // have no business on the page.
+    let scrub = |s: String| {
+        let s = s.replace(key, "[redacted]");
+        static KEYISH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        KEYISH
+            .get_or_init(|| regex::Regex::new(r"sk-[A-Za-z0-9_*\-]{4,}").expect("static key pattern"))
+            .replace_all(&s, "[redacted]")
+            .into_owned()
+    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| (0, e.to_string()))?;
+    let r = client
+        .post(format!("{base}/realtime/client_secrets"))
+        .bearer_auth(key)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| (0, scrub(e.to_string())))?;
+    let status = r.status().as_u16();
+    let text = r.text().await.unwrap_or_default();
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if status >= 300 {
+        let msg = v["error"]["message"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(300).collect());
+        return Err((status, scrub(msg)));
+    }
+    let Some(secret) = v["value"].as_str().filter(|s| !s.is_empty() && *s != key) else {
+        return Err((status, "the client secret response had no value".to_string()));
+    };
+    Ok(json!({
+        "client_secret": secret,
+        "expires_at": v["expires_at"],
+        "session_id": v["session"]["id"],
+    }))
+}
+
+async fn realtime_session_route(State(state): State<AppState>, AxPath(worker): AxPath<String>) -> Response {
+    if !valid_worker(&worker) {
+        return err(StatusCode::BAD_REQUEST, "invalid worker name");
+    }
+    let home = crate::config::amux_home();
+    let Some(key) = openai_key(&home) else {
+        tracing::info!(worker = %worker, verdict = "realtime_no_key", measured = true, n_considered = 1,
+            "[converse] OpenAI Realtime unavailable: {OPENAI_KEY} not set; client falls back to browser speech");
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+            "ok": false, "fallback": "browser",
+            "reason": format!("{OPENAI_KEY} is not set in ~/.amux/server.env."),
+        }))).into_response();
+    };
+    let model = knob(&home, MODEL_KEY, DEFAULT_MODEL);
+    let voice = knob(&home, VOICE_KEY, DEFAULT_VOICE);
+    let transcribe = knob(&home, TRANSCRIBE_KEY, DEFAULT_TRANSCRIBE);
+    let base = knob(&home, BASE_KEY, OPENAI_BASE);
+    let store = state.store.clone();
+    let w = worker.clone();
+    let context = tokio::task::spawn_blocking(move || {
+        let conn = store.read().ok();
+        worker_context(conn.as_deref(), &w)
+    })
+    .await
+    .unwrap_or_else(|_| format!("Worker: {worker}"));
+    let body = realtime_session(&model, &voice, &transcribe, &instructions(&worker, &context));
+    let started = std::time::Instant::now();
+    match mint(&base, &key, &body).await {
+        Ok(mut out) => {
+            tracing::info!(worker = %worker, model = %model, voice = %voice, context_chars = context.chars().count(),
+                mint_ms = started.elapsed().as_millis() as u64, verdict = "realtime_secret_minted",
+                "[converse] OpenAI Realtime client secret minted (key not logged)");
+            out["ok"] = json!(true);
+            out["model"] = json!(model);
+            out["voice"] = json!(voice);
+            out["calls_url"] = json!(format!("{base}/realtime/calls"));
+            out["context_chars"] = json!(context.chars().count());
+            out["tool"] = json!("ask_worker");
+            Json(out).into_response()
+        }
+        Err((status, message)) => {
+            tracing::warn!(worker = %worker, upstream_status = status, verdict = "realtime_mint_failed",
+                "[converse] OpenAI Realtime client secret could not be minted: {message}");
+            (StatusCode::BAD_GATEWAY, Json(json!({
+                "ok": false, "fallback": "browser", "upstream_status": status,
+                "reason": format!("OpenAI refused the session ({status}): {message}"),
+            }))).into_response()
+        }
+    }
 }
 
 // ---- list / read ------------------------------------------------------------
@@ -409,15 +568,45 @@ fn clean_turns(v: &Value) -> Vec<Value> {
                         "worker" | "assistant" => "worker",
                         _ => "system",
                     };
-                    Some(json!({
+                    let mut turn = json!({
                         "role": role,
                         "text": text.chars().take(MAX_TURN_CHARS).collect::<String>(),
                         "t_ms": t["t_ms"].as_i64().unwrap_or(0).max(0),
-                    }))
+                    });
+                    // Utterance end to the first sound of this reply.
+                    if let Some(ms) = t["first_audio_ms"].as_i64().filter(|m| (0..600_000).contains(m)) {
+                        turn["first_audio_ms"] = json!(ms);
+                    }
+                    Some(turn)
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Billed usage the browser measured: audio milliseconds each way and the
+/// Realtime token counts from `response.done`. Numbers only.
+fn clean_usage(v: &Value) -> Value {
+    let Some(o) = v.as_object() else { return Value::Null };
+    let keys = ["audio_in_ms", "audio_out_ms", "input_audio_tokens", "output_audio_tokens",
+                "input_text_tokens", "output_text_tokens", "cached_tokens", "responses", "tool_calls"];
+    let mut out = serde_json::Map::new();
+    for k in keys {
+        if let Some(n) = o.get(k).and_then(Value::as_i64).filter(|n| *n >= 0) {
+            out.insert(k.to_string(), json!(n));
+        }
+    }
+    if out.is_empty() { Value::Null } else { Value::Object(out) }
+}
+
+/// Median and worst first-audio latency over the replies that measured one.
+pub(crate) fn latency_summary(turns: &[Value]) -> Value {
+    let mut ms: Vec<i64> = turns.iter().filter_map(|t| t["first_audio_ms"].as_i64()).collect();
+    if ms.is_empty() {
+        return Value::Null;
+    }
+    ms.sort_unstable();
+    json!({"n": ms.len(), "median_ms": ms[ms.len() / 2], "max_ms": ms[ms.len() - 1]})
 }
 
 fn short(s: Option<&str>, max: usize) -> String {
@@ -461,7 +650,9 @@ fn build_record(worker: &str, id: &str, body: &Value, prev: Option<&Value>, now:
         "ended_at": ended_at,
         "duration_ms": duration_ms,
         "turns": turns,
+        "usage": clean_usage(&body["usage"]),
         "audio": prev.map(|p| p["audio"].clone()).unwrap_or(Value::Null),
+        "rev": body["rev"].as_i64().unwrap_or(0),
         "created_at": prev.and_then(|p| p["created_at"].as_i64()).unwrap_or(now),
         "updated_at": now,
     })
@@ -483,6 +674,15 @@ async fn upsert(AxPath(worker): AxPath<String>, Json(body): Json<Value>) -> Resp
     let w = worker.clone();
     let res = tokio::task::spawn_blocking(move || {
         let prev = read_record(&path);
+        // A client revision older than the stored one is a late, stale save:
+        // keep what is stored rather than roll it back.
+        if let (Some(p), Some(rev)) = (prev.as_ref(), body["rev"].as_i64()) {
+            if p["rev"].as_i64().is_some_and(|stored| rev < stored) {
+                tracing::info!(id = %id, rev, stored = p["rev"].as_i64().unwrap_or(0),
+                    verdict = "stale_save_ignored", "[converse] an out-of-order save was ignored");
+                return Ok::<_, std::io::Error>((p.clone(), false));
+            }
+        }
         let rec = build_record(&w, &id, &body, prev.as_ref(), now);
         let bytes = serde_json::to_vec_pretty(&rec).map_err(std::io::Error::other)?;
         write_atomic(&path, &bytes)?;
@@ -494,6 +694,21 @@ async fn upsert(AxPath(worker): AxPath<String>, Json(body): Json<Value>) -> Resp
             if created {
                 tracing::info!(worker = %worker, id = %rec["id"].as_str().unwrap_or(""),
                     engine = %rec["engine"].as_str().unwrap_or(""), "[converse] conversation started");
+            }
+            if rec["ended_at"].is_i64() {
+                let u = &rec["usage"];
+                let lat = latency_summary(rec["turns"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+                tracing::info!(worker = %worker, id = %rec["id"].as_str().unwrap_or(""),
+                    engine = %rec["engine"].as_str().unwrap_or(""),
+                    duration_ms = rec["duration_ms"].as_i64().unwrap_or(0),
+                    audio_in_ms = u["audio_in_ms"].as_i64().unwrap_or(0),
+                    audio_out_ms = u["audio_out_ms"].as_i64().unwrap_or(0),
+                    input_audio_tokens = u["input_audio_tokens"].as_i64().unwrap_or(0),
+                    output_audio_tokens = u["output_audio_tokens"].as_i64().unwrap_or(0),
+                    first_audio_median_ms = lat["median_ms"].as_i64().unwrap_or(-1),
+                    first_audio_n = lat["n"].as_i64().unwrap_or(0),
+                    verdict = "conversation_ended", measured = true, n_considered = 1,
+                    "[converse] conversation ended: usage and first-audio latency recorded");
             }
             let mut out = decorate(rec, &worker, days, now);
             out["created"] = json!(created);
@@ -864,6 +1079,54 @@ mod tests {
         assert_eq!(r["created_at"], json!(5));
         assert_eq!(r["audio"]["file"], json!("x.webm"));
         assert_eq!(r["duration_ms"], json!(1200));
+    }
+
+    /// A local stand-in for api.openai.com: answers the mint with a secret,
+    /// or with an error that echoes the bearer token, to prove neither path
+    /// lets the real key out.
+    async fn stub_openai(echo_key_in_error: bool) -> String {
+        use axum::routing::post as p;
+        let app = axum::Router::new().route("/v1/realtime/client_secrets", p(move |headers: HeaderMap, Json(body): Json<Value>| async move {
+            let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            assert_eq!(body["session"]["type"], json!("realtime"));
+            assert_eq!(body["session"]["tools"][0]["name"], json!("ask_worker"));
+            if echo_key_in_error {
+                (StatusCode::UNAUTHORIZED, Json(json!({"error": {"message": format!("bad credentials {auth}; Incorrect API key provided: sk-proj-********Dv0A.")}})))
+            } else {
+                (StatusCode::OK, Json(json!({"value": "ek_test_123", "expires_at": 1_800_000_000, "session": {"id": "sess_test"}})))
+            }
+        }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn the_mint_returns_the_client_secret_and_never_the_api_key() {
+        let key = "sk-test-REALKEY-0123456789";
+        let body = realtime_session("gpt-realtime-2.1", "marin", "gpt-4o-mini-transcribe", &instructions("w", "Worker: w"));
+        let ok = mint(&stub_openai(false).await, key, &body).await.unwrap();
+        assert_eq!(ok["client_secret"], json!("ek_test_123"));
+        assert!(!ok.to_string().contains(key), "{ok}");
+        let (status, msg) = mint(&stub_openai(true).await, key, &body).await.unwrap_err();
+        assert_eq!(status, 401);
+        assert!(!msg.contains(key), "upstream error must be scrubbed: {msg}");
+        assert!(!msg.contains("sk-"), "a masked key echo is scrubbed too: {msg}");
+        assert!(msg.contains("[redacted]"));
+    }
+
+    #[test]
+    fn the_session_carries_bounded_context_and_one_tool() {
+        let ctx = worker_context(None, "no-such-worker-xyz");
+        assert!(ctx.contains("No amux worker by this name exists"));
+        assert!(ctx.chars().count() <= CONTEXT_MAX_CHARS);
+        let s = realtime_session("m", "v", "t", &instructions("no-such-worker-xyz", &ctx));
+        assert_eq!(s["session"]["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(s["session"]["audio"]["input"]["turn_detection"]["interrupt_response"], json!(true));
+        assert!(s["session"]["instructions"].as_str().unwrap().contains("ask_worker"));
+        assert_eq!(latency_summary(&[json!({"first_audio_ms": 900}), json!({}), json!({"first_audio_ms": 300})]),
+            json!({"n": 2, "median_ms": 900, "max_ms": 900}));
     }
 
     #[test]

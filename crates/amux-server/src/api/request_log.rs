@@ -2750,6 +2750,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // -- Converse tab: voice conversations with a worker (api/converse.rs)
     RouteEntry { path: "/api/converse/config", methods: &["GET"] },
     RouteEntry { path: "/api/converse/sweep", methods: &["POST"] },
+    RouteEntry { path: "/api/converse/{worker}/realtime-session", methods: &["POST"] },
     RouteEntry { path: "/api/converse/{worker}/conversations", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/converse/{worker}/conversations/{id}", methods: &["GET", "DELETE"] },
     RouteEntry { path: "/api/converse/{worker}/conversations/{id}/audio", methods: &["GET", "PUT"] },

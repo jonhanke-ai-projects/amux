@@ -3313,14 +3313,16 @@ async function _upqCancel(id) {
 // The byte store stays separate: it is chunked IDB, never JSON/localStorage.
 let _uploadSyncPending = false;
 function _upqDrain() { return runSyncBanner(true); }
-async function _syncOneUpload(item) {
+// onProgress(f) is called as chunks land, with f.status ("Uploading 34% ·
+// 34.0 / 100.0 MB") and f.sent; the sync checklist shows it on the row.
+async function _syncOneUpload(item, onProgress) {
   const deliver = async () => {
     const current = (await _upqList()).find(row => row.id === item.id);
     if (!current) throw new Error('Upload changed in another tab — refresh to review');
     if (current.surface === 'directory') {
       const f = {...current, file:_storedUploadFile(current), stored:true, chunk:0};
       // A finish receipt may already be durable if the page closed before removal.
-      if (!f.path || !f.url) await _runUpload(f, {render:() => {}});
+      if (!f.path || !f.url) await _runUpload(f, {render:() => { if (onProgress) onProgress(f); }});
       if (!f.path || !f.url) throw new Error(f.error || 'Server has not confirmed this file');
     } else {
       const fd = new FormData();
@@ -3576,11 +3578,16 @@ async function _runSyncBanner(quiet = false) {
     const done = items.filter(i => i.status === 'done').length;
     const failed = items.filter(i => i.status === 'failed').length;
     titleEl.textContent = 'Syncing ' + done + '/' + items.length + (failed ? ' (' + failed + ' failed)' : '') + (skipped ? ' (' + skipped + ' skipped)' : '');
-    _syncPillText = done < items.length ? 'Syncing ' + done + '/' + items.length : '';
+    const live = items.find(i => i.status === 'running' && i.pct > 0);
+    _syncPillText = done < items.length ? 'Syncing ' + done + '/' + items.length + (live ? ' \u00b7 ' + live.pct + '%' : '') : '';
     updateConnectionStatus();
     itemsEl.innerHTML = items.map(i => {
       const icon = i.status === 'done' ? '&#x2714;' : i.status === 'failed' ? '&#x2718;' : i.status === 'skipped' ? '&mdash;' : '';
-      return '<div data-sync-id="' + esc(i.key) + '" class="sync-item ' + i.status + '"><span class="sync-box" aria-hidden="true">' + icon + '</span>' + esc(i.label) + '</div>';
+      const prog = i.status === 'running' && i.progress
+        ? '<div class="sync-progress"><div class="sync-progress-text">' + esc(i.progress) + '</div>'
+          + '<div class="sync-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + (i.pct || 0) + '"><span style="width:' + (i.pct || 0) + '%"></span></div></div>'
+        : '';
+      return '<div data-sync-id="' + esc(i.key) + '" class="sync-item ' + i.status + '"><span class="sync-box" aria-hidden="true">' + icon + '</span><span class="sync-label">' + esc(i.label) + prog + '</span></div>';
     }).join('');
   }
 
@@ -3739,7 +3746,16 @@ async function _runSyncBanner(quiet = false) {
   }
   for (const item of items.filter(i => i.type === 'upload' && i.replay !== false)) {
     item.status = 'running'; renderBanner();
-    try { await _syncOneUpload(item.file); item.status = 'done'; }
+    // A 100 MB upload sat behind a bare spinner with "Syncing 0/1" for minutes
+    // (Ethan, 2026-10-11). The uploader already counts bytes per chunk; show it
+    // on the row and in the pill, repainted at most once a frame.
+    let raf = 0;
+    const progress = f => {
+      item.progress = f.status || '';
+      item.pct = typeof _uploadPct === 'function' ? _uploadPct(f) : 0;
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderBanner(); });
+    };
+    try { await _syncOneUpload(item.file, progress); item.status = 'done'; item.progress = ''; }
     catch (error) {
       item.status = 'failed'; item.label += ' — ' + String(error.message || error);
       _uploadStorageError('sync-unconfirmed', error);
@@ -13666,8 +13682,8 @@ async function _peekRunSchedule(id) {
   _peekLoadSchedules();
 }
 async function _peekDeleteSchedule(id) {
-  if (!confirm('Delete this schedule?')) return;
-  await apiCall(API + '/api/schedules/' + id + '?by=dashboard', { method: 'DELETE' });
+  // The shared confirm and outcome toast (deleteSchedule), never window.confirm.
+  await deleteSchedule(id);
   _peekLoadSchedules();
 }
 async function _peekEditSchedule(id) {
@@ -13679,9 +13695,7 @@ async function _peekEditSchedule(id) {
 async function _peekNewSchedule() {
   // Open the full modal preset to this session, so the rich mode picker is available.
   await fetchSchedules();
-  openSchedModal();
-  const sel = document.getElementById('sched-session');
-  if (sel && peekSession) sel.value = peekSession;
+  openSchedModal(null, { session: peekSession || '' });
 }
 
 // ── Peek worker logs ──
@@ -22684,7 +22698,9 @@ async function _openScheduleFromMessage(id) {
   switchView('scheduler');
   await Promise.all([fetchSchedules(), fetchSchedulerRuns(), fetchSchedulerAudit()]);
   renderScheduler();
-  if ((schedules || []).some(s => s.id === sid && !s.deleted)) openSchedModal(sid);
+  // The details panel, not the editor: following a link is reading, and the
+  // panel has Edit one tap away.
+  if ((schedules || []).some(s => s.id === sid && !s.deleted)) openSchedDetail(sid);
   else showToast(sid + ' is no longer active — see scheduler audit');
 }
 function _linkifyScheduleIds(safeHtml) {
@@ -24934,7 +24950,11 @@ async function _renderPdf(data, body) {
   // Range-capable raw stream, at any size. Touch devices keep pdf.js: iOS shows
   // only a first-page snapshot of a framed PDF.
   const rawSrc = data.raw_url ? _authUrl(API + data.raw_url) : (data.path ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(data.path)) : '');
-  if (rawSrc && !(window.matchMedia && matchMedia('(pointer: coarse)').matches)) {
+  // localStorage amux_pdf_viewer = 'pdfjs' keeps the in-page renderer on desktop
+  // too (page-by-page canvases, the 30-page preview cap and its notice).
+  let forcePdfjs = false;
+  try { forcePdfjs = localStorage.getItem('amux_pdf_viewer') === 'pdfjs'; } catch (e) {}
+  if (rawSrc && !forcePdfjs && !(window.matchMedia && matchMedia('(pointer: coarse)').matches)) {
     if (!current()) return;
     body.innerHTML = '';
     const frame = document.createElement('iframe');
@@ -32671,7 +32691,8 @@ function switchView(view) {
     // separately because they are a separate thing (see renderSystemJobs), and
     // refreshed on a timer because a frozen age is the exact failure the
     // section exists to prevent.
-    fetchSystemJobs().then(renderSystemJobs);
+    // renderScheduler again after: the System pill's count is the job count.
+    fetchSystemJobs().then(() => { renderSystemJobs(); renderScheduler(); });
     _startSysJobsTimer();
   } else {
     if (boardTimer) { clearInterval(boardTimer); boardTimer = null; }
@@ -34742,7 +34763,10 @@ async function fetchSchedules() {
 let _schedulerRuns = [];
 async function fetchSchedulerRuns() {
   try {
-    const r = await fetch(API + '/api/schedules/runs');
+    // 500, not the endpoint's default 50: the rows' recent-run dots and the
+    // Running/Failing status read this list, and ~200 runs a day fleet-wide
+    // rotate a 50-row window out inside a few hours (MF-847).
+    const r = await fetch(API + '/api/schedules/runs?limit=500');
     if (r.ok) { _schedulerRuns = await r.json(); try { localStorage.setItem('amux_sched_runs_cache', JSON.stringify(_schedulerRuns)); } catch(e) {} }
   } catch(e) {
     try { var c = localStorage.getItem('amux_sched_runs_cache'); if (c) _schedulerRuns = JSON.parse(c); } catch(e2) {}
@@ -34791,7 +34815,11 @@ function renderSchedulerAudit(rowsIn, liveIdsIn) {
     return;
   }
   const live = liveIdsIn || new Set((schedules || []).map(s => s.id));
-  el.innerHTML = rows.map(r => {
+  el.innerHTML = rows.map(r => _schedAuditRow(r, live)).join('');
+}
+// One audit row, shared by the fleet-wide Change history panel and the
+// details panel's History tab, so the two cannot describe a change differently.
+function _schedAuditRow(r, live) {
     const gone = !live.has(r.schedule_id);
     const del = r.field === 'deleted' || r.source === 'api-delete';
     const who = r.by_who || 'unattributed';
@@ -34815,7 +34843,6 @@ function renderSchedulerAudit(rowsIn, liveIdsIn) {
       + '<span style="color:var(--dim);">' + label + ' by </span>' + whoHtml
       + '<span style="color:var(--dim);margin-left:auto;">' + timeAgo(Number(r.ts) || 0) + '</span>'
       + '</div>' + diff + '</div>';
-  }).join('');
 }
 
 // WHAT A RUN DOT MEANS (AMUX-2647). Before the delivery verdict existed there
@@ -34965,27 +34992,419 @@ function _copyMsgId(id) {
   try { navigator.clipboard.writeText(full); } catch(e) {}
   if (typeof showToast === 'function') showToast(full + ' copied');
 }
-function toggleSchedExpand(id) {
-  const el = document.getElementById('sched-cmd-' + id);
-  if (!el) return;
-  const showing = el.style.display !== 'none';
-  el.style.display = showing ? 'none' : 'block';
-  const btn = document.getElementById('sched-view-btn-' + id);
-  if (btn) btn.textContent = showing ? 'View' : 'Hide';
+// The last-run line for a schedule row, shared by every row (and therefore by
+// both the global scheduler and the worker-details peek, which render through
+// the same renderScheduler). `last_run` arrives either as an epoch int/string or
+// an ISO wall-clock string, so normalise both; the title carries the absolute
+// local time, the label the relative one (Ethan 2026-08-19). The total run
+// count rides beside it, as it did on the old card.
+function _schedLastRunHTML(s) {
+  const total = `<span title="Total runs">&#xD7;${s && s.run_count ? s.run_count : 0}</span>`;
+  if (!s || !s.last_run) return `<span class="sx-sub sx-dim">never run &middot; ${total}</span>`;
+  // An epoch arrives as a digit STRING from the rust writer; relTime only
+  // reads numbers as epochs, so it rendered "—" for every loop's last run.
+  const ms = /^\d+$/.test(String(s.last_run))
+    ? (+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)
+    : new Date(String(s.last_run).replace(' ', 'T')).getTime();
+  const abs = new Date(ms).toLocaleString();
+  return `<span class="sx-sub sx-dim"><span title="last run: ${esc(abs)}">&#x2713; ${relTime(ms)}</span> &middot; ${total}</span>`;
 }
 
-// The last-run cell for a schedule row, shared by the enabled AND disabled
-// templates (and therefore by both the global scheduler and the worker-details
-// peek, which render through the same renderScheduler). `last_run` arrives either
-// as an epoch int/string or an ISO wall-clock string, so normalise both; the
-// title carries the absolute local time, the label the relative one. Extracted so
-// the two row templates cannot drift on "when did this last run" (Ethan 2026-08-19).
-function _schedLastRunHTML(s) {
-  if (!s || !s.last_run) return '<span style="color:var(--dim);">never</span>';
-  const abs = /^\d+$/.test(String(s.last_run))
-    ? new Date((+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)).toLocaleString()
-    : new Date(s.last_run).toLocaleString();
-  return `<span style="color:var(--dim);" title="last run: ${esc(abs)}">&#x2713; ${relTime(s.last_run)}</span>`;
+// ── Scheduler page (redesign, 2026-10-11) ─────────────────────────────────────
+//
+// Owner's request: "redesign the scheduler page ... list, details, create all.
+// make sure it has everything we have today". The list is grouped cards with a
+// segmented filter; a row opens the details panel; the create modal edits too.
+//
+// WHERE THE NUMBERS COME FROM. The group a row sits in is the server's
+// `cadence_class`, decided by the same parser that fires the schedule (a view
+// must share the mechanism's predicate, ethos rule 1). Runs/day and Failures
+// are `run_stats_24h`, COUNTED from schedule_runs over one 24h window, with
+// `measured` and `n_considered` beside them. Nothing on a row is inferred from
+// the expression text alone except the human label for the frequency.
+const _sxFilters = { group: 'all', worker: '', type: '', status: '' };
+const _sxSelected = new Set();
+const _SX_ROWS_PER_GROUP = 5;
+const _SX_GROUPS = [
+  { key: 'loop', label: 'Active Loops', icon: '&#x21BB;', purpose: 'keep the platform healthy (more often than hourly)' },
+  { key: 'routine', label: 'Daily Routines', icon: '&#x2600;', purpose: 'recurring work to keep things on track (hourly to daily)' },
+  { key: 'weekly', label: 'Weekly &amp; Less', icon: '&#x1F4C5;', purpose: 'longer-term maintenance and audits (weekly, monthly, once)' },
+  { key: 'inactive', label: 'Inactive', icon: '&#x23F8;', purpose: 'paused or finished; nothing here fires' },
+];
+
+// The server's class; the fallback only covers a payload cached from a server
+// older than this page (localStorage), and says so in the row's title.
+function _sxClass(s) {
+  if (s.cadence_class) return s.cadence_class;
+  if (s.sched_type === 'once' && !s.schedule_expr) return 'once';
+  return schedCadence(s);
+}
+function _sxGroupOf(s) {
+  if (!s.enabled) return 'inactive';
+  const c = _sxClass(s);
+  if (c === 'loop') return 'loop';
+  if (c === 'weekly' || c === 'once') return 'weekly';
+  return 'routine';   // routine, and unknown (flagged "Unparsed" on the row)
+}
+function _sxNextMs(s) {
+  if (!s || !s.next_run) return 0;
+  const v = String(s.next_run);
+  const ms = /^\d+$/.test(v) ? (+v > 2e9 ? +v : +v * 1000) : new Date(v.replace(' ', 'T')).getTime();
+  return isNaN(ms) ? 0 : ms;
+}
+function _sxRunIndex(runs) {
+  const m = {};
+  for (const r of runs || []) {
+    if (!m[r.schedule_id]) m[r.schedule_id] = [];
+    if (m[r.schedule_id].length < 6) m[r.schedule_id].push(r);
+  }
+  return m;
+}
+function _sxIsFail(r) { return !!r && (r.status === 'error' || r.status === 'refused'); }
+function _sxStatus(s, runs) {
+  const latest = runs && runs[0];
+  if (latest && latest.status === 'running') return { key: 'running', label: 'Running' };
+  if (!s.enabled) return { key: 'paused', label: (s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused' };
+  if (_sxClass(s) === 'unknown') return { key: 'unparsed', label: 'Unparsed' };
+  if (_sxIsFail(latest)) return { key: 'failing', label: 'Failing' };
+  const nx = _sxNextMs(s);
+  if (nx && nx < Date.now() - 5 * 60000) return { key: 'overdue', label: 'Overdue' };
+  return { key: 'scheduled', label: 'Scheduled' };
+}
+function _sxStatusPill(st) {
+  const why = {
+    running: 'A run is in progress right now',
+    scheduled: 'Enabled and waiting for its next run',
+    failing: 'The most recent run failed or was refused',
+    overdue: 'Enabled, but its next run time is more than 5 minutes past',
+    paused: 'Disabled: this schedule does not fire',
+    unparsed: 'The scheduler cannot parse this expression, so it will not fire. Edit it.',
+  }[st.key] || '';
+  return `<span class="sx-pill sx-pill-${st.key}" title="${esc(why)}">${esc(st.label)}</span>`;
+}
+
+// ── Time and frequency labels ───────────────────────────────────────────────
+function _sxParseTime(t) {
+  const s = String(t || '').trim().toLowerCase().replace(/\s+/g, '');
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)?$/);
+  if (!m) return null;
+  let h = +m[1];
+  const min = m[2] !== undefined ? +m[2] : 0;
+  const ap = m[3] || '';
+  if (m[2] === undefined && !ap) return null;   // a bare "9" is not a time the server accepts
+  if (ap && h > 12) return null;                  // "13pm" is nonsense, as the server says
+  if (ap === 'pm' && h < 12) h += 12;
+  if (ap === 'am' && h === 12) h = 0;
+  if (h > 23 || min > 59) return null;
+  return { h, m: min };
+}
+function _sxFmtClock(h, m) {
+  const d = new Date(2000, 0, 1, h, m);
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+function _sxHHMM(h, m) { return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'); }
+const _SX_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+function _sxDayFull(abbr) {
+  const a = String(abbr || '').toLowerCase().slice(0, 3);
+  return _SX_DAYS.find(d => d.startsWith(a)) || null;
+}
+function _sxCap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
+function _sxOrd(n) { n = +n; const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+
+// Structured reading of an expression, in the grammar the server accepts
+// (runtime_jobs/scheduler.rs ScheduleExpr::parse). Used for labels and the
+// create-form preview only; the server remains the authority on firing.
+function _sxParseExpr(expr) {
+  const e = String(expr || '').trim();
+  const l = e.toLowerCase();
+  let m;
+  if (!e) return null;
+  if ((m = l.match(/^(?:every|in)\s+(\d+)\s*(m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)$/))) {
+    const u = m[2][0];
+    return { kind: 'interval', n: +m[1], unit: u };
+  }
+  if ((m = l.match(/^every\s+(morning|evening|night)$/))) return { kind: 'daily', h: m[1] === 'morning' ? 9 : 18, m: 0 };
+  if ((m = l.match(/^every\s+weekday\s+at\s+(.+)$/))) { const t = _sxParseTime(m[1]); return t ? { kind: 'weekdays', h: t.h, m: t.m } : null; }
+  if ((m = l.match(/^(?:weekly\s+on|every)\s+([a-z]+)\s+at\s+(.+)$/))) {
+    const d = _sxDayFull(m[1]); const t = _sxParseTime(m[2]);
+    return (d && t) ? { kind: 'weekly', day: d, h: t.h, m: t.m } : null;
+  }
+  if ((m = l.match(/^daily\s+at\s+(.+)$/))) { const t = _sxParseTime(m[1]); return t ? { kind: 'daily', h: t.h, m: t.m } : null; }
+  if ((m = l.match(/^monthly\s+on\s+(\d{1,2})\s+at\s+(.+)$/))) {
+    const t = _sxParseTime(m[2]);
+    return (t && +m[1] >= 1 && +m[1] <= 28) ? { kind: 'monthly', dom: +m[1], h: t.h, m: t.m } : null;
+  }
+  const parts = e.split(/\s+/);
+  if (parts.length === 5 && parts.every(p => /^[\d*,\/\-]+$/.test(p))) return { kind: 'cron', f: parts };
+  return null;
+}
+function _sxDowList(field) {
+  if (field === '*') return null;
+  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const out = [];
+  for (const tok of field.split(',')) {
+    const r = tok.match(/^(\d)-(\d)$/);
+    if (r) { out.push(names[+r[1]] + ' to ' + names[+r[2]]); continue; }
+    if (/^\d$/.test(tok)) { out.push(names[+tok]); continue; }
+    return undefined;   // a step or something unusual: say the raw field
+  }
+  return out.join(', ');
+}
+function _sxCronText(f) {
+  const [mi, hr, dom, mon, dow] = f;
+  const simpleList = x => /^\d+(,\d+)*$/.test(x);
+  if (/^\*\/\d+$/.test(mi) && hr === '*' && dom === '*' && mon === '*' && dow === '*') return 'every ' + mi.slice(2) + ' minutes';
+  if (mi === '*' && hr === '*' && dom === '*' && mon === '*' && dow === '*') return 'every minute';
+  if (/^\d+$/.test(mi) && hr === '*' && dom === '*' && mon === '*' && dow === '*') return 'every hour at minute ' + mi;
+  if (/^\d+$/.test(mi) && simpleList(hr) && mon === '*') {
+    const times = hr.split(',').map(h => _sxFmtClock(+h, +mi)).join(' and ');
+    const days = _sxDowList(dow);
+    if (dom === '*' && dow === '*') return 'every day at ' + times;
+    if (dom === '*' && days) return days + ' at ' + times;
+    if (simpleList(dom) && dow === '*') return 'on day ' + dom.split(',').join(', ') + ' of each month at ' + times;
+  }
+  return 'cron: minute ' + mi + ', hour ' + hr + ', day of month ' + dom + ', month ' + mon + ', weekday ' + dow;
+}
+// Short label for the Frequency column ("Every 10m", "Daily 7:00 PM", "Mon 6:00 AM").
+function _sxFreq(s) {
+  if (s.sched_type === 'once' && !s.schedule_expr) {
+    const d = s.run_at ? new Date(String(s.run_at).replace(' ', 'T')) : null;
+    return 'Once' + (d && !isNaN(d) ? ' ' + d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + _sxFmtClock(d.getHours(), d.getMinutes()) : '');
+  }
+  const p = _sxParseExpr(s.schedule_expr);
+  if (!p) return s.schedule_expr || s.recurrence || 'recurring';
+  switch (p.kind) {
+    case 'interval':
+      if (p.unit === 'h' && p.n === 1) return 'Hourly';
+      if (p.unit === 'd' && p.n === 1) return 'Every day';
+      return 'Every ' + p.n + p.unit;
+    case 'daily': return 'Daily ' + _sxFmtClock(p.h, p.m);
+    case 'weekdays': return 'Weekdays ' + _sxFmtClock(p.h, p.m);
+    case 'weekly': return _sxCap(p.day.slice(0, 3)) + ' ' + _sxFmtClock(p.h, p.m);
+    case 'monthly': return 'Monthly ' + _sxOrd(p.dom) + ' ' + _sxFmtClock(p.h, p.m);
+    case 'cron': return _sxCap(_sxCronText(p.f).replace(/^cron: .*/, s.schedule_expr));
+  }
+  return s.schedule_expr;
+}
+// A sentence for the details panel and the create preview.
+function _sxDescribe(expr, stype, runAt) {
+  if (stype === 'once' && !expr) {
+    const d = runAt ? new Date(String(runAt).replace(' ', 'T')) : null;
+    return d && !isNaN(d) ? 'Runs once, on ' + d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ', then disables itself.' : 'Runs once, then disables itself.';
+  }
+  const p = _sxParseExpr(expr);
+  if (!p) return 'The scheduler cannot read "' + expr + '", so it will not fire.';
+  const unitWord = { m: 'minute', h: 'hour', d: 'day' };
+  switch (p.kind) {
+    case 'interval': return p.n === 1 ? 'Runs every ' + unitWord[p.unit] + '.' : 'Runs every ' + p.n + ' ' + unitWord[p.unit] + 's.';
+    case 'daily': return 'Runs every day at ' + _sxFmtClock(p.h, p.m) + '.';
+    case 'weekdays': return 'Runs Monday to Friday at ' + _sxFmtClock(p.h, p.m) + '.';
+    case 'weekly': return 'Runs every ' + _sxCap(p.day) + ' at ' + _sxFmtClock(p.h, p.m) + '.';
+    case 'monthly': return 'Runs on the ' + _sxOrd(p.dom) + ' of every month at ' + _sxFmtClock(p.h, p.m) + '.';
+    case 'cron': return 'Runs ' + _sxCronText(p.f) + '.';
+  }
+  return '';
+}
+// Planned runs per day for the create preview. The list uses the server's
+// planned_fires_day; this is only for an expression that is not saved yet.
+function _sxPlannedPerDay(expr, stype) {
+  if (stype === 'once' && !expr) return null;
+  const p = _sxParseExpr(expr);
+  if (!p) return null;
+  switch (p.kind) {
+    case 'interval': return 1440 / (p.n * { m: 1, h: 60, d: 1440 }[p.unit]);
+    case 'daily': return 1;
+    case 'weekdays': return 5 / 7;
+    case 'weekly': return 1 / 7;
+    case 'monthly': return 12 / 365.2425;
+    case 'cron': {
+      const [mi, hr, dom, mon, dow] = p.f;
+      const count = (x, max) => x === '*' ? max : /^\*\/\d+$/.test(x) ? Math.ceil(max / +x.slice(2)) : /^\d+(,\d+)*$/.test(x) ? x.split(',').length : null;
+      if (dom !== '*' || mon !== '*') return null;
+      const a = count(mi, 60), b = count(hr, 24);
+      if (a == null || b == null) return null;
+      let days = 1;
+      if (dow !== '*') { const d = _sxDowList(dow); if (!d) return null; const n = dow.split(',').reduce((t, tok) => { const r = tok.match(/^(\d)-(\d)$/); return t + (r ? (+r[2] - +r[1] + 1) : 1); }, 0); days = Math.min(n, 7) / 7; }
+      return a * b * days;
+    }
+  }
+  return null;
+}
+function _sxFmtRate(n) { return n >= 10 ? String(Math.round(n)) : n >= 1 ? String(Math.round(n * 10) / 10) : String(Math.round(n * 100) / 100); }
+
+// ── Row pieces ──────────────────────────────────────────────────────────────
+function _sxHue(name) { let h = 0; for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; }
+function _sxTypeIcon(s) {
+  return s.kind === 'shell'
+    ? `<span class="sx-type-ico sx-ico-shell" role="img" aria-label="Run a command" title="Run a command: runs on this machine, no model turn, no cost per run">$</span>`
+    : `<span class="sx-type-ico sx-ico-tmux" role="img" aria-label="Trigger a worker" title="Trigger a worker: each run is a full model turn for the worker">&#x2709;</span>`;
+}
+function _sxWorkerChip(s, sessMap) {
+  if (!s.session) {
+    return `<span class="sx-chip sx-chip-none" title="${s.kind === 'shell' ? 'Runs on this machine; no owner worker is told about failures' : 'No worker: this schedule has nowhere to deliver'}">${s.kind === 'shell' ? 'host only' : 'no worker'}</span>`;
+  }
+  const st = sessMap[s.session] || 'not running';
+  const init = (String(s.session).replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase();
+  const owner = s.kind === 'shell';
+  // The worker of a SHELL schedule is who owns it and hears about a failure,
+  // NOT where the command goes (AMUX-2899: a shell row that read like a
+  // delivery target got Run Now pressed three times for nothing).
+  const title = s.session + ': ' + st + (owner ? '. Owner and failure alerts only; the command runs on this machine, NOT in this worker' : '. Each run is delivered to this worker as a prompt');
+  return `<span class="sx-chip" title="${esc(title)}"><span class="sx-avatar" style="--h:${_sxHue(s.session)}" aria-hidden="true">${esc(init)}</span>`
+    + `<span class="sx-chip-name">${owner ? '<span class="sx-dim">owner </span>' : ''}${esc(s.session)}</span>`
+    + `<span class="sched-sess-dot ${esc(String(st).replace(/\s+/g, '-'))}" aria-hidden="true"></span></span>`;
+}
+function _sxNextCell(s, st) {
+  if (!s.enabled) return '<span class="sx-dim" title="Paused: no next run">paused</span>';
+  const ms = _sxNextMs(s);
+  if (!ms) return '<span class="sx-dim" title="No next run recorded">none</span>';
+  const abs = new Date(ms).toLocaleString();
+  if (ms < Date.now()) {
+    return `<span class="sx-next" title="Due ${esc(abs)}"><i class="sx-dot ${st.key === 'overdue' ? 'warn' : 'ok'}"></i>${st.key === 'overdue' ? 'overdue ' + esc(relTime(ms).replace(/ ago$/, '')) : 'due now'}</span>`;
+  }
+  return `<span class="sx-next" title="${esc(abs)}"><i class="sx-dot ok"></i>${esc(relTime(ms).replace(/^in /, ''))}</span>`;
+}
+function _sxRunDots(runs) {
+  return (runs || []).map(r => {
+    // The tooltip is where "it ran" stops being the whole story: which path
+    // the command took and what Claude Code said about the submission.
+    // A RUNNING SHELL RUN IS ON THIS MACHINE, NOT IN THE WORKER (Ethan,
+    // 2026-09-25: "says this but the worker is idle").
+    let bits;
+    if (r.status === 'running') {
+      bits = ['running on this machine for ' + _fmtDur(Date.now() - r.ran_at * 1000),
+              'started ' + new Date(r.ran_at * 1000).toLocaleTimeString()];
+      if (r.delivery === 'shell') bits.push('a shell command: the worker is not involved and stays idle');
+    } else {
+      bits = [r.status, new Date(r.ran_at * 1000).toLocaleTimeString()];
+      if (r.delivery && r.delivery !== r.status) bits.push('via ' + r.delivery);
+      if (r.submission) bits.push(r.submission);
+      if (r.note) bits.push(String(r.note).split('\n')[0].slice(0, 120));
+    }
+    return `<span class="sched-run-dot ${_schedRunDotClass(r)}" title="${esc(bits.join(' · '))}"></span>`;
+  }).join('');
+}
+function _sxRunsCell(s, runs) {
+  const rs = s.run_stats_24h;
+  const n = rs ? rs.runs : (s.fires_day != null ? s.fires_day : null);
+  const share = s.fleet_share || 0;
+  const planned = s.planned_fires_day;
+  const title = n == null
+    ? 'The server did not report run counts for this schedule'
+    : n + ' run(s) in the last 24h, counted from run history'
+      + (planned != null ? '; planned about ' + _sxFmtRate(planned) + '/day' : '')
+      + (share ? '; ' + share + '% of all scheduled runs in the fleet' : '');
+  const dots = _sxRunDots(runs);
+  return `<span class="sx-rpd${share >= 20 ? ' hot' : ''}" title="${esc(title)}">${n == null ? 'n/a' : n}${share >= 5 ? ` <span class="sx-share">${share}%</span>` : ''}</span>`
+    + (dots ? `<span class="sx-dots" title="Recent runs, newest first">${dots}</span>` : '');
+}
+function _sxFailCell(s) {
+  const rs = s.run_stats_24h;
+  if (!rs || rs.measured !== true) return '<span class="sx-dim" title="Failures were not measured for this schedule">n/a</span>';
+  const f = rs.failures || 0;
+  const t = f ? f + ' failed or refused run(s) in 24h; last ' + new Date(rs.last_failure_at * 1000).toLocaleString()
+              : 'No failed runs in 24h (' + (rs.runs || 0) + ' run(s) considered for this schedule)';
+  return `<span class="sx-fail${f ? ' bad' : ''}" title="${esc(t)}">${f}</span>`;
+}
+function _sxSearchHay(s) {
+  return [s.title, s.session, s.command, s.schedule_expr, s.recurrence, s.id, _sxFreq(s), s.kind === 'shell' ? 'shell command' : 'worker prompt']
+    .filter(Boolean).join(' ').toLowerCase();
+}
+
+function _sxRowHTML(s, runMap, sessMap, scoped) {
+  const runs = runMap[s.id] || [];
+  const st = _sxStatus(s, runs);
+  const id = esc(s.id), idJs = escJs(s.id);
+  const sel = _sxSelected.has(s.id);
+  const freqTitle = s.cadence_class ? (s.schedule_expr || s.sched_type || '') : (s.schedule_expr || '') + ' (group guessed in the browser: this payload has no cadence_class)';
+  return `<div class="sx-row sched-item${sel ? ' selected' : ''}" data-sched-id="${id}" data-status="${st.key}" role="button" tabindex="0"
+      onclick="openSchedDetail('${idJs}')" onkeydown="if(event.key==='Enter'&&event.target===this)openSchedDetail('${idJs}')">
+    ${scoped ? '' : `<label class="sx-cell sx-sel" onclick="event.stopPropagation()"><input type="checkbox" ${sel ? 'checked' : ''} onchange="_sxToggleSel('${idJs}',this.checked)" aria-label="Select ${esc(s.title)}"></label>`}
+    <div class="sx-cell sx-name">${_sxTypeIcon(s)}<div class="sx-name-text"><span class="sx-title">${esc(s.title)}</span><code class="sched-id-badge" title="Schedule id: click to copy" onclick="event.stopPropagation();_copySchedId('${idJs}')">${id}</code></div></div>
+    ${scoped ? '' : `<div class="sx-cell sx-worker">${_sxWorkerChip(s, sessMap)}</div>`}
+    <div class="sx-cell sx-freq"><span title="${esc(freqTitle)}">${esc(_sxFreq(s))}</span>${_schedLastRunHTML(s)}</div>
+    <div class="sx-cell sx-nextc">${_sxNextCell(s, st)}</div>
+    <div class="sx-cell sx-runs">${_sxRunsCell(s, runs)}</div>
+    <div class="sx-cell sx-fails">${_sxFailCell(s)}</div>
+    <div class="sx-cell sx-stat">${_sxStatusPill(st)}</div>
+    <div class="sx-cell sx-morec"><label class="sched-toggle-label sx-toggle" title="${s.enabled ? 'Enabled: click to pause' : 'Paused: click to resume'}" onclick="event.stopPropagation()"><input type="checkbox" role="switch" ${s.enabled ? 'checked' : ''} aria-label="${s.enabled ? 'Pause' : 'Resume'} ${esc(s.title)}" onchange="toggleSchedEnabled('${idJs}', this.checked)"></label><button class="sx-more-btn" aria-label="More actions for ${esc(s.title)}" aria-haspopup="menu" onclick="event.stopPropagation();_sxOpenMenu(event,'${idJs}','row')">&#x22EF;</button></div>
+  </div>`;
+}
+function _sxHeadRow(scoped) {
+  return `<div class="sx-row sx-row-head" aria-hidden="true">
+    ${scoped ? '' : '<span class="sx-cell sx-sel"></span>'}
+    <span class="sx-cell sx-name">Name</span>
+    ${scoped ? '' : '<span class="sx-cell sx-worker">Worker</span>'}
+    <span class="sx-cell sx-freq">Frequency</span><span class="sx-cell sx-nextc">Next run</span>
+    <span class="sx-cell sx-runs">Runs/day</span><span class="sx-cell sx-fails">Failures</span>
+    <span class="sx-cell sx-stat">Status</span><span class="sx-cell sx-morec"></span></div>`;
+}
+
+function _sxSetGroup(g) {
+  _sxFilters.group = g;
+  renderScheduler();
+  const v = document.getElementById('scheduler-view');
+  if (v && v.scrollIntoView) { try { document.getElementById('sched-pills').scrollIntoView({ block: 'nearest' }); } catch (e) {} }
+}
+function _sxToggleSel(id, on) {
+  if (on) _sxSelected.add(id); else _sxSelected.delete(id);
+  const row = document.querySelector('#scheduler-list [data-sched-id="' + CSS.escape(id) + '"]');
+  if (row) row.classList.toggle('selected', on);
+  _sxRenderBulk();
+}
+function _sxClearSelection() { _sxSelected.clear(); renderScheduler(); }
+function _sxRenderBulk() {
+  const bar = document.getElementById('sched-bulk');
+  if (!bar) return;
+  const live = new Set((schedules || []).map(s => s.id));
+  for (const id of [..._sxSelected]) if (!live.has(id)) _sxSelected.delete(id);
+  bar.hidden = !_sxSelected.size;
+  const n = document.getElementById('sched-bulk-n');
+  if (n) n.textContent = _sxSelected.size + ' selected';
+}
+async function _sxBulk(action) {
+  const ids = [..._sxSelected];
+  if (!ids.length) return;
+  if (action === 'delete') {
+    const ok = await showConfirm('Delete ' + ids.length + ' schedule' + (ids.length === 1 ? '' : 's') + '? They stop firing. Each is a soft delete, recorded in Change history.', 'Delete', true);
+    if (!ok) return;
+  }
+  let done = 0;
+  for (const id of ids) {
+    const r = action === 'delete'
+      ? await apiCall(API + '/api/schedules/' + encodeURIComponent(id) + '?by=dashboard', { method: 'DELETE' })
+      : await apiCall(API + '/api/schedules/' + encodeURIComponent(id), {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: action === 'resume' ? 1 : 0, by: 'dashboard' }) });
+    if (r) done++;
+  }
+  const verb = { pause: 'Paused', resume: 'Resumed', delete: 'Deleted' }[action];
+  showToast(verb + ' ' + done + ' of ' + ids.length + ' schedule' + (ids.length === 1 ? '' : 's')
+    + (done < ids.length ? '; the rest were refused (see the messages above)' : ''));
+  _sxSelected.clear();
+  await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
+  renderScheduler(); renderSchedulerAudit(); renderCalendar();
+  _peekRefreshSchedIfActive();
+}
+
+function _sxRenderPills(counts) {
+  const el = document.getElementById('sched-pills');
+  if (!el) return;
+  const sys = (_systemJobs && Array.isArray(_systemJobs.jobs)) ? _systemJobs.jobs.length : null;
+  const pills = [{ key: 'all', label: 'All', n: counts.all }]
+    .concat(_SX_GROUPS.map(g => ({ key: g.key, label: g.label, n: counts[g.key] })))
+    .concat([{ key: 'system', label: 'System', n: sys }]);
+  el.innerHTML = pills.map(p => `<button role="tab" class="sx-pill-btn${_sxFilters.group === p.key ? ' active' : ''}" aria-selected="${_sxFilters.group === p.key}" data-group="${p.key}" onclick="_sxSetGroup('${p.key}')">${p.label}${p.n == null ? '' : ` <span class="sx-pill-n">${p.n}</span>`}</button>`).join('');
+}
+function _sxRenderWorkerFilter(scope) {
+  const sel = document.getElementById('sched-f-worker');
+  if (!sel) return;
+  const names = [...new Set(scope.map(s => s.session).filter(Boolean))].sort();
+  const cur = _sxFilters.worker;
+  const hasNone = scope.some(s => !s.session);
+  sel.innerHTML = '<option value="">All workers</option>' + names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')
+    + (hasNone ? '<option value="__none">No worker</option>' : '');
+  if (cur && (names.includes(cur) || cur === '__none')) sel.value = cur; else { sel.value = ''; _sxFilters.worker = ''; }
 }
 
 function renderScheduler(opts) {
@@ -34996,223 +35415,93 @@ function renderScheduler(opts) {
   if (!listEl) return;
 
   // Scope: when driven from the peek Schedules tab (opts.session), only the
-  // current session's schedules/runs are shown; the homepage view shows the whole
-  // fleet. Same renderer either way, so the two views stay pixel-identical.
+  // current session's schedules/runs are shown; the homepage view shows the
+  // whole fleet. Same row renderer either way, so the two views agree.
   const sessionFilter = opts.session || null;
-  const scope = sessionFilter ? schedules.filter(s => s.session === sessionFilter && !s.deleted) : schedules;
-  const scopeIds = sessionFilter ? new Set(scope.map(s => s.id)) : null;
-  const runsScoped = scopeIds ? _schedulerRuns.filter(r => scopeIds.has(r.schedule_id)) : _schedulerRuns;
-  const searchQ = (opts.searchQuery != null ? opts.searchQuery : schedSearchQuery) || '';
-
-  // Build run history map: schedule_id → last N run records
-  const runMap = {};
-  for (const r of runsScoped) {
-    if (!runMap[r.schedule_id]) runMap[r.schedule_id] = [];
-    if (runMap[r.schedule_id].length < 6) runMap[r.schedule_id].push(r);
-  }
-
-  // Session status map
+  const main = !sessionFilter;
+  const scope = (schedules || []).filter(s => !s.deleted && (!sessionFilter || s.session === sessionFilter));
+  const scopeIds = new Set(scope.map(s => s.id));
+  const runsScoped = sessionFilter ? _schedulerRuns.filter(r => scopeIds.has(r.schedule_id)) : _schedulerRuns;
+  const searchQ = ((opts.searchQuery != null ? opts.searchQuery : schedSearchQuery) || '').trim().toLowerCase();
+  const runMap = _sxRunIndex(runsScoped);
   const sessMap = {};
   for (const s of sessions) sessMap[s.name] = s.status || 'idle';
 
-  // Stats
-  const dayAgo = (Date.now() / 1000) - 86400;
-  const runsToday = runsScoped.filter(r => r.ran_at > dayAgo).length;
+  // Summary: counted, never assumed. Runs are the server's 24h counts summed
+  // over the rows in view, so the number matches the Runs/day column.
   const activeCount = scope.filter(s => s.enabled).length;
-  const loopCount = scope.filter(s => s.enabled && isLoopCadence(s)).length;
+  const runs24 = scope.reduce((t, s) => t + ((s.run_stats_24h && s.run_stats_24h.runs) || s.fires_day || 0), 0);
+  const failing = scope.filter(s => s.enabled && _sxStatus(s, runMap[s.id]).key === 'failing').length;
   if (statsEl) {
-    statsEl.innerHTML = `<strong>${activeCount}</strong> active &nbsp;&middot;&nbsp; <strong>${loopCount}</strong> looping &nbsp;&middot;&nbsp; <strong>${runsToday}</strong> runs today`;
+    statsEl.innerHTML = `<strong>${activeCount}</strong> active &middot; <strong>${runs24}</strong> runs in 24h`
+      + (failing ? ` &middot; <strong class="sx-bad">${failing}</strong> failing` : '');
+  }
+
+  if (main) _sxRenderWorkerFilter(scope);
+  const f = main ? _sxFilters : { group: 'all', worker: '', type: '', status: '' };
+  const filtered = scope.filter(s => {
+    if (searchQ && !_sxSearchHay(s).includes(searchQ)) return false;
+    if (f.worker && (f.worker === '__none' ? !!s.session : s.session !== f.worker)) return false;
+    if (f.type && (s.kind || 'tmux') !== f.type) return false;
+    if (f.status) {
+      const k = _sxStatus(s, runMap[s.id]).key;
+      if (f.status === 'paused' ? k !== 'paused' : k !== f.status) return false;
+    }
+    return true;
+  });
+  const byGroup = { loop: [], routine: [], weekly: [], inactive: [] };
+  for (const s of filtered) byGroup[_sxGroupOf(s)].push(s);
+  // Soonest first inside a group; paused rows most recently changed first, so
+  // the schedule you just paused is the one at the top of Inactive.
+  for (const k of ['loop', 'routine', 'weekly']) byGroup[k].sort((a, b) => (_sxNextMs(a) || 9e15) - (_sxNextMs(b) || 9e15));
+  byGroup.inactive.sort((a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0));
+  if (main) {
+    _sxRenderPills({ all: filtered.length, loop: byGroup.loop.length, routine: byGroup.routine.length,
+                     weekly: byGroup.weekly.length, inactive: byGroup.inactive.length });
+    _sxRenderBulk();
+    const sys = document.querySelector('#scheduler-view .sysjob-section');
+    if (sys) sys.hidden = !(f.group === 'all' || f.group === 'system');
   }
 
   if (!scope.length) {
-    listEl.innerHTML = `<div style="text-align:center;padding:40px 0;color:var(--dim);">
-      <div style="font-size:2rem;margin-bottom:10px;">&#x23F0;</div>
-      <div style="font-weight:600;font-size:0.9rem;margin-bottom:6px;color:var(--text);">No schedules yet</div>
-      <div style="font-size:0.82rem;">Create a schedule to run commands in workers on a recurring timer.</div>
+    listEl.innerHTML = `<div class="sx-empty">
+      <div class="sx-empty-ico">&#x23F0;</div>
+      <div class="sx-empty-title">No schedules yet</div>
+      <div>Run a shell command or send a worker a message on a timer.</div>
+      <button class="btn primary" onclick="${main ? 'openSchedModal()' : '_peekNewSchedule()'}">+ New schedule</button>
     </div>`;
+  } else if (main && f.group === 'system') {
+    listEl.innerHTML = '';
   } else {
-    const renderCard = (s) => {
-      const recLabel = s.schedule_expr || (s.sched_type === 'once' ? 'once' : (s.recurrence || 'recurring'));
-      const runs = runMap[s.id] || [];
-      const dots = runs.map(r => {
-        const cls = _schedRunDotClass(r);
-        // The tooltip is where "it ran" stops being the whole story: the run
-        // row now carries WHICH path the command took and what Claude Code
-        // said about the submission, and burying that in the DB would be the
-        // same failure as not recording it (ethos rule 4).
-        // A RUNNING SHELL RUN IS ON THIS MACHINE, NOT IN THE WORKER (Ethan,
-        // 2026-09-25: "says this but the worker is idle"). "running · via shell
-        // · started on host; result pending" beside an idle worker read as a
-        // stuck job. Say where it runs and for how long.
-        let bits;
-        if (r.status === 'running') {
-          bits = ['running on this machine for ' + _fmtDur(Date.now() - r.ran_at * 1000),
-                  'started ' + new Date(r.ran_at * 1000).toLocaleTimeString()];
-          if (r.delivery === 'shell') bits.push('a shell command: the worker is not involved and stays idle');
-        } else {
-          bits = [r.status, new Date(r.ran_at * 1000).toLocaleTimeString()];
-          if (r.delivery && r.delivery !== r.status) bits.push('via ' + r.delivery);
-          if (r.submission) bits.push(r.submission);
-          if (r.note) bits.push(String(r.note).split('\n')[0].slice(0, 120));
-        }
-        return `<span class="sched-run-dot ${cls}" title="${esc(bits.join(' · '))}"></span>`;
-      }).join('');
-      const sessStatus = sessMap[s.session] || 'idle';
-      // KIND, not the presence of a session (AMUX-2899). This keyed on
-      // `s.session` being empty, so a shell schedule that HAS a session — 4 of
-      // the 7 shell schedules do — rendered byte-identically to a prompt
-      // schedule pointed at that worker. Ethan pressed Run Now on SCHED-99
-      // three times because nothing reached ts-gke; nothing was ever going to,
-      // and the row said the opposite. A view must key on the same field the
-      // mechanism does (ethos rule 1).
-      const isShell = s.kind === 'shell';
-      const kindChip = isShell
-        ? `<code class="sched-cadence-pill" style="color:var(--yellow,#fbbf24);" title="Runs a command on the host and routes on its exit code. It does NOT prompt a worker.">shell</code>`
-        : '';
-      const sessLink = !s.session
-        ? `<span style="color:var(--dim);">(no worker)</span>`
-        : isShell
-          // The worker is who OWNS/gets alerted, not where the command goes.
-          // Still linked — you want to reach the owner — but labelled so the
-          // row cannot be read as a delivery target.
-          ? `<span class="sched-sess-dot ${sessStatus}" title="${esc(s.session)}: ${sessStatus} — owner / alert routing, NOT a delivery target"></span><span style="color:var(--dim);">owner </span><span style="color:var(--accent);cursor:pointer;" onclick="switchView('workers');openPeek('${esc(s.session)}')">${esc(s.session)}</span>`
-          : `<span class="sched-sess-dot ${sessStatus}" title="${s.worker}: ${sessStatus}"></span><span style="color:var(--accent);cursor:pointer;" onclick="switchView('workers');openPeek('${esc(s.session)}')">${esc(s.session)}</span>`;
-      const nextRel = s.next_run ? `▶ <strong style="color:var(--text);" title="${s.next_run}">${relTime(s.next_run)}</strong>` : '';
-      // Measured cost badge (MG audit #1): fires last 24h + fleet share; red
-      // when one schedule dominates — 51% of wake-ups sat invisible until
-      // measured by hand.
-      const fpd = s.fires_day || 0;
-      const share = s.fleet_share || 0;
-      const fireBadge = fpd
-        ? `<span class="sched-fires${share >= 20 ? ' hot' : ''}" title="${fpd} fires in 24h = ${share}% of fleet">${fpd}/day${share >= 5 ? ` \u00B7 ${share}%` : ''}</span>`
-        : '';
-      const lastRel = _schedLastRunHTML(s);
-      // The ⚡trigger / 👁watch / "stop:" badges lived here. They advertised
-      // behaviour this server does not have — the pane-polling watcher and the
-      // event-trigger loop were never ported from Python — so a badge could
-      // only ever tell a user their schedule reacts to events when it does
-      // not. The fields are refused at the write path now (AMUX-2680); the
-      // badges go with them rather than painting stale rows as armed.
-      return `<div class="card sched-item" data-sched-id="${esc(s.id)}" style="padding:9px 12px;">
-        <div style="display:flex;align-items:flex-start;gap:8px;">
-          <label class="sched-toggle-label" title="${s.enabled ? 'Disable' : 'Enable'}">
-            <input type="checkbox" ${s.enabled ? 'checked' : ''}
-              onchange="toggleSchedEnabled('${esc(s.id)}', this.checked)"
-              style="width:auto;accent-color:var(--accent);">
-          </label>
-          <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">
-              <code class="sched-id-badge" title="Schedule id — click to copy" onclick="event.stopPropagation();_copySchedId('${esc(s.id)}')">${esc(s.id)}</code>
-              <span style="font-weight:600;font-size:0.84rem;cursor:pointer;" onclick="toggleSchedExpand('${esc(s.id)}')">${esc(s.title)}</span>
-              <code class="sched-cadence-pill">${esc(recLabel)}</code>${kindChip}${fireBadge}
-            </div>
-            <div style="font-size:0.72rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--dim);">
-              <span style="display:flex;align-items:center;gap:3px;">${sessLink}</span>
-              ${nextRel ? `<span>${nextRel}</span>` : ''}
-              ${lastRel}
-              <span title="Total runs">&#xD7;${s.run_count || 0}</span>
-              ${dots ? `<span style="display:flex;align-items:center;gap:2px;" title="Recent runs (newest first)">${dots}</span>` : ''}
-            </div>
-            <div class="sched-cmd-expand" id="sched-cmd-${esc(s.id)}" style="display:none;">
-              <pre>${esc(s.command)}</pre>
-            </div>
-            <div class="sched-actions">
-              <button class="btn sched-action-btn" id="sched-view-btn-${esc(s.id)}"
-                onclick="toggleSchedExpand('${esc(s.id)}')">View</button>
-              <button class="btn sched-action-btn"
-                onclick="runScheduleNow('${esc(s.id)}')">Run Now</button>
-              ${s.sched_type !== 'once' && s.next_run ? `<button class="btn sched-action-btn" title="Skip the next occurrence" onclick="skipSchedule('${esc(s.id)}')">&#x23ED; Skip</button>` : ''}
-              <button class="btn sched-action-btn"
-                onclick="openSchedModal('${esc(s.id)}')">Edit</button>
-              <button class="btn sched-action-btn" style="color:var(--red);"
-                onclick="deleteSchedule('${esc(s.id)}')">Delete</button>
-            </div>
-          </div>
+    const narrowed = !!(searchQ || f.worker || f.type || f.status);
+    const groups = (main && f.group !== 'all') ? _SX_GROUPS.filter(g => g.key === f.group) : _SX_GROUPS;
+    let html = '';
+    for (const g of groups) {
+      const items = byGroup[g.key];
+      if (!items.length && (f.group === 'all' || !main)) continue;
+      const limit = (main && f.group === 'all' && !narrowed) ? _SX_ROWS_PER_GROUP : Infinity;
+      const shown = items.slice(0, limit);
+      const more = items.length - shown.length;
+      html += `<section class="sx-group" data-group="${g.key}">
+        <header class="sx-group-head">
+          <span class="sx-group-ico" aria-hidden="true">${g.icon}</span>
+          <div class="sx-group-text"><h3>${g.label} <span class="sx-count">${items.length}</span></h3>
+            <p>${items.length} schedule${items.length === 1 ? '' : 's'} &middot; ${g.purpose}</p></div>
+          ${main && f.group === 'all' ? `<button class="sx-viewall" onclick="_sxSetGroup('${g.key}')">View all &rarr;</button>` : ''}
+        </header>
+        <div class="sx-table${sessionFilter ? ' sx-scoped' : ''}">
+          ${items.length ? _sxHeadRow(!!sessionFilter) + shown.map(s => _sxRowHTML(s, runMap, sessMap, !!sessionFilter)).join('') : '<div class="sx-group-empty">Nothing in this group matches.</div>'}
         </div>
-      </div>`;
-    };
-
-    const renderDisabledCard = (s) => {
-      const recLabel = s.schedule_expr || (s.sched_type === 'once' ? 'once' : (s.recurrence || 'recurring'));
-      const runs = runMap[s.id] || [];
-      const dots = runs.map(r => `<span class="sched-run-dot ${_schedRunDotClass(r)}" title="${esc(r.status)}"></span>`).join('');
-      return `<div class="card sched-item" data-sched-id="${esc(s.id)}" style="padding:8px 12px;">
-        <div style="display:flex;align-items:flex-start;gap:8px;">
-          <label class="sched-toggle-label" title="Enable">
-            <input type="checkbox" onchange="toggleSchedEnabled('${esc(s.id)}', this.checked)"
-              style="width:auto;accent-color:var(--accent);">
-          </label>
-          <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px;">
-              <code class="sched-id-badge" title="Schedule id — click to copy" onclick="event.stopPropagation();_copySchedId('${esc(s.id)}')">${esc(s.id)}</code>
-              <span style="font-weight:600;font-size:0.82rem;">${esc(s.title)}</span>
-              <code class="sched-cadence-pill">${esc(recLabel)}</code>
-            </div>
-            <div style="font-size:0.7rem;color:var(--dim);display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-              ${s.session ? `<span style="color:var(--accent);">${esc(s.session)}</span>` : ''}
-              ${_schedLastRunHTML(s)}
-              <span title="Total runs">&#xD7;${s.run_count || 0}</span>
-              ${dots ? `<span style="display:flex;align-items:center;gap:2px;">${dots}</span>` : ''}
-            </div>
-            <div class="sched-actions">
-              <button class="btn sched-action-btn" onclick="openSchedModal('${esc(s.id)}')">Edit</button>
-              <button class="btn sched-action-btn" style="color:var(--red);" onclick="deleteSchedule('${esc(s.id)}')">Delete</button>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    };
-
-    // Apply search filter (title, session, command, cadence, id)
-    const q = searchQ.trim().toLowerCase();
-    const filtered = !q ? scope : scope.filter(s => {
-      const hay = [s.title, s.session, s.command, s.schedule_expr, s.recurrence, s.id]
-        .filter(Boolean).join(' ').toLowerCase();
-      return hay.includes(q);
-    });
-
-    // Group active schedules
-    const groups = [
-      { key: 'loop', label: 'Active Loops', emoji: '&#x21BB;', items: [] },
-      { key: 'routine', label: 'Daily Routines', emoji: '&#x2600;', items: [] },
-      { key: 'weekly', label: 'Weekly &amp; Less', emoji: '&#x1F4C5;', items: [] },
-    ];
-    const disabled = [];
-    for (const s of filtered) {
-      if (!s.enabled) { disabled.push(s); continue; }
-      const cad = schedCadence(s);
-      const g = groups.find(g => g.key === cad) || groups[1];
-      g.items.push(s);
+        ${more > 0 ? `<button class="sx-showmore" onclick="_sxSetGroup('${g.key}')">Show ${more} more</button>` : ''}
+      </section>`;
     }
-
-    const renderGroup = ({ label, emoji, items }) => {
-      if (!items.length) return '';
-      return `<div class="sched-group">
-        <div class="sched-group-header">${emoji} ${label} <span class="sched-group-count">${items.length}</span></div>
-        <div style="display:flex;flex-direction:column;gap:6px;">${items.map(renderCard).join('')}</div>
-      </div>`;
-    };
-
-    let html = groups.map(renderGroup).join('');
-
-    if (disabled.length) {
-      html += `<details class="sched-disabled-details" ${q ? 'open' : ''}>
-        <summary><span class="sched-disabled-arrow">&#x25B6;</span> Inactive <span class="sched-group-count">${disabled.length}</span></summary>
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;opacity:0.6;">
-          ${disabled.map(renderDisabledCard).join('')}
-        </div>
-      </details>`;
-    }
-
     if (!html) {
-      html = `<div style="text-align:center;padding:36px 0;color:var(--dim);font-size:0.82rem;">
-        No schedules match &ldquo;${esc(schedSearchQuery)}&rdquo;.</div>`;
+      html = `<div class="sx-empty sx-empty-small">No schedules match${searchQ ? ' &ldquo;' + esc(searchQ) + '&rdquo;' : ' these filters'}.</div>`;
     }
-
     listEl.innerHTML = html;
   }
 
-  // ── Recent runs (collapsible) ─────────────────────────────────────────────
+  // ── Recent runs, fleet-wide (collapsible) ─────────────────────────────────
   const det = document.getElementById('sched-runs-details');
   const arrow = document.getElementById('sched-runs-arrow');
   if (det && arrow) {
@@ -35221,7 +35510,7 @@ function renderScheduler(opts) {
     }, { once: true });
   }
   if (!runsEl) {
-    // peek view may omit the runs list — nothing to render
+    // peek view may omit the runs list; nothing to render
   } else if (!runsScoped.length) {
     runsEl.innerHTML = `<div style="color:var(--dim);font-size:0.78rem;padding:4px 0;">No runs recorded yet.</div>`;
   } else {
@@ -35231,11 +35520,11 @@ function renderScheduler(opts) {
       const okColor = _schedRunColor(r.status);
       // The submission verdict, only where it ADDS something. `confirmed` is
       // the expected case for a delivered run and chipping it everywhere would
-      // bury `unverified` — the one that means "the keys landed and Claude Code
-      // may never have taken the message" (AMUX-2629).
+      // bury `unverified` (AMUX-2629).
       const subChip = (r.submission && r.submission !== 'confirmed' && r.submission !== 'deferred')
         ? `<span style="color:var(--yellow,#fbbf24);flex-shrink:0;font-size:0.65rem;" title="submission verdict">${esc(r.submission)}</span>` : '';
-      return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);font-size:0.75rem;min-width:0;">
+      const live = scopeIds.has(r.schedule_id);
+      return `<div class="sx-fleet-run${live ? ' clickable' : ''}" ${live ? `onclick="openSchedDetail('${escJs(r.schedule_id)}')"` : ''}>
         <span style="color:${okColor};font-weight:600;min-width:52px;flex-shrink:0;">${esc(r.status)}</span>
         <span style="color:var(--dim);white-space:nowrap;flex-shrink:0;" title="${esc(fullDate)}">${esc(timeStr)}</span>
         ${_schedRunSrcChip(r.source)}${subChip}
@@ -35244,8 +35533,285 @@ function renderScheduler(opts) {
       </div>`;
     }).join('');
   }
+  if (_sxDetailId && document.getElementById('sched-detail') && !document.getElementById('sched-detail').hidden) _sxRenderDetail();
 }
 
+// ── Row / detail "more" menu ────────────────────────────────────────────────
+function _sxCloseMenu() {
+  const m = document.getElementById('sched-menu');
+  if (m && !m.hidden) { m.hidden = true; m.innerHTML = ''; }
+}
+function _sxOpenMenu(ev, id, ctx) {
+  const s = (schedules || []).find(x => x.id === id);
+  const m = document.getElementById('sched-menu');
+  if (!s || !m) return;
+  const trigger = ev.currentTarget || ev.target;
+  if (!m.hidden && m.dataset.for === id + ctx) { _sxCloseMenu(); return; }
+  const idJs = escJs(id);
+  const items = [];
+  if (ctx === 'row') items.push(['Details', `openSchedDetail('${idJs}')`]);
+  items.push(['Run now', `runScheduleNow('${idJs}')`]);
+  items.push([s.enabled ? 'Pause' : 'Resume', `toggleSchedEnabled('${idJs}', ${s.enabled ? 'false' : 'true'})`]);
+  if (s.enabled && s.sched_type !== 'once' && s.next_run) items.push(['Skip next run', `skipSchedule('${idJs}')`]);
+  items.push(['Edit schedule', `openSchedModal('${idJs}')`]);
+  items.push(['Duplicate', `duplicateSchedule('${idJs}')`]);
+  items.push(['Copy ID', `_copySchedId('${idJs}')`]);
+  if (s.session) items.push(['Open in worker', `_sxOpenWorker('${escJs(s.session)}')`]);
+  items.push(['Delete', `deleteSchedule('${idJs}')`, 'danger']);
+  m.innerHTML = items.map(([label, fn, cls]) =>
+    `<button role="menuitem" class="sx-menu-item${cls ? ' ' + cls : ''}" onclick="_sxCloseMenu();${fn}">${esc(label)}</button>`).join('');
+  m.dataset.for = id + ctx;
+  m.hidden = false;
+  const r = trigger.getBoundingClientRect();
+  const w = m.offsetWidth, h = m.offsetHeight;
+  let left = Math.min(r.right - w, innerWidth - w - 8);
+  left = Math.max(8, left);
+  let top = r.bottom + 4;
+  if (top + h > innerHeight - 8) top = Math.max(8, r.top - h - 4);
+  m.style.left = left + 'px';
+  m.style.top = top + 'px';
+  const first = m.querySelector('button');
+  if (first) first.focus({ preventScroll: true });
+}
+document.addEventListener('click', (e) => {
+  const m = document.getElementById('sched-menu');
+  if (m && !m.hidden && !m.contains(e.target) && !(e.target.closest && e.target.closest('.sx-more-btn'))) _sxCloseMenu();
+}, true);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const m = document.getElementById('sched-menu');
+  if (m && !m.hidden) { _sxCloseMenu(); e.stopPropagation(); return; }
+  const d = document.getElementById('sched-detail');
+  const ov = document.getElementById('sched-overlay');
+  const confirmOpen = document.getElementById('modal-backdrop')?.classList.contains('open');
+  if (d && !d.hidden && !(ov && ov.classList.contains('active')) && !confirmOpen) closeSchedDetail();
+});
+window.addEventListener('resize', _sxCloseMenu);
+
+function _sxOpenWorker(name) {
+  closeSchedDetail();
+  switchView('workers');
+  openPeek(name);
+}
+
+// ── Details panel ───────────────────────────────────────────────────────────
+let _sxDetailId = null;
+let _sxDetailTabName = 'details';
+let _sxDetailRuns = null;     // { id, rows } or { id, error }
+let _sxDetailAudit = null;
+let _sxDetailLog = null;
+let _sxLogTimer = null;
+
+function openSchedDetail(id) {
+  const s = (schedules || []).find(x => x.id === id && !x.deleted);
+  if (!s) { showToast(id + ' is not in the current schedule list; see Change history'); return; }
+  _sxCloseMenu();
+  const same = _sxDetailId === id;
+  _sxDetailId = id;
+  if (!same) { _sxDetailRuns = null; _sxDetailAudit = null; _sxDetailLog = null; _sxDetailTabName = 'details'; }
+  const ov = document.getElementById('sched-detail');
+  ov.hidden = false;
+  requestAnimationFrame(() => ov.classList.add('open'));
+  _sxRenderDetail();
+  _sxLoadDetailRuns(id);
+  setTimeout(() => { const c = ov.querySelector('.sx-detail-close'); if (c) c.focus({ preventScroll: true }); }, 30);
+}
+function closeSchedDetail() {
+  const ov = document.getElementById('sched-detail');
+  if (!ov || ov.hidden) return;
+  ov.classList.remove('open');
+  clearTimeout(_sxLogTimer); _sxLogTimer = null;
+  _sxCloseMenu();
+  setTimeout(() => { if (!ov.classList.contains('open')) ov.hidden = true; }, 200);
+  _sxDetailId = null;
+}
+function _sxDetailTab(tab) {
+  _sxDetailTabName = tab;
+  document.querySelectorAll('#sched-detail .sx-tab').forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  if (tab !== 'logs') { clearTimeout(_sxLogTimer); _sxLogTimer = null; }
+  _sxRenderDetail();
+  const id = _sxDetailId;
+  if (!id) return;
+  if (tab === 'history' && !(_sxDetailAudit && _sxDetailAudit.id === id)) _sxLoadDetailAudit(id);
+  if (tab === 'runs' && !(_sxDetailRuns && _sxDetailRuns.id === id)) _sxLoadDetailRuns(id);
+  if (tab === 'logs') _sxLoadDetailLog(id);
+}
+async function _sxLoadDetailRuns(id) {
+  try {
+    const r = await fetch(API + '/api/schedules/runs?schedule_id=' + encodeURIComponent(id) + '&limit=200', { headers: _authHeaders() });
+    const d = await r.json();
+    _sxDetailRuns = r.ok && Array.isArray(d) ? { id, rows: d } : { id, error: (d && d.error) || ('HTTP ' + r.status) };
+  } catch (e) { _sxDetailRuns = { id, error: e.message || String(e) }; }
+  if (_sxDetailId === id) _sxRenderDetail();
+}
+async function _sxLoadDetailAudit(id) {
+  try {
+    const r = await fetch(API + '/api/schedules/audit?id=' + encodeURIComponent(id) + '&limit=100', { headers: _authHeaders() });
+    const d = await r.json();
+    _sxDetailAudit = r.ok && Array.isArray(d) ? { id, rows: d } : { id, error: (d && d.error) || ('HTTP ' + r.status) };
+  } catch (e) { _sxDetailAudit = { id, error: e.message || String(e) }; }
+  if (_sxDetailId === id) _sxRenderDetail();
+}
+async function _sxLoadDetailLog(id, logName) {
+  const s = (schedules || []).find(x => x.id === id);
+  if (!s || s.kind !== 'shell') { _sxRenderDetail(); return; }
+  try {
+    const q = logName ? '?log=' + encodeURIComponent(logName) : '';
+    const r = await fetch(API + '/api/schedules/' + encodeURIComponent(id) + '/output' + q, { headers: _authHeaders() });
+    const d = await r.json();
+    _sxDetailLog = r.ok ? Object.assign({ id }, d) : { id, error: (d && d.error) || ('HTTP ' + r.status) };
+  } catch (e) { _sxDetailLog = { id, error: e.message || String(e) }; }
+  if (_sxDetailId !== id || _sxDetailTabName !== 'logs') return;
+  _sxRenderDetail();
+  clearTimeout(_sxLogTimer);
+  if (_sxDetailLog && _sxDetailLog.running) _sxLogTimer = setTimeout(() => _sxLoadDetailLog(id, _sxDetailLog.log), 2000);
+}
+
+const _SX_RUN_LABEL = { ok: 'Success', delivered: 'Delivered', done: 'Done', queued: 'Queued', running: 'Running',
+  refused: 'Refused', skipped: 'Skipped', error: 'Failed' };
+function _sxRunRow(r) {
+  const tone = _schedRunTone(r.status);
+  const label = _SX_RUN_LABEL[r.status] || (r.status || 'unknown');
+  const when = r.ran_at ? new Date(r.ran_at * 1000) : null;
+  const extra = [];
+  if (r.status === 'running' && r.ran_at) extra.push('running for ' + _fmtDur(Date.now() - r.ran_at * 1000));
+  if (r.exit_code != null) extra.push('exit ' + r.exit_code);
+  if (r.delivery && r.delivery !== r.status) extra.push('via ' + r.delivery);
+  if (r.submission && r.submission !== 'confirmed' && r.submission !== 'deferred') extra.push(r.submission);
+  const note = r.note ? String(r.note).split('\n')[0].slice(0, 160) : '';
+  return `<div class="sx-run">
+    <span class="sx-run-pill tone-${tone}"><span class="sched-run-dot ${_schedRunDotClass(r)}"></span>${esc(label)}</span>
+    <span class="sx-run-when" title="${when ? esc(when.toLocaleString()) : ''}">${when ? esc(relTime(r.ran_at)) : '?'}</span>
+    ${_schedRunSrcChip(r.source)}
+    ${extra.length ? `<span class="sx-run-extra">${esc(extra.join(' · '))}</span>` : ''}
+    ${note ? `<span class="sx-run-note" title="${esc(r.note)}">${esc(note)}</span>` : ''}
+  </div>`;
+}
+function _sxFmtWhen(v) {
+  if (v == null || v === '') return '<span class="sx-dim">never</span>';
+  const ms = /^\d+(\.\d+)?$/.test(String(v)) ? (+v > 2e9 ? +v : +v * 1000) : new Date(String(v).replace(' ', 'T')).getTime();
+  if (isNaN(ms)) return esc(String(v));
+  return `${esc(new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))} <span class="sx-dim">(${esc(relTime(ms))})</span>`;
+}
+
+function _sxRenderDetail() {
+  const id = _sxDetailId;
+  const body = document.getElementById('sched-detail-body');
+  if (!id || !body) return;
+  const s = (schedules || []).find(x => x.id === id);
+  if (!s || s.deleted) {
+    body.innerHTML = '<div class="sx-empty sx-empty-small">This schedule no longer exists. Change history keeps its record.</div>';
+    return;
+  }
+  const runsForStatus = (_sxDetailRuns && _sxDetailRuns.id === id && _sxDetailRuns.rows) ? _sxDetailRuns.rows : (_sxRunIndex(_schedulerRuns)[id] || []);
+  const st = _sxStatus(s, runsForStatus);
+  const idEl = document.getElementById('sched-detail-id');
+  idEl.textContent = s.id;
+  idEl.onclick = () => _copySchedId(s.id);
+  document.getElementById('sched-detail-status').innerHTML = _sxStatusPill(st);
+  document.getElementById('sched-detail-title').textContent = s.title || s.id;
+  const idJs = escJs(s.id);
+  const sessJs = s.session ? escJs(s.session) : '';
+  const tab = _sxDetailTabName;
+  let html = '';
+  if (tab === 'details') {
+    const rs = s.run_stats_24h;
+    const sessMap = {};
+    for (const x of sessions) sessMap[x.name] = x.status || 'idle';
+    const rows = [
+      ['Worker', _sxWorkerChip(s, sessMap)],
+      ['Type', s.kind === 'shell'
+        ? '<span class="sx-type-line">' + _sxTypeIcon(s) + ' Run a command <span class="sx-dim">(shell, on this machine, no model cost)</span></span>'
+        : '<span class="sx-type-line">' + _sxTypeIcon(s) + ' Trigger a worker <span class="sx-dim">(tmux, a full model turn per run)</span></span>'],
+      ['Frequency', `${esc(_sxFreq(s))}<div class="sx-dim sx-sub">${esc(_sxDescribe(s.schedule_expr, s.sched_type, s.run_at))}</div>`
+        + (s.schedule_expr ? `<code class="sx-expr">${esc(s.schedule_expr)}</code>` : '')],
+      ['Next run', s.enabled ? _sxFmtWhen(s.next_run) : '<span class="sx-dim">paused</span>'],
+      ['Runs per day', rs
+        ? `${rs.runs} in the last 24h <span class="sx-dim">(counted from run history${s.planned_fires_day != null ? '; planned about ' + esc(_sxFmtRate(s.planned_fires_day)) + '/day' : ''}${s.fleet_share ? '; ' + esc(String(s.fleet_share)) + '% of fleet runs' : ''})</span>`
+        : (s.fires_day != null ? esc(String(s.fires_day)) + ' in the last 24h' : '<span class="sx-dim">not reported</span>')],
+      ['Failures', rs && rs.measured === true
+        ? (rs.failures ? `<span class="sx-bad">${rs.failures}</span> in 24h, last ${_sxFmtWhen(rs.last_failure_at)}` : `0 in 24h <span class="sx-dim">(${rs.runs} run(s) considered)</span>`)
+        : '<span class="sx-dim">not measured</span>'],
+      ['Created', _sxFmtWhen(s.created)],
+      ['Last run', _sxFmtWhen(s.last_run)],
+      ['Total runs', esc(String(s.run_count || 0))],
+    ];
+    if (s.last_delivery) rows.push(['Last delivery', esc(s.last_delivery)]);
+    if (s.last_refusal_reason) rows.push(['Last refusal', `<span class="sx-bad">${esc(s.last_refusal_reason)}</span>`]);
+    if (s.worktree) rows.push(['Isolation', 'Ephemeral worktree per run']);
+    const cmdLabel = s.kind === 'shell' ? 'Shell command' : 'Message sent to the worker';
+    const recent = (_sxDetailRuns && _sxDetailRuns.id === id)
+      ? (_sxDetailRuns.error ? `<div class="ui-error">Could not load runs: ${esc(_sxDetailRuns.error)}</div>`
+         : (_sxDetailRuns.rows.length ? _sxDetailRuns.rows.slice(0, 5).map(_sxRunRow).join('') : '<div class="sx-dim">No runs recorded yet.</div>'))
+      : '<div class="sx-dim">Loading runs...</div>';
+    html = `<div class="sx-actions">
+        <button class="btn primary" onclick="runScheduleNow('${idJs}')">&#x25B6; Run now</button>
+        <button class="btn" onclick="toggleSchedEnabled('${idJs}', ${s.enabled ? 'false' : 'true'})">${s.enabled ? '&#x23F8; Pause' : '&#x25B6; Resume'}</button>
+        <button class="btn sx-more-btn" aria-label="More actions" aria-haspopup="menu" onclick="_sxOpenMenu(event,'${idJs}','detail')">&#x22EF;</button>
+        ${s.session ? `<button class="btn sx-linkbtn" onclick="_sxOpenWorker('${sessJs}')">View in worker &rarr;</button>` : ''}
+      </div>
+      <dl class="sx-dl">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+      <div class="sx-desc">
+        <div class="sx-desc-head"><span>${cmdLabel}</span><button class="sx-linkbtn" onclick="_sxCopyText(${esc(JSON.stringify(s.command || ''))})">Copy</button></div>
+        <pre class="${s.kind === 'shell' ? 'sx-shell' : ''}">${esc(s.command || '')}</pre>
+      </div>
+      <div class="sx-sec-head"><h4>Recent Runs</h4><button class="sx-linkbtn" onclick="_sxDetailTab('runs')">View all</button></div>
+      <div class="sx-runs-list">${recent}</div>
+      <div class="sx-sec-head"><h4>Related</h4></div>
+      <div class="sx-related">
+        ${s.session ? `<button class="sx-rel" onclick="_sxOpenWorker('${sessJs}')">Open in worker <span>&rarr;</span></button>` : ''}
+        <button class="sx-rel" onclick="_sxDetailTab('logs')">View logs <span>&rarr;</span></button>
+        <button class="sx-rel" onclick="openSchedModal('${idJs}')">Edit schedule <span>&rarr;</span></button>
+        <button class="sx-rel" onclick="duplicateSchedule('${idJs}')">Duplicate <span>&rarr;</span></button>
+        ${s.enabled && s.sched_type !== 'once' && s.next_run ? `<button class="sx-rel" onclick="skipSchedule('${idJs}')">Skip next run <span>&rarr;</span></button>` : ''}
+        <button class="sx-rel danger" onclick="deleteSchedule('${idJs}')">Delete schedule <span>&rarr;</span></button>
+      </div>`;
+  } else if (tab === 'history') {
+    const a = _sxDetailAudit && _sxDetailAudit.id === id ? _sxDetailAudit : null;
+    html = !a ? '<div class="sx-dim">Loading change history...</div>'
+      : a.error ? `<div class="ui-error">Could not load change history: ${esc(a.error)}</div>`
+      : a.rows.length ? `<div class="sx-audit">${a.rows.map(r => _schedAuditRow(r, new Set([id]))).join('')}</div>`
+      : '<div class="sx-dim">No recorded changes for this schedule.</div>';
+  } else if (tab === 'runs') {
+    const a = _sxDetailRuns && _sxDetailRuns.id === id ? _sxDetailRuns : null;
+    html = !a ? '<div class="sx-dim">Loading runs...</div>'
+      : a.error ? `<div class="ui-error">Could not load runs: ${esc(a.error)}</div>`
+      : a.rows.length ? `<div class="sx-dim sx-sub">${a.rows.length} most recent run(s)${a.rows.length >= 200 ? ' (the newest 200)' : ''}. Run duration is not recorded by the scheduler; shell runs show their exit code.</div><div class="sx-runs-list">${a.rows.map(_sxRunRow).join('')}</div>`
+      : '<div class="sx-dim">No runs recorded yet.</div>';
+  } else if (tab === 'logs') {
+    if (s.kind !== 'shell') {
+      const a = _sxDetailRuns && _sxDetailRuns.id === id ? _sxDetailRuns : null;
+      const notes = a && a.rows ? a.rows.filter(r => r.note || r.delivery).slice(0, 30) : [];
+      html = `<div class="ui-help sx-sub">A worker-trigger schedule has no host log: each run is delivered into the worker's conversation. Open the worker to read what it did. The delivery verdict of each run is below.</div>
+        ${s.session ? `<button class="btn" onclick="_sxOpenWorker('${sessJs}')">Open ${esc(s.session)} &rarr;</button>` : ''}
+        <div class="sx-runs-list">${notes.length ? notes.map(_sxRunRow).join('') : '<div class="sx-dim">No delivery notes recorded.</div>'}</div>`;
+    } else {
+      const L = _sxDetailLog && _sxDetailLog.id === id ? _sxDetailLog : null;
+      if (!L) html = '<div class="sx-dim">Loading output...</div>';
+      else if (L.error) html = `<div class="ui-error">Could not load output: ${esc(L.error)}</div>`;
+      else {
+        const logs = L.logs || [];
+        const opts = logs.map((l, i) => `<option value="${esc(l.name)}"${l.name === L.log ? ' selected' : ''}>${i === 0 ? 'Latest · ' : ''}${esc(new Date(l.started_ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</option>`).join('');
+        html = `<div class="sx-log-bar">
+            ${opts ? `<select class="input" aria-label="Choose a run's output" onchange="_sxLoadDetailLog('${idJs}', this.value)">${opts}</select>` : ''}
+            <button class="btn" onclick="_sxLoadDetailLog('${idJs}', ${L.log ? esc(JSON.stringify(L.log)) : 'undefined'})">Refresh</button>
+            ${L.running ? '<span class="sx-pill sx-pill-running">Running</span>' : ''}
+          </div>
+          <pre class="sx-log">${esc(L.text || '') || (L.why_empty ? esc(L.why_empty) : '(no output)')}</pre>`;
+      }
+    }
+  }
+  body.innerHTML = html;
+}
+
+function _sxCopyText(t) {
+  try { navigator.clipboard.writeText(String(t)); showToast('Copied'); }
+  catch (e) { showToast('Could not copy: ' + (e.message || e)); }
+}
 // ── System jobs (AMUX-2703) ──────────────────────────────────────────────────
 //
 // amux's OWN background loops, rendered BELOW the user's schedules and clearly
@@ -35485,6 +36051,7 @@ async function runScheduleNow(id) {
     if (r) {
       const d = (typeof r.json === 'function') ? await r.json().catch(() => ({})) : (r || {});
       await Promise.all([fetchSchedules(), fetchSchedulerRuns(), fetchSchedulerAudit()]);
+      if (_sxDetailId === id) await _sxLoadDetailRuns(id);
       renderScheduler();
       renderSchedulerAudit();
       _peekRefreshSchedIfActive();
@@ -35545,15 +36112,24 @@ function _schedWhen(s) {
 }
 
 async function toggleSchedEnabled(id, enabled) {
-  await apiCall(API + '/api/schedules/' + id, {
+  const r = await apiCall(API + '/api/schedules/' + id, {
     method: 'PATCH', headers: {'Content-Type':'application/json'},
     // Tag UI toggles so an audit flip reads "dashboard", not UNATTRIBUTED
     // (the recurring-disabler mystery, AMUX-1765 — it was this control).
     body: JSON.stringify({ enabled: enabled ? 1 : 0, by: 'dashboard' })
   });
-  await fetchSchedules();
+  await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
+  if (_sxDetailAudit && _sxDetailAudit.id === id) _sxDetailAudit = null;
   renderScheduler();
+  renderSchedulerAudit();
   _peekRefreshSchedIfActive();
+  // Say what happened: the row moving groups is easy to miss on a phone.
+  // A refusal was already toasted by apiCall with the server's sentence.
+  if (r) {
+    const s = (schedules || []).find(x => x.id === id);
+    showToast((enabled ? 'Resumed ' : 'Paused ') + id
+      + (enabled && s && s.next_run ? ', next run ' + _schedWhen(s.next_run) : ''));
+  }
 }
 
 let _boardViewsLoaded = false;
@@ -38430,41 +39006,136 @@ function _populateSessionSelect(selectId, current) {
   if (current) sel.value = current;
 }
 
-// ── Schedule modal ────────────────────────────────────────────────────────────
-let _schedMode = 'loop';
-function setSchedMode(mode) {
-  _schedMode = mode;
-  // 'trigger' was a fourth mode. Every control in it wrote a column nothing
-  // reads (AMUX-2680), so it is gone rather than disabled — an offered mode
-  // that saves and never fires is worse than an absent one.
-  ['loop','routine','once'].forEach(m => {
-    const panel = document.getElementById('sched-panel-' + m);
-    if (panel) panel.style.display = m === mode ? '' : 'none';
+// ── Schedule modal: create, edit and duplicate ─────────────────────────────────
+//
+// One form for all three. The two type cards map to the scheduler's `kind`:
+// "Run a command" is kind=shell (runs on this machine, no model turn) and
+// "Trigger a worker" is kind=tmux (a prompt delivered to the worker, a full
+// model turn per run). Every preset writes a schedule_expr the server already
+// parses (ScheduleExpr::parse); nothing here invents a schedule grammar.
+let _sxPreset = 'everyN';
+let _sxOrig = null;          // the stored schedule fields when editing
+let _sxSchedDirty = false;   // did the user touch the schedule controls?
+const _SX_PRESETS = ['minute', 'everyN', 'hour', 'daily', 'weekdays', 'weekly', 'monthly', 'once', 'custom'];
+
+function _sxCreateSection(sec) {
+  ['basic', 'advanced', 'template'].forEach(k => {
+    const el = document.getElementById('sched-sec-' + k);
+    if (el) el.hidden = k !== sec;
   });
-  document.querySelectorAll('.sched-mode-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.mode === mode));
-  // default the once datetime if entering once with empty value
-  if (mode === 'once') {
-    const ra = document.getElementById('sched-run-at');
-    if (ra && !ra.value) ra.value = new Date(Date.now() + 3600000).toISOString().slice(0,16);
+  document.querySelectorAll('#sched-overlay .sx-nav-btn').forEach(b => {
+    const on = b.dataset.sec === sec;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-current', on ? 'true' : 'false');
+  });
+  if (sec === 'advanced') {
+    const adv = document.getElementById('sched-expr-adv');
+    const b = _sxBuildSchedule();
+    if (adv && document.activeElement !== adv) adv.value = b.schedExpr || '';
   }
+  if (sec === 'template') _sxRenderTemplates();
 }
-function setLoopEvery(v) {
-  document.getElementById('sched-loop-every').value = v;
-  markLoopChipActive(v);
+function _sxSchedTouched() { _sxSchedDirty = true; _sxRenderPreview(); }
+function _sxSetPreset(p, quiet) {
+  if (!_SX_PRESETS.includes(p)) p = 'custom';
+  _sxPreset = p;
+  if (!quiet) _sxSchedDirty = true;
+  document.querySelectorAll('#sched-presets .sx-preset').forEach(b => {
+    const on = b.dataset.preset === p;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+    b.setAttribute('role', 'radio');
+  });
+  document.querySelectorAll('#sched-overlay .sx-pf').forEach(el => {
+    el.hidden = !(el.dataset.for || '').split(' ').includes(p);
+  });
+  if (p === 'once') {
+    const ra = document.getElementById('sched-run-at');
+    if (ra && !ra.value) ra.value = _sxLocalInput(new Date(Date.now() + 3600000));
+    try { _dpSyncLabel(ra); } catch (e) {}
+  }
+  if (p === 'custom') {
+    const ex = document.getElementById('sched-expr');
+    if (ex && !ex.value) {
+      const cur = _sxOrig && _sxOrig.expr;
+      ex.value = cur || '0 9 * * 1-5';
+    }
+  }
+  _sxRenderPreview();
 }
-function markLoopChipActive(v) {
-  document.querySelectorAll('#sched-loop-chips .sched-chip').forEach(c =>
-    c.classList.toggle('active', c.dataset.every === v));
-}
-function setRoutineExpr(v) {
+function _sxAdvExpr(v) {
   document.getElementById('sched-expr').value = v;
-  markRoutineChip(v);
+  _sxSetPreset('custom');
 }
-function markRoutineChip(v) {
-  document.querySelectorAll('#sched-routine-chips .sched-chip').forEach(c =>
-    c.classList.toggle('active', (c.getAttribute('onclick') || '').includes("'" + v + "'")));
+// A datetime-local value in LOCAL time. toISOString() is UTC, which put the
+// default "in an hour" five hours off for anyone west of Greenwich.
+function _sxLocalInput(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
+function _sxVal(id) { const el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; }
+
+// The schedule the form describes right now: { stype, schedExpr, run_at } or
+// { error }. An untouched edit returns the STORED values unchanged, so opening
+// and saving a schedule never rewrites "daily at 9am" as "daily at 09:00" and
+// files a change nobody made.
+function _sxBuildSchedule() {
+  if (_sxOrig && !_sxSchedDirty) {
+    const once = _sxOrig.sched_type === 'once' && !_sxOrig.expr;
+    return { stype: once ? 'once' : 'recurring', schedExpr: once ? '' : _sxOrig.expr, run_at: once ? (_sxOrig.run_at || '') : '' };
+  }
+  const time = _sxVal('sched-time');
+  const needTime = ['daily', 'weekdays', 'weekly', 'monthly'].includes(_sxPreset);
+  if (needTime && !/^\d{2}:\d{2}$/.test(time)) return { error: 'Pick a time' };
+  switch (_sxPreset) {
+    case 'minute': return { stype: 'recurring', schedExpr: 'every 1m', run_at: '' };
+    case 'hour': return { stype: 'recurring', schedExpr: 'every 1h', run_at: '' };
+    case 'everyN': {
+      const n = parseInt(_sxVal('sched-every-n'), 10);
+      const u = _sxVal('sched-every-unit') || 'm';
+      if (!(n >= 1 && n <= 999)) return { error: 'Enter how often, a whole number from 1 to 999' };
+      return { stype: 'recurring', schedExpr: 'every ' + n + u, run_at: '' };
+    }
+    case 'daily': return { stype: 'recurring', schedExpr: 'daily at ' + time, run_at: '' };
+    case 'weekdays': return { stype: 'recurring', schedExpr: 'every weekday at ' + time, run_at: '' };
+    case 'weekly': return { stype: 'recurring', schedExpr: 'weekly on ' + (_sxVal('sched-weekday') || 'monday') + ' at ' + time, run_at: '' };
+    case 'monthly': {
+      const d = parseInt(_sxVal('sched-monthday'), 10);
+      if (!(d >= 1 && d <= 28)) return { error: 'Day of month must be 1 to 28 (later days would skip short months)' };
+      return { stype: 'recurring', schedExpr: 'monthly on ' + d + ' at ' + time, run_at: '' };
+    }
+    case 'once': {
+      const ra = _sxVal('sched-run-at');
+      if (!ra) return { error: 'Pick a date and time' };
+      return { stype: 'once', schedExpr: '', run_at: ra };
+    }
+    case 'custom': {
+      const e = _sxVal('sched-expr');
+      if (!e) return { error: 'Enter a schedule expression' };
+      return { stype: 'recurring', schedExpr: e, run_at: '' };
+    }
+  }
+  return { error: 'Pick a schedule' };
+}
+function _sxRenderPreview() {
+  const el = document.getElementById('sched-preview');
+  if (!el) return;
+  const b = _sxBuildSchedule();
+  const shell = !!document.getElementById('sched-kind-shell')?.checked;
+  if (b.error) { el.innerHTML = '<span class="ui-error">' + esc(b.error) + '</span>'; return; }
+  const known = b.stype === 'once' || !!_sxParseExpr(b.schedExpr);
+  const desc = _sxDescribe(b.schedExpr, b.stype, b.run_at);
+  const rate = _sxPlannedPerDay(b.schedExpr, b.stype);
+  let cost;
+  if (shell) cost = 'Runs on this machine: no model turn and no cost per run.';
+  else if (b.stype === 'once') cost = 'One message to the worker: one full model turn.';
+  else if (rate != null) cost = 'About ' + _sxFmtRate(rate) + ' run(s) a day. Each one sends this message to the worker as a full model turn (about $6 a run, the figure measured in AF-216), so roughly $' + (rate * 6).toFixed(2) + ' a day.';
+  else cost = 'Each run sends this message to the worker as a full model turn (about $6 a run, measured in AF-216).';
+  el.innerHTML = `<div class="${known ? '' : 'ui-error'}">${esc(desc)}</div>`
+    + (b.schedExpr ? `<code class="sx-expr">${esc(b.schedExpr)}</code>` : '')
+    + (known ? `<div class="ui-help">${esc(cost)}</div>` : '<div class="ui-help">The server will refuse an expression it cannot parse and say which forms it accepts.</div>');
+}
+
 function _schedCmdCount() {
   const ta = document.getElementById('sched-command');
   const el = document.getElementById('sched-command-count');
@@ -38472,6 +39143,7 @@ function _schedCmdCount() {
   const n = ta.value.length;
   el.textContent = n ? (n >= 1000 ? (n/1000).toFixed(1) + 'k' : n) + ' chars' : '';
 }
+function _sxCopyCommand() { _sxCopyText(document.getElementById('sched-command').value); }
 function toggleSchedCmdFullscreen() {
   const box = document.querySelector('#sched-overlay .board-edit-box');
   if (!box) return;
@@ -38482,179 +39154,283 @@ function toggleSchedCmdFullscreen() {
 }
 function schedCmdSwitchMode(mode) {
   const ta = document.getElementById('sched-command');
+  const wrap = document.getElementById('sched-command-editor-wrap');
   const preview = document.getElementById('sched-command-preview');
   const editTab = document.getElementById('sched-cmd-tab-edit');
   const prevTab = document.getElementById('sched-cmd-tab-preview');
   if (mode === 'preview') {
     preview.innerHTML = renderMarkdown(ta.value) || '<span style="color:var(--dim);font-size:0.85rem;">Nothing to preview</span>';
-    ta.style.display = 'none';
+    wrap.style.display = 'none';
     preview.style.display = 'block';
     editTab.classList.remove('active');
     prevTab.classList.add('active');
   } else {
     preview.style.display = 'none';
-    ta.style.display = 'block';
+    wrap.style.display = '';
     editTab.classList.add('active');
     prevTab.classList.remove('active');
   }
 }
 function updateSchedKindUI() {
   const shell = document.getElementById('sched-kind-shell').checked;
-  document.getElementById('sched-kind').value = shell ? 'shell' : 'tmux';
-  document.getElementById('sched-session-group').style.display = shell ? 'none' : '';
-  document.getElementById('sched-command-label').textContent = shell ? 'Shell command' : 'Command';
+  document.querySelectorAll('#sched-overlay .sx-type-card').forEach(c =>
+    c.classList.toggle('active', !!c.querySelector('input:checked')));
+  document.getElementById('sched-command-label').innerHTML = (shell ? 'Command' : 'Message') + ' <span class="sx-req">*</span>';
+  document.getElementById('sched-cmd-prefix').hidden = !shell;
+  document.getElementById('sched-command-editor-wrap').classList.toggle('sx-has-prefix', shell);
   document.getElementById('sched-command').placeholder = shell
-    ? 'e.g. /bin/bash /path/to/script.sh' : 'e.g. /status or npm run build';
+    ? '/bin/bash ~/scripts/nightly.sh' : 'e.g. /status, or a full multi-paragraph prompt for the worker';
+  document.getElementById('sched-command-tabs').hidden = shell;
+  if (shell) schedCmdSwitchMode('edit');
+  document.getElementById('sched-session-label').textContent = shell ? 'Owner worker (optional)' : 'Worker';
+  document.getElementById('sched-session-help').textContent = shell
+    ? 'The command runs on this machine, not in a worker. The owner is the worker told when it fails.'
+    : 'The message is delivered to this worker as a prompt.';
+  const none = document.querySelector('#sched-session option[value=""]');
+  if (none) none.textContent = shell ? 'No owner' : 'Choose a worker';
+  _sxRenderPreview();
 }
-// Determine which mode an existing schedule maps to
-function schedModeOf(s) {
-  if (s.sched_type === 'once' && !s.schedule_expr) return 'once';
-  if (isLoopCadence(s)) return 'loop';
-  return 'routine';
+// Map a stored schedule onto the form's presets. Anything that does not fit a
+// preset exactly opens as Custom with the stored text, verbatim.
+function _sxPresetFromSchedule(s) {
+  const out = { preset: 'custom', expr: s.schedule_expr || '' };
+  if (s.sched_type === 'once' && !s.schedule_expr) { out.preset = 'once'; out.run_at = s.run_at || ''; return out; }
+  const p = _sxParseExpr(s.schedule_expr);
+  if (!p) return out;
+  if (p.kind === 'interval') {
+    if (p.n === 1 && p.unit === 'm') out.preset = 'minute';
+    else if (p.n === 1 && p.unit === 'h') out.preset = 'hour';
+    else { out.preset = 'everyN'; out.n = p.n; out.unit = p.unit; }
+  } else if (p.kind === 'daily' || p.kind === 'weekdays' || p.kind === 'weekly' || p.kind === 'monthly') {
+    out.preset = p.kind; out.time = _sxHHMM(p.h, p.m); out.day = p.day; out.dom = p.dom;
+  }
+  return out;
 }
-function openSchedModal(editId) {
+function _sxFillSessions(current, shell) {
+  const sel = document.getElementById('sched-session');
+  const names = [...new Set((sessions || []).map(s => s.name))].sort();
+  let html = '<option value="">' + (shell ? 'No owner' : 'Choose a worker') + '</option>'
+    + names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  // A stored worker that is not running right now must stay selected, or an
+  // edit would silently move the schedule to whichever worker sorts first.
+  if (current && !names.includes(current)) html += `<option value="${esc(current)}">${esc(current)} (not running)</option>`;
+  sel.innerHTML = html;
+  sel.value = current || '';
+}
+function _sxApplyToForm(src, opts) {
+  opts = opts || {};
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  const shell = (src.kind || 'tmux') === 'shell';
+  setVal('sched-title', src.title || '');
+  document.getElementById('sched-kind-shell').checked = shell;
+  document.getElementById('sched-kind-tmux').checked = !shell;
+  _sxFillSessions(src.session || '', shell);
+  setVal('sched-command', src.command || '');
+  document.getElementById('sched-worktree').checked = !!src.worktree;
+  const pre = _sxPresetFromSchedule(src);
+  if (pre.time) setVal('sched-time', pre.time);
+  if (pre.n) setVal('sched-every-n', pre.n);
+  if (pre.unit) setVal('sched-every-unit', pre.unit);
+  if (pre.day) setVal('sched-weekday', pre.day);
+  if (pre.dom) setVal('sched-monthday', pre.dom);
+  setVal('sched-run-at', pre.run_at && String(pre.run_at).includes('T') ? String(pre.run_at).slice(0, 16) : '');
+  setVal('sched-expr', pre.preset === 'custom' ? pre.expr : '');
+  updateSchedKindUI();
+  _sxSetPreset(pre.preset, !!opts.quiet);
+  try { _dpSyncLabel(document.getElementById('sched-run-at')); } catch (e) {}
+  _schedCmdCount();
+}
+function openSchedModal(editId, opts) {
+  opts = opts || {};
   _schedEditId = editId || null;
+  _sxOrig = null;
+  _sxSchedDirty = false;
+  _sxCloseMenu();
   const overlay = document.getElementById('sched-overlay');
   // AMUX-3509: the command editor gets the same @-worker dropdown as the
   // main composer (idempotent — _atAttach wires once per element).
   _atAttach(document.getElementById('sched-command'));
-  // Populate session list
-  const sel = document.getElementById('sched-session');
-  sel.innerHTML = (sessions || []).map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
-  // Reset all fields to defaults
+  // Defaults: a worker prompt every 30 minutes, the old Loop default.
   const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
-  const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = v; };
-  setVal('sched-title', '');
-  setChk('sched-kind-shell', false);
-  setVal('sched-command', '');
-  setVal('sched-loop-every', '30m');
-  setVal('sched-expr', '');
-  setVal('sched-run-at', new Date(Date.now() + 3600000).toISOString().slice(0,16));
-  setChk('sched-worktree', false);
-
-  let mode = 'loop';
-  if (editId) {
-    const s = schedules.find(x => x.id === editId);
-    if (s) {
-      setVal('sched-title', s.title);
-      setChk('sched-kind-shell', (s.kind || 'tmux') === 'shell');
-      sel.value = s.session;
-      setVal('sched-command', s.command);
-      setVal('sched-run-at', s.run_at && s.run_at.includes('T') ? s.run_at : '');
-      setChk('sched-worktree', !!s.worktree);
-      mode = schedModeOf(s);
-      const expr = s.schedule_expr || '';
-      if (mode === 'loop') {
-        const m = expr.match(/every\s+(\d+\s*[mh])/i);
-        setVal('sched-loop-every', m ? m[1].replace(/\s+/g,'') : (expr === 'hourly' ? '1h' : '30m'));
-      } else if (mode === 'routine') {
-        setVal('sched-expr', expr);
-      }
-    }
-    document.getElementById('sched-save-btn').textContent = 'Update';
+  setVal('sched-every-n', 30); setVal('sched-every-unit', 'm'); setVal('sched-time', '09:00');
+  setVal('sched-weekday', 'monday'); setVal('sched-monthday', 1); setVal('sched-expr', ''); setVal('sched-expr-adv', '');
+  setVal('sched-run-at', _sxLocalInput(new Date(Date.now() + 3600000)));
+  document.querySelectorAll('#sched-overlay [aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
+  const s = editId ? (schedules || []).find(x => x.id === editId) : null;
+  if (s) {
+    _sxOrig = { expr: s.schedule_expr || '', sched_type: s.sched_type || 'recurring', run_at: s.run_at || '' };
+    _sxApplyToForm(s, { quiet: true });
+    document.getElementById('sched-modal-title').textContent = 'Edit ' + s.id;
+    document.getElementById('sched-modal-sub').textContent = 'Changes are recorded in the schedule\'s change history.';
+    document.getElementById('sched-save-btn').textContent = 'Save changes';
   } else {
-    document.getElementById('sched-save-btn').textContent = 'Save';
+    const src = opts.from || { kind: 'tmux', session: opts.session || '', title: '', command: '' };
+    _sxApplyToForm(src, { quiet: true });
+    if (!opts.from) _sxSetPreset('everyN', true);
+    document.getElementById('sched-modal-title').textContent = opts.from ? 'Duplicate schedule' : 'Create Schedule';
+    document.getElementById('sched-modal-sub').textContent = opts.from
+      ? 'A new schedule with the same settings. Nothing is saved until you create it.'
+      : 'Set up a new scheduled task to run a command or trigger a worker.';
+    document.getElementById('sched-save-btn').textContent = 'Create Schedule';
   }
-  updateSchedKindUI();
-  setSchedMode(mode);
-  setLoopEvery(document.getElementById('sched-loop-every').value);
-  markRoutineChip(document.getElementById('sched-expr').value);
-  // Programmatic .value set above fires no event, so refresh the picker label.
-  try { _dpSyncLabel(document.getElementById('sched-run-at')); } catch (e) {}
+  document.getElementById('sched-nav-template').hidden = !!s;
+  const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { return ''; } })();
+  document.getElementById('sched-tz').textContent = 'Time zone: times use the amux server\'s local clock' + (tz ? ' (this browser is on ' + tz + ')' : '') + '.';
+  _sxCreateSection('basic');
   schedCmdSwitchMode('edit');
-  // reset editor expand state + char count
   const _box = overlay.querySelector('.board-edit-box');
   if (_box) _box.classList.remove('sched-cmd-max');
   const _eb = document.getElementById('sched-expand-btn');
   if (_eb) { _eb.innerHTML = '&#x2922;'; _eb.title = 'Expand editor (fills the modal)'; }
-  _schedCmdCount();
   overlay.style.display = 'flex';
   requestAnimationFrame(() => {
     overlay.classList.add('active');
-    const box = overlay.querySelector('.board-edit-box');
-    if (box) box.scrollTop = 0;
+    const body = overlay.querySelector('.sx-create-body');
+    if (body) body.scrollTop = 0;
   });
   setTimeout(() => document.getElementById('sched-title').focus(), 50);
+}
+function duplicateSchedule(id) {
+  const s = (schedules || []).find(x => x.id === id);
+  if (!s) { showToast(id + ' is not in the current schedule list'); return; }
+  openSchedModal(null, { from: Object.assign({}, s, { title: 'Copy of ' + (s.title || s.id) }) });
+  _sxSchedDirty = true;   // a duplicate saves what the form shows
 }
 function closeSchedModal() {
   const overlay = document.getElementById('sched-overlay');
   overlay.classList.remove('active');
-  setTimeout(() => { overlay.style.display = 'none'; }, 250);
+  // Only hide if nothing reopened it in the meantime: Create right after a
+  // save reopened the form inside this 250ms and the stale timer hid it.
+  setTimeout(() => { if (!overlay.classList.contains('active')) overlay.style.display = 'none'; }, 250);
   _schedEditId = null;
+  _sxOrig = null;
+}
+
+// Templates are prefills only. Nothing is created until Create is pressed.
+const _SX_TEMPLATES = [
+  { name: 'Health check loop', kind: 'shell', preset: 'everyN', n: 15, unit: 'm', command: 'curl -fsS http://localhost:8824/health > /dev/null',
+    blurb: 'A shell check every 15 minutes. A non-zero exit is reported to the owner.' },
+  { name: 'Nightly script', kind: 'shell', preset: 'daily', time: '03:00', command: '/bin/bash ~/scripts/nightly.sh',
+    blurb: 'Run a script on this machine at 3:00 AM.' },
+  { name: 'Morning standup', kind: 'tmux', preset: 'weekdays', time: '09:00',
+    command: 'Post a short standup: what you finished yesterday, what is next, and what is blocked.',
+    blurb: 'Ask a worker for a standup, Monday to Friday at 9:00 AM.' },
+  { name: 'Weekly audit', kind: 'tmux', preset: 'weekly', day: 'monday', time: '09:00',
+    command: 'Review the past week of work and open a card for anything that regressed.',
+    blurb: 'A weekly review by a worker, Mondays at 9:00 AM.' },
+  { name: 'Monthly disk report', kind: 'shell', preset: 'monthly', dom: 1, time: '09:00', command: 'du -sh ~/.amux',
+    blurb: 'A shell report on the 1st of every month.' },
+  { name: 'One-off follow-up', kind: 'tmux', preset: 'once', command: 'Check whether the deploy finished and report what you find.',
+    blurb: 'Send a worker one message an hour from now.' },
+];
+function _sxRenderTemplates() {
+  const el = document.getElementById('sched-templates');
+  if (el) {
+    el.innerHTML = _SX_TEMPLATES.map((t, i) => `<button type="button" class="sx-template" onclick="_sxUseTemplate(${i})">
+      ${t.kind === 'shell' ? '<span class="sx-type-ico sx-ico-shell" aria-hidden="true">$</span>' : '<span class="sx-type-ico sx-ico-tmux" aria-hidden="true">&#x2709;</span>'}
+      <span><b>${esc(t.name)}</b><span>${esc(t.blurb)}</span></span></button>`).join('');
+  }
+  const sel = document.getElementById('sched-template-copy');
+  if (sel) {
+    const live = (schedules || []).filter(s => !s.deleted).sort((a, b) => String(a.title).localeCompare(String(b.title)));
+    sel.innerHTML = '<option value="">Choose a schedule to copy</option>'
+      + live.map(s => `<option value="${esc(s.id)}">${esc(s.title)} (${esc(s.id)})</option>`).join('');
+  }
+}
+function _sxUseTemplate(i) {
+  const t = _SX_TEMPLATES[i];
+  if (!t) return;
+  const keepSession = _sxVal('sched-session');
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  setVal('sched-title', t.name);
+  setVal('sched-command', t.command);
+  document.getElementById('sched-kind-shell').checked = t.kind === 'shell';
+  document.getElementById('sched-kind-tmux').checked = t.kind !== 'shell';
+  _sxFillSessions(keepSession, t.kind === 'shell');
+  if (t.time) setVal('sched-time', t.time);
+  if (t.n) setVal('sched-every-n', t.n);
+  if (t.unit) setVal('sched-every-unit', t.unit);
+  if (t.day) setVal('sched-weekday', t.day);
+  if (t.dom) setVal('sched-monthday', t.dom);
+  if (t.preset === 'once') setVal('sched-run-at', _sxLocalInput(new Date(Date.now() + 3600000)));
+  updateSchedKindUI();
+  _sxSetPreset(t.preset);
+  _schedCmdCount();
+  _sxCreateSection('basic');
+  showToast('Template applied. Review it, then Create Schedule.');
+}
+function _sxTemplateFromExisting(id) {
+  const s = (schedules || []).find(x => x.id === id);
+  if (!s) return;
+  _sxApplyToForm(Object.assign({}, s, { title: 'Copy of ' + (s.title || s.id) }));
+  _sxSchedDirty = true;
+  _sxCreateSection('basic');
+}
+
+function _sxInvalid(id, msg) {
+  const el = document.getElementById(id);
+  if (el) { el.setAttribute('aria-invalid', 'true'); try { el.focus(); } catch (e) {} }
+  showToast(msg);
 }
 async function saveSchedModal() {
-  const title = document.getElementById('sched-title').value.trim();
+  document.querySelectorAll('#sched-overlay [aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
+  const title = _sxVal('sched-title');
   const shell = document.getElementById('sched-kind-shell').checked;
   const kind = shell ? 'shell' : 'tmux';
-  // A shell schedule hides the worker picker, and this used to send worker ''
-  // for it, so EDITING any shell schedule cleared its session and it vanished
-  // from its worker's list (Ethan, 2026-10-03: SCHED-550 lost amux-helper on a
-  // frequency change). On an edit the picker holds the stored session (the
-  // editor sets it), so send that; with none, leave the field out.
-  const _pick = (document.getElementById('sched-session') || {}).value || '';
-  // A NEW shell schedule keeps no worker (its picker is hidden and would
-  // otherwise default to the first session in the list).
-  const worker = (shell && !_schedEditId) ? '' : _pick;
-  const command = document.getElementById('sched-command').value.trim();
-  if (!title || !command) { showToast && showToast('Title and command are required'); return; }
-  if (!shell && !worker) { showToast && showToast('Pick a worker'); return; }
-
-  const v = (id) => (document.getElementById(id).value || '').trim();
-  const mode = _schedMode;
-  let stype = 'recurring', run_at = '', schedExpr = '';
-
-  if (mode === 'loop') {
-    let every = v('sched-loop-every') || '30m';
-    if (!/^\d+\s*[mh]$/i.test(every)) { showToast && showToast('Interval looks off — try "30m" or "1h"'); return; }
-    schedExpr = 'every ' + every.replace(/\s+/g,'');
-  } else if (mode === 'routine') {
-    schedExpr = v('sched-expr');
-    if (!schedExpr) { showToast && showToast('Enter a schedule (e.g. "daily at 9am")'); return; }
-  } else { // once
-    stype = 'once';
-    run_at = v('sched-run-at');
-    if (!run_at) { showToast && showToast('Pick a date & time'); return; }
-  }
+  // The worker picker is visible for both kinds now, so what it shows is what
+  // is sent: for a shell schedule it is the OWNER (failure alerts), never a
+  // delivery target. Before this the picker was hidden for shell and an edit
+  // cleared the owner (SCHED-550 lost amux-helper on a frequency change).
+  const worker = _sxVal('sched-session');
+  const command = (document.getElementById('sched-command').value || '').trim();
+  if (!title) { _sxCreateSection('basic'); return _sxInvalid('sched-title', 'Name is required'); }
+  if (!command) { _sxCreateSection('basic'); return _sxInvalid('sched-command', (shell ? 'Command' : 'Message') + ' is required'); }
+  if (!shell && !worker) { _sxCreateSection('basic'); return _sxInvalid('sched-session', 'Pick the worker to send the message to'); }
+  const b = _sxBuildSchedule();
+  if (b.error) { _sxCreateSection('basic'); showToast(b.error); return; }
 
   // watch / done_pattern / done_action / watch_timeout / trigger_on /
-  // trigger_cooldown / trigger_sessions were sent on every save and read by
-  // nothing — the columns exist, the row round-tripped, and the loop's "stop
-  // when output matches" box therefore looked like it worked. The server now
-  // REFUSES to arm them (400, AMUX-2680), so sending them would turn every
-  // save into an error; they are gone from the payload for the same reason
-  // they are gone from the form.
+  // trigger_cooldown / trigger_sessions / fan_out are refused by the server
+  // (400, AMUX-2680): stored, never read. They are not in the payload for the
+  // same reason they are not on the form.
   const worktree = document.getElementById('sched-worktree').checked ? 1 : 0;
-  const payload = { title, kind, command, sched_type: stype, recurrence: null, run_at,
-                    schedule_expr: schedExpr || null,
-                    worktree,
+  const payload = { title, kind, command, sched_type: b.stype, recurrence: null, run_at: b.run_at,
+                    schedule_expr: b.schedExpr || null,
+                    worktree, worker,
                     by: 'dashboard' };
-  if (worker || !_schedEditId) payload.worker = worker;
-  const url = _schedEditId ? API + '/api/schedules/' + _schedEditId : API + '/api/schedules';
-  const method = _schedEditId ? 'PATCH' : 'POST';
+  const editId = _schedEditId;
+  const url = editId ? API + '/api/schedules/' + editId : API + '/api/schedules';
+  const method = editId ? 'PATCH' : 'POST';
   const r = await apiCall(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   if (r) {
-    await fetchSchedules();
+    await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
     renderCalendar();
     renderScheduler();
+    renderSchedulerAudit();
     if (typeof peekSession !== 'undefined' && peekSession) _peekLoadSchedules();
     closeSchedModal();
+    if (editId) { _sxDetailAudit = null; openSchedDetail(editId); }
   }
 }
 async function deleteSchedule(id) {
-  if (!confirm('Delete this schedule?')) return;
+  const s = (schedules || []).find(x => x.id === id);
+  const ok = await showConfirm('Delete ' + id + (s ? ' "' + s.title + '"' : '') + '? It stops firing. The delete is soft and is recorded in Change history.', 'Delete', true);
+  if (!ok) return;
+  if (_sxDetailId === id) closeSchedDetail();
   // Collapse the row FIRST — an instant repaint swallows the removal and reads
   // as "where did it go / did I misclick" (Ethan: "deleting a schedule nothing
-  // is displayed and it just silently works"). Then say it worked: confirm()
-  // before is not feedback after.
+  // is displayed and it just silently works"). Then say it worked.
   const row = document.querySelector('[data-sched-id="' + CSS.escape(id) + '"]')
     || document.getElementById('sched-row-' + id);
   const a = row && _anim(row, { opacity: [1, 0], height: [row.offsetHeight + 'px', '0px'] }, { duration: 0.16 });
   if (a && a.finished) { try { await a.finished; } catch (e) {} }
-  await apiCall(API + '/api/schedules/' + id + '?by=dashboard', { method: 'DELETE' });
-  showToast('Schedule deleted (soft — restorable from the audit trail)');
-  await fetchSchedules();
+  const r = await apiCall(API + '/api/schedules/' + id + '?by=dashboard', { method: 'DELETE' });
+  if (r) showToast('Deleted ' + id + ' (soft delete, recorded in Change history)');
+  _sxSelected.delete(id);
+  await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
   renderCalendar();
   renderScheduler();
+  renderSchedulerAudit();
   _peekRefreshSchedIfActive();
 }
 
@@ -54663,27 +55439,37 @@ setTimeout(_cvLoadList, 3000);
 // ── Converse tab: hands-free voice conversations with a worker ──────────────
 // Ethan, 2026-10-11: "create a new tab in the worker details page called
 // 'converse' ... chat with your worker so I can be hands free ... a log of the
-// interactions and I should be able to replay any ... an expiration".
+// interactions and I should be able to replay any ... an expiration". Then:
+// "it needs to be more realtime and it shouldnt interrupt the worker, similar
+// to how the chat worker thing doesnt interrupt the worker", and OpenAI
+// Realtime as the default engine.
 //
-// THE WORKER ANSWERS. Speech becomes text in the browser (Web Speech API), each
-// finished utterance goes through doSend (the composer's own send path) and
-// the reply is read from /api/sessions/<name>/last-message (read-aloud's
-// source), then spoken. Nothing here calls a model. The server half
-// (api/converse.rs) only keeps the log: transcript turns plus the session audio
-// MediaRecorder captured, expired after AMUX_CONVERSE_RETENTION_DAYS.
+// NEVER THE WORKER'S TERMINAL. Everything a conversation asks of the worker
+// goes to its chat companion, `<worker>@chat` (the Chat tab's lane), which
+// answers beside the worker and relays to it only when needed. So talking to
+// a worker cannot interrupt a turn it is in the middle of.
 //
-// ENGINES. "browser" always works where the browser has speech recognition.
-// "personaplex" (NVIDIA PersonaPlex) needs an NVIDIA GPU server; the server
-// reports whether AMUX_PERSONAPLEX_URL is set and answering, and the selector
-// shows that verdict rather than pretending to connect.
+// ENGINES. "openai" (default when the server has OPENAI_API_KEY): WebRTC
+// speech to speech with OpenAI Realtime. The server mints a short-lived client
+// secret carrying the worker's context and one tool, ask_worker, which this
+// page answers through the chat companion. "browser" (free fallback, also
+// used when minting or connecting fails): Web Speech in, the chat companion's
+// streamed reply spoken sentence by sentence as it arrives.
 //
-// SIGNALS (two-fix rule): every failure a person would otherwise only feel
-// (no reply, recognition refused, save or upload refused) is beaconed with
-// amuxTrack('converse_*', {measured, n_considered, ...}) and the server logs a
-// `[converse]` line for every stored conversation and every retention sweep.
+// LOG. api/converse.rs keeps each conversation (transcript, both audio sides
+// when they can be recorded, billed audio usage and per-reply first-audio
+// latency) and expires it after AMUX_CONVERSE_RETENTION_DAYS.
+//
+// SIGNALS (two-fix rule): every failure a person would otherwise only feel is
+// posted as a kind=converse client-debug beacon (server-rs.log), and so is
+// each reply's first-audio latency (converse_first_audio).
 var _VX_SPEEDS = [1, 1.25, 1.5, 2, 0.75];
-var _VX_REPLY_WAIT_MS = 10 * 60 * 1000;
-var _VX_POLL_MS = 1500;
+// A chat turn can run tools; a voice reply waits this long before giving up.
+var _VX_CHAT_WAIT_MS = 4 * 60 * 1000;
+// End of utterance: silence after the last final result, or after an interim
+// one (recognisers can sit on an interim result for a while).
+var _VX_SILENCE_FINAL_MS = 450;
+var _VX_SILENCE_INTERIM_MS = 800;
 var _VX_PERSONALITIES = {
   default: { label: 'Default', hint: '(Voice conversation from the Converse tab: reply in two or three short spoken sentences, no markdown.)' },
   detailed: { label: 'Detailed', hint: '(Voice conversation from the Converse tab: reply in plain spoken prose, no markdown, tables or code blocks.)' },
@@ -54786,8 +55572,12 @@ function _vxSkeleton(worker) {
     +     '<span class="vx-state" id="vx-state">Ready</span></div>'
     +   '<div class="vx-live" id="vx-live" aria-live="polite"></div>'
     +   '<div class="vx-controls">'
-    +     '<div class="vx-ctl"><button class="vx-round" id="vx-mute" onclick="_vxToggleMute()" aria-label="Mute" disabled>&#x1F507;</button><span id="vx-mute-lbl">Mute</span></div>'
-    +     '<div class="vx-ctl"><button class="vx-round vx-call" id="vx-call" onclick="_vxCallButton()" aria-label="Start conversation">&#x260E;</button><span id="vx-call-lbl">Start</span></div>'
+    +     '<div class="vx-ctl"><button class="vx-round" id="vx-mute" data-repeatable onclick="_vxToggleMute()" aria-label="Mute" disabled>&#x1F507;</button><span id="vx-mute-lbl">Mute</span></div>'
+    // data-repeatable: Start/End and Mute are toggles. Without it the shared
+    // press contract (state/feedback.mjs) swallowed End-then-Start, because a
+    // write the previous press started (the session mint, a save) was still
+    // bound to the button.
+    +     '<div class="vx-ctl"><button class="vx-round vx-call" id="vx-call" data-repeatable onclick="_vxCallButton()" aria-label="Start conversation">&#x260E;</button><span id="vx-call-lbl">Start</span></div>'
     +     '<div class="vx-ctl"><button class="vx-round" id="vx-voice-btn" onclick="_vxToggleSettings()" aria-label="Voice settings" aria-expanded="true">&#x2699;</button><span>Voice</span></div>'
     +   '</div>'
     +   '<form class="vx-type" onsubmit="event.preventDefault();_vxTypeSend()"><input class="input" id="vx-type-input" placeholder="Or type to ' + w + '" autocomplete="off"><button class="btn" type="submit">Send</button></form>'
@@ -54844,7 +55634,8 @@ async function _vxLoadConfig(worker) {
   const sel = document.getElementById('vx-engine');
   if (!sel) return;
   const engines = (_vxCfg && _vxCfg.engines) || [{ id: 'browser', label: 'Browser speech', available: true }];
-  const want = _vxPref('engine', 'browser');
+  const dflt = (engines.find(e => e.default && e.available) || { id: 'browser' }).id;
+  const want = _vxPref('engine', dflt);
   sel.innerHTML = engines.map(e => '<option value="' + esc(e.id) + '"' + (e.available ? '' : ' disabled') + '>'
     + esc(e.label) + (e.available ? '' : ' (unavailable)') + '</option>').join('');
   const ok = engines.find(e => e.id === want && e.available);
@@ -54859,20 +55650,17 @@ function _vxEngineNote() {
   const note = document.getElementById('vx-engine-note');
   const badge = document.getElementById('vx-powered');
   const engines = (_vxCfg && _vxCfg.engines) || [];
-  const pp = engines.find(e => e.id === 'personaplex');
+  const oa = engines.find(e => e.id === 'openai');
   const sel = document.getElementById('vx-engine');
-  const chosen = sel ? sel.value : 'browser';
-  if (badge) badge.innerHTML = chosen === 'personaplex'
-    ? 'Powered by <b>NVIDIA PersonaPlex</b>'
+  const chosen = (_vx && _vx.active && _vx.engine) || (sel ? sel.value : 'browser');
+  if (badge) badge.innerHTML = chosen === 'openai'
+    ? 'Powered by <b>OpenAI Realtime</b>' + (oa && oa.model ? ' (' + esc(oa.model) + ')' : '')
     : 'Engine: <b>Browser speech</b>';
   if (!note) return;
-  let html = '';
-  if (!_vxRecognitionCtor()) html += '<div>This browser has no speech recognition, so speak-to-send is off. Type below instead, or use Chrome, Edge or Safari.</div>';
-  if (pp && !pp.available) html += '<div>NVIDIA PersonaPlex: ' + esc(pp.reason || 'unavailable') + '</div>';
-  if (pp && pp.available && chosen === 'personaplex') {
-    html += '<div>PersonaPlex answered at <a href="' + esc(pp.url) + '" target="_blank" rel="noopener">' + esc(pp.url)
-      + '</a>. Routing its speech to this worker is not built yet, so this conversation still uses browser speech, and the worker still answers.</div>';
-  }
+  let html = '<div>Questions about the worker go to its chat, which answers beside it, so a conversation never interrupts the worker.</div>';
+  if (oa && !oa.available) html += '<div>OpenAI Realtime: ' + esc(oa.reason || 'unavailable') + '</div>';
+  if (chosen === 'openai' && oa && oa.available) html += '<div>' + esc(oa.reason || '') + '</div>';
+  if (chosen === 'browser' && !_vxRecognitionCtor()) html += '<div>This browser has no speech recognition, so speak-to-send is off. Type below instead, or use Chrome, Edge or Safari.</div>';
   note.innerHTML = html;
 }
 
@@ -54992,28 +55780,26 @@ function _vxPickMime() {
   if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
   return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find(m => MediaRecorder.isTypeSupported(m)) || '';
 }
+function _vxT() { return Date.now() - _vx.startedAt; }
 async function _vxStart() {
   const worker = peekSession;
   if (!worker || _vx.active) return;
   _vxPlayerStop();
   const id = 'vx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  const want = (document.getElementById('vx-engine') || {}).value || 'browser';
   _vx = { active: true, worker, id, startedAt: Date.now(), turns: [], muted: false, speaking: false, speakingText: '',
-          interim: '', pending: '', lastSeen: '', candidate: '', replyWaiters: 0, chunks: [], saved: false,
-          state: 'Starting...', engine: (document.getElementById('vx-engine') || {}).value || 'browser', workerVoiceRecorded: false };
+          interim: '', consumed: 0, resultsLen: 0, chunks: [], saved: false, queue: [], qBusy: false,
+          state: 'Starting...', engine: want, workerVoiceRecorded: false, rtCalls: new Set(), rtTurns: {}, rtUserT: {},
+          usage: { audio_in_ms: 0, audio_out_ms: 0, input_audio_tokens: 0, output_audio_tokens: 0,
+                   input_text_tokens: 0, output_text_tokens: 0, cached_tokens: 0, responses: 0, tool_calls: 0 } };
   _vxPaintLive();
-  const row = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === worker);
-  if (row && row.running === false) _vxNote(worker + ' is not running. Your first message will offer to start it.');
-  // The baseline reply: whatever the worker last said BEFORE this conversation
-  // must never be spoken as if it answered.
-  fetch(API + '/api/sessions/' + encodeURIComponent(worker) + '/last-message', { headers: _authHeaders() })
-    .then(r => r.json()).then(d => { if (_vx.id === id && !_vx.lastSeen) _vx.lastSeen = (d.text || '').trim(); }).catch(() => {});
   const device = _vxPref('device', '');
   const constraints = { audio: Object.assign({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }, device ? { deviceId: { exact: device } } : {}) };
   try {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) _vx.stream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (e) {
     _vxTrack('converse_mic_unavailable', { error: String(e && e.name || e) });
-    _vxNote('Microphone unavailable (' + (e && e.name || e) + '). Type below to talk to the worker.');
+    _vxNote('Microphone unavailable (' + (e && e.name || e) + '). Type below to talk.');
   }
   if (_vx.id !== id) return;
   try {
@@ -55034,8 +55820,7 @@ async function _vxStart() {
   if (_vx.stream && window.MediaRecorder) {
     try {
       const mime = _vxPickMime();
-      const recStream = _vx.dest ? _vx.dest.stream : _vx.stream;
-      _vx.recorder = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
+      _vx.recorder = new MediaRecorder(_vx.dest ? _vx.dest.stream : _vx.stream, mime ? { mimeType: mime } : undefined);
       _vx.recorder.ondataavailable = e => { if (e.data && e.data.size) _vx.chunks.push(e.data); };
       _vx.recorder.start(1000);
     } catch (e) {
@@ -55046,47 +55831,150 @@ async function _vxStart() {
   _vx.levels = [];
   _vx.timer = setInterval(() => {
     const el = document.getElementById('vx-elapsed');
-    if (el && _vx.active) el.textContent = _vxClock(Date.now() - _vx.startedAt);
+    if (el && _vx.active) el.textContent = _vxClock(_vxT());
   }, 500);
-  if (_vxRecognitionCtor()) _vxRecStart();
-  else _vxNote('No speech recognition in this browser; type below.');
+  // The chat companion is the only way either engine reaches the worker.
+  _vxLinkOpen();
+  let engine = 'browser';
+  if (want === 'openai') engine = (await _vxRtStart(id)) ? 'openai' : 'browser';
+  if (_vx.id !== id) return;
+  _vx.engine = engine;
+  if (engine === 'browser') {
+    if (_vxRecognitionCtor()) _vxRecStart();
+    else _vxNote('No speech recognition in this browser; type below.');
+  }
   _vxSetState('Listening...');
   _vxPaintLive();
+  _vxEngineNote();
   _vxDrawWave();
-  _vxSave();
 }
 function _vxNote(text) {
   if (!_vx.active) { showToast(text); return; }
-  _vx.turns.push({ role: 'system', text, t_ms: Date.now() - _vx.startedAt });
+  _vx.turns.push({ role: 'system', text, t_ms: _vxT() });
   _vxPaintLive();
 }
+
+// ── the chat companion link: how a conversation reaches the worker ──────────
+// `<worker>@chat` is the Chat tab's lane. A send there runs a headless turn
+// beside the worker and relays to it only when needed; the worker's own
+// terminal is never written to, so a conversation cannot interrupt it. The
+// reply streams on /api/sessions/<worker>@chat/chat/stream (the Chat tab's
+// stream): `user` names the turn for our msg_id, `delta` carries text, `done`
+// the finished message. The exchange is in the Chat tab's history as well.
+function _vxChatKey(w) { return w + '@chat'; }
+function _vxLinkOpen() {
+  const id = _vx.id, key = _vxChatKey(_vx.worker);
+  const L = _vx.link = _vx.link || { cursor: '', waiters: {}, byTurn: {}, es: null };
+  const url = API + '/api/sessions/' + encodeURIComponent(key) + '/chat/stream' + (L.cursor ? '?after=' + encodeURIComponent(L.cursor) : '');
+  let es;
+  try { es = new EventSource(_authUrl(url)); } catch (e) { _vxTrack('converse_chat_stream_failed', { error: String(e && e.message || e) }); return; }
+  L.es = es;
+  es.onmessage = ev => {
+    if (_vx.id !== id || L.es !== es) return;
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.seq && m.epoch) L.cursor = m.epoch + ':' + m.seq;
+    _vxLinkEvent(L, m);
+  };
+  es.onerror = () => {
+    if (L.es !== es) return;
+    try { es.close(); } catch (e) {}
+    L.es = null;
+    if (_vx.id === id && _vx.active) setTimeout(() => { if (_vx.id === id && _vx.active && !L.es) _vxLinkOpen(); }, 1000);
+  };
+}
+function _vxLinkEvent(L, m) {
+  if (m.type === 'user') {
+    const w = L.waiters[m.msg_id];
+    if (w) { w.turn_id = m.turn_id; L.byTurn[m.turn_id] = w; }
+    return;
+  }
+  if (m.type === 'gap') { Object.values(L.byTurn).forEach(w => _vxLinkRecover(w)); return; }
+  const w = m.turn_id && L.byTurn[m.turn_id];
+  if (!w) return;
+  if (m.type === 'delta') {
+    w.text += m.text || '';
+    if (w.onDelta) w.onDelta(w.text);
+  } else if (m.type === 'done') {
+    _vxLinkFinish(w, (m.message && m.message.text) || w.text, m.message && m.message.error);
+  } else if (m.type === 'stopped') {
+    _vxLinkFinish(w, w.text, 'stopped');
+  }
+}
+function _vxLinkFinish(w, text, error) {
+  if (w.done) return;
+  w.done = true;
+  clearTimeout(w.timer);
+  const L = _vx.link;
+  if (L) { delete L.waiters[w.msg_id]; if (w.turn_id) delete L.byTurn[w.turn_id]; }
+  w.resolve({ text: String(text || ''), error: error || '' });
+}
+// The stream lost events (a gap or a long silence): the history is the truth.
+async function _vxLinkRecover(w) {
+  if (w.done || !w.turn_id) return false;
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(_vxChatKey(_vx.worker)) + '/chat?limit=20', { headers: _authHeaders() });
+    const d = await r.json();
+    const m = (d.messages || []).find(x => x.role === 'assistant' && x.turn_id === w.turn_id);
+    if (m) { _vxLinkFinish(w, m.text, m.error); return true; }
+  } catch (e) {}
+  return false;
+}
+function _vxAskChat(text, onDelta) {
+  return new Promise(resolve => {
+    const L = _vx.link || (_vxLinkOpen(), _vx.link);
+    const ident = {};
+    // doSend stamps ident.msg_id before its first await, so the waiter is in
+    // place before any stream event for this turn can be handled.
+    const sent = doSend(_vxChatKey(_vx.worker), text, ident);
+    const w = { msg_id: ident.msg_id, text: '', onDelta, resolve, done: false };
+    L.waiters[w.msg_id] = w;
+    w.timer = setTimeout(async () => {
+      if (!(await _vxLinkRecover(w))) {
+        _vxTrack('converse_chat_timeout', { wait_ms: _VX_CHAT_WAIT_MS });
+        _vxLinkFinish(w, w.text, 'no answer within ' + Math.round(_VX_CHAT_WAIT_MS / 60000) + ' minutes');
+      }
+    }, _VX_CHAT_WAIT_MS);
+    Promise.resolve(sent).then(result => {
+      if (result !== 'sent' && result !== 'queued') {
+        _vxTrack('converse_send_failed', { result });
+        _vxLinkFinish(w, '', 'not delivered (' + result + ')');
+      }
+    }, () => _vxLinkFinish(w, '', 'not delivered'));
+  });
+}
+
+// ── browser engine: Web Speech in, sentence-chunked speech out ─────────────
 function _vxRecStart() {
   const Ctor = _vxRecognitionCtor();
-  if (!Ctor || !_vx.active || _vx.muted || _vx.rec) return;
+  if (!Ctor || !_vx.active || _vx.muted || _vx.rec || _vx.engine === 'openai') return;
   const id = _vx.id;
   let r;
   try { r = new Ctor(); } catch (e) { _vxNote('Speech recognition could not start: ' + e.message); return; }
   r.continuous = true;
   r.interimResults = true;
   r.lang = navigator.language || 'en-US';
+  _vx.consumed = 0;   // result indexes restart with each recognition session
   r.onresult = ev => {
     if (_vx.id !== id) return;
-    let interim = '', fin = '';
-    for (let i = ev.resultIndex; i < ev.results.length; i++) {
-      const res = ev.results[i];
-      const t = (res[0] && res[0].transcript) || '';
-      if (res.isFinal) fin += t; else interim += t;
+    _vx.lastHeardAt = Date.now();
+    _vx.resultsLen = ev.results.length;
+    let text = '';
+    for (let i = _vx.consumed; i < ev.results.length; i++) text += (ev.results[i][0] && ev.results[i][0].transcript) || '';
+    const heard = text.trim();
+    const last = ev.results[ev.results.length - 1];
+    // Echo of the worker's own voice from the speaker: neither a barge-in nor
+    // something the person said.
+    if (heard && _vx.speaking && _vxIsEcho(heard)) {
+      if (last && last.isFinal) _vx.consumed = ev.results.length;
+      _vx.interim = '';
+      return;
     }
-    const heard = (fin || interim).trim();
-    // INTERRUPT ANYTIME: the person talking over the worker stops its voice,
-    // unless what the mic heard is the worker's own voice from the speaker.
-    if (heard && _vx.speaking && !_vxIsEcho(heard)) _vxInterrupt();
-    if (fin.trim() && !(_vx.speaking && _vxIsEcho(fin))) {
-      _vx.pending = (_vx.pending + ' ' + fin).trim();
-      clearTimeout(_vx.sendTimer);
-      _vx.sendTimer = setTimeout(_vxFlushUtterance, 1100);
-    }
-    _vx.interim = interim.trim();
+    if (heard && _vx.speaking) _vxInterrupt();
+    _vx.interim = heard;
+    // Send soon after the person stops: a short silence after a final result,
+    // a little longer after an interim one.
+    clearTimeout(_vx.sendTimer);
+    if (heard) _vx.sendTimer = setTimeout(_vxFlushUtterance, last && last.isFinal ? _VX_SILENCE_FINAL_MS : _VX_SILENCE_INTERIM_MS);
     _vxPaintLive();
   };
   r.onerror = e => {
@@ -55100,168 +55988,367 @@ function _vxRecStart() {
   };
   r.onend = () => {
     if (_vx.rec === r) _vx.rec = null;
-    // Continuous recognition still ends on silence or a network blip; keep it
-    // listening for as long as the conversation is on.
     if (_vx.id === id && _vx.active && !_vx.muted && !_vx.recBlocked) setTimeout(() => { if (_vx.id === id) _vxRecStart(); }, 250);
   };
   try { r.start(); _vx.rec = r; } catch (e) { _vxTrack('converse_recognition_error', { error: String(e && e.message || e) }); }
 }
 function _vxFlushUtterance() {
-  const text = (_vx.pending || '').trim();
-  _vx.pending = '';
+  const text = (_vx.interim || '').trim();
+  _vx.consumed = _vx.resultsLen;
   _vx.interim = '';
-  if (text) _vxSendUtterance(text);
+  if (text) _vxSendUtterance(text, _vx.lastHeardAt || Date.now());
 }
 function _vxTypeSend() {
   const inp = document.getElementById('vx-type-input');
   const text = (inp && inp.value || '').trim();
   if (!text) return;
   inp.value = '';
-  if (!_vx.active) { _vxStart().then(() => _vxSendUtterance(text)); return; }
-  _vxSendUtterance(text);
+  const go = () => _vx.engine === 'openai' ? _vxRtTyped(text) : _vxSendUtterance(text, Date.now());
+  if (!_vx.active) { _vxStart().then(go); return; }
+  go();
 }
-async function _vxSendUtterance(text) {
+function _vxHint() {
+  const persona = _VX_PERSONALITIES[(document.getElementById('vx-personality') || {}).value || 'default'] || _VX_PERSONALITIES.default;
+  return persona.hint;
+}
+async function _vxSendUtterance(text, utterEndAt) {
   if (!_vx.active) return;
-  const id = _vx.id, worker = _vx.worker;
   _vxInterrupt();
-  _vx.turns.push({ role: 'user', text, t_ms: Date.now() - _vx.startedAt });
-  _vxSetState('Sending...');
+  _vx.turns.push({ role: 'user', text, t_ms: _vxT() });
+  _vxSetState('Thinking...');
   _vxPaintLive();
   _vxSave();
-  const persona = _VX_PERSONALITIES[(document.getElementById('vx-personality') || {}).value || 'default'] || _VX_PERSONALITIES.default;
-  const message = persona.hint ? text + '\n\n' + persona.hint : text;
-  let result = 'failed';
-  try { result = await doSend(worker, message, {}); } catch (e) { result = 'exception'; }
-  if (_vx.id !== id) return;
-  if (result !== 'sent' && result !== 'queued') {
-    _vxTrack('converse_send_failed', { result });
-    _vxNote('Not delivered to ' + worker + ' (' + result + '). Say it again or type it.');
-    _vxSetState('Listening...');
-    return;
-  }
-  _vxSetState('Waiting for ' + worker + '...');
-  _vxAwaitReply(id);
+  const turn = { role: 'worker', text: '', t_ms: null, utterEndAt };
+  const chunker = _vxChunker(turn);
+  const show = full => {
+    if (turn.t_ms === null) { turn.t_ms = _vxT(); _vx.turns.push(turn); }
+    turn.text = full;
+    _vxPaintLive();
+  };
+  const hint = _vxHint();
+  const res = await _vxAskChat(hint ? text + '\n\n' + hint : text, full => { show(full); chunker.feed(full); });
+  if (!_vx.active) return;
+  if (res.text) { show(res.text); chunker.end(res.text); }
+  if (res.error && !res.text) _vxNote(_vx.worker + "'s chat did not answer: " + res.error);
+  delete turn.utterEndAt;
+  _vxSave();
+  if (!_vx.speaking) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
 }
-// Poll the worker's latest full message until a NEW one appears and holds
-// still for one poll (a reply being written is not spoken half-done). Each new
-// message is one worker turn; polling continues while the worker is busy so a
-// "let me check" followed by the answer are both heard.
-async function _vxAwaitReply(id) {
-  _vx.replyDeadline = Date.now() + _VX_REPLY_WAIT_MS;
-  // A loop already running keeps going: owed tells it a newer utterance is
-  // still unanswered, so it must not stop on the previous reply's quiet.
-  _vx.owed = (_vx.owed || 0) + 1;
-  if (_vx.polling) return;
-  _vx.polling = true;
-  const worker = _vx.worker;
-  let polls = 0, replies = 0, quiet = 0;
-  try {
-    while (_vx.id === id && _vx.active && Date.now() < _vx.replyDeadline) {
-      await new Promise(r => setTimeout(r, _VX_POLL_MS));
-      if (_vx.id !== id || !_vx.active) break;
-      polls++;
-      let text = '';
-      try {
-        const r = await fetch(API + '/api/sessions/' + encodeURIComponent(worker) + '/last-message', { headers: _authHeaders() });
-        text = ((await r.json()).text || '').trim();
-      } catch (e) { continue; }
-      if (_vx.id !== id) break;
-      if (text && text !== _vx.lastSeen) {
-        quiet = 0;
-        if (text === _vx.candidate) {
-          _vx.lastSeen = text;
-          _vx.candidate = '';
-          replies++;
-          _vx.owed = 0;
-          _vx.turns.push({ role: 'worker', text, t_ms: Date.now() - _vx.startedAt });
-          _vxPaintLive();
-          _vxSave();
-          _vxSpeak(text);
-        } else {
-          _vx.candidate = text;
-        }
-        continue;
-      }
-      quiet++;
-      const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === worker) || {};
-      const busy = ['active', 'running', 'working'].includes(s.status);
-      if (replies && !_vx.owed && !busy && quiet >= 2) break;
+// Speak a streaming reply sentence by sentence: the first sentence is queued
+// the moment it is complete, not when the whole reply has arrived.
+function _vxChunker(turn) {
+  let upto = 0;
+  const cut = (full, final) => {
+    if (turn.muted) { upto = full.length; return; }
+    let end = upto;
+    const re = /[.!?](?=["')\]]*(\s|$))|\n/g;
+    re.lastIndex = upto;
+    let m;
+    while ((m = re.exec(full))) {
+      const e = m.index + m[0].length;
+      // Never cut inside a code fence; it would be read half-stripped.
+      if ((full.slice(0, e).match(/```/g) || []).length % 2 === 0) end = e;
     }
-    if (_vx.id === id && _vx.active && _vx.owed) {
-      _vxTrack('converse_reply_timeout', { n_considered: polls, wait_ms: _VX_REPLY_WAIT_MS });
-      _vxNote('No reply from ' + worker + ' yet. It may still be working; check the Terminal tab.');
+    if (final) end = full.length;
+    if (end > upto) {
+      const chunk = _vxSpeechText(full.slice(upto, end));
+      upto = end;
+      if (chunk) _vxEnqueue(chunk, turn);
     }
-  } finally {
-    if (_vx.id === id) {
-      _vx.polling = false;
-      if (_vx.active && !_vx.speaking) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
-    }
-  }
+  };
+  return { feed: full => cut(full, false), end: full => cut(full, true) };
 }
-function _vxVoiceFor(name) {
-  const vs = (window.speechSynthesis && speechSynthesis.getVoices) ? speechSynthesis.getVoices() : [];
-  return vs.find(v => v.name === name) || null;
+function _vxEnqueue(text, turn) {
+  if (!_vx.active) return;
+  _vx.queue.push({ text, turn });
+  _vx.speakingText = [_vx.speakingText, text].filter(Boolean).join(' ');
+  _vxPump();
 }
-async function _vxSpeak(text) {
-  const clean = _vxSpeechText(text);
-  if (!clean || !_vx.active) return;
+function _vxPump() {
+  if (_vx.qBusy || !_vx.queue.length || !_vx.active) return;
+  const item = _vx.queue.shift();
+  const id = _vx.id;
+  _vx.qBusy = true;
+  _vx.speaking = true;
+  _vxSetState('Speaking...');
+  const started = () => {
+    const t = item.turn;
+    if (t && t.utterEndAt && t.first_audio_ms === undefined) {
+      t.first_audio_ms = Date.now() - t.utterEndAt;
+      _vxTrack('converse_first_audio', { ms: t.first_audio_ms, engine: 'browser' });
+    }
+  };
+  const finished = () => {
+    if (_vx.id !== id || !_vx.qBusy) return;
+    _vx.qBusy = false;
+    _vx.srcNode = null;
+    if (!_vx.queue.length) {
+      _vx.speaking = false;
+      _vx.speakingText = '';
+      if (_vx.active) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
+    }
+    _vxPump();
+  };
+  _vxSay(item.text, started, finished);
+}
+async function _vxSay(text, onStart, onEnd) {
   const id = _vx.id;
   const pref = (document.getElementById('vx-voice') || {}).value || '';
-  _vx.speaking = true;
-  _vx.speakingText = clean;
-  _vxSetState('Speaking...');
-  const done = () => {
-    if (_vx.id !== id || _vx.speakingText !== clean) return;
-    _vx.speaking = false; _vx.speakingText = ''; _vx.srcNode = null;
-    if (_vx.active) _vxSetState(_vx.muted ? 'Muted' : (_vx.polling ? 'Waiting for ' + _vx.worker + '...' : 'Listening...'));
-  };
-  // A server voice is played through the conversation's audio graph, so the
+  // A server voice plays through the conversation's audio graph, so the
   // recording holds both sides. A browser voice cannot be captured; replay
   // speaks those turns again instead.
   if (pref.startsWith('s:') && _vx.ctx && _vx.dest) {
     try {
       const r = await fetch(API + '/api/tts', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ text: clean, voice_id: pref.slice(2) }), _skipOutbox: true });
+        body: JSON.stringify({ text, voice_id: pref.slice(2) }), _skipOutbox: true });
       const d = await r.json();
       if (!r.ok || !d.url) throw new Error(d.error || ('HTTP ' + r.status));
-      const buf = await (await fetch(d.url)).arrayBuffer();
-      const audio = await _vx.ctx.decodeAudioData(buf);
-      if (_vx.id !== id || _vx.speakingText !== clean) return;
+      const audio = await _vx.ctx.decodeAudioData(await (await fetch(d.url)).arrayBuffer());
+      if (_vx.id !== id || !_vx.qBusy) return;
       const node = _vx.ctx.createBufferSource();
       node.buffer = audio;
       node.connect(_vx.ctx.destination);
       node.connect(_vx.dest);
-      node.onended = done;
+      node.onended = onEnd;
       _vx.srcNode = node;
       _vx.workerVoiceRecorded = true;
       node.start();
+      onStart();
       return;
     } catch (e) {
       _vxTrack('converse_server_voice_failed', { error: String(e && e.message || e) });
     }
   }
-  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') { done(); return; }
-  const u = new SpeechSynthesisUtterance(clean);
+  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') { onEnd(); return; }
+  const u = new SpeechSynthesisUtterance(text);
   if (pref.startsWith('b:')) { const v = _vxVoiceFor(pref.slice(2)); if (v) u.voice = v; }
-  u.onend = done;
-  u.onerror = done;
-  try { speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { done(); }
+  let begun = false;
+  u.onstart = () => { begun = true; onStart(); };
+  u.onend = () => { if (!begun) onStart(); onEnd(); };
+  u.onerror = onEnd;
+  try { speechSynthesis.speak(u); } catch (e) { onEnd(); }
 }
+function _vxVoiceFor(name) {
+  const vs = (window.speechSynthesis && speechSynthesis.getVoices) ? speechSynthesis.getVoices() : [];
+  return vs.find(v => v.name === name) || null;
+}
+// Barge-in: the person talking stops the voice and drops what was queued.
+// The rest of that reply is still logged, just not spoken.
 function _vxInterrupt() {
-  if (!_vx.speaking) return;
+  if (!_vx.speaking && !_vx.queue.length) return;
+  _vx.queue.forEach(q => { if (q.turn) q.turn.muted = true; });
+  const cur = _vx.queue[0];
+  _vx.queue = [];
+  _vx.qBusy = false;
   _vx.speaking = false;
   _vx.speakingText = '';
+  if (cur && cur.turn) cur.turn.muted = true;
+  (_vx.turns || []).forEach(t => { if (t.role === 'worker' && t.utterEndAt) t.muted = true; });
   try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
   try { if (_vx.srcNode) _vx.srcNode.stop(); } catch (e) {}
   _vx.srcNode = null;
   if (_vx.active) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
 }
+
+// ── OpenAI Realtime engine: WebRTC speech to speech ─────────────────────────
+// The server mints a short-lived client secret per conversation with the
+// worker's context and one tool, ask_worker; the browser opens the WebRTC call
+// with it. The real API key never reaches this page. Barge-in is the model's
+// own server VAD (interrupt_response). Both audio sides go into the recording.
+async function _vxRtStart(id) {
+  const worker = _vx.worker;
+  let d = {};
+  try {
+    const r = await fetch(API + '/api/converse/' + encodeURIComponent(worker) + '/realtime-session',
+      { method: 'POST', headers: _authHeaders(), _skipOutbox: true });
+    d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.client_secret) throw new Error(d.reason || ('HTTP ' + r.status));
+  } catch (e) {
+    _vxTrack('converse_realtime_fallback', { stage: 'mint', error: String(e && e.message || e) });
+    _vxNote('OpenAI Realtime is unavailable (' + (e.message || e) + '). Using browser speech instead.');
+    return false;
+  }
+  if (_vx.id !== id) return false;
+  try {
+    const pc = new RTCPeerConnection();
+    _vx.pc = pc;
+    const el = document.createElement('audio');
+    el.autoplay = true;
+    el.setAttribute('playsinline', '');
+    _vx.remoteEl = el;
+    pc.ontrack = e => {
+      const st = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track]);
+      el.srcObject = st;
+      try { el.play().catch(() => {}); } catch (_) {}
+      try {
+        if (_vx.ctx && _vx.dest && !_vx.remoteSrc) {
+          _vx.remoteSrc = _vx.ctx.createMediaStreamSource(st);
+          _vx.remoteSrc.connect(_vx.dest);
+          if (_vx.analyser) _vx.remoteSrc.connect(_vx.analyser);
+          _vx.workerVoiceRecorded = true;
+        }
+      } catch (_) {}
+    };
+    if (_vx.stream) _vx.stream.getAudioTracks().forEach(t => pc.addTrack(t, _vx.stream));
+    else pc.addTransceiver('audio', { direction: 'recvonly' });
+    const dc = pc.createDataChannel('oai-events');
+    _vx.dc = dc;
+    dc.onmessage = e => { if (_vx.id !== id) return; let m; try { m = JSON.parse(e.data); } catch (_) { return; } _vxRtEvent(m); };
+    dc.onopen = () => { if (_vx.id === id) _vxSetState('Listening...'); };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const ans = await fetch(d.calls_url, { method: 'POST', body: offer.sdp,
+      headers: { Authorization: 'Bearer ' + d.client_secret, 'Content-Type': 'application/sdp' } });
+    if (!ans.ok) throw new Error('OpenAI answered HTTP ' + ans.status);
+    await pc.setRemoteDescription({ type: 'answer', sdp: await ans.text() });
+    _vx.model = d.model;
+    return true;
+  } catch (e) {
+    _vxTrack('converse_realtime_fallback', { stage: 'webrtc', error: String(e && e.message || e) });
+    _vxNote('Could not connect to OpenAI Realtime (' + (e.message || e) + '). Using browser speech instead.');
+    _vxRtClose();
+    return false;
+  }
+}
+function _vxRtSend(ev) {
+  try { if (_vx.dc && _vx.dc.readyState === 'open') { _vx.dc.send(JSON.stringify(ev)); return true; } } catch (e) {}
+  _vxTrack('converse_realtime_send_failed', { type: ev.type });
+  return false;
+}
+// Takes the conversation explicitly: an ending conversation finishes saving
+// while a new one may already be starting, and must not close the new one.
+function _vxRtClose(c) {
+  c = c || _vx;
+  try { if (c.dc) c.dc.close(); } catch (e) {}
+  try { if (c.pc) c.pc.close(); } catch (e) {}
+  try { if (c.remoteEl) { c.remoteEl.srcObject = null; c.remoteEl.remove(); } } catch (e) {}
+  c.dc = null; c.pc = null; c.remoteEl = null;
+}
+function _vxRtTyped(text) {
+  _vx.turns.push({ role: 'user', text, t_ms: _vxT() });
+  _vx.rtUtterEnd = Date.now();
+  _vxRtSend({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+  _vxRtSend({ type: 'response.create' });
+  _vxPaintLive();
+  _vxSave();
+}
+function _vxRtTurn(key) {
+  let t = _vx.rtTurns[key];
+  if (!t) {
+    t = _vx.rtTurns[key] = { role: 'worker', text: '', t_ms: _vxT() };
+    if (_vx.rtLatency !== undefined) { t.first_audio_ms = _vx.rtLatency; delete _vx.rtLatency; }
+    _vx.turns.push(t);
+  }
+  return t;
+}
+function _vxRtEvent(m) {
+  const now = Date.now();
+  const u = _vx.usage;
+  switch (m.type) {
+    case 'input_audio_buffer.speech_started':
+      _vx.userSpeechAt = now;
+      if (m.item_id) _vx.rtUserT[m.item_id] = _vxT();
+      _vxSetState('Listening...');
+      break;
+    case 'input_audio_buffer.speech_stopped':
+      if (_vx.userSpeechAt) u.audio_in_ms += now - _vx.userSpeechAt;
+      _vx.userSpeechAt = 0;
+      _vx.rtUtterEnd = now;
+      _vxSetState('Thinking...');
+      break;
+    case 'conversation.item.input_audio_transcription.completed': {
+      const text = String(m.transcript || '').trim();
+      if (text) {
+        _vx.turns.push({ role: 'user', text, t_ms: _vx.rtUserT[m.item_id] !== undefined ? _vx.rtUserT[m.item_id] : _vxT() });
+        _vx.turns.sort((a, b) => (a.t_ms || 0) - (b.t_ms || 0));
+        _vxPaintLive();
+        _vxSave();
+      }
+      break;
+    }
+    case 'output_audio_buffer.started':
+      _vx.outAudioAt = now;
+      _vx.speaking = true;
+      if (_vx.rtUtterEnd) {
+        const ms = now - _vx.rtUtterEnd;
+        _vx.rtUtterEnd = 0;
+        _vxTrack('converse_first_audio', { ms, engine: 'openai', model: _vx.model || '' });
+        const open = Object.values(_vx.rtTurns).filter(t => t.first_audio_ms === undefined && t.t_ms >= _vxT() - 15000).pop();
+        if (open) open.first_audio_ms = ms; else _vx.rtLatency = ms;
+      }
+      _vxSetState('Speaking...');
+      break;
+    case 'output_audio_buffer.stopped':
+    case 'output_audio_buffer.cleared':
+      if (_vx.outAudioAt) u.audio_out_ms += now - _vx.outAudioAt;
+      _vx.outAudioAt = 0;
+      _vx.speaking = false;
+      _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
+      break;
+    case 'response.output_audio_transcript.delta': {
+      const t = _vxRtTurn(m.response_id || m.item_id || 'r');
+      t.text += m.delta || '';
+      _vxPaintLive();
+      break;
+    }
+    case 'response.output_audio_transcript.done': {
+      const t = _vxRtTurn(m.response_id || m.item_id || 'r');
+      if (m.transcript) t.text = m.transcript;
+      _vxPaintLive();
+      _vxSave();
+      break;
+    }
+    case 'response.function_call_arguments.done':
+      _vxRtTool(m.call_id, m.name, m.arguments);
+      break;
+    case 'response.done': {
+      const r = m.response || {};
+      const us = r.usage || {};
+      const inD = us.input_token_details || {}, outD = us.output_token_details || {};
+      u.responses += 1;
+      u.input_audio_tokens += inD.audio_tokens || 0;
+      u.input_text_tokens += inD.text_tokens || 0;
+      u.cached_tokens += inD.cached_tokens || 0;
+      u.output_audio_tokens += outD.audio_tokens || 0;
+      u.output_text_tokens += outD.text_tokens || 0;
+      (r.output || []).forEach(o => { if (o.type === 'function_call') _vxRtTool(o.call_id, o.name, o.arguments); });
+      break;
+    }
+    case 'error':
+      _vxTrack('converse_realtime_error', { error: String((m.error && (m.error.message || m.error.code)) || 'error') });
+      _vxNote('OpenAI: ' + ((m.error && m.error.message) || 'error'));
+      break;
+  }
+}
+// The model's one tool. The request goes to the worker's chat companion, never
+// to the worker's terminal, and the chat's answer goes back to the model.
+async function _vxRtTool(callId, name, args) {
+  if (!callId || _vx.rtCalls.has(callId)) return;
+  _vx.rtCalls.add(callId);
+  let request = '';
+  try { request = String(JSON.parse(args || '{}').request || ''); } catch (e) {}
+  if (name !== 'ask_worker') request = request || String(args || '');
+  _vx.usage.tool_calls += 1;
+  const worker = _vx.worker;
+  _vx.turns.push({ role: 'system', text: 'Asked ' + worker + "'s chat: " + request, t_ms: _vxT() });
+  _vxSetState('Asking ' + worker + '...');
+  _vxPaintLive();
+  const res = await _vxAskChat((request || 'What is your status?') + '\n\n(Asked by voice from the Converse tab. Answer in a few plain sentences.)');
+  if (!_vx.active) return;
+  _vx.turns.push({ role: 'system', text: worker + "'s chat answered: " + (res.text || res.error || '(nothing)').slice(0, 600), t_ms: _vxT() });
+  _vxRtSend({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId,
+    output: JSON.stringify(res.text ? { reply: res.text.slice(0, 8000) } : { error: res.error || 'no answer' }) } });
+  _vxRtSend({ type: 'response.create' });
+  _vxPaintLive();
+  _vxSave();
+}
+
 function _vxToggleMute() {
   if (!_vx.active) return;
   _vx.muted = !_vx.muted;
   if (_vx.stream) _vx.stream.getAudioTracks().forEach(t => { t.enabled = !_vx.muted; });
   if (_vx.muted) {
-    clearTimeout(_vx.sendTimer); _vx.pending = ''; _vx.interim = '';
+    clearTimeout(_vx.sendTimer); _vx.interim = '';
     try { if (_vx.rec) _vx.rec.abort(); } catch (e) {}
     _vx.rec = null;
     _vxSetState('Muted');
@@ -55271,21 +56358,39 @@ function _vxToggleMute() {
   }
   _vxPaintLive();
 }
-function _vxRecordBody(final) {
+function _vxRecordBody(final, c) {
+  const _vx = c;   // the conversation being saved, which may not be the live one
   const now = Date.now();
+  const turns = _vx.turns.filter(t => (t.role !== 'system' || final) && (t.text || '').trim())
+    .map(t => Object.assign({ role: t.role, text: t.text, t_ms: t.t_ms || 0 }, t.first_audio_ms !== undefined ? { first_audio_ms: t.first_audio_ms } : {}))
+    .sort((a, b) => a.t_ms - b.t_ms);
+  const u = Object.assign({}, _vx.usage);
+  if (_vx.outAudioAt) u.audio_out_ms += now - _vx.outAudioAt;
   return {
     id: _vx.id, engine: _vx.engine || 'browser',
-    voice: (document.getElementById('vx-voice') || {}).value || '',
+    voice: _vx.engine === 'openai' ? ((_vxCfg && (_vxCfg.engines || []).find(e => e.id === 'openai') || {}).voice || '') : ((document.getElementById('vx-voice') || {}).value || ''),
     personality: (document.getElementById('vx-personality') || {}).value || 'default',
     started_at: _vx.startedAt,
     ended_at: final ? now : null,
     duration_ms: now - _vx.startedAt,
-    turns: _vx.turns.filter(t => t.role !== 'system' || final),
+    turns,
+    usage: u,
   };
 }
-async function _vxSave(final) {
-  if (!_vx.id || !_vx.worker) return null;
-  const body = _vxRecordBody(final);
+// Saves are SERIALISED per conversation and carry a revision: concurrent
+// upserts could land out of order, and a mid-conversation save arriving after
+// the final one used to overwrite its usage with zeros (seen in the e2e).
+function _vxSave(final, c) {
+  const conv = c || window._vx;
+  if (!conv.id || !conv.worker) return Promise.resolve(null);
+  conv.rev = (conv.rev || 0) + 1;
+  const rev = conv.rev;
+  conv.saveChain = (conv.saveChain || Promise.resolve()).then(() => _vxSaveNow(final, conv, rev), () => _vxSaveNow(final, conv, rev));
+  return conv.saveChain;
+}
+async function _vxSaveNow(final, c, rev) {
+  const _vx = c;
+  const body = Object.assign(_vxRecordBody(final, _vx), { rev });
   if (!body.turns.some(t => t.role !== 'system')) return null;   // nothing said yet
   try {
     const r = await fetch(_vxApi(_vx.worker), { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
@@ -55301,14 +56406,16 @@ async function _vxSave(final) {
 async function _vxEnd() {
   if (!_vx.active) return;
   const c = _vx;
-  c.active = false;
   clearTimeout(c.sendTimer);
-  if (c.pending) { c.turns.push({ role: 'user', text: c.pending, t_ms: Date.now() - c.startedAt }); c.pending = ''; }
+  if (c.interim) { c.turns.push({ role: 'user', text: c.interim, t_ms: Date.now() - c.startedAt }); c.interim = ''; }
+  _vxInterrupt();
+  c.active = false;
+  c.ending = true;
   clearInterval(c.timer);
   try { if (c.rec) c.rec.abort(); } catch (e) {}
   c.rec = null;
-  _vxInterrupt();
   c.speaking = false;
+  if (c.link) { try { if (c.link.es) c.link.es.close(); } catch (e) {} c.link.es = null; }
   let blob = null;
   if (c.recorder && c.recorder.state !== 'inactive') {
     blob = await new Promise(res => {
@@ -55318,12 +56425,12 @@ async function _vxEnd() {
     });
   }
   if (c.recorder && !(blob && blob.size)) _vxTrack('converse_recording_empty', { mime: c.recorder.mimeType || '', chunks: c.chunks.length });
+  _vxRtClose(c);
   try { if (c.stream) c.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { if (c.ctx) c.ctx.close(); } catch (e) {}
   c.lastTurns = c.turns;
-  _vxSetState('Saving...');
-  _vxPaintLive();
-  const saved = await _vxSave(true);
+  if (_vx === c) { _vxSetState('Saving...'); _vxPaintLive(); }
+  const saved = await _vxSave(true, c);
   if (saved && blob && blob.size) {
     try {
       const r = await fetch(_vxApi(c.worker, '/' + encodeURIComponent(c.id) + '/audio'), { method: 'PUT',
@@ -55335,12 +56442,15 @@ async function _vxEnd() {
       showToast('Conversation saved without its audio: ' + (e.message || e));
     }
   }
-  _vxSetState('Ready');
-  _vxPaintLive();
-  _vxDrawWave();
-  const el = document.getElementById('vx-elapsed');
-  if (el) el.textContent = _vxClock(Date.now() - c.startedAt);
-  if (saved && peekSession === c.worker) {
+  c.ending = false;
+  if (_vx === c) {
+    _vxSetState('Ready');
+    _vxPaintLive();
+    _vxDrawWave();
+    const el = document.getElementById('vx-elapsed');
+    if (el) el.textContent = _vxClock(Date.now() - c.startedAt);
+  }
+  if (saved && peekSession === c.worker && !_vx.active) {
     await _vxLoadHistory(c.worker);
     _vxSelect(c.id);
   }
@@ -55512,7 +56622,8 @@ function _vxRenderPlayer() {
   const turns = r.turns || [];
   const transcript = turns.map((t, i) => '<div class="vx-pturn" data-i="' + i + '" onclick="_vxSeek(' + (t.t_ms || 0) + ')">'
     + '<span class="vx-pavatar vx-pavatar-' + esc(t.role) + '">' + (t.role === 'user' ? 'Y' : t.role === 'worker' ? 'W' : 'i') + '</span>'
-    + '<div><div class="vx-who">' + (t.role === 'user' ? 'You' : t.role === 'worker' ? esc(worker) : 'Note') + ' <i>' + _vxClock(t.t_ms) + '</i></div>'
+    + '<div><div class="vx-who">' + (t.role === 'user' ? 'You' : t.role === 'worker' ? esc(worker) : 'Note') + ' <i>' + _vxClock(t.t_ms) + '</i>'
+    + (t.first_audio_ms !== undefined ? ' <i class="vx-lat" title="From the end of what you said to the first sound of this reply">first audio ' + (t.first_audio_ms / 1000).toFixed(1) + 's</i>' : '') + '</div>'
     + '<div class="vx-said">' + esc(t.text) + '</div></div></div>').join('') || '<div class="vx-empty">No turns recorded.</div>';
   const a = r.audio;
   const details = [
@@ -55521,6 +56632,9 @@ function _vxRenderPlayer() {
     ['Duration', _vxDur(r.duration_ms)], ['Turns', String(turns.length)],
     ['Audio', a ? (a.mime + ', ' + Math.round((a.bytes || 0) / 1024) + ' KB' + (a.has_worker_voice ? ', both voices' : ', your voice; worker turns are re-spoken on replay')) : 'none (replay speaks the transcript)'],
     ['Voice', r.voice || 'Browser default'], ['Personality', r.personality || 'default'],
+    ['First audio', r.latency ? ('median ' + (r.latency.median_ms / 1000).toFixed(1) + 's, worst ' + (r.latency.max_ms / 1000).toFixed(1) + 's over ' + r.latency.n + ' repl' + (r.latency.n === 1 ? 'y' : 'ies')) : 'not measured'],
+    ['Audio used', r.usage ? (Math.round((r.usage.audio_in_ms || 0) / 100) / 10 + 's in, ' + Math.round((r.usage.audio_out_ms || 0) / 100) / 10 + 's out'
+      + (r.usage.input_audio_tokens || r.usage.output_audio_tokens ? ' (' + (r.usage.input_audio_tokens || 0) + ' / ' + (r.usage.output_audio_tokens || 0) + ' audio tokens)' : '')) : 'none'],
     ['Expires', new Date(r.expires_at).toLocaleString() + ' (' + _vxExpires(r) + ')'], ['Id', r.id],
   ].map(([k, v]) => '<div class="vx-drow"><span>' + esc(k) + '</span><span>' + esc(v) + '</span></div>').join('');
   el.innerHTML = '<div class="vx-ptitle">' + esc(r.title || 'Conversation') + '</div>'
