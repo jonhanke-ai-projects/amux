@@ -93,7 +93,7 @@ async function slashOffers(page: Page, prefix: string): Promise<string[]> {
 
 test('a skill created and edited in the Skills tab is offered, written and recognized', async ({ page }, info) => {
   test.setTimeout(240_000);
-  const name = `e2e-skill-${info.project.name}-${Date.now().toString(36)}`;
+  const name = `e2e-skill-${info.project.name}-${Date.now().toString(36)}-${info.repeatEachIndex}-${info.workerIndex}`;
   const body = (token: string, desc: string) =>
     `---\ndescription: ${desc}\n---\nReply with exactly the text ${token} and nothing else.\n`;
   await openSkills(page);
@@ -101,6 +101,10 @@ test('a skill created and edited in the Skills tab is offered, written and recog
   // ── Create ──
   await page.getByRole('button', { name: /\+ New/ }).first().click();
   await expect(page.locator('#skill-edit-modal')).toHaveClass(/active/);
+  // editSkill() moves focus to the name field 50 ms after opening. Filling
+  // before that lands lets the focus move mid-fill and send the content's
+  // text into the name field (seen on mobile CI), so wait for it.
+  await expect(page.locator('#skill-edit-name')).toBeFocused();
   await page.locator('#skill-edit-name').fill(name);
   const created = await saveInEditor(page, body('SKILL-TOKEN-V1', 'first version'));
   expect(created.command_file, created.command_file_error).toBeTruthy();
