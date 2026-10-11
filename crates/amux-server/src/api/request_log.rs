@@ -3082,6 +3082,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/peek/steps",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/models",
         methods: &["GET"],
     },
