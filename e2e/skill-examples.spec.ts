@@ -41,12 +41,18 @@ test('inferred examples render with their purpose and copy', async ({ page }, in
       { invocation: `/${name} all PRs`, purpose: 'Work through every open PR' },
     ],
   } }));
+  // Record what reaches the clipboard: the outcome, not a transient toast.
+  await page.addInitScript(() => {
+    (window as any).__copied = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true,
+      value: { writeText: async (t: string) => { (window as any).__copied.push(t); } } });
+  });
   await createSkill(page, name, '---\ndescription: Merge PRs\n---\nbody\n');
   const box = await expand(page, name);
   await expect(box.locator('.skill-example-inv')).toHaveText([`/${name} 264`, `/${name} all PRs`]);
   await expect(box).toContainText('Work through every open PR');
   await box.locator('.skill-example').nth(1).getByRole('button', { name: 'Copy' }).click();
-  await expect(page.locator('body')).toContainText(`Copied /${name} all PRs`);
+  await expect.poll(() => page.evaluate(() => (window as any).__copied)).toEqual([`/${name} all PRs`]);
 });
 
 test('when nothing can be inferred the reason is shown', async ({ page }, info) => {

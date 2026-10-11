@@ -42733,7 +42733,10 @@ async function _skillLoadExamples(body, fetchKey) {
 }
 function _skillCopyExample(btn) {
   const inv = btn.getAttribute('data-inv') || '';
-  try { navigator.clipboard.writeText(inv); showToast('Copied ' + inv); } catch (e) { showToast('Copy failed'); }
+  // writeText is async and refuses without permission or focus; say which happened.
+  Promise.resolve()
+    .then(() => navigator.clipboard.writeText(inv))
+    .then(() => showToast('Copied ' + inv), () => showToast('Copy failed: the browser refused clipboard access'));
 }
 
 function _skillRenderContent(raw) {
