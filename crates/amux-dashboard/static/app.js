@@ -14072,7 +14072,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1326';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1327';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -42814,7 +42814,7 @@ let _skillsData = { db: [], file: [], builtin: [], usage: {}, daily: [], windowD
 // skill first here and one tap away in every worker's composer.
 function _skillsPref(k, d) { try { return localStorage.getItem('skills_' + k) || d; } catch(e) { return d; } }
 function _skillsPrefSet(k, v) { try { localStorage.setItem('skills_' + k, v); } catch(e) {} }
-function _skillsSort() { const s = _skillsPref('sort', 'used'); return s === 'name' || s === 'recent' ? s : 'used'; }
+function _skillsSort() { const s = _skillsPref('sort', 'used'); return ['name', 'recent', 'created', 'edited'].includes(s) ? s : 'used'; }
 function _skillsQ() { return ((document.getElementById('skills-search') || {}).value || '').toLowerCase(); }
 function _skillsRerender() { _skillsRender(_skillsQ(), document.getElementById('skills-count'), document.getElementById('skills-tab-sections')); }
 function _skillsSortSet(v) { _skillsPrefSet('sort', v); _skillsRerender(); }
@@ -42933,8 +42933,8 @@ function _skillsRender(q, countEl, container) {
   const isPinned = cmd => pinned.has(_skillKey(cmd));
   const wf = _skillsFilters.worker === '__unattributed__' ? '' : _skillsFilters.worker;
   const all = [
-    ..._skillsData.db.map(s => ({ cmd: '/' + s.name, desc: s.description || '', hint: s.hint || '', type: 'custom', editable: true, key: 'db:' + s.name })),
-    ..._skillsData.file.map(c => ({ cmd: c.cmd, desc: c.desc || '', hint: c.hint || '', type: 'project', editable: false, key: 'file:' + c.cmd.replace(/^\//, '') })),
+    ..._skillsData.db.map(s => ({ cmd: '/' + s.name, desc: s.description || '', hint: s.hint || '', type: 'custom', editable: true, key: 'db:' + s.name, created_at: s.created_at || 0, modified_at: s.modified_at || 0 })),
+    ..._skillsData.file.map(c => ({ cmd: c.cmd, desc: c.desc || '', hint: c.hint || '', type: 'project', editable: false, key: 'file:' + c.cmd.replace(/^\//, ''), created_at: c.created_at || 0, modified_at: c.modified_at || 0 })),
     ..._skillsData.builtin.map(c => ({ cmd: c.cmd, desc: c.desc || '', hint: '', type: 'builtin', editable: false, key: '' })),
   ];
   const keep = it => {
@@ -42959,6 +42959,8 @@ function _skillsRender(q, countEl, container) {
   shown.sort((a, b) => {
     if (sort === 'used') return score(b) - score(a) || ((use(b.cmd) || {}).n || 0) - ((use(a.cmd) || {}).n || 0) || a.cmd.localeCompare(b.cmd);
     if (sort === 'recent') return ((use(b.cmd) || {}).last_ts || 0) - ((use(a.cmd) || {}).last_ts || 0) || a.cmd.localeCompare(b.cmd);
+    if (sort === 'created') return (b.created_at || 0) - (a.created_at || 0) || a.cmd.localeCompare(b.cmd);
+    if (sort === 'edited') return (b.modified_at || 0) - (a.modified_at || 0) || a.cmd.localeCompare(b.cmd);
     return a.cmd.localeCompare(b.cmd);
   });
   const nonBuiltin = all.filter(i => i.type !== 'builtin').length;
