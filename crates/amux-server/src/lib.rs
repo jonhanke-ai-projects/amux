@@ -668,6 +668,8 @@ async fn async_main() {
     // worse than raw claude" was invisible for months is that nothing counted
     // how many times a lane's conversation had been summarized away.
     drop(runtime_jobs::context_health::spawn());
+    // Example invocations for every skill, ready before the first `/`.
+    crate::api::skill_examples::spawn_warmer(state.clone());
     // Recompose every lane's MEMORY.md once per boot (contract rule 13). A new
     // binary may compose differently, and nothing else rewrites the files until
     // a worker's identity changes: 2026-10-06 ~/Dev/mixpeek's file was still in

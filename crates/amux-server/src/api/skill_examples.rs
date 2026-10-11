@@ -196,6 +196,66 @@ pub(crate) fn prewarm(name: String, content: String) {
     });
 }
 
+/// Every skill amux lists (DB rows and command files), by name.
+fn all_skill_names(state: &AppState) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(conn) = state.store.read() {
+        if let Ok(mut st) = conn.prepare("SELECT name FROM skills") {
+            if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
+                names.extend(rows.flatten());
+            }
+        }
+    }
+    for d in super::skills::command_dirs() {
+        if let Ok(rd) = std::fs::read_dir(d) {
+            for e in rd.flatten() {
+                if let Some(n) = e.file_name().to_str().and_then(|f| f.strip_suffix(".md")) {
+                    names.push(n.to_string());
+                }
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names.retain(|n| !super::skills::bad_name(n));
+    names
+}
+
+/// EXAMPLES READY BEFORE ANYONE TYPES (Ethan, 2026-10-11: "this should have
+/// examples for each"). Inferred examples were generated on the first `/`
+/// lookup, so the dropdown showed a bare `/iterate` while the model ran and
+/// only drew the examples if the answer landed before the next keystroke.
+/// This warms every skill once per version of its file, 60 s after boot and
+/// hourly; a skill whose cache already matches costs one file read.
+pub(crate) fn spawn_warmer(state: AppState) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        loop {
+            let names = all_skill_names(&state);
+            let (mut ok, mut failed) = (0usize, 0usize);
+            for name in &names {
+                let Some(content) = skill_content(&state, name, None) else { continue };
+                let _guard = GENERATING.lock().await;
+                let (n2, c2) = (name.clone(), content);
+                let res = tokio::task::spawn_blocking(move || {
+                    let model = super::mdai::resolve_model(None);
+                    let client = super::mdai::best_model();
+                    inferred_examples(&crate::config::amux_home(), client.as_ref(), &model, &n2, &c2)
+                })
+                .await;
+                match res {
+                    Ok(Ok(_)) => ok += 1,
+                    _ => failed += 1,
+                }
+            }
+            tracing::info!(target: "amux::skills", skills = names.len(), ready = ok, failed,
+                measured = true, n_considered = names.len(), verdict = "skill_examples_warmed",
+                "skill example invocations are ready for the `/` dropdown");
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    });
+}
+
 // One generation at a time: two expands of the same skill must not pay twice.
 static GENERATING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

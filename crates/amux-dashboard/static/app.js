@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1319';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1320';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -20287,11 +20287,36 @@ function _skillExamplesFor(name, rerender) {
     });
   return null;
 }
+// Built-in commands have no skill file to infer examples from, so the ones
+// that take an argument carry a few here (Ethan, 2026-10-11: "this should have
+// examples for each"). Shown only for commands the provider actually lists.
+const _BUILTIN_EXAMPLES = {
+  '/model': [['/model opus', 'Switch this worker to Opus'], ['/model sonnet', 'Switch to Sonnet for faster, cheaper turns']],
+  '/add-dir': [['/add-dir ../mixpeek', 'Let this session read and edit a sibling repo']],
+  '/compact': [['/compact keep the open board decisions and file paths', 'Summarize the conversation, keeping what you name']],
+  '/effort': [['/effort high', 'Think harder on each turn'], ['/effort low', 'Answer faster']],
+  '/export': [['/export session-notes.md', 'Save this conversation to a file']],
+  '/loop': [['/loop 10m check CI on main and fix what is yours', 'Repeat a prompt on an interval']],
+  '/rename': [['/rename calendar-redesign', 'Name this conversation']],
+  '/review': [['/review 239', 'Review a pull request by number']],
+  '/schedule': [['/schedule every weekday at 9am summarize overnight board changes', 'Run a prompt on a schedule']],
+  '/plan': [['/plan add Google RSVP buttons to the calendar card', 'Plan before changing anything']],
+  '/memory': [['/memory', 'Open the memory files this session loads']],
+  '/resume': [['/resume', 'Pick an earlier conversation to continue']],
+  '/rewind': [['/rewind', 'Step back to an earlier point in this conversation']],
+  '/focus': [['/focus the calendar sync', 'Narrow the session to one task']],
+  '/color': [['/color purple', 'Color this session in the terminal']],
+};
 function _slashAcMatches(q, rerender) {
   let items = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
   const head = q.split(/\s/)[0];
   const target = SLASH_COMMANDS.find(c => c.cmd === head) || (items.length === 1 ? items[0] : null);
-  if (target && !_isBuiltinCmd(target.cmd)) {
+  if (target && _isBuiltinCmd(target.cmd) && _BUILTIN_EXAMPLES[target.cmd]) {
+    const more = _BUILTIN_EXAMPLES[target.cmd]
+      .filter(([inv]) => inv.toLowerCase().startsWith(q) && inv.toLowerCase() !== q)
+      .map(([inv, purpose]) => ({ cmd: inv, desc: purpose, example: true }));
+    items = items.concat(more);
+  } else if (target && !_isBuiltinCmd(target.cmd)) {
     const ex = _skillExamplesFor(target.cmd.slice(1), rerender) || [];
     const more = ex.filter(e => e.invocation.toLowerCase().startsWith(q) && e.invocation.toLowerCase() !== q)
       .map(e => ({ cmd: e.invocation, desc: e.purpose || '', example: true }));
