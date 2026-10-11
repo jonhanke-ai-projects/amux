@@ -55305,7 +55305,7 @@ async function _cvLoadWorkerHistory(sel) {
     if (!r.ok || _cv.sel !== sel) return;
     const rows = await r.json();
     if (_cv.sel !== sel || !Array.isArray(rows)) return;
-    _cv.history = rows.filter(h => h && h.text && !/\(From amux Messages\. To reply/.test(h.text)).map(h => ({
+    _cv.history = rows.filter(h => h && h.text && !/\(From amux Messages\. To reply|\bamux post [gpw]:\S+ <<'EOF'/.test(h.text)).map(h => ({
       id: 'h' + h.id, conv: sel, history: true, ts: h.ts || 0, body: _msgStripPrefix(h.text),
       author_key: h.type === 'session' && h.origin ? 'worker:' + h.origin : 'person:' + (h.origin || 'owner'),
       author_name: h.type === 'session' && h.origin ? h.origin : (h.type === 'schedule' ? 'scheduler' : (h.origin || 'owner')),
