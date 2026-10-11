@@ -61,9 +61,11 @@ fn frontmatter_fields(text: &str) -> (String, String) {
 /// GET /api/skills/usage[?days=N]: how often each skill was invoked, from
 /// Claude Code transcripts (the model's Skill calls and typed slash commands;
 /// AMUX-5340). `n` is all time, `recent` the last `days` (default 30). Keys are
-/// the bare name, lowercase, no leading slash.
+/// the bare name, lowercase, no leading slash. Each skill also carries
+/// `workers` (window counts by amux worker) and the response carries `daily`
+/// (window counts per UTC day, zero-filled) for the Skills tab's chart.
 async fn skill_usage(State(state): State<AppState>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
-    let days: i64 = q.get("days").and_then(|d| d.parse().ok()).filter(|d: &i64| *d > 0).unwrap_or(30);
+    let days: i64 = q.get("days").and_then(|d| d.parse().ok()).filter(|d: &i64| *d > 0).unwrap_or(30).min(366);
     let since = chrono::Utc::now().timestamp() - days * 86_400;
     let read = state.store.read_async(move |conn| {
         let backfill: Option<String> = conn
@@ -81,15 +83,52 @@ async fn skill_usage(State(state): State<AppState>, axum::extract::Query(q): axu
                 })))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok((backfill, rows))
+        let mut rows: serde_json::Map<String, serde_json::Value> = rows.into_iter().collect();
+        // Per-worker counts inside the window, for the Skills tab's worker
+        // filter. `session` is empty for invocations backfilled from
+        // transcripts that predate per-worker capture; that bucket stays ""
+        // so the filter can say "unattributed" rather than hide it.
+        let mut st = conn.prepare(
+            "SELECT skill, session, COUNT(*) FROM skill_usage WHERE ts >= ?1 GROUP BY skill, session",
+        )?;
+        let per = st
+            .query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (skill, session, n) in per {
+            if let Some(obj) = rows.get_mut(&skill).and_then(|v| v.as_object_mut()) {
+                let w = obj.entry("workers").or_insert_with(|| json!({}));
+                w[session] = json!(n);
+            }
+        }
+        // Invocations per UTC day across the window, zero-filled so a quiet
+        // day reads as 0 rather than as a missing bar. The first bucket is
+        // the (partial) day containing `since`, so the series sums to exactly
+        // the per-skill `recent` counts above.
+        let mut st = conn.prepare(
+            "SELECT ts / 86400, COUNT(*) FROM skill_usage WHERE ts >= ?1 GROUP BY ts / 86400",
+        )?;
+        let by_day: std::collections::HashMap<i64, i64> = st
+            .query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let today = chrono::Utc::now().timestamp() / 86_400;
+        let daily: Vec<serde_json::Value> = ((since / 86_400)..=today)
+            .map(|d| {
+                let date = chrono::DateTime::from_timestamp(d * 86_400, 0)
+                    .map(|t| t.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default();
+                json!({"day": date, "n": by_day.get(&d).copied().unwrap_or(0)})
+            })
+            .collect();
+        Ok((backfill, rows, daily))
     }).await;
     match read {
-        Ok((backfill, rows)) => Json(json!({
+        Ok((backfill, rows, daily)) => Json(json!({
             "measured": true,
             "n_considered": rows.len(),
             "window_days": days,
             "backfill": backfill,
-            "skills": rows.into_iter().collect::<serde_json::Map<String, serde_json::Value>>(),
+            "daily": daily,
+            "skills": rows,
         }))
         .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"measured": false, "why_unmeasured": e.to_string()}))).into_response(),
@@ -369,6 +408,41 @@ mod tests {
         let commands = commands.as_array().unwrap();
         assert!(!commands.iter().any(|c| c["cmd"] == "/diff"));
         assert!(commands.iter().any(|c| c["cmd"] == "/context"));
+    }
+
+    #[tokio::test]
+    async fn usage_reports_daily_series_and_workers() {
+        let state = crate::api::standing_approvals::tests::test_state();
+        let now = chrono::Utc::now().timestamp();
+        state
+            .store
+            .write(move |c| {
+                for (i, (skill, session, ago)) in [("slop", "gtm", 0), ("slop", "", 0), ("slop", "gtm", 86_400), ("loop", "amux", 40 * 86_400)]
+                    .iter()
+                    .enumerate()
+                {
+                    c.execute(
+                        "INSERT INTO skill_usage (record_uuid, skill, source, session, ts) VALUES (?1,?2,'user',?3,?4)",
+                        rusqlite::params![format!("r{i}"), skill, session, now - ago],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let resp = skill_usage(State(state), axum::extract::Query([("days".to_string(), "7".to_string())].into())).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let daily = v["daily"].as_array().unwrap();
+        assert!(daily.len() == 7 || daily.len() == 8, "one zero-filled row per day of the window: {}", daily.len());
+        let total: i64 = daily.iter().map(|d| d["n"].as_i64().unwrap()).sum();
+        assert_eq!(total, 3, "the 40-day-old call is outside");
+        let recent: i64 = v["skills"].as_object().unwrap().values().map(|s| s["recent"].as_i64().unwrap()).sum();
+        assert_eq!(total, recent, "the chart total and the per-skill window counts agree");
+        assert_eq!(daily.last().unwrap()["n"], 2);
+        assert_eq!(v["skills"]["slop"]["workers"]["gtm"], 2);
+        assert_eq!(v["skills"]["slop"]["workers"][""], 1, "unattributed calls stay visible");
+        assert!(v["skills"]["loop"].get("workers").is_none(), "no window calls, no workers");
+        assert_eq!(v["skills"]["loop"]["n"], 1);
     }
 
     #[test]
