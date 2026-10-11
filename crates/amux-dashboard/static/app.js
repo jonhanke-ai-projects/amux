@@ -14078,7 +14078,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1340';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1341';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -24928,7 +24928,25 @@ async function _renderPdf(data, body) {
   const current = () => body._pdfRender === owner && body.isConnected && body.classList.contains('file-pdf') && body.getClientRects().length > 0;
   const report = (verdict, pages = 0, total = 0) => fetch(API + '/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({kind:'file-pdf-render',verdict,pages,total_pages:total,viewer:body.id==='file-body'?'overlay':'split',measured:true,n_considered:1,ver:APP_VER})}).catch(()=>{});
-  // The server inlines PDFs as a base64 data_url; decode to bytes for pdf.js.
+  // NATIVE VIEWER ON DESKTOP (Ethan, 2026-10-11: "we should have a native pdf
+  // viewer"). A desktop browser and the macOS app's WKWebView both render a PDF
+  // natively in a frame (search, zoom, selectable text) straight from the
+  // Range-capable raw stream, at any size. Touch devices keep pdf.js: iOS shows
+  // only a first-page snapshot of a framed PDF.
+  const rawSrc = data.raw_url ? _authUrl(API + data.raw_url) : (data.path ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(data.path)) : '');
+  if (rawSrc && !(window.matchMedia && matchMedia('(pointer: coarse)').matches)) {
+    if (!current()) return;
+    body.innerHTML = '';
+    const frame = document.createElement('iframe');
+    frame.className = 'pdf-native';
+    frame.title = 'PDF';
+    frame.src = rawSrc;
+    frame.style.cssText = 'width:100%;height:100%;min-height:70vh;border:0;border-radius:4px;background:#fff;';
+    body.appendChild(frame);
+    report('native');
+    return;
+  }
+  // The server inlines small PDFs as a base64 data_url; decode to bytes for pdf.js.
   let bytes = null;
   const b64 = (data.data_url || '').split(',')[1];
   if (b64) {
