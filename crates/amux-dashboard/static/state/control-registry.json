@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2566,
+  "n_considered": 2582,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3152,8 +3152,50 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_skillsFilterSet": {
+      "kind": "command._skillsFilterSet",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_skillsGroupPick": {
+      "kind": "command._skillsGroupPick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_skillsJump": {
+      "kind": "command._skillsJump",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_skillsLayoutSet": {
+      "kind": "command._skillsLayoutSet",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_skillsRender": {
       "kind": "command._skillsRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_skillsRerender": {
+      "kind": "command._skillsRerender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_skillsSectionAll": {
+      "kind": "command._skillsSectionAll",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_skillsSectionToggle": {
+      "kind": "command._skillsSectionToggle",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3166,6 +3208,12 @@
     },
     "_skillsTabLoad": {
       "kind": "command._skillsTabLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_skillsWindowSet": {
+      "kind": "command._skillsWindowSet",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -2046,18 +2046,64 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 
 <div id="skills-view" style="display:none;flex-direction:column;flex:1;min-height:0;padding:12px 16px;">
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-shrink:0;">
-    <div class="search-wrap" style="flex:1;">
-      <input class="search-input" id="skills-search" type="text" placeholder="Search skills..." autocomplete="off"
-        oninput="_skillsFilter(this.value)">
+  <div class="sk-scroll">
+    <div class="sk-layout">
+      <div class="sk-main">
+        <div class="sk-top">
+          <div class="search-wrap sk-search">
+            <input class="search-input" id="skills-search" type="search" placeholder="Search skills, e.g. /pr-merge, browser, test" autocomplete="off"
+              aria-label="Search skills" oninput="_skillsFilter(this.value)">
+            <kbd class="sk-kbd" aria-hidden="true">&#x2318;K</kbd>
+          </div>
+          <span class="sk-count" id="skills-count"></span>
+          <button class="btn sk-new" onclick="editSkill()">+ New</button>
+        </div>
+        <div class="sk-filters" role="toolbar" aria-label="Filter skills">
+          <select id="skills-f-type" class="input sk-select" aria-label="Type" onchange="_skillsFilterSet('type', this.value)">
+            <option value="">All types</option><option value="custom">Custom</option><option value="project">Project</option><option value="builtin">Built-in</option>
+          </select>
+          <select id="skills-f-status" class="input sk-select" aria-label="Status" onchange="_skillsFilterSet('status', this.value)">
+            <option value="">All statuses</option><option value="pinned">Pinned</option><option value="unpinned">Not pinned</option><option value="used">Used in window</option><option value="unused">Not used in window</option>
+          </select>
+          <select id="skills-f-worker" class="input sk-select" aria-label="Worker" onchange="_skillsFilterSet('worker', this.value)">
+            <option value="">All workers</option>
+          </select>
+          <select id="skills-sort" class="input sk-select" aria-label="Sort skills" onchange="_skillsSortSet(this.value)">
+            <option value="used">Sort: Usage</option><option value="recent">Sort: Recently used</option><option value="created">Sort: Recently created</option><option value="edited">Sort: Recently edited</option><option value="name">Sort: Name</option>
+          </select>
+          <div class="sk-viewtoggle" role="group" aria-label="Layout">
+            <button class="btn" id="skills-view-list" aria-pressed="true" onclick="_skillsLayoutSet('list')">&#x2630; List</button>
+            <button class="btn" id="skills-view-grid" aria-pressed="false" onclick="_skillsLayoutSet('grid')">&#x25A6; Grid</button>
+          </div>
+        </div>
+        <div id="skills-tab-sections"></div>
+      </div>
+      <aside class="sk-side" aria-label="Skill usage">
+        <section class="sk-panel">
+          <div class="sk-panel-head">
+            <h3>Usage overview</h3>
+            <select id="skills-window" class="input sk-select sk-select-sm" aria-label="Usage window" onchange="_skillsWindowSet(this.value)">
+              <option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option>
+            </select>
+          </div>
+          <div id="skills-chart" class="sk-chart"></div>
+        </section>
+        <section class="sk-panel">
+          <div class="sk-panel-head"><h3>Top skills</h3></div>
+          <ol id="skills-top" class="sk-top-list"></ol>
+        </section>
+        <section class="sk-panel">
+          <div class="sk-panel-head"><h3>Groups</h3></div>
+          <ul id="skills-groups" class="sk-groups"></ul>
+        </section>
+        <section class="sk-panel sk-tip" id="skills-tip">
+          <button class="sk-tip-x" aria-label="Dismiss tip" onclick="_skillsTipDismiss()">&#x2715;</button>
+          <div class="sk-tip-title">&#x1F4A1; Tip</div>
+          <div>Pin the skills you use most: a pinned skill is listed first here and sits one tap away in every worker's composer quick bar.</div>
+        </section>
+      </aside>
     </div>
-    <span style="font-size:0.78rem;color:var(--dim);white-space:nowrap;" id="skills-count"></span>
-    <select id="skills-sort" class="input" aria-label="Sort skills" onchange="_skillsSortSet(this.value)" style="font-size:0.78rem;padding:4px 8px;min-height:36px;width:auto;">
-      <option value="name">Name</option><option value="used">Most used</option><option value="recent-used">Recently used</option><option value="recent-created">Recently created</option><option value="recent-edited">Recently edited</option>
-    </select>
-    <button class="btn" onclick="editSkill()" style="font-size:0.75rem;padding:4px 12px;flex-shrink:0;">+ New</button>
   </div>
-  <div id="skills-tab-sections" style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;"></div>
 </div>
 
 <!-- Schedule modal -->
