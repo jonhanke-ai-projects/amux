@@ -14076,7 +14076,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1343';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1344';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -55398,27 +55398,37 @@ setTimeout(_cvLoadList, 3000);
 // ── Converse tab: hands-free voice conversations with a worker ──────────────
 // Ethan, 2026-10-11: "create a new tab in the worker details page called
 // 'converse' ... chat with your worker so I can be hands free ... a log of the
-// interactions and I should be able to replay any ... an expiration".
+// interactions and I should be able to replay any ... an expiration". Then:
+// "it needs to be more realtime and it shouldnt interrupt the worker, similar
+// to how the chat worker thing doesnt interrupt the worker", and OpenAI
+// Realtime as the default engine.
 //
-// THE WORKER ANSWERS. Speech becomes text in the browser (Web Speech API), each
-// finished utterance goes through doSend (the composer's own send path) and
-// the reply is read from /api/sessions/<name>/last-message (read-aloud's
-// source), then spoken. Nothing here calls a model. The server half
-// (api/converse.rs) only keeps the log: transcript turns plus the session audio
-// MediaRecorder captured, expired after AMUX_CONVERSE_RETENTION_DAYS.
+// NEVER THE WORKER'S TERMINAL. Everything a conversation asks of the worker
+// goes to its chat companion, `<worker>@chat` (the Chat tab's lane), which
+// answers beside the worker and relays to it only when needed. So talking to
+// a worker cannot interrupt a turn it is in the middle of.
 //
-// ENGINES. "browser" always works where the browser has speech recognition.
-// "personaplex" (NVIDIA PersonaPlex) needs an NVIDIA GPU server; the server
-// reports whether AMUX_PERSONAPLEX_URL is set and answering, and the selector
-// shows that verdict rather than pretending to connect.
+// ENGINES. "openai" (default when the server has OPENAI_API_KEY): WebRTC
+// speech to speech with OpenAI Realtime. The server mints a short-lived client
+// secret carrying the worker's context and one tool, ask_worker, which this
+// page answers through the chat companion. "browser" (free fallback, also
+// used when minting or connecting fails): Web Speech in, the chat companion's
+// streamed reply spoken sentence by sentence as it arrives.
 //
-// SIGNALS (two-fix rule): every failure a person would otherwise only feel
-// (no reply, recognition refused, save or upload refused) is beaconed with
-// amuxTrack('converse_*', {measured, n_considered, ...}) and the server logs a
-// `[converse]` line for every stored conversation and every retention sweep.
+// LOG. api/converse.rs keeps each conversation (transcript, both audio sides
+// when they can be recorded, billed audio usage and per-reply first-audio
+// latency) and expires it after AMUX_CONVERSE_RETENTION_DAYS.
+//
+// SIGNALS (two-fix rule): every failure a person would otherwise only feel is
+// posted as a kind=converse client-debug beacon (server-rs.log), and so is
+// each reply's first-audio latency (converse_first_audio).
 var _VX_SPEEDS = [1, 1.25, 1.5, 2, 0.75];
-var _VX_REPLY_WAIT_MS = 10 * 60 * 1000;
-var _VX_POLL_MS = 1500;
+// A chat turn can run tools; a voice reply waits this long before giving up.
+var _VX_CHAT_WAIT_MS = 4 * 60 * 1000;
+// End of utterance: silence after the last final result, or after an interim
+// one (recognisers can sit on an interim result for a while).
+var _VX_SILENCE_FINAL_MS = 450;
+var _VX_SILENCE_INTERIM_MS = 800;
 var _VX_PERSONALITIES = {
   default: { label: 'Default', hint: '(Voice conversation from the Converse tab: reply in two or three short spoken sentences, no markdown.)' },
   detailed: { label: 'Detailed', hint: '(Voice conversation from the Converse tab: reply in plain spoken prose, no markdown, tables or code blocks.)' },
@@ -55521,8 +55531,12 @@ function _vxSkeleton(worker) {
     +     '<span class="vx-state" id="vx-state">Ready</span></div>'
     +   '<div class="vx-live" id="vx-live" aria-live="polite"></div>'
     +   '<div class="vx-controls">'
-    +     '<div class="vx-ctl"><button class="vx-round" id="vx-mute" onclick="_vxToggleMute()" aria-label="Mute" disabled>&#x1F507;</button><span id="vx-mute-lbl">Mute</span></div>'
-    +     '<div class="vx-ctl"><button class="vx-round vx-call" id="vx-call" onclick="_vxCallButton()" aria-label="Start conversation">&#x260E;</button><span id="vx-call-lbl">Start</span></div>'
+    +     '<div class="vx-ctl"><button class="vx-round" id="vx-mute" data-repeatable onclick="_vxToggleMute()" aria-label="Mute" disabled>&#x1F507;</button><span id="vx-mute-lbl">Mute</span></div>'
+    // data-repeatable: Start/End and Mute are toggles. Without it the shared
+    // press contract (state/feedback.mjs) swallowed End-then-Start, because a
+    // write the previous press started (the session mint, a save) was still
+    // bound to the button.
+    +     '<div class="vx-ctl"><button class="vx-round vx-call" id="vx-call" data-repeatable onclick="_vxCallButton()" aria-label="Start conversation">&#x260E;</button><span id="vx-call-lbl">Start</span></div>'
     +     '<div class="vx-ctl"><button class="vx-round" id="vx-voice-btn" onclick="_vxToggleSettings()" aria-label="Voice settings" aria-expanded="true">&#x2699;</button><span>Voice</span></div>'
     +   '</div>'
     +   '<form class="vx-type" onsubmit="event.preventDefault();_vxTypeSend()"><input class="input" id="vx-type-input" placeholder="Or type to ' + w + '" autocomplete="off"><button class="btn" type="submit">Send</button></form>'
@@ -55579,7 +55593,8 @@ async function _vxLoadConfig(worker) {
   const sel = document.getElementById('vx-engine');
   if (!sel) return;
   const engines = (_vxCfg && _vxCfg.engines) || [{ id: 'browser', label: 'Browser speech', available: true }];
-  const want = _vxPref('engine', 'browser');
+  const dflt = (engines.find(e => e.default && e.available) || { id: 'browser' }).id;
+  const want = _vxPref('engine', dflt);
   sel.innerHTML = engines.map(e => '<option value="' + esc(e.id) + '"' + (e.available ? '' : ' disabled') + '>'
     + esc(e.label) + (e.available ? '' : ' (unavailable)') + '</option>').join('');
   const ok = engines.find(e => e.id === want && e.available);
@@ -55594,20 +55609,17 @@ function _vxEngineNote() {
   const note = document.getElementById('vx-engine-note');
   const badge = document.getElementById('vx-powered');
   const engines = (_vxCfg && _vxCfg.engines) || [];
-  const pp = engines.find(e => e.id === 'personaplex');
+  const oa = engines.find(e => e.id === 'openai');
   const sel = document.getElementById('vx-engine');
-  const chosen = sel ? sel.value : 'browser';
-  if (badge) badge.innerHTML = chosen === 'personaplex'
-    ? 'Powered by <b>NVIDIA PersonaPlex</b>'
+  const chosen = (_vx && _vx.active && _vx.engine) || (sel ? sel.value : 'browser');
+  if (badge) badge.innerHTML = chosen === 'openai'
+    ? 'Powered by <b>OpenAI Realtime</b>' + (oa && oa.model ? ' (' + esc(oa.model) + ')' : '')
     : 'Engine: <b>Browser speech</b>';
   if (!note) return;
-  let html = '';
-  if (!_vxRecognitionCtor()) html += '<div>This browser has no speech recognition, so speak-to-send is off. Type below instead, or use Chrome, Edge or Safari.</div>';
-  if (pp && !pp.available) html += '<div>NVIDIA PersonaPlex: ' + esc(pp.reason || 'unavailable') + '</div>';
-  if (pp && pp.available && chosen === 'personaplex') {
-    html += '<div>PersonaPlex answered at <a href="' + esc(pp.url) + '" target="_blank" rel="noopener">' + esc(pp.url)
-      + '</a>. Routing its speech to this worker is not built yet, so this conversation still uses browser speech, and the worker still answers.</div>';
-  }
+  let html = '<div>Questions about the worker go to its chat, which answers beside it, so a conversation never interrupts the worker.</div>';
+  if (oa && !oa.available) html += '<div>OpenAI Realtime: ' + esc(oa.reason || 'unavailable') + '</div>';
+  if (chosen === 'openai' && oa && oa.available) html += '<div>' + esc(oa.reason || '') + '</div>';
+  if (chosen === 'browser' && !_vxRecognitionCtor()) html += '<div>This browser has no speech recognition, so speak-to-send is off. Type below instead, or use Chrome, Edge or Safari.</div>';
   note.innerHTML = html;
 }
 
@@ -55727,28 +55739,26 @@ function _vxPickMime() {
   if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
   return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find(m => MediaRecorder.isTypeSupported(m)) || '';
 }
+function _vxT() { return Date.now() - _vx.startedAt; }
 async function _vxStart() {
   const worker = peekSession;
   if (!worker || _vx.active) return;
   _vxPlayerStop();
   const id = 'vx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  const want = (document.getElementById('vx-engine') || {}).value || 'browser';
   _vx = { active: true, worker, id, startedAt: Date.now(), turns: [], muted: false, speaking: false, speakingText: '',
-          interim: '', pending: '', lastSeen: '', candidate: '', replyWaiters: 0, chunks: [], saved: false,
-          state: 'Starting...', engine: (document.getElementById('vx-engine') || {}).value || 'browser', workerVoiceRecorded: false };
+          interim: '', consumed: 0, resultsLen: 0, chunks: [], saved: false, queue: [], qBusy: false,
+          state: 'Starting...', engine: want, workerVoiceRecorded: false, rtCalls: new Set(), rtTurns: {}, rtUserT: {},
+          usage: { audio_in_ms: 0, audio_out_ms: 0, input_audio_tokens: 0, output_audio_tokens: 0,
+                   input_text_tokens: 0, output_text_tokens: 0, cached_tokens: 0, responses: 0, tool_calls: 0 } };
   _vxPaintLive();
-  const row = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === worker);
-  if (row && row.running === false) _vxNote(worker + ' is not running. Your first message will offer to start it.');
-  // The baseline reply: whatever the worker last said BEFORE this conversation
-  // must never be spoken as if it answered.
-  fetch(API + '/api/sessions/' + encodeURIComponent(worker) + '/last-message', { headers: _authHeaders() })
-    .then(r => r.json()).then(d => { if (_vx.id === id && !_vx.lastSeen) _vx.lastSeen = (d.text || '').trim(); }).catch(() => {});
   const device = _vxPref('device', '');
   const constraints = { audio: Object.assign({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }, device ? { deviceId: { exact: device } } : {}) };
   try {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) _vx.stream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (e) {
     _vxTrack('converse_mic_unavailable', { error: String(e && e.name || e) });
-    _vxNote('Microphone unavailable (' + (e && e.name || e) + '). Type below to talk to the worker.');
+    _vxNote('Microphone unavailable (' + (e && e.name || e) + '). Type below to talk.');
   }
   if (_vx.id !== id) return;
   try {
@@ -55769,8 +55779,7 @@ async function _vxStart() {
   if (_vx.stream && window.MediaRecorder) {
     try {
       const mime = _vxPickMime();
-      const recStream = _vx.dest ? _vx.dest.stream : _vx.stream;
-      _vx.recorder = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
+      _vx.recorder = new MediaRecorder(_vx.dest ? _vx.dest.stream : _vx.stream, mime ? { mimeType: mime } : undefined);
       _vx.recorder.ondataavailable = e => { if (e.data && e.data.size) _vx.chunks.push(e.data); };
       _vx.recorder.start(1000);
     } catch (e) {
@@ -55781,47 +55790,150 @@ async function _vxStart() {
   _vx.levels = [];
   _vx.timer = setInterval(() => {
     const el = document.getElementById('vx-elapsed');
-    if (el && _vx.active) el.textContent = _vxClock(Date.now() - _vx.startedAt);
+    if (el && _vx.active) el.textContent = _vxClock(_vxT());
   }, 500);
-  if (_vxRecognitionCtor()) _vxRecStart();
-  else _vxNote('No speech recognition in this browser; type below.');
+  // The chat companion is the only way either engine reaches the worker.
+  _vxLinkOpen();
+  let engine = 'browser';
+  if (want === 'openai') engine = (await _vxRtStart(id)) ? 'openai' : 'browser';
+  if (_vx.id !== id) return;
+  _vx.engine = engine;
+  if (engine === 'browser') {
+    if (_vxRecognitionCtor()) _vxRecStart();
+    else _vxNote('No speech recognition in this browser; type below.');
+  }
   _vxSetState('Listening...');
   _vxPaintLive();
+  _vxEngineNote();
   _vxDrawWave();
-  _vxSave();
 }
 function _vxNote(text) {
   if (!_vx.active) { showToast(text); return; }
-  _vx.turns.push({ role: 'system', text, t_ms: Date.now() - _vx.startedAt });
+  _vx.turns.push({ role: 'system', text, t_ms: _vxT() });
   _vxPaintLive();
 }
+
+// ── the chat companion link: how a conversation reaches the worker ──────────
+// `<worker>@chat` is the Chat tab's lane. A send there runs a headless turn
+// beside the worker and relays to it only when needed; the worker's own
+// terminal is never written to, so a conversation cannot interrupt it. The
+// reply streams on /api/sessions/<worker>@chat/chat/stream (the Chat tab's
+// stream): `user` names the turn for our msg_id, `delta` carries text, `done`
+// the finished message. The exchange is in the Chat tab's history as well.
+function _vxChatKey(w) { return w + '@chat'; }
+function _vxLinkOpen() {
+  const id = _vx.id, key = _vxChatKey(_vx.worker);
+  const L = _vx.link = _vx.link || { cursor: '', waiters: {}, byTurn: {}, es: null };
+  const url = API + '/api/sessions/' + encodeURIComponent(key) + '/chat/stream' + (L.cursor ? '?after=' + encodeURIComponent(L.cursor) : '');
+  let es;
+  try { es = new EventSource(_authUrl(url)); } catch (e) { _vxTrack('converse_chat_stream_failed', { error: String(e && e.message || e) }); return; }
+  L.es = es;
+  es.onmessage = ev => {
+    if (_vx.id !== id || L.es !== es) return;
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.seq && m.epoch) L.cursor = m.epoch + ':' + m.seq;
+    _vxLinkEvent(L, m);
+  };
+  es.onerror = () => {
+    if (L.es !== es) return;
+    try { es.close(); } catch (e) {}
+    L.es = null;
+    if (_vx.id === id && _vx.active) setTimeout(() => { if (_vx.id === id && _vx.active && !L.es) _vxLinkOpen(); }, 1000);
+  };
+}
+function _vxLinkEvent(L, m) {
+  if (m.type === 'user') {
+    const w = L.waiters[m.msg_id];
+    if (w) { w.turn_id = m.turn_id; L.byTurn[m.turn_id] = w; }
+    return;
+  }
+  if (m.type === 'gap') { Object.values(L.byTurn).forEach(w => _vxLinkRecover(w)); return; }
+  const w = m.turn_id && L.byTurn[m.turn_id];
+  if (!w) return;
+  if (m.type === 'delta') {
+    w.text += m.text || '';
+    if (w.onDelta) w.onDelta(w.text);
+  } else if (m.type === 'done') {
+    _vxLinkFinish(w, (m.message && m.message.text) || w.text, m.message && m.message.error);
+  } else if (m.type === 'stopped') {
+    _vxLinkFinish(w, w.text, 'stopped');
+  }
+}
+function _vxLinkFinish(w, text, error) {
+  if (w.done) return;
+  w.done = true;
+  clearTimeout(w.timer);
+  const L = _vx.link;
+  if (L) { delete L.waiters[w.msg_id]; if (w.turn_id) delete L.byTurn[w.turn_id]; }
+  w.resolve({ text: String(text || ''), error: error || '' });
+}
+// The stream lost events (a gap or a long silence): the history is the truth.
+async function _vxLinkRecover(w) {
+  if (w.done || !w.turn_id) return false;
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(_vxChatKey(_vx.worker)) + '/chat?limit=20', { headers: _authHeaders() });
+    const d = await r.json();
+    const m = (d.messages || []).find(x => x.role === 'assistant' && x.turn_id === w.turn_id);
+    if (m) { _vxLinkFinish(w, m.text, m.error); return true; }
+  } catch (e) {}
+  return false;
+}
+function _vxAskChat(text, onDelta) {
+  return new Promise(resolve => {
+    const L = _vx.link || (_vxLinkOpen(), _vx.link);
+    const ident = {};
+    // doSend stamps ident.msg_id before its first await, so the waiter is in
+    // place before any stream event for this turn can be handled.
+    const sent = doSend(_vxChatKey(_vx.worker), text, ident);
+    const w = { msg_id: ident.msg_id, text: '', onDelta, resolve, done: false };
+    L.waiters[w.msg_id] = w;
+    w.timer = setTimeout(async () => {
+      if (!(await _vxLinkRecover(w))) {
+        _vxTrack('converse_chat_timeout', { wait_ms: _VX_CHAT_WAIT_MS });
+        _vxLinkFinish(w, w.text, 'no answer within ' + Math.round(_VX_CHAT_WAIT_MS / 60000) + ' minutes');
+      }
+    }, _VX_CHAT_WAIT_MS);
+    Promise.resolve(sent).then(result => {
+      if (result !== 'sent' && result !== 'queued') {
+        _vxTrack('converse_send_failed', { result });
+        _vxLinkFinish(w, '', 'not delivered (' + result + ')');
+      }
+    }, () => _vxLinkFinish(w, '', 'not delivered'));
+  });
+}
+
+// ── browser engine: Web Speech in, sentence-chunked speech out ─────────────
 function _vxRecStart() {
   const Ctor = _vxRecognitionCtor();
-  if (!Ctor || !_vx.active || _vx.muted || _vx.rec) return;
+  if (!Ctor || !_vx.active || _vx.muted || _vx.rec || _vx.engine === 'openai') return;
   const id = _vx.id;
   let r;
   try { r = new Ctor(); } catch (e) { _vxNote('Speech recognition could not start: ' + e.message); return; }
   r.continuous = true;
   r.interimResults = true;
   r.lang = navigator.language || 'en-US';
+  _vx.consumed = 0;   // result indexes restart with each recognition session
   r.onresult = ev => {
     if (_vx.id !== id) return;
-    let interim = '', fin = '';
-    for (let i = ev.resultIndex; i < ev.results.length; i++) {
-      const res = ev.results[i];
-      const t = (res[0] && res[0].transcript) || '';
-      if (res.isFinal) fin += t; else interim += t;
+    _vx.lastHeardAt = Date.now();
+    _vx.resultsLen = ev.results.length;
+    let text = '';
+    for (let i = _vx.consumed; i < ev.results.length; i++) text += (ev.results[i][0] && ev.results[i][0].transcript) || '';
+    const heard = text.trim();
+    const last = ev.results[ev.results.length - 1];
+    // Echo of the worker's own voice from the speaker: neither a barge-in nor
+    // something the person said.
+    if (heard && _vx.speaking && _vxIsEcho(heard)) {
+      if (last && last.isFinal) _vx.consumed = ev.results.length;
+      _vx.interim = '';
+      return;
     }
-    const heard = (fin || interim).trim();
-    // INTERRUPT ANYTIME: the person talking over the worker stops its voice,
-    // unless what the mic heard is the worker's own voice from the speaker.
-    if (heard && _vx.speaking && !_vxIsEcho(heard)) _vxInterrupt();
-    if (fin.trim() && !(_vx.speaking && _vxIsEcho(fin))) {
-      _vx.pending = (_vx.pending + ' ' + fin).trim();
-      clearTimeout(_vx.sendTimer);
-      _vx.sendTimer = setTimeout(_vxFlushUtterance, 1100);
-    }
-    _vx.interim = interim.trim();
+    if (heard && _vx.speaking) _vxInterrupt();
+    _vx.interim = heard;
+    // Send soon after the person stops: a short silence after a final result,
+    // a little longer after an interim one.
+    clearTimeout(_vx.sendTimer);
+    if (heard) _vx.sendTimer = setTimeout(_vxFlushUtterance, last && last.isFinal ? _VX_SILENCE_FINAL_MS : _VX_SILENCE_INTERIM_MS);
     _vxPaintLive();
   };
   r.onerror = e => {
@@ -55835,168 +55947,367 @@ function _vxRecStart() {
   };
   r.onend = () => {
     if (_vx.rec === r) _vx.rec = null;
-    // Continuous recognition still ends on silence or a network blip; keep it
-    // listening for as long as the conversation is on.
     if (_vx.id === id && _vx.active && !_vx.muted && !_vx.recBlocked) setTimeout(() => { if (_vx.id === id) _vxRecStart(); }, 250);
   };
   try { r.start(); _vx.rec = r; } catch (e) { _vxTrack('converse_recognition_error', { error: String(e && e.message || e) }); }
 }
 function _vxFlushUtterance() {
-  const text = (_vx.pending || '').trim();
-  _vx.pending = '';
+  const text = (_vx.interim || '').trim();
+  _vx.consumed = _vx.resultsLen;
   _vx.interim = '';
-  if (text) _vxSendUtterance(text);
+  if (text) _vxSendUtterance(text, _vx.lastHeardAt || Date.now());
 }
 function _vxTypeSend() {
   const inp = document.getElementById('vx-type-input');
   const text = (inp && inp.value || '').trim();
   if (!text) return;
   inp.value = '';
-  if (!_vx.active) { _vxStart().then(() => _vxSendUtterance(text)); return; }
-  _vxSendUtterance(text);
+  const go = () => _vx.engine === 'openai' ? _vxRtTyped(text) : _vxSendUtterance(text, Date.now());
+  if (!_vx.active) { _vxStart().then(go); return; }
+  go();
 }
-async function _vxSendUtterance(text) {
+function _vxHint() {
+  const persona = _VX_PERSONALITIES[(document.getElementById('vx-personality') || {}).value || 'default'] || _VX_PERSONALITIES.default;
+  return persona.hint;
+}
+async function _vxSendUtterance(text, utterEndAt) {
   if (!_vx.active) return;
-  const id = _vx.id, worker = _vx.worker;
   _vxInterrupt();
-  _vx.turns.push({ role: 'user', text, t_ms: Date.now() - _vx.startedAt });
-  _vxSetState('Sending...');
+  _vx.turns.push({ role: 'user', text, t_ms: _vxT() });
+  _vxSetState('Thinking...');
   _vxPaintLive();
   _vxSave();
-  const persona = _VX_PERSONALITIES[(document.getElementById('vx-personality') || {}).value || 'default'] || _VX_PERSONALITIES.default;
-  const message = persona.hint ? text + '\n\n' + persona.hint : text;
-  let result = 'failed';
-  try { result = await doSend(worker, message, {}); } catch (e) { result = 'exception'; }
-  if (_vx.id !== id) return;
-  if (result !== 'sent' && result !== 'queued') {
-    _vxTrack('converse_send_failed', { result });
-    _vxNote('Not delivered to ' + worker + ' (' + result + '). Say it again or type it.');
-    _vxSetState('Listening...');
-    return;
-  }
-  _vxSetState('Waiting for ' + worker + '...');
-  _vxAwaitReply(id);
+  const turn = { role: 'worker', text: '', t_ms: null, utterEndAt };
+  const chunker = _vxChunker(turn);
+  const show = full => {
+    if (turn.t_ms === null) { turn.t_ms = _vxT(); _vx.turns.push(turn); }
+    turn.text = full;
+    _vxPaintLive();
+  };
+  const hint = _vxHint();
+  const res = await _vxAskChat(hint ? text + '\n\n' + hint : text, full => { show(full); chunker.feed(full); });
+  if (!_vx.active) return;
+  if (res.text) { show(res.text); chunker.end(res.text); }
+  if (res.error && !res.text) _vxNote(_vx.worker + "'s chat did not answer: " + res.error);
+  delete turn.utterEndAt;
+  _vxSave();
+  if (!_vx.speaking) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
 }
-// Poll the worker's latest full message until a NEW one appears and holds
-// still for one poll (a reply being written is not spoken half-done). Each new
-// message is one worker turn; polling continues while the worker is busy so a
-// "let me check" followed by the answer are both heard.
-async function _vxAwaitReply(id) {
-  _vx.replyDeadline = Date.now() + _VX_REPLY_WAIT_MS;
-  // A loop already running keeps going: owed tells it a newer utterance is
-  // still unanswered, so it must not stop on the previous reply's quiet.
-  _vx.owed = (_vx.owed || 0) + 1;
-  if (_vx.polling) return;
-  _vx.polling = true;
-  const worker = _vx.worker;
-  let polls = 0, replies = 0, quiet = 0;
-  try {
-    while (_vx.id === id && _vx.active && Date.now() < _vx.replyDeadline) {
-      await new Promise(r => setTimeout(r, _VX_POLL_MS));
-      if (_vx.id !== id || !_vx.active) break;
-      polls++;
-      let text = '';
-      try {
-        const r = await fetch(API + '/api/sessions/' + encodeURIComponent(worker) + '/last-message', { headers: _authHeaders() });
-        text = ((await r.json()).text || '').trim();
-      } catch (e) { continue; }
-      if (_vx.id !== id) break;
-      if (text && text !== _vx.lastSeen) {
-        quiet = 0;
-        if (text === _vx.candidate) {
-          _vx.lastSeen = text;
-          _vx.candidate = '';
-          replies++;
-          _vx.owed = 0;
-          _vx.turns.push({ role: 'worker', text, t_ms: Date.now() - _vx.startedAt });
-          _vxPaintLive();
-          _vxSave();
-          _vxSpeak(text);
-        } else {
-          _vx.candidate = text;
-        }
-        continue;
-      }
-      quiet++;
-      const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === worker) || {};
-      const busy = ['active', 'running', 'working'].includes(s.status);
-      if (replies && !_vx.owed && !busy && quiet >= 2) break;
+// Speak a streaming reply sentence by sentence: the first sentence is queued
+// the moment it is complete, not when the whole reply has arrived.
+function _vxChunker(turn) {
+  let upto = 0;
+  const cut = (full, final) => {
+    if (turn.muted) { upto = full.length; return; }
+    let end = upto;
+    const re = /[.!?](?=["')\]]*(\s|$))|\n/g;
+    re.lastIndex = upto;
+    let m;
+    while ((m = re.exec(full))) {
+      const e = m.index + m[0].length;
+      // Never cut inside a code fence; it would be read half-stripped.
+      if ((full.slice(0, e).match(/```/g) || []).length % 2 === 0) end = e;
     }
-    if (_vx.id === id && _vx.active && _vx.owed) {
-      _vxTrack('converse_reply_timeout', { n_considered: polls, wait_ms: _VX_REPLY_WAIT_MS });
-      _vxNote('No reply from ' + worker + ' yet. It may still be working; check the Terminal tab.');
+    if (final) end = full.length;
+    if (end > upto) {
+      const chunk = _vxSpeechText(full.slice(upto, end));
+      upto = end;
+      if (chunk) _vxEnqueue(chunk, turn);
     }
-  } finally {
-    if (_vx.id === id) {
-      _vx.polling = false;
-      if (_vx.active && !_vx.speaking) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
-    }
-  }
+  };
+  return { feed: full => cut(full, false), end: full => cut(full, true) };
 }
-function _vxVoiceFor(name) {
-  const vs = (window.speechSynthesis && speechSynthesis.getVoices) ? speechSynthesis.getVoices() : [];
-  return vs.find(v => v.name === name) || null;
+function _vxEnqueue(text, turn) {
+  if (!_vx.active) return;
+  _vx.queue.push({ text, turn });
+  _vx.speakingText = [_vx.speakingText, text].filter(Boolean).join(' ');
+  _vxPump();
 }
-async function _vxSpeak(text) {
-  const clean = _vxSpeechText(text);
-  if (!clean || !_vx.active) return;
+function _vxPump() {
+  if (_vx.qBusy || !_vx.queue.length || !_vx.active) return;
+  const item = _vx.queue.shift();
+  const id = _vx.id;
+  _vx.qBusy = true;
+  _vx.speaking = true;
+  _vxSetState('Speaking...');
+  const started = () => {
+    const t = item.turn;
+    if (t && t.utterEndAt && t.first_audio_ms === undefined) {
+      t.first_audio_ms = Date.now() - t.utterEndAt;
+      _vxTrack('converse_first_audio', { ms: t.first_audio_ms, engine: 'browser' });
+    }
+  };
+  const finished = () => {
+    if (_vx.id !== id || !_vx.qBusy) return;
+    _vx.qBusy = false;
+    _vx.srcNode = null;
+    if (!_vx.queue.length) {
+      _vx.speaking = false;
+      _vx.speakingText = '';
+      if (_vx.active) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
+    }
+    _vxPump();
+  };
+  _vxSay(item.text, started, finished);
+}
+async function _vxSay(text, onStart, onEnd) {
   const id = _vx.id;
   const pref = (document.getElementById('vx-voice') || {}).value || '';
-  _vx.speaking = true;
-  _vx.speakingText = clean;
-  _vxSetState('Speaking...');
-  const done = () => {
-    if (_vx.id !== id || _vx.speakingText !== clean) return;
-    _vx.speaking = false; _vx.speakingText = ''; _vx.srcNode = null;
-    if (_vx.active) _vxSetState(_vx.muted ? 'Muted' : (_vx.polling ? 'Waiting for ' + _vx.worker + '...' : 'Listening...'));
-  };
-  // A server voice is played through the conversation's audio graph, so the
+  // A server voice plays through the conversation's audio graph, so the
   // recording holds both sides. A browser voice cannot be captured; replay
   // speaks those turns again instead.
   if (pref.startsWith('s:') && _vx.ctx && _vx.dest) {
     try {
       const r = await fetch(API + '/api/tts', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ text: clean, voice_id: pref.slice(2) }), _skipOutbox: true });
+        body: JSON.stringify({ text, voice_id: pref.slice(2) }), _skipOutbox: true });
       const d = await r.json();
       if (!r.ok || !d.url) throw new Error(d.error || ('HTTP ' + r.status));
-      const buf = await (await fetch(d.url)).arrayBuffer();
-      const audio = await _vx.ctx.decodeAudioData(buf);
-      if (_vx.id !== id || _vx.speakingText !== clean) return;
+      const audio = await _vx.ctx.decodeAudioData(await (await fetch(d.url)).arrayBuffer());
+      if (_vx.id !== id || !_vx.qBusy) return;
       const node = _vx.ctx.createBufferSource();
       node.buffer = audio;
       node.connect(_vx.ctx.destination);
       node.connect(_vx.dest);
-      node.onended = done;
+      node.onended = onEnd;
       _vx.srcNode = node;
       _vx.workerVoiceRecorded = true;
       node.start();
+      onStart();
       return;
     } catch (e) {
       _vxTrack('converse_server_voice_failed', { error: String(e && e.message || e) });
     }
   }
-  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') { done(); return; }
-  const u = new SpeechSynthesisUtterance(clean);
+  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') { onEnd(); return; }
+  const u = new SpeechSynthesisUtterance(text);
   if (pref.startsWith('b:')) { const v = _vxVoiceFor(pref.slice(2)); if (v) u.voice = v; }
-  u.onend = done;
-  u.onerror = done;
-  try { speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { done(); }
+  let begun = false;
+  u.onstart = () => { begun = true; onStart(); };
+  u.onend = () => { if (!begun) onStart(); onEnd(); };
+  u.onerror = onEnd;
+  try { speechSynthesis.speak(u); } catch (e) { onEnd(); }
 }
+function _vxVoiceFor(name) {
+  const vs = (window.speechSynthesis && speechSynthesis.getVoices) ? speechSynthesis.getVoices() : [];
+  return vs.find(v => v.name === name) || null;
+}
+// Barge-in: the person talking stops the voice and drops what was queued.
+// The rest of that reply is still logged, just not spoken.
 function _vxInterrupt() {
-  if (!_vx.speaking) return;
+  if (!_vx.speaking && !_vx.queue.length) return;
+  _vx.queue.forEach(q => { if (q.turn) q.turn.muted = true; });
+  const cur = _vx.queue[0];
+  _vx.queue = [];
+  _vx.qBusy = false;
   _vx.speaking = false;
   _vx.speakingText = '';
+  if (cur && cur.turn) cur.turn.muted = true;
+  (_vx.turns || []).forEach(t => { if (t.role === 'worker' && t.utterEndAt) t.muted = true; });
   try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
   try { if (_vx.srcNode) _vx.srcNode.stop(); } catch (e) {}
   _vx.srcNode = null;
   if (_vx.active) _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
 }
+
+// ── OpenAI Realtime engine: WebRTC speech to speech ─────────────────────────
+// The server mints a short-lived client secret per conversation with the
+// worker's context and one tool, ask_worker; the browser opens the WebRTC call
+// with it. The real API key never reaches this page. Barge-in is the model's
+// own server VAD (interrupt_response). Both audio sides go into the recording.
+async function _vxRtStart(id) {
+  const worker = _vx.worker;
+  let d = {};
+  try {
+    const r = await fetch(API + '/api/converse/' + encodeURIComponent(worker) + '/realtime-session',
+      { method: 'POST', headers: _authHeaders(), _skipOutbox: true });
+    d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.client_secret) throw new Error(d.reason || ('HTTP ' + r.status));
+  } catch (e) {
+    _vxTrack('converse_realtime_fallback', { stage: 'mint', error: String(e && e.message || e) });
+    _vxNote('OpenAI Realtime is unavailable (' + (e.message || e) + '). Using browser speech instead.');
+    return false;
+  }
+  if (_vx.id !== id) return false;
+  try {
+    const pc = new RTCPeerConnection();
+    _vx.pc = pc;
+    const el = document.createElement('audio');
+    el.autoplay = true;
+    el.setAttribute('playsinline', '');
+    _vx.remoteEl = el;
+    pc.ontrack = e => {
+      const st = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track]);
+      el.srcObject = st;
+      try { el.play().catch(() => {}); } catch (_) {}
+      try {
+        if (_vx.ctx && _vx.dest && !_vx.remoteSrc) {
+          _vx.remoteSrc = _vx.ctx.createMediaStreamSource(st);
+          _vx.remoteSrc.connect(_vx.dest);
+          if (_vx.analyser) _vx.remoteSrc.connect(_vx.analyser);
+          _vx.workerVoiceRecorded = true;
+        }
+      } catch (_) {}
+    };
+    if (_vx.stream) _vx.stream.getAudioTracks().forEach(t => pc.addTrack(t, _vx.stream));
+    else pc.addTransceiver('audio', { direction: 'recvonly' });
+    const dc = pc.createDataChannel('oai-events');
+    _vx.dc = dc;
+    dc.onmessage = e => { if (_vx.id !== id) return; let m; try { m = JSON.parse(e.data); } catch (_) { return; } _vxRtEvent(m); };
+    dc.onopen = () => { if (_vx.id === id) _vxSetState('Listening...'); };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const ans = await fetch(d.calls_url, { method: 'POST', body: offer.sdp,
+      headers: { Authorization: 'Bearer ' + d.client_secret, 'Content-Type': 'application/sdp' } });
+    if (!ans.ok) throw new Error('OpenAI answered HTTP ' + ans.status);
+    await pc.setRemoteDescription({ type: 'answer', sdp: await ans.text() });
+    _vx.model = d.model;
+    return true;
+  } catch (e) {
+    _vxTrack('converse_realtime_fallback', { stage: 'webrtc', error: String(e && e.message || e) });
+    _vxNote('Could not connect to OpenAI Realtime (' + (e.message || e) + '). Using browser speech instead.');
+    _vxRtClose();
+    return false;
+  }
+}
+function _vxRtSend(ev) {
+  try { if (_vx.dc && _vx.dc.readyState === 'open') { _vx.dc.send(JSON.stringify(ev)); return true; } } catch (e) {}
+  _vxTrack('converse_realtime_send_failed', { type: ev.type });
+  return false;
+}
+// Takes the conversation explicitly: an ending conversation finishes saving
+// while a new one may already be starting, and must not close the new one.
+function _vxRtClose(c) {
+  c = c || _vx;
+  try { if (c.dc) c.dc.close(); } catch (e) {}
+  try { if (c.pc) c.pc.close(); } catch (e) {}
+  try { if (c.remoteEl) { c.remoteEl.srcObject = null; c.remoteEl.remove(); } } catch (e) {}
+  c.dc = null; c.pc = null; c.remoteEl = null;
+}
+function _vxRtTyped(text) {
+  _vx.turns.push({ role: 'user', text, t_ms: _vxT() });
+  _vx.rtUtterEnd = Date.now();
+  _vxRtSend({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+  _vxRtSend({ type: 'response.create' });
+  _vxPaintLive();
+  _vxSave();
+}
+function _vxRtTurn(key) {
+  let t = _vx.rtTurns[key];
+  if (!t) {
+    t = _vx.rtTurns[key] = { role: 'worker', text: '', t_ms: _vxT() };
+    if (_vx.rtLatency !== undefined) { t.first_audio_ms = _vx.rtLatency; delete _vx.rtLatency; }
+    _vx.turns.push(t);
+  }
+  return t;
+}
+function _vxRtEvent(m) {
+  const now = Date.now();
+  const u = _vx.usage;
+  switch (m.type) {
+    case 'input_audio_buffer.speech_started':
+      _vx.userSpeechAt = now;
+      if (m.item_id) _vx.rtUserT[m.item_id] = _vxT();
+      _vxSetState('Listening...');
+      break;
+    case 'input_audio_buffer.speech_stopped':
+      if (_vx.userSpeechAt) u.audio_in_ms += now - _vx.userSpeechAt;
+      _vx.userSpeechAt = 0;
+      _vx.rtUtterEnd = now;
+      _vxSetState('Thinking...');
+      break;
+    case 'conversation.item.input_audio_transcription.completed': {
+      const text = String(m.transcript || '').trim();
+      if (text) {
+        _vx.turns.push({ role: 'user', text, t_ms: _vx.rtUserT[m.item_id] !== undefined ? _vx.rtUserT[m.item_id] : _vxT() });
+        _vx.turns.sort((a, b) => (a.t_ms || 0) - (b.t_ms || 0));
+        _vxPaintLive();
+        _vxSave();
+      }
+      break;
+    }
+    case 'output_audio_buffer.started':
+      _vx.outAudioAt = now;
+      _vx.speaking = true;
+      if (_vx.rtUtterEnd) {
+        const ms = now - _vx.rtUtterEnd;
+        _vx.rtUtterEnd = 0;
+        _vxTrack('converse_first_audio', { ms, engine: 'openai', model: _vx.model || '' });
+        const open = Object.values(_vx.rtTurns).filter(t => t.first_audio_ms === undefined && t.t_ms >= _vxT() - 15000).pop();
+        if (open) open.first_audio_ms = ms; else _vx.rtLatency = ms;
+      }
+      _vxSetState('Speaking...');
+      break;
+    case 'output_audio_buffer.stopped':
+    case 'output_audio_buffer.cleared':
+      if (_vx.outAudioAt) u.audio_out_ms += now - _vx.outAudioAt;
+      _vx.outAudioAt = 0;
+      _vx.speaking = false;
+      _vxSetState(_vx.muted ? 'Muted' : 'Listening...');
+      break;
+    case 'response.output_audio_transcript.delta': {
+      const t = _vxRtTurn(m.response_id || m.item_id || 'r');
+      t.text += m.delta || '';
+      _vxPaintLive();
+      break;
+    }
+    case 'response.output_audio_transcript.done': {
+      const t = _vxRtTurn(m.response_id || m.item_id || 'r');
+      if (m.transcript) t.text = m.transcript;
+      _vxPaintLive();
+      _vxSave();
+      break;
+    }
+    case 'response.function_call_arguments.done':
+      _vxRtTool(m.call_id, m.name, m.arguments);
+      break;
+    case 'response.done': {
+      const r = m.response || {};
+      const us = r.usage || {};
+      const inD = us.input_token_details || {}, outD = us.output_token_details || {};
+      u.responses += 1;
+      u.input_audio_tokens += inD.audio_tokens || 0;
+      u.input_text_tokens += inD.text_tokens || 0;
+      u.cached_tokens += inD.cached_tokens || 0;
+      u.output_audio_tokens += outD.audio_tokens || 0;
+      u.output_text_tokens += outD.text_tokens || 0;
+      (r.output || []).forEach(o => { if (o.type === 'function_call') _vxRtTool(o.call_id, o.name, o.arguments); });
+      break;
+    }
+    case 'error':
+      _vxTrack('converse_realtime_error', { error: String((m.error && (m.error.message || m.error.code)) || 'error') });
+      _vxNote('OpenAI: ' + ((m.error && m.error.message) || 'error'));
+      break;
+  }
+}
+// The model's one tool. The request goes to the worker's chat companion, never
+// to the worker's terminal, and the chat's answer goes back to the model.
+async function _vxRtTool(callId, name, args) {
+  if (!callId || _vx.rtCalls.has(callId)) return;
+  _vx.rtCalls.add(callId);
+  let request = '';
+  try { request = String(JSON.parse(args || '{}').request || ''); } catch (e) {}
+  if (name !== 'ask_worker') request = request || String(args || '');
+  _vx.usage.tool_calls += 1;
+  const worker = _vx.worker;
+  _vx.turns.push({ role: 'system', text: 'Asked ' + worker + "'s chat: " + request, t_ms: _vxT() });
+  _vxSetState('Asking ' + worker + '...');
+  _vxPaintLive();
+  const res = await _vxAskChat((request || 'What is your status?') + '\n\n(Asked by voice from the Converse tab. Answer in a few plain sentences.)');
+  if (!_vx.active) return;
+  _vx.turns.push({ role: 'system', text: worker + "'s chat answered: " + (res.text || res.error || '(nothing)').slice(0, 600), t_ms: _vxT() });
+  _vxRtSend({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId,
+    output: JSON.stringify(res.text ? { reply: res.text.slice(0, 8000) } : { error: res.error || 'no answer' }) } });
+  _vxRtSend({ type: 'response.create' });
+  _vxPaintLive();
+  _vxSave();
+}
+
 function _vxToggleMute() {
   if (!_vx.active) return;
   _vx.muted = !_vx.muted;
   if (_vx.stream) _vx.stream.getAudioTracks().forEach(t => { t.enabled = !_vx.muted; });
   if (_vx.muted) {
-    clearTimeout(_vx.sendTimer); _vx.pending = ''; _vx.interim = '';
+    clearTimeout(_vx.sendTimer); _vx.interim = '';
     try { if (_vx.rec) _vx.rec.abort(); } catch (e) {}
     _vx.rec = null;
     _vxSetState('Muted');
@@ -56006,21 +56317,39 @@ function _vxToggleMute() {
   }
   _vxPaintLive();
 }
-function _vxRecordBody(final) {
+function _vxRecordBody(final, c) {
+  const _vx = c;   // the conversation being saved, which may not be the live one
   const now = Date.now();
+  const turns = _vx.turns.filter(t => (t.role !== 'system' || final) && (t.text || '').trim())
+    .map(t => Object.assign({ role: t.role, text: t.text, t_ms: t.t_ms || 0 }, t.first_audio_ms !== undefined ? { first_audio_ms: t.first_audio_ms } : {}))
+    .sort((a, b) => a.t_ms - b.t_ms);
+  const u = Object.assign({}, _vx.usage);
+  if (_vx.outAudioAt) u.audio_out_ms += now - _vx.outAudioAt;
   return {
     id: _vx.id, engine: _vx.engine || 'browser',
-    voice: (document.getElementById('vx-voice') || {}).value || '',
+    voice: _vx.engine === 'openai' ? ((_vxCfg && (_vxCfg.engines || []).find(e => e.id === 'openai') || {}).voice || '') : ((document.getElementById('vx-voice') || {}).value || ''),
     personality: (document.getElementById('vx-personality') || {}).value || 'default',
     started_at: _vx.startedAt,
     ended_at: final ? now : null,
     duration_ms: now - _vx.startedAt,
-    turns: _vx.turns.filter(t => t.role !== 'system' || final),
+    turns,
+    usage: u,
   };
 }
-async function _vxSave(final) {
-  if (!_vx.id || !_vx.worker) return null;
-  const body = _vxRecordBody(final);
+// Saves are SERIALISED per conversation and carry a revision: concurrent
+// upserts could land out of order, and a mid-conversation save arriving after
+// the final one used to overwrite its usage with zeros (seen in the e2e).
+function _vxSave(final, c) {
+  const conv = c || window._vx;
+  if (!conv.id || !conv.worker) return Promise.resolve(null);
+  conv.rev = (conv.rev || 0) + 1;
+  const rev = conv.rev;
+  conv.saveChain = (conv.saveChain || Promise.resolve()).then(() => _vxSaveNow(final, conv, rev), () => _vxSaveNow(final, conv, rev));
+  return conv.saveChain;
+}
+async function _vxSaveNow(final, c, rev) {
+  const _vx = c;
+  const body = Object.assign(_vxRecordBody(final, _vx), { rev });
   if (!body.turns.some(t => t.role !== 'system')) return null;   // nothing said yet
   try {
     const r = await fetch(_vxApi(_vx.worker), { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
@@ -56036,14 +56365,16 @@ async function _vxSave(final) {
 async function _vxEnd() {
   if (!_vx.active) return;
   const c = _vx;
-  c.active = false;
   clearTimeout(c.sendTimer);
-  if (c.pending) { c.turns.push({ role: 'user', text: c.pending, t_ms: Date.now() - c.startedAt }); c.pending = ''; }
+  if (c.interim) { c.turns.push({ role: 'user', text: c.interim, t_ms: Date.now() - c.startedAt }); c.interim = ''; }
+  _vxInterrupt();
+  c.active = false;
+  c.ending = true;
   clearInterval(c.timer);
   try { if (c.rec) c.rec.abort(); } catch (e) {}
   c.rec = null;
-  _vxInterrupt();
   c.speaking = false;
+  if (c.link) { try { if (c.link.es) c.link.es.close(); } catch (e) {} c.link.es = null; }
   let blob = null;
   if (c.recorder && c.recorder.state !== 'inactive') {
     blob = await new Promise(res => {
@@ -56053,12 +56384,12 @@ async function _vxEnd() {
     });
   }
   if (c.recorder && !(blob && blob.size)) _vxTrack('converse_recording_empty', { mime: c.recorder.mimeType || '', chunks: c.chunks.length });
+  _vxRtClose(c);
   try { if (c.stream) c.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { if (c.ctx) c.ctx.close(); } catch (e) {}
   c.lastTurns = c.turns;
-  _vxSetState('Saving...');
-  _vxPaintLive();
-  const saved = await _vxSave(true);
+  if (_vx === c) { _vxSetState('Saving...'); _vxPaintLive(); }
+  const saved = await _vxSave(true, c);
   if (saved && blob && blob.size) {
     try {
       const r = await fetch(_vxApi(c.worker, '/' + encodeURIComponent(c.id) + '/audio'), { method: 'PUT',
@@ -56070,12 +56401,15 @@ async function _vxEnd() {
       showToast('Conversation saved without its audio: ' + (e.message || e));
     }
   }
-  _vxSetState('Ready');
-  _vxPaintLive();
-  _vxDrawWave();
-  const el = document.getElementById('vx-elapsed');
-  if (el) el.textContent = _vxClock(Date.now() - c.startedAt);
-  if (saved && peekSession === c.worker) {
+  c.ending = false;
+  if (_vx === c) {
+    _vxSetState('Ready');
+    _vxPaintLive();
+    _vxDrawWave();
+    const el = document.getElementById('vx-elapsed');
+    if (el) el.textContent = _vxClock(Date.now() - c.startedAt);
+  }
+  if (saved && peekSession === c.worker && !_vx.active) {
     await _vxLoadHistory(c.worker);
     _vxSelect(c.id);
   }
@@ -56247,7 +56581,8 @@ function _vxRenderPlayer() {
   const turns = r.turns || [];
   const transcript = turns.map((t, i) => '<div class="vx-pturn" data-i="' + i + '" onclick="_vxSeek(' + (t.t_ms || 0) + ')">'
     + '<span class="vx-pavatar vx-pavatar-' + esc(t.role) + '">' + (t.role === 'user' ? 'Y' : t.role === 'worker' ? 'W' : 'i') + '</span>'
-    + '<div><div class="vx-who">' + (t.role === 'user' ? 'You' : t.role === 'worker' ? esc(worker) : 'Note') + ' <i>' + _vxClock(t.t_ms) + '</i></div>'
+    + '<div><div class="vx-who">' + (t.role === 'user' ? 'You' : t.role === 'worker' ? esc(worker) : 'Note') + ' <i>' + _vxClock(t.t_ms) + '</i>'
+    + (t.first_audio_ms !== undefined ? ' <i class="vx-lat" title="From the end of what you said to the first sound of this reply">first audio ' + (t.first_audio_ms / 1000).toFixed(1) + 's</i>' : '') + '</div>'
     + '<div class="vx-said">' + esc(t.text) + '</div></div></div>').join('') || '<div class="vx-empty">No turns recorded.</div>';
   const a = r.audio;
   const details = [
@@ -56256,6 +56591,9 @@ function _vxRenderPlayer() {
     ['Duration', _vxDur(r.duration_ms)], ['Turns', String(turns.length)],
     ['Audio', a ? (a.mime + ', ' + Math.round((a.bytes || 0) / 1024) + ' KB' + (a.has_worker_voice ? ', both voices' : ', your voice; worker turns are re-spoken on replay')) : 'none (replay speaks the transcript)'],
     ['Voice', r.voice || 'Browser default'], ['Personality', r.personality || 'default'],
+    ['First audio', r.latency ? ('median ' + (r.latency.median_ms / 1000).toFixed(1) + 's, worst ' + (r.latency.max_ms / 1000).toFixed(1) + 's over ' + r.latency.n + ' repl' + (r.latency.n === 1 ? 'y' : 'ies')) : 'not measured'],
+    ['Audio used', r.usage ? (Math.round((r.usage.audio_in_ms || 0) / 100) / 10 + 's in, ' + Math.round((r.usage.audio_out_ms || 0) / 100) / 10 + 's out'
+      + (r.usage.input_audio_tokens || r.usage.output_audio_tokens ? ' (' + (r.usage.input_audio_tokens || 0) + ' / ' + (r.usage.output_audio_tokens || 0) + ' audio tokens)' : '')) : 'none'],
     ['Expires', new Date(r.expires_at).toLocaleString() + ' (' + _vxExpires(r) + ')'], ['Id', r.id],
   ].map(([k, v]) => '<div class="vx-drow"><span>' + esc(k) + '</span><span>' + esc(v) + '</span></div>').join('');
   el.innerHTML = '<div class="vx-ptitle">' + esc(r.title || 'Conversation') + '</div>'

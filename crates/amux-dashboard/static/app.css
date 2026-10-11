@@ -8854,3 +8854,4 @@ body.light #fc-container { color-scheme: light; }
 @media (max-width: 600px) {
   #sched-overlay.amux-dialog-viewport > .board-edit-box.sx-create { max-height: calc(var(--dialog-viewport-height, 100dvh) - var(--sw-fail-h, 0px)) !important; }
 }
+.vx-lat { color:var(--accent) !important; margin-left:6px !important; }

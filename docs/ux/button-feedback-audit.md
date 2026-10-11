@@ -526,17 +526,17 @@ Counts are over control occurrences in the source (one markup site may render ma
 | app.js:44646 | Save limit | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:44742 | Delete | `_vaultSecretRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:44741 | Replace value | `_vaultSecretReplace` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:55525 | Start conversation | `_vxCallButton` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:56164 | … | `_vxDelete` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:56162 | Download transcript | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:56163 | Download audio | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:56270 | Download | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:55543 | + New | `_vxNew` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:56268 | … | `_vxPlayToggle` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:56154 | Play  | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:56155 | + | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:55665 | Delete expired now | `_vxSweepNow` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:55524 | Mute | `_vxToggleMute` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:55539 | Start conversation | `_vxCallButton` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:56498 | … | `_vxDelete` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:56496 | Download transcript | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js:56497 | Download audio | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js:56608 | Download | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js:55557 | + New | `_vxNew` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:56606 | … | `_vxPlayToggle` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:56488 | Play  | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:56489 | + | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:55677 | Delete expired now | `_vxSweepNow` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:55534 | Mute | `_vxToggleMute` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:11587 | … | `_workerBoardConfigurationSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:11590 | Inherit | `_workerBoardConfigurationSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:11555 | … | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -1206,16 +1206,16 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:2068 | vp-mute | `_vpToggleMute` | onclick |
 | index.html:2062 | vp-play | `_vpTogglePlay` | onclick |
 | app.js:48780 | video-player | `_vpTogglePlay` | addEventListener |
-| app.js:56168 | + (_vxShowAll ? Show less : Show more (…)) + | `_vxRenderList` | onclick |
-| app.js:56272 | Transcript | `_vxRenderPlayer` | onclick |
-| app.js:56273 | Details | `_vxRenderPlayer` | onclick |
-| app.js:55539 | Manage retention | `_vxRetentionToggle` | onclick |
-| app.js:56248 | + | `_vxSeek` | onclick |
-| app.js:56267 | Back 15 seconds | `_vxSeek` | onclick |
-| app.js:56269 | Forward 15 seconds | `_vxSeek` | onclick |
-| app.js:56266 | Playback speed | `_vxSpeed` | onclick |
-| app.js:56160 | More actions | `_vxToggleMenu` | onclick |
-| app.js:55526 | Voice settings | `_vxToggleSettings` | onclick |
+| app.js:56502 | + (_vxShowAll ? Show less : Show more (…)) + | `_vxRenderList` | onclick |
+| app.js:56610 | Transcript | `_vxRenderPlayer` | onclick |
+| app.js:56611 | Details | `_vxRenderPlayer` | onclick |
+| app.js:55553 | Manage retention | `_vxRetentionToggle` | onclick |
+| app.js:56582 | + | `_vxSeek` | onclick |
+| app.js:56605 | Back 15 seconds | `_vxSeek` | onclick |
+| app.js:56607 | Forward 15 seconds | `_vxSeek` | onclick |
+| app.js:56604 | Playback speed | `_vxSpeed` | onclick |
+| app.js:56494 | More actions | `_vxToggleMenu` | onclick |
+| app.js:55540 | Voice settings | `_vxToggleSettings` | onclick |
 | app.js:46766 | + _WT_CHAPTERS[k].label + (done[k] ? | `_wtChapter` | onclick |
 | app.js:46770 | Finish | `_wtDismiss` | onclick |
 | app.js:46783 | Skip | `_wtDismiss` | onclick |
