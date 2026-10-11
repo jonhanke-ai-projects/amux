@@ -27518,7 +27518,7 @@ async fn send_post_detached(
     }
 }
 
-async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
+pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
     if let Some(refusal) = probe_refusal(state, name, headers, &body_str(body, "text")).await {
         return refusal;
     }
