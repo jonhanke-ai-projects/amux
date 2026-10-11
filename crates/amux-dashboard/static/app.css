@@ -8225,3 +8225,10 @@ body.light #fc-container { color-scheme: light; }
   #gcal-event-modal { align-items: flex-end; }
   #gcal-event-modal .modal { max-width: none !important; width: 100%; margin: 0; border-radius: 16px 16px 0 0; max-height: 85vh; padding-bottom: env(safe-area-inset-bottom); }
 }
+
+/* Map: "you are here" (2026-10-11) */
+.map-me { position: relative; }
+.map-me-dot { position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.45); box-sizing: border-box; }
+.map-me-pulse { position: absolute; left: -9px; top: -9px; width: 40px; height: 40px; border-radius: 50%; background: rgba(26,115,232,0.35); animation: map-me-pulse 2s ease-out infinite; }
+@keyframes map-me-pulse { 0% { transform: scale(0.4); opacity: 0.9; } 100% { transform: scale(1.4); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .map-me-pulse { animation: none; opacity: 0.35; } }

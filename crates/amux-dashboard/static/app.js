@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1320';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1321';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -32405,6 +32405,7 @@ function switchView(view) {
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
   if (view === 'connectors') _connectorsTabLoad();
+  if (view !== 'map' && typeof _mapMeStop === 'function') _mapMeStop();   // live location only while the map is open
   else if (typeof _connOpenId !== 'undefined' && _connOpenId) _connClose();
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
@@ -32701,6 +32702,7 @@ function _mapInit() {
   _mapRenderTags();
   _mapRenderPins();
   _mapRenderMarkers();
+  _mapMeAuto();
   // Location history (AMUX-5458): the tab may have been left open; draw it now
   // that the map exists.
   if (typeof _mapTab !== 'undefined' && _mapTab === 'history') _mapSidebarTab('history');
@@ -32985,14 +32987,53 @@ function _mapSetDefaultView() {
   if (btn) { const o = btn.textContent; btn.textContent = '\u2713 Saved!'; setTimeout(function(){btn.textContent=o;},1500); }
 }
 
-function _mapLocateMe() {
-  if (!navigator.geolocation) { alert('Geolocation not supported by your browser.'); return; }
-  navigator.geolocation.getCurrentPosition(function(pos) {
-    _mapUserLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    if (_map) _map.flyTo([pos.coords.latitude, pos.coords.longitude], 14);
-    if (_mapSettings.sortBy === 'distance') _mapRenderPins();  // re-rank around me
-  }, function() { alert('Could not get your location.'); });
+// "YOU ARE HERE" (Ethan, 2026-10-11: "there should be a clear pin on where
+// i am"). Locate Me used to fly the map to the fix and draw nothing there.
+// Now: a blue dot with a white ring and a pulse, inside a circle sized to the
+// fix's accuracy, kept live with watchPosition while the Map tab is open and
+// stopped when it closes. It starts on its own only if location is already
+// allowed, so opening the map never pops a permission prompt.
+let _mapMeMarker = null, _mapMeCircle = null, _mapMeWatch = null, _mapMeFlyNext = false;
+function _mapMeShow(pos) {
+  const lat = pos.coords.latitude, lng = pos.coords.longitude, acc = Math.round(pos.coords.accuracy || 0);
+  _mapUserLoc = { lat: lat, lng: lng };
+  if (!_map) return;
+  const icon = L.divIcon({ className: 'map-me', html: '<span class="map-me-pulse"></span><span class="map-me-dot"></span>', iconSize: [22, 22], iconAnchor: [11, 11] });
+  if (!_mapMeMarker) {
+    _mapMeMarker = L.marker([lat, lng], { icon: icon, zIndexOffset: 10000, keyboard: false, title: 'You are here' })
+      .bindTooltip('You are here', { direction: 'top', offset: [0, -10] }).addTo(_map);
+    _mapMeCircle = L.circle([lat, lng], { radius: acc, color: '#1a73e8', weight: 1, opacity: 0.5, fillColor: '#1a73e8', fillOpacity: 0.12, interactive: false }).addTo(_map);
+  } else {
+    _mapMeMarker.setLatLng([lat, lng]);
+    _mapMeCircle.setLatLng([lat, lng]).setRadius(acc);
+  }
+  _mapMeMarker.setTooltipContent('You are here' + (acc ? ' (within ' + _mapFmtDist(acc) + ')' : ''));
+  if (_mapMeFlyNext) { _mapMeFlyNext = false; _map.flyTo([lat, lng], Math.max(_map.getZoom(), 15)); }
+  if (_mapSettings.sortBy === 'distance') _mapRenderPins();  // re-rank around me
 }
+function _mapMeStart(fly) {
+  if (!navigator.geolocation) { showToast('This browser has no location access.'); return; }
+  if (fly) {
+    _mapMeFlyNext = true;
+    if (_mapUserLoc && _mapMeMarker && _map) { _mapMeFlyNext = false; _map.flyTo([_mapUserLoc.lat, _mapUserLoc.lng], Math.max(_map.getZoom(), 15)); }
+  }
+  if (_mapMeWatch !== null) return;
+  _mapMeWatch = navigator.geolocation.watchPosition(_mapMeShow, function(err) {
+    if (fly) showToast('Could not get your location' + (err && err.message ? ': ' + err.message : '') + '.');
+    if (err && err.code === 1) _mapMeStop();   // permission denied: stop asking
+  }, { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 });
+}
+function _mapMeStop() {
+  if (_mapMeWatch !== null && navigator.geolocation) navigator.geolocation.clearWatch(_mapMeWatch);
+  _mapMeWatch = null;
+}
+async function _mapMeAuto() {
+  try {
+    const st = navigator.permissions && await navigator.permissions.query({ name: 'geolocation' });
+    if (st && st.state === 'granted') _mapMeStart(false);
+  } catch (e) {}
+}
+function _mapLocateMe() { _mapMeStart(true); }
 
 // Haversine distance in meters (AMUX-1865 #5).
 function _mapDist(lat1, lng1, lat2, lng2) {
