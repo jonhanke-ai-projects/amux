@@ -74,7 +74,7 @@ A provider without an entry uses `default`.
 | `default` | same as claude | `claude` |
 
 All providers share `thin` (ansi-to-html, link-paths, fit-rules,
-tag-prompts-thin), `thin-composer` (ansi-to-html, link-paths, fit-rules) and
+tag-prompts-thin, scroll-box-blocks), `thin-composer` (ansi-to-html, link-paths, fit-rules) and
 `footer` (ansi-to-html).
 
 ## Dashboard frame decisions
