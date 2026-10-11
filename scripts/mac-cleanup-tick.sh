@@ -162,7 +162,13 @@ FAMILY_AGE_H=${AMUX_CLEANUP_FAMILY_AGE_H:-12}
 # TMPDIR may be unset under the scheduler, and `/tmp` is a symlink that find does not follow, so the
 # per-user temp dir comes from getconf when TMPDIR is empty rather than from a symlink that scans nothing.
 USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
-TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-/private/tmp/claude-$(id -u)@6:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.ao/data/worktrees@8}
+# $HOME/.amux@2 (disk RCA 20261011-174748): every side target a lane or a subagent
+# builds into lives there as ~/.amux/rust-build-target-<name> (CLAUDE.md names the
+# shared one; lanes, e2e harnesses and subagents add their own). The roots never
+# covered it, so 106G sat there unseen while one afternoon added 58G of new ones.
+# Depth 2 reaches <name>/CACHEDIR.TAG and nothing deeper; the shared target is in
+# TARGET_KEEP, and a target being built holds open files, which the lsof guard keeps.
+TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-/private/tmp/claude-$(id -u)@6:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
 TARGET_IDLE_H=${AMUX_CLEANUP_TARGET_IDLE_H:-24}
 # Under disk pressure the idle floor drops (DESKT-62). On 2026-10-01 the disk fell
 # from 574G to 155G in five days, and about 60G of build output sat 21-23h idle in

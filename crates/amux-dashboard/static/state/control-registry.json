@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2686,
+  "n_considered": 2765,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3410,6 +3410,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_sxBulk": {
+      "kind": "command._sxBulk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_sxOpenWorker": {
+      "kind": "command._sxOpenWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_syncBannerBeacon": {
       "kind": "command._syncBannerBeacon",
       "feedback_required": true,
@@ -3656,14 +3668,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_vxAwaitReply": {
-      "kind": "command._vxAwaitReply",
+    "_vxAskChat": {
+      "kind": "command._vxAskChat",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
     "_vxCallButton": {
       "kind": "command._vxCallButton",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxChunker": {
+      "kind": "command._vxChunker",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3680,6 +3698,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_vxEnqueue": {
+      "kind": "command._vxEnqueue",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_vxEnsureAudio": {
       "kind": "command._vxEnsureAudio",
       "feedback_required": true,
@@ -3688,6 +3712,12 @@
     },
     "_vxFlushUtterance": {
       "kind": "command._vxFlushUtterance",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxLinkOpen": {
+      "kind": "command._vxLinkOpen",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3722,6 +3752,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_vxPump": {
+      "kind": "command._vxPump",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_vxRecStart": {
       "kind": "command._vxRecStart",
       "feedback_required": true,
@@ -3734,8 +3770,50 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_vxRtEvent": {
+      "kind": "command._vxRtEvent",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxRtSend": {
+      "kind": "command._vxRtSend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxRtStart": {
+      "kind": "command._vxRtStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxRtTool": {
+      "kind": "command._vxRtTool",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxRtTyped": {
+      "kind": "command._vxRtTyped",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_vxSave": {
       "kind": "command._vxSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxSaveNow": {
+      "kind": "command._vxSaveNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vxSay": {
+      "kind": "command._vxSay",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3748,12 +3826,6 @@
     },
     "_vxSendUtterance": {
       "kind": "command._vxSendUtterance",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_vxSpeak": {
-      "kind": "command._vxSpeak",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4222,6 +4294,12 @@
     },
     "doStop": {
       "kind": "command.doStop",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "duplicateSchedule": {
+      "kind": "command.duplicateSchedule",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

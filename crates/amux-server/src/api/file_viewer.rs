@@ -119,6 +119,9 @@ const AUDIO_MIMES: &[(&str, &str)] = &[
     (".wav", "audio/wav"),
     (".ogg", "audio/ogg"),
     (".m4a", "audio/mp4"),
+    // An audiobook (.m4b) is AAC in an MP4 container, the same as .m4a; without
+    // it the viewer fell through to the binary "Download" card (2026-10-11).
+    (".m4b", "audio/mp4"),
     (".aac", "audio/aac"),
     (".flac", "audio/flac"),
 ];
@@ -390,18 +393,22 @@ async fn view(req: Request) -> Response {
     }
 
     if ext == ".pdf" {
-        let raw = match std::fs::read(&p) {
-            Ok(b) => b,
-            Err(e) => return j(500, json!({"error": e.to_string()})),
-        };
-        if raw.len() > 10_000_000 {
-            return j(400, json!({"error": "PDF too large (>10 MB)"}));
+        // A PDF over the inline cap STREAMS from /api/file/raw (Range-capable,
+        // no disposition) instead of being refused: "PDF too large (>10 MB)"
+        // blocked a 24 MB book outright (2026-10-11). Small ones still inline
+        // for the offline cache. The size comes from metadata, so a large file
+        // is never read into memory just to be turned away.
+        let raw_url = format!("/api/file/raw?path={}", py_quote(&pystr(&p)));
+        let sz = meta.len();
+        let mut out = json!({"path": pystr(&p), "is_pdf": true, "size": sz, "raw_url": raw_url});
+        if sz <= 10_000_000 {
+            let raw = match std::fs::read(&p) {
+                Ok(b) => b,
+                Err(e) => return j(500, json!({"error": e.to_string()})),
+            };
+            out["data_url"] = json!(format!("data:application/pdf;base64,{}", B64.encode(&raw)));
         }
-        let data_url = format!("data:application/pdf;base64,{}", B64.encode(&raw));
-        return j(
-            200,
-            json!({"path": pystr(&p), "is_pdf": true, "data_url": data_url}),
-        );
+        return j(200, out);
     }
 
     if let Some(mime) = mime_of(VIDEO_MIMES, &ext) {
@@ -2615,6 +2622,32 @@ pub(crate) mod tests {
         assert_eq!(find_in_scratchpads(tmp.path(), Path::new("/Users/x/Dev/amux"), "research/ideas/doc.md", &yes), None,
             "another project's scratchpads are not searched");
         assert_eq!(find_in_scratchpads(tmp.path(), cwd, "../../etc/passwd", &yes), None);
+    }
+
+    #[tokio::test]
+    async fn a_large_pdf_streams_and_an_audiobook_plays() {
+        let app = app();
+        let dir = tempfile::tempdir().unwrap();
+        // 12 MB, sparse: over the 10 MB inline cap without writing 12 MB.
+        let big = dir.path().join("Inference Engineering.pdf");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(12_000_000).unwrap();
+        let (status, v) = get(&app, &format!("/api/file?path={}", enc(big.to_str().unwrap()))).await;
+        assert_eq!(status, StatusCode::OK, "a large PDF is shown, not refused: {v}");
+        assert_eq!(v["is_pdf"], true);
+        assert!(v.get("data_url").is_none(), "a large PDF is not inlined");
+        assert!(v["raw_url"].as_str().unwrap().starts_with("/api/file/raw?path="), "{v}");
+
+        let small = dir.path().join("s.pdf");
+        std::fs::write(&small, b"%PDF-1.4 tiny").unwrap();
+        let (_, v) = get(&app, &format!("/api/file?path={}", enc(small.to_str().unwrap()))).await;
+        assert!(v["data_url"].as_str().unwrap().starts_with("data:application/pdf;base64,"), "small PDFs still inline");
+
+        let book = dir.path().join("Inference_Engineering.m4b");
+        std::fs::write(&book, b"....ftypM4B ").unwrap();
+        let (_, v) = get(&app, &format!("/api/file?path={}", enc(book.to_str().unwrap()))).await;
+        assert_eq!(v["is_audio"], true, "an audiobook plays in the audio player: {v}");
+        assert_eq!(v["mime"], "audio/mp4");
     }
 
     #[tokio::test]

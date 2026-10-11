@@ -495,7 +495,7 @@ fn messages_link_schedule_ids_to_the_scheduler() {
         "fetchSchedules()",
         "fetchSchedulerRuns()",
         "fetchSchedulerAudit()",
-        "openSchedModal(sid)",
+        "openSchedDetail(sid)",
         "function _linkifyScheduleIds(safeHtml)",
     ] {
         assert!(body.contains(needle), "schedule navigation lost `{needle}`");

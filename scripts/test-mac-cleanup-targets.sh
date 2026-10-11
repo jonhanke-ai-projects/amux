@@ -455,6 +455,17 @@ echo "13. the defaults the scheduler runs with"
 check "the amux shared target is protected by default"  "yes" "$(printf '%s' "$DEFAULT_KEEP" | grep -Eq "\.amux/rust-build-target(:|\$)" && echo yes || echo no)"
 check "the ao shared target is protected by default"    "yes" "$(printf '%s' "$DEFAULT_KEEP" | grep -Eq "\.ao/data/cargo-target-shared(:|\$)" && echo yes || echo no)"
 check "the per-session scratchpads are scanned by default" "yes" "$(printf '%s' "$DEFAULT_ROOTS" | grep -q "/private/tmp/claude-$(id -u)@" && echo yes || echo no)"
+# Disk RCA 20261011-174748: the amux home's side targets (~/.amux/rust-build-target-*)
+# were outside every root. Default list, the depth that reaches them, and the shared one kept.
+check "the amux home's side targets are scanned by default" "yes" "$(printf '%s' "$DEFAULT_ROOTS" | grep -q ":$HOME/.amux@2:" && echo yes || echo no)"
+check "the shared amux target stays protected" "yes" "$(printf '%s' "$DEFAULT_KEEP" | grep -q "$HOME/.amux/rust-build-target\(:\|$\)" && echo yes || echo no)"
+mkdir -p "$FIX/ahome/rust-build-target-side" "$FIX/ahome/logs/deep/x"
+cp "$FIX/sig.tag" "$FIX/ahome/rust-build-target-side/CACHEDIR.TAG" 2>/dev/null || printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "$FIX/ahome/rust-build-target-side/CACHEDIR.TAG"
+echo '{}' > "$FIX/ahome/rust-build-target-side/.rustc_info.json"
+find_cargo_targets "$FIX/ahome@2" 8 30 > "$FIX/ahome.out"
+check "a side target in an amux home is found at depth 2" "yes" "$(grep -qx "$FIX/ahome/rust-build-target-side" "$FIX/ahome.out" && echo yes || echo no)"
+find_cargo_targets "$FIX/ahome@1" 8 30 > "$FIX/ahome1.out"
+check "depth 1 would miss it (the @2 is load-bearing)" "no" "$(grep -qx "$FIX/ahome/rust-build-target-side" "$FIX/ahome1.out" && echo yes || echo no)"
 if [ "$(uname)" = Darwin ]; then
   # The path goes in the environment, never as $1: a sourced tick parses its own positional args.
   unset_roots=$(TICK_PATH="$TICK" env -u TMPDIR bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"; printf "%s" "$TARGET_ROOTS"' 2>/dev/null) || unset_roots=""
