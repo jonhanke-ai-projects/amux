@@ -14072,7 +14072,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1328';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1329';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -42890,8 +42890,11 @@ async function _skillsTabLoad(keepQuery) {
     set('skills-window', String(days));
     const dbNames = new Set(dbSkills.map(s => '/' + s.name));
     _skillsData.db = dbSkills;
-    _skillsData.file = cmds.filter(c => c.cmd && !dbNames.has(c.cmd) && !_isBuiltinCmd(c.cmd));
-    _skillsData.builtin = cmds.filter(c => _isBuiltinCmd(c.cmd));
+    // The server labels each command's source; the local list is only a
+    // fallback for an older server that does not.
+    const isBuiltin = c => c.source ? c.source === 'builtin' : _isBuiltinCmd(c.cmd);
+    _skillsData.file = cmds.filter(c => c.cmd && !dbNames.has(c.cmd) && !isBuiltin(c) && c.source !== 'table');
+    _skillsData.builtin = cmds.filter(c => c.cmd && isBuiltin(c));
     // Worker filter: every worker the window's usage names, "" = unattributed.
     const workers = new Set();
     for (const u of Object.values(_skillsData.usage)) for (const w of Object.keys(u.workers || {})) workers.add(w);
