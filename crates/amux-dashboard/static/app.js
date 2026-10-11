@@ -14076,7 +14076,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1342';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1343';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -34981,10 +34981,13 @@ function _copyMsgId(id) {
 function _schedLastRunHTML(s) {
   const total = `<span title="Total runs">&#xD7;${s && s.run_count ? s.run_count : 0}</span>`;
   if (!s || !s.last_run) return `<span class="sx-sub sx-dim">never run &middot; ${total}</span>`;
-  const abs = /^\d+$/.test(String(s.last_run))
-    ? new Date((+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)).toLocaleString()
-    : new Date(s.last_run).toLocaleString();
-  return `<span class="sx-sub sx-dim"><span title="last run: ${esc(abs)}">&#x2713; ${relTime(s.last_run)}</span> &middot; ${total}</span>`;
+  // An epoch arrives as a digit STRING from the rust writer; relTime only
+  // reads numbers as epochs, so it rendered "—" for every loop's last run.
+  const ms = /^\d+$/.test(String(s.last_run))
+    ? (+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)
+    : new Date(String(s.last_run).replace(' ', 'T')).getTime();
+  const abs = new Date(ms).toLocaleString();
+  return `<span class="sx-sub sx-dim"><span title="last run: ${esc(abs)}">&#x2713; ${relTime(ms)}</span> &middot; ${total}</span>`;
 }
 
 // ── Scheduler page (redesign, 2026-10-11) ─────────────────────────────────────

@@ -8848,3 +8848,9 @@ body.light #fc-container { color-scheme: light; }
   #sched-overlay.board-edit-overlay { padding:0 0 var(--sw-fail-h, 0px) 0; }
   #sched-overlay .board-edit-box.sx-create { height:auto; align-self:stretch; }
 }
+/* Phones: the create form is a full-screen sheet. The shared dialog-viewport
+   guard caps every box 40px short of the viewport (with !important); this one
+   is meant to fill it, keeping the guard's keyboard-aware height. */
+@media (max-width: 600px) {
+  #sched-overlay.amux-dialog-viewport > .board-edit-box.sx-create { max-height: calc(var(--dialog-viewport-height, 100dvh) - var(--sw-fail-h, 0px)) !important; }
+}

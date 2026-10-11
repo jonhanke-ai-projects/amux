@@ -281,6 +281,13 @@ test('create: every preset and both types save an expression the server parses',
       // Polled: the dialog opens with a short scale-in transition.
       if (vw <= 600) {
         await expect.poll(async () => Math.round((await page.locator('#sched-overlay .sx-create').boundingBox())!.width)).toBe(vw);
+        // Full-screen on phones: the sheet reaches the bottom (the shared
+        // dialog guard once held it 40px short, with the list showing below).
+        const vh = page.viewportSize()!.height;
+        await expect.poll(async () => {
+          const b = (await page.locator('#sched-overlay .sx-create').boundingBox())!;
+          return Math.round(b.y + b.height);
+        }).toBeGreaterThanOrEqual(vh - 2);
       }
       await page.waitForTimeout(300);
       await page.screenshot({ path: info.outputPath('scheduler-create.png') });
