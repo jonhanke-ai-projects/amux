@@ -30240,6 +30240,10 @@ async function submitCreate() {
     createBody.worktree = true;
     const wtProfile = document.getElementById('create-worktree-profile')?.value || '';
     if (wtProfile) createBody.worktree_profile = wtProfile;
+  } else if (_createDirIsGit && _typeHasWorktree) {
+    // The box was offered and left unchecked: say so, so group-level workspace
+    // isolation does not give this worker a worktree anyway.
+    createBody.worktree = false;
   }
   const _groups = _createGroupsFrom((document.getElementById('create-group') || {}).value);
   if (_groups.length) createBody.tags = _groups;

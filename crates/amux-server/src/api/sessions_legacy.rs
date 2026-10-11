@@ -4547,14 +4547,17 @@ pub async fn create_session_legacy(
     {
         pairs.push(("CC_ISOLATED", "1".to_string()));
     }
-    // WORKTREE AT CREATE TIME (AMUX-4911). An explicit "0" overrides group-level
-    // workspace isolation so the create modal's unchecked checkbox is respected.
+    // WORKTREE AT CREATE TIME (AMUX-4911). `worktree: false` is the dialog's
+    // unchecked box, and it opts this worker out of group-level workspace
+    // isolation (CC_WORKTREE=0). A request that does not mention a worktree
+    // (the CLI, the API) writes nothing, so AMUX_WORKSPACE_ISOLATION still
+    // applies to it.
     if worktree {
         pairs.push(("CC_WORKTREE", "1".to_string()));
         if !worktree_profile.is_empty() {
             pairs.push(("CC_WORKTREE_PROFILE", worktree_profile.clone()));
         }
-    } else {
+    } else if body.get("worktree").and_then(serde_json::Value::as_bool) == Some(false) {
         pairs.push(("CC_WORKTREE", "0".to_string()));
     }
     // ACCEPT tags AS AN ARRAY, which is what the dashboard and API send
