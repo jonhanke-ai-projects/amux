@@ -25,7 +25,7 @@ async function expand(page: Page, name: string) {
 }
 
 test('a line in the skill file that invokes it is shown as an example', async ({ page }, info) => {
-  const name = `ex-written-${info.project.name}-${Date.now().toString(36)}`;
+  const name = `ex-written-${info.project.name}-${Date.now().toString(36)}-${info.repeatEachIndex}-${info.workerIndex}`;
   await createSkill(page, name, `---\ndescription: Summarize a file\nargument-hint: [path]\n---\nRun it like:\n- \`/${name} README.md\`\n`);
   const box = await expand(page, name);
   await expect(box.locator('.skill-example-inv').first()).toHaveText(`/${name} README.md`, { timeout: 60_000 });
@@ -33,7 +33,7 @@ test('a line in the skill file that invokes it is shown as an example', async ({
 });
 
 test('inferred examples render with their purpose and copy', async ({ page }, info) => {
-  const name = `ex-inferred-${info.project.name}-${Date.now().toString(36)}`;
+  const name = `ex-inferred-${info.project.name}-${Date.now().toString(36)}-${info.repeatEachIndex}-${info.workerIndex}`;
   await page.route(/\/api\/skills\/[^/]+\/examples/, (r) => r.fulfill({ json: {
     name, written: [], cached: false, measured: true, n_considered: 1,
     inferred: [
@@ -50,7 +50,7 @@ test('inferred examples render with their purpose and copy', async ({ page }, in
 });
 
 test('when nothing can be inferred the reason is shown', async ({ page }, info) => {
-  const name = `ex-none-${info.project.name}-${Date.now().toString(36)}`;
+  const name = `ex-none-${info.project.name}-${Date.now().toString(36)}-${info.repeatEachIndex}-${info.workerIndex}`;
   await page.route(/\/api\/skills\/[^/]+\/examples/, (r) => r.fulfill({ json: {
     name, written: [], inferred: [], cached: false, measured: false, n_considered: 1,
     why_unmeasured: 'meta-task model call failed: no key',
@@ -64,7 +64,7 @@ test('when nothing can be inferred the reason is shown', async ({ page }, info) 
 // worker card's input once the typed text names the skill, filtered by what
 // has been typed; picking one fills the whole invocation.
 test('typing a skill in a composer offers its examples and a pick fills the invocation', async ({ page }, info) => {
-  const name = `ex-ac-${info.project.name}-${Date.now().toString(36)}`;
+  const name = `ex-ac-${info.project.name}-${Date.now().toString(36)}-${info.repeatEachIndex}-${info.workerIndex}`;
   const worker = { name: 'ex-ac-worker', provider: 'claude', model: 'sonnet', running: true, status: 'idle', dir: '/tmp' };
   await page.route(/\/api\/sessions(?:\?.*)?$/, (r) => r.fulfill({ json: [worker] }));
   await page.route(/\/api\/skills\/[^/]+\/examples/, (r) => r.fulfill({ json: {

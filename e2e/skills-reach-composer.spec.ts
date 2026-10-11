@@ -93,7 +93,7 @@ async function slashOffers(page: Page, prefix: string): Promise<string[]> {
 
 test('a skill created and edited in the Skills tab is offered, written and recognized', async ({ page }, info) => {
   test.setTimeout(240_000);
-  const name = `e2e-skill-${info.project.name}-${Date.now().toString(36)}`;
+  const name = `e2e-skill-${info.project.name}-${Date.now().toString(36)}-${info.repeatEachIndex}-${info.workerIndex}`;
   const body = (token: string, desc: string) =>
     `---\ndescription: ${desc}\n---\nReply with exactly the text ${token} and nothing else.\n`;
   await openSkills(page);
