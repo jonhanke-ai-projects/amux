@@ -16,6 +16,7 @@
 // wiring under test.
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
+import { cleanup } from './teardown';
 
 const BASELINE = 'An older reply from before this conversation started.';
 const REPLY_1 = 'I am refactoring the board drain loop and the tests are green so far.';
@@ -259,9 +260,9 @@ test('Converse: talk to a worker hands-free, then replay, delete and expire the 
     expect(after.n_considered).toBe(0);
     expect((await request.get(`${conv}/${oldId}`, { headers: auth })).status()).toBe(404);
   } finally {
-    await page.evaluate(() => (window as any).closePeek?.()).catch(() => {});
-    await request.post(`/api/sessions/${encodeURIComponent(worker)}/delete`, {
+    await cleanup('close peek', () => page.evaluate(() => (window as any).closePeek?.()));
+    await cleanup('delete fixture worker', () => request.post(`/api/sessions/${encodeURIComponent(worker)}/delete`, {
       headers: { ...auth, 'X-Amux-UI-Token': uiToken }, data: {},
-    }).catch(() => {});
+    }));
   }
 });
