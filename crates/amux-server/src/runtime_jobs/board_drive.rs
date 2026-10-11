@@ -8231,6 +8231,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             // (AMUX-2983). A refused claim is not an error, it is the race being
             // caught: skip, do not deliver finished work.
             if claim_card(state, lane, &card).await {
+                crate::api::contract_fresh::maybe_mark_per_task(lane, &card);
                 match fleet.deliver_work(lane, &prompt).await {
                     Ok(()) => {
                         LaneTrace::acted(lane, "assigned", &card, "claimed and prompt queued")
@@ -8334,7 +8335,9 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         } => {
             // A direct CAS eliminates the old backlog -> todo -> next-tick gap.
             match claim_card_from_outcome(state, lane, &card, "backlog").await {
-                ClaimCardOutcome::Claimed => match fleet.deliver_work(lane, &prompt).await {
+                ClaimCardOutcome::Claimed => {
+                    crate::api::contract_fresh::maybe_mark_per_task(lane, &card);
+                    match fleet.deliver_work(lane, &prompt).await {
                     Ok(()) => {
                         let remaining = backlog_left.saturating_sub(1);
                         crate::api::session_verbs::emit_event(state, lane, "backlog.drained",
@@ -8359,7 +8362,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                             } else { "compensation yielded to a concurrent card change; inspect board-drive WARN" }))
                             .with_counts(eligible, open)
                     }
-                },
+                }},
                 ClaimCardOutcome::DependencyBlocked(blocking) => LaneTrace::skip(
                     lane,
                     "drain-dependency-raced",
@@ -9191,6 +9194,9 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
         };
         match pickup {
             Pickup::Claim { card, prompt } => {
+                // No per-task mark here: the worker leased this card itself,
+                // mid-conversation, and a lease never passes through
+                // at_dispatch, so a mark would recycle some later dispatch.
                 if claim_card(state, lane, &card).await {
                     return LeaseNext {
                         verdict: "leased",
