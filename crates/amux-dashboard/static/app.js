@@ -14072,7 +14072,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1327';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1328';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -32588,7 +32588,7 @@ function switchView(view) {
   // Per-session scoping lives on the peek's own Messages tab and on the
   // "Message history" modal reached from inside a peek.
   if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
-  if (view === 'messages') _messagesLoad(true, '');
+  if (view === 'messages') { _messagesLoad(true, ''); _cvEnter(); }
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'scratchpad') _scratchpadLoad();
   if (view === 'record') _recorderInit();
@@ -54229,3 +54229,301 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); e.stopPropagation(); _xlsxSave();
   }
 }, true);
+
+// ── Messages: conversations (server: api/conversations.rs) ──────────────────
+// Channels are groups; People are direct messages; Workers are each worker's
+// shared thread. "All messages" is the original message log, unchanged.
+const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: null,
+  listT: null, typingAt: 0, ac: { items: [], i: 0, open: false }, loading: false };
+function _cvViewOn() { const v = document.getElementById('messages-view'); return !!v && v.style.display !== 'none'; }
+function _cvMobile() { return window.matchMedia && window.matchMedia('(max-width: 600px)').matches; }
+function _cvColor(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return 'hsl(' + (h % 360) + ',55%,45%)'; }
+function _cvAvatar(name, worker) {
+  if (worker) return '<span class="cv-av" style="background:var(--border);color:var(--text)">&#x1F916;</span>';
+  return '<span class="cv-av" style="background:' + _cvColor(name) + '">' + esc((name || '?').charAt(0).toUpperCase()) + '</span>';
+}
+function _cvMeKey() { return _cv.list && _cv.list.me ? _cv.list.me.key : ''; }
+function _cvFindName(conv) {
+  const L = _cv.list || {};
+  const c = (L.channels || []).find(x => x.conv === conv); if (c) return '#' + c.name;
+  const p = (L.people || []).find(x => x.conv === conv); if (p) return p.name;
+  const w = (L.workers || []).find(x => x.conv === conv); if (w) return w.name;
+  if (conv && conv.indexOf('g:') === 0) return '#' + conv.slice(2);
+  if (conv && conv.indexOf('w:') === 0) return conv.slice(2);
+  return conv || '';
+}
+async function _cvLoadList() {
+  try {
+    const r = await fetch(API + '/api/conversations');
+    if (!r.ok) return;
+    _cv.list = await r.json();
+  } catch (e) { return; }
+  _cvRenderBadge();
+  if (_cvViewOn()) _cvRenderSide();
+}
+function _cvRenderBadge() {
+  const tab = document.getElementById('tab-messages'); if (!tab || !_cv.list) return;
+  let b = document.getElementById('tab-messages-badge');
+  if (!b) { b = document.createElement('span'); b.id = 'tab-messages-badge'; b.className = 'cv-badge cv-badge-red'; b.style.marginLeft = '4px'; tab.appendChild(b); }
+  const t = _cv.list.totals || {};
+  b.textContent = t.mentions ? String(t.mentions) : (t.unread ? '•' : '');
+  b.title = (t.mentions || 0) + ' mention(s), ' + (t.unread || 0) + ' unread';
+}
+function _cvItem(conv, ico, label, u, m, extra) {
+  const cls = 'cv-item' + (_cv.sel === conv ? ' active' : '') + (u ? ' unread' : '');
+  return '<button class="' + cls + '" data-cv="' + esc(conv) + '" onclick="_cvSelect(this.dataset.cv)">' + ico +
+    '<span class="cv-lbl">' + esc(label) + '</span>' + (extra || '') +
+    (m ? '<span class="cv-badge cv-badge-red">' + m + '</span>' : (u ? '<span class="cv-badge">' + u + '</span>' : '')) + '</button>';
+}
+function _cvRenderSide() {
+  const L = _cv.list; if (!L) return;
+  const t = L.totals || {};
+  document.getElementById('cv-mentions-n').textContent = t.mentions || '';
+  document.getElementById('cv-unread-n').textContent = t.unread || '';
+  document.querySelectorAll('#cv-side .cv-nav > .cv-item[data-cv^="@"]').forEach(b => b.classList.toggle('active', b.dataset.cv === _cv.sel));
+  const allItem = document.getElementById('cv-all-item');
+  if (allItem) allItem.style.display = L.me && L.me.scope_level && L.me.scope_level !== 'global' ? 'none' : '';
+  document.getElementById('cv-channels').innerHTML = (L.channels || []).map(c =>
+    _cvItem(c.conv, '<span class="cv-ico">#</span>', c.name, c.unread, c.mentions)).join('') || '<div class="cv-empty">No channels yet</div>';
+  const ppl = (L.people || []);
+  document.getElementById('cv-people-sec').style.display = ppl.length ? '' : 'none';
+  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me
+    ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
+    : _cvItem(p.conv, _cvAvatar(p.name), p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.online ? ' on' : '') + '" title="' + (p.online ? 'online' : 'away') + '"></span>')).join('');
+  const sess = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
+  document.getElementById('cv-workers').innerHTML = (L.workers || []).map(w => {
+    const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
+    return _cvItem(w.conv, _cvAvatar(w.name, true), w.name, w.unread, w.mentions, '<span class="cv-dot' + (act ? ' on' : '') + '" title="' + (act ? 'working' : 'idle') + '"></span>');
+  }).join('') || '<div class="cv-empty">No workers you can reach</div>';
+}
+function _cvShowPane(which) {
+  document.getElementById('cv-pane').style.display = which === 'conv' ? 'flex' : 'none';
+  document.getElementById('msgs-log-pane').style.display = which === 'log' ? 'flex' : 'none';
+}
+function _cvEnter() {
+  if (!document.getElementById('cv-pane')) return;
+  const lp = document.getElementById('msgs-log-pane');
+  if (lp && !lp.querySelector('.cv-back')) {
+    const b = document.createElement('button'); b.className = 'btn cv-back'; b.innerHTML = '&#x2039; Conversations';
+    b.style.alignSelf = 'flex-start'; b.style.marginBottom = '8px'; b.onclick = _cvBack; lp.prepend(b);
+  }
+  _cvLoadList().then(() => {
+    if (_cvMobile()) { document.getElementById('messages-view').classList.remove('cv-open'); _cvRenderSide(); return; }
+    let sel = _cv.sel || localStorage.getItem('amux_cv_sel') || '';
+    const L = _cv.list || {}; const known = c => [...(L.channels || []), ...(L.people || []), ...(L.workers || [])].some(x => x.conv === c);
+    if (!sel || (sel[0] !== '@' && !known(sel)) || (sel === '@all' && L.me && L.me.scope_level !== 'global')) {
+      const first = (L.channels || []).find(c => c.unread) || (L.channels || [])[0];
+      sel = first ? first.conv : '@mentions';
+    }
+    _cvSelect(sel, true);
+  });
+  clearInterval(_cv.listT); _cv.listT = setInterval(() => { if (_cvViewOn()) _cvLoadList(); }, 5000);
+}
+function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
+function _cvSelect(sel, auto) {
+  _cv.sel = sel; try { localStorage.setItem('amux_cv_sel', sel); } catch (e) {}
+  if (!auto || !_cvMobile()) document.getElementById('messages-view').classList.add('cv-open');
+  clearInterval(_cv.pollT); _cv.pollT = null;
+  _cvRenderSide();
+  if (sel === '@all') { _cvShowPane('log'); return; }
+  _cvShowPane('conv');
+  _cvFit();
+  const compose = document.getElementById('cv-compose'), hint = document.getElementById('cv-hint');
+  const isConv = sel[0] !== '@';
+  compose.style.display = isConv ? '' : 'none'; hint.style.display = isConv ? '' : 'none';
+  document.getElementById('cv-typing').textContent = '';
+  document.getElementById('cv-head-people').innerHTML = '';
+  if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');
+  if (sel === '@unread') return _cvRenderUnread();
+  if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
+  _cv.posts = []; _cv.lastId = 0; _cv.info = null;
+  document.getElementById('cv-title').textContent = _cvFindName(sel);
+  document.getElementById('cv-meta').textContent = '';
+  document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
+  const inp = document.getElementById('cv-input');
+  inp.placeholder = 'Message ' + _cvFindName(sel) + (sel[0] === 'p' || _cvMobile() ? '' : ' (use @ to mention a person or worker)');
+  _cvPoll(true);
+  _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel) _cvPoll(false); }, 2500);
+  if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
+}
+function _cvFit() {
+  const pane = document.getElementById('cv-pane'); if (!pane) return;
+  requestAnimationFrame(() => { const top = Math.max(0, pane.getBoundingClientRect().top + window.scrollY); pane.style.setProperty('--cv-top', top + 'px'); });
+}
+window.addEventListener('resize', () => { if (_cvViewOn() && _cv.sel) _cvFit(); });
+function _cvSearch(q) { q = (q || '').trim(); if (q) _cvSelect('@search:' + q); }
+async function _cvPoll(full) {
+  const sel = _cv.sel; if (!sel || sel[0] === '@') return;
+  let d;
+  try {
+    const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts' + (full ? '' : '?after=' + _cv.lastId));
+    d = await r.json();
+    if (!r.ok) { document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">' + esc(d.error || ('HTTP ' + r.status)) + '</div>'; return; }
+  } catch (e) { return; }
+  if (sel !== _cv.sel) return;
+  _cv.info = d;
+  if (full) _cv.posts = d.posts || [];
+  else if ((d.posts || []).length) _cv.posts = _cv.posts.concat(d.posts);
+  // Deliveries are written back after a post lands: refresh recent ones that are still pending.
+  const pending = _cv.posts.filter(p => (p.mentions || []).some(m => m.indexOf('worker:') === 0) && !(p.deliveries || []).length && Date.now() - p.ts < 120000);
+  if (!full && pending.length) { try { const r2 = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?after=' + (pending[0].id - 1) + '&limit=200'); const d2 = await r2.json(); (d2.posts || []).forEach(np => { const i = _cv.posts.findIndex(p => p.id === np.id); if (i >= 0) _cv.posts[i] = np; }); } catch (e) {} }
+  const grew = _cv.posts.length && _cv.posts[_cv.posts.length - 1].id !== _cv.lastId;
+  if (_cv.posts.length) _cv.lastId = _cv.posts[_cv.posts.length - 1].id;
+  _cvRenderHead(sel, d);
+  if (full || grew || pending.length) _cvRenderPosts(full || grew);
+  document.getElementById('cv-typing').innerHTML = (d.typing || []).length
+    ? '<span class="cv-dot on" style="display:inline-block;margin-right:6px"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
+  if (grew || full) _cvMarkRead();
+}
+function _cvRenderHead(sel, d) {
+  const meta = document.getElementById('cv-meta');
+  const ppl = d.people || [], wk = d.workers || [];
+  const on = ppl.filter(p => p.online).length;
+  if (sel.indexOf('g:') === 0) {
+    const g = sel.slice(2);
+    meta.textContent = ppl.length + (ppl.length === 1 ? ' person' : ' people') + ' · ' + wk.length + (wk.length === 1 ? ' worker' : ' workers') + ' · ' +
+      (g === 'general' ? 'Everyone with workspace access' : 'Everything in the ' + g + ' group');
+  } else if (sel.indexOf('w:') === 0) {
+    meta.textContent = 'Messages here go to ' + sel.slice(2) + '. It replies here. ' + ppl.length + ' people can read this.';
+  } else {
+    meta.textContent = 'Direct message';
+  }
+  document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:8px"><span class="cv-dot on" style="display:inline-block;margin-right:4px"></span>' + on + ' online</span>' : '') +
+    ppl.slice(0, 4).map(p => _cvAvatar(p.name)).join('');
+}
+function _cvBodyHtml(p) {
+  let h = esc(p.body || '');
+  const me = _cvMeKey();
+  const names = {};
+  (p.mentions || []).forEach(k => { const n = k.replace(/^(person|worker):/, ''); names[n.split('@')[0].toLowerCase()] = k; });
+  ((_cv.info && _cv.info.people) || []).forEach(pp => { if ((p.mentions || []).includes(pp.key)) names[pp.name.toLowerCase()] = pp.key; });
+  h = h.replace(/(^|[^\w.])@([\w.\-]+)/g, (m, pre, tok) => {
+    const k = names[tok.replace(/\.$/, '').toLowerCase()];
+    return k ? pre + '<span class="cv-mention' + (k === me ? ' me' : '') + '">@' + tok + '</span>' : m;
+  });
+  h = h.replace(/(^|\s)(\/[\w.\-\/]+\.[A-Za-z0-9]{1,6})(?=$|[\s,;:)])/g, (m, pre, path) =>
+    pre + '<span class="cv-file" role="button" tabindex="0" data-path="' + path + '" onclick="openFilePreview(this.dataset.path)" title="Open ' + path + '">&#x1F4C4; ' + path + '</span>');
+  return h;
+}
+function _cvDelivHtml(p) {
+  const want = (p.mentions || []).filter(m => m.indexOf('worker:') === 0).map(m => m.slice(7));
+  if (!want.length) return '';
+  const got = p.deliveries || [];
+  const chips = want.map(w => {
+    const d = got.find(x => x.worker === w);
+    if (!d) return '<span>sending to ' + esc(w) + '…</span>';
+    if (d.state === 'queued') return '<span title="' + esc(d.detail || '') + '">&#x23F3; queued for ' + esc(w) + '</span>';
+    return d.ok ? '<span class="ok">&#x2713; delivered to ' + esc(w) + '</span>'
+      : '<span class="bad" title="' + esc(d.detail || '') + '">&#x2715; not delivered to ' + esc(w) + (d.detail ? ': ' + esc(String(d.detail).slice(0, 60)) : '') + '</span>';
+  });
+  return '<div class="cv-deliv">' + chips.join('') + '</div>';
+}
+function _cvPostHtml(p, showConv) {
+  const worker = p.author_key.indexOf('worker:') === 0;
+  const t = new Date(p.ts);
+  return '<div class="cv-post" data-id="' + p.id + '">' + _cvAvatar(p.author_name, worker) + '<div class="cv-post-main"><div class="cv-post-head">' +
+    '<span class="cv-post-who">' + esc(p.author_name) + (p.author_key === _cvMeKey() ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
+    '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
+    (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvSelect(this.dataset.cv)">in ' + esc(_cvFindName(p.conv)) + '</span>' : '') +
+    '</div><div class="cv-post-body">' + _cvBodyHtml(p) + '</div>' + _cvDelivHtml(p) + '</div></div>';
+}
+function _cvDayLabel(ts) {
+  const d = new Date(ts), today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  const s = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return same(d, today) ? 'Today · ' + s : same(d, y) ? 'Yesterday · ' + s : d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+function _cvRenderPosts(scroll) {
+  const box = document.getElementById('cv-posts');
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  if (!_cv.posts.length) {
+    const sel = _cv.sel || '';
+    box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
+      : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
+    return;
+  }
+  let html = '', day = '';
+  for (const p of _cv.posts) { const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; } html += _cvPostHtml(p, false); }
+  box.innerHTML = html;
+  if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
+}
+async function _cvMarkRead() {
+  if (!_cv.sel || _cv.sel[0] === '@' || document.hidden) return;
+  try { await fetch(API + '/api/conversations/' + encodeURIComponent(_cv.sel) + '/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ last_id: _cv.lastId }) }); } catch (e) {}
+  _cvLoadList();
+}
+async function _cvLoadFeed(url, title, meta) {
+  document.getElementById('cv-title').textContent = title;
+  document.getElementById('cv-meta').textContent = meta;
+  const box = document.getElementById('cv-posts'); box.innerHTML = '<div class="cv-empty">Loading…</div>';
+  try {
+    const r = await fetch(API + url); const d = await r.json();
+    const posts = (d.posts || []);
+    box.innerHTML = posts.length ? posts.map(p => _cvPostHtml(p, true)).join('') : '<div class="cv-empty">Nothing here.</div>';
+  } catch (e) { box.innerHTML = '<div class="cv-empty">Could not load: ' + esc(e.message) + '</div>'; }
+}
+function _cvRenderUnread() {
+  document.getElementById('cv-title').textContent = 'Unread';
+  document.getElementById('cv-meta').textContent = 'Conversations with messages you have not opened';
+  const L = _cv.list || {};
+  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.workers || []).map(w => [w, w.name])]
+    .filter(([x]) => x.unread).sort((a, b) => b[0].last_ts - a[0].last_ts);
+  document.getElementById('cv-posts').innerHTML = rows.length ? '<div class="cv-nav">' + rows.map(([x, n]) => _cvItem(x.conv, '', n, x.unread, x.mentions)).join('') + '</div>'
+    : '<div class="cv-empty">You are all caught up.</div>';
+}
+// Composer: Enter sends, Shift+Enter is a new line, @ opens the picker.
+function _cvAcCandidates(q) {
+  const d = _cv.info || {}; const me = _cvMeKey(); q = q.toLowerCase();
+  const ppl = (d.people || []).filter(p => p.key !== me).map(p => ({ handle: p.name.replace(/\s+/g, ''), label: p.name, kind: 'person' }));
+  const wks = (d.mentionable_workers || []).map(w => ({ handle: w, label: w, kind: 'worker' }));
+  return [...ppl, ...wks].filter(c => c.handle.toLowerCase().startsWith(q) || c.label.toLowerCase().includes(q)).slice(0, 8);
+}
+function _cvOnInput(el) {
+  el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  const upto = el.value.slice(0, el.selectionStart); const m = upto.match(/(^|\s)@([\w.\-]*)$/);
+  const ac = document.getElementById('cv-ac');
+  if (m) {
+    _cv.ac.items = _cvAcCandidates(m[2]); _cv.ac.i = 0; _cv.ac.open = _cv.ac.items.length > 0;
+    ac.innerHTML = _cv.ac.items.map((c, i) => '<button type="button" class="' + (i === 0 ? 'sel' : '') + '" onmousedown="event.preventDefault();_cvAcPick(' + i + ')">' +
+      _cvAvatar(c.label, c.kind === 'worker') + '<span>' + esc(c.label) + '</span><small>' + (c.kind === 'worker' ? 'worker' : 'person') + '</small></button>').join('');
+    ac.classList.toggle('open', _cv.ac.open);
+  } else { _cv.ac.open = false; ac.classList.remove('open'); }
+  if (el.value.trim() && Date.now() - _cv.typingAt > 3000 && _cv.sel && _cv.sel[0] !== '@') {
+    _cv.typingAt = Date.now();
+    fetch(API + '/api/conversations/' + encodeURIComponent(_cv.sel) + '/typing', { method: 'POST' }).catch(() => {});
+  }
+}
+function _cvAcPick(i) {
+  const c = _cv.ac.items[i]; if (!c) return;
+  const el = document.getElementById('cv-input'); const pos = el.selectionStart;
+  const before = el.value.slice(0, pos).replace(/@([\w.\-]*)$/, '@' + c.handle + ' ');
+  el.value = before + el.value.slice(pos); el.selectionStart = el.selectionEnd = before.length;
+  _cv.ac.open = false; document.getElementById('cv-ac').classList.remove('open'); el.focus();
+}
+function _cvOnKey(e) {
+  if (_cv.ac.open) {
+    const btns = document.querySelectorAll('#cv-ac button');
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); _cv.ac.i = (_cv.ac.i + (e.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length; btns.forEach((b, i) => b.classList.toggle('sel', i === _cv.ac.i)); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); _cvAcPick(_cv.ac.i); return; }
+    if (e.key === 'Escape') { _cv.ac.open = false; document.getElementById('cv-ac').classList.remove('open'); return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); _cvSend(); }
+}
+async function _cvSend() {
+  const el = document.getElementById('cv-input'), btn = document.getElementById('cv-send');
+  const body = el.value.trim(); const sel = _cv.sel;
+  if (!body || !sel || sel[0] === '@' || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { if (typeof showToast === 'function') showToast(d.error || ('Not sent: HTTP ' + r.status), 'error'); return; }
+    el.value = ''; el.style.height = ''; _cv.typingAt = 0;
+    await _cvPoll(false);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Not sent: ' + e.message, 'error');
+  } finally { btn.disabled = false; el.focus(); }
+}
+// The tab badge stays current in every view, not only while Messages is open.
+setInterval(() => { if (!document.hidden && !_cvViewOn()) _cvLoadList(); }, 20000);
+setTimeout(_cvLoadList, 3000);
