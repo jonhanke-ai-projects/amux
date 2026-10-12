@@ -5962,6 +5962,7 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
       let text;
       if (action === 'approve' && _niOwnerMustAct(it)) text = 'Done' + ref + ': ' + q + ' I have provided it. Verify it works, then continue.' + (typed ? ' ' + typed : '');
       else if (action === 'approve' || action === 'approve_always') text = 'Approved' + ref + ': ' + q + '. Proceed.' + (typed ? ' ' + typed : '');
+      else if (action === 'dismiss') text = 'Dismissed' + ref + ': ' + q + ' The owner closed this ask without answering. Stop waiting on it and do not ask again; carry on with other work.';
       else if (action === 'decline') text = 'Declined' + ref + ': ' + q + '. Do not proceed' + (typed ? '; ' + typed : '') + '.';
       else text = 'Re' + ref + ': ' + typed;
       if (it.worker) {
@@ -5973,7 +5974,7 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
       }
       if (it.card) {
         const verb = action === 'approve' && _niOwnerMustAct(it) ? 'Provided'
-          : { approve: 'Approved', approve_always: 'Approved (standing rule)', decline: 'Declined', reply: 'Owner reply' }[action];
+          : { approve: 'Approved', approve_always: 'Approved (standing rule)', decline: 'Declined', reply: 'Owner reply', dismiss: 'Dismissed without an answer' }[action];
         const note = '[' + stamp + '] ' + verb + ' by owner in ' + surface + (action === 'reply' || (action === 'decline' && typed) ? ': ' + typed : '.');
         const marker = '#triage-' + _niHash(it.key + '|' + action + '|' + typed);
         const c = await _niCard(it.card, note, marker, true);
@@ -14102,7 +14103,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1386';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1387';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -40527,16 +40528,21 @@ async function openBoardDetail(id) {
 // needs-input triage: message to the asking worker (deduped), marked note on the
 // card, card out of needsyou, read back.
 let _bdAnswerCtx = null;   // {card, worker}
-// The X on the answer box: close it without answering. Nothing is sent and the
-// card stays in needsyou; a re-render while this card is open keeps it closed.
+// The X on the answer box dismisses the ASK FOR GOOD, after a confirm (Ethan,
+// 2026-10-12: "X should get rid of the needs input thing for good and there
+// should be an are you sure"). It used to only hide the box, so the card stayed
+// in needsyou and the chip, the pill and the re-nag all came back. Dismiss runs
+// the one answer path: the worker is told to stop waiting, the card is noted
+// and leaves needsyou, read back. Cancel in the confirm changes nothing.
 let _bdAnswerDismissed = '';
-function _bdAnswerCancel() {
-  _bdAnswerDismissed = boardDetailId || '';
-  _bdAnswerCtx = null;
-  const box = document.getElementById('bd-answer');
-  if (box) box.hidden = true;
-  const ta = document.getElementById('bd-answer-text');
-  if (ta) ta.value = '';
+async function _bdAnswerCancel() {
+  if (_bdAnswerBusy || !boardDetailId) return;
+  const card = boardDetailId;
+  const it = _bdAnswerItem(card);
+  const ok = await showConfirm('Dismiss this ask for good? ' + card + ' stops waiting on you'
+    + (it.worker ? ' and ' + it.worker + ' is told to carry on without an answer.' : '.'), 'Dismiss', true);
+  if (!ok || boardDetailId !== card) return;
+  await _bdAnswer('dismiss');
 }
 function _bdAnswerItem(card) {
   const ctx = _bdAnswerCtx || {};
@@ -40587,11 +40593,13 @@ async function _bdAnswer(action) {
   const { done, errs } = res;
   _niLog(action, it, errs.length ? (done.length ? 'partial' : 'refused') : 'ok', done.concat(errs).join('; '));
   if (errs.length) { showToast((done.length ? done.join(', ') + '. ' : '') + 'Refused: ' + errs.join(' | ')); return; }
-  const label = { approve: 'Approved', decline: 'Declined', reply: 'Answered' }[action];
+  const label = { approve: 'Approved', decline: 'Declined', reply: 'Answered', dismiss: 'Dismissed' }[action];
   showToast(label + ': ' + done.join(', '));
   _niHandled.set(it.key, Date.now() + 5 * 60_000);
   updateNeedsInputPill();
   _bdAnswerCtx = null;
+  if (ta) ta.value = '';
+  if (action === 'dismiss') _bdAnswerDismissed = card;   // stays closed while this card is open
   document.getElementById('bd-answer').hidden = true;
   try { _bdHydrate(card); } catch (_) {}
 }

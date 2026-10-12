@@ -80,6 +80,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_bdAnswerCancel": {
+      "kind": "command._bdAnswerCancel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_bdArtifactHref": {
       "kind": "command._bdArtifactHref",
       "feedback_required": true,
