@@ -70,6 +70,7 @@ test('a worker thread shows that worker\'s message history', async ({ page }) =>
     return r.fulfill({ json: [
       { id: 7, session: 'w1', type: 'user', origin: '', text: '[09:00 AM] fix the login page', ts: now - 3600000 },
       { id: 8, session: 'w1', type: 'user', origin: '', text: '[g:x] owner: hi\n\n(From amux Messages. To reply in #x, post plain text: curl ...)', ts: now - 1800000 },
+      { id: 9, session: 'w1', type: 'user', origin: '', text: "owner mentioned you in #x (amux Messages):\n\nping\n\nThis is addressed to you: act on it now. Post it with:\namux post g:x <<'EOF'\n<your answer>\nEOF", ts: now - 900000 },
     ] });
   });
   await setup(page);
@@ -77,6 +78,7 @@ test('a worker thread shows that worker\'s message history', async ({ page }) =>
   await expect(page.locator('#cv-posts')).toContainText('fix the login page');
   await expect(page.locator('#cv-posts')).toContainText('sent from its page');
   await expect(page.locator('#cv-posts'), 'a Messages delivery is not shown twice').not.toContainText('From amux Messages');
+  await expect(page.locator('#cv-posts'), 'nor in the new delivery format').not.toContainText('mentioned you in #x');
 });
 
 test('offline: a post queues visibly instead of vanishing', async ({ page }) => {
