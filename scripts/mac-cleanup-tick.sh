@@ -1120,6 +1120,9 @@ reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
       while IFS=$'\t' read -r ekb e; do
         [ "$total" -gt "$quota_kb" ] || break
         if [ "$ekb" -lt $(( CLAUDE_TMP_ENTRY_MIN_MB * 1024 )) ]; then break; fi   # sorted biggest first: everything after is smaller
+        # Each candidate can cost a find and a git status per checkout (up to the
+        # walk budget each); without this the arm could outlast the tick's 600s kill.
+        if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
         if [ -f "$e/.git" ]; then n_qkept=$((n_qkept+1)); continue; fi
         rc=0; any_recent "$CLAUDE_TMP_ENTRY_IDLE_H" "$CLAUDE_TMP_WALK_S" "$e" || rc=$?
         if [ "$rc" != 1 ]; then n_qkept=$((n_qkept+1)); continue; fi
