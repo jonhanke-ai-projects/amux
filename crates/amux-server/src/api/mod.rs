@@ -47,6 +47,7 @@ pub mod email_approval;
 pub mod email_intel;
 pub mod env_config;
 pub mod file_viewer;
+pub mod media_hls;
 pub mod files;
 pub mod fs;
 pub mod git_guard;

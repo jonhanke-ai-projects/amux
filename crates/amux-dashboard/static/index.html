@@ -3325,13 +3325,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button class="ab-btn" id="ab-play-btn" onclick="_abTogglePlay()">&#x25B6;</button>
   <div class="ab-info">
     <div class="ab-title" id="ab-title">—</div>
-    <div class="ab-time"><span id="ab-cur">0:00</span> / <span id="ab-dur">0:00</span></div>
+    <div class="ab-time"><span id="ab-cur">0:00</span> / <span id="ab-dur">0:00</span> <span class="ab-state" id="ab-state" role="status" aria-live="polite"></span></div>
   </div>
   <div class="ab-progress"><input type="range" id="ab-seek" min="0" max="100" value="0" step="0.1" oninput="_abSeekInput(this.value)" onmousedown="_abSeekStart()" onmouseup="_abSeekEnd()" ontouchstart="_abSeekStart()" ontouchend="_abSeekEnd()"></div>
   <button class="ab-speed" id="ab-speed" onclick="_abCycleSpeed()">1x</button>
   <button class="ab-btn" onclick="_abClose()" title="Close player">&times;</button>
 </div>
-<audio id="amux-audio" preload="auto"></audio>
+<audio id="amux-audio" preload="metadata" playsinline></audio>
 
 <!-- Toast -->
 <div id="toast" class="toast"></div>
