@@ -14104,7 +14104,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1397';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1398';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -57397,13 +57397,42 @@ function _drawFit() {
   v.style.setProperty('--draw-top', (top + (phone ? 0 : pb)) + 'px');
 }
 
+// Excalidraw caches where its canvas sits in the viewport and re-measures only
+// on its own resize and on scroll. When the canvas MOVES without resizing (the
+// header above it changes height, live mode or full screen ends, the page
+// settles after the editor mounted), the cache goes stale and every stroke
+// lands that far from the cursor (Ethan, 2026-10-12). Compare the cache with
+// the real box and re-measure on any drift.
+function _drawSyncOffsets(why) {
+  const d = _draw;
+  const host = document.getElementById('draw-host');
+  if (!d || !d.api || !host) return false;
+  const r = (host.querySelector('.excalidraw') || host).getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  const st = d.api.getAppState();
+  const dx = Math.round(r.left - st.offsetLeft), dy = Math.round(r.top - st.offsetTop);
+  if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return false;
+  d.api.refresh();
+  if (Date.now() - (d.driftAt || 0) > 5000) {
+    d.driftAt = Date.now();
+    _drawBeacon('canvas-offset-drift', { dx, dy, why, zoom: _zoomLevel, n_considered: 1,
+      scale: st.width ? Math.round(r.width / st.width * 1000) / 1000 : null });
+  }
+  return true;
+}
+function _drawSyncOffsetsSoon(why) { requestAnimationFrame(() => _drawSyncOffsets(why)); }
+
 async function _drawEnter() {
   const d = _drawS();
   document.documentElement.classList.add('draw-active');
-  if (!d.fitHooked) { d.fitHooked = true; addEventListener('resize', () => { if (activeView === 'draw') _drawFit(); }); }
+  if (!d.fitHooked) {
+    d.fitHooked = true;
+    addEventListener('resize', () => { if (activeView === 'draw') { _drawFit(); _drawSyncOffsetsSoon('resize'); } });
+    document.addEventListener('fullscreenchange', () => { if (activeView === 'draw') _drawSyncOffsetsSoon('fullscreen'); });
+  }
   scrollTo(0, 0);
   _drawFit();
-  requestAnimationFrame(_drawFit);
+  requestAnimationFrame(() => { _drawFit(); _drawSyncOffsets('enter'); });
   _drawRenderChrome();
   const loadingEl = document.getElementById('draw-loading');
   if (!d.mounted) {
@@ -57499,6 +57528,12 @@ function _drawMount() {
       }
     }, true);
     wrap.addEventListener('dragover', e => e.preventDefault());
+    // Before the editor reads a pointer position, make sure it knows where its
+    // canvas is. Hover reaches this before a press does; a pen or finger has
+    // no hover, so the press checks too.
+    for (const ev of ['pointerenter', 'pointermove', 'pointerdown']) {
+      wrap.addEventListener(ev, () => _drawSyncOffsets(ev), { capture: true, passive: true });
+    }
   }
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && _draw && _draw.mounted && _drawDirty()) _drawSave();
@@ -58295,6 +58330,7 @@ function _drawToggleLib(show) {
   if (window.innerWidth <= 700) v.classList.toggle('draw-lib-sheet', !!show);
   else v.classList.toggle('draw-lib-hidden', !show);
   if (show) _drawLibRender();
+  _drawSyncOffsetsSoon('library');
 }
 
 // ── Recent drawings ──
@@ -58450,6 +58486,7 @@ function _drawToggleLive() {
   }
   _drawRenderSelbar();
   _drawRenderPenbar();
+  _drawSyncOffsetsSoon('live');
 }
 function _drawRenderPenbar() {
   const d = _drawS();

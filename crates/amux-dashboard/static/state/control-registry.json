@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2867,
+  "n_considered": 2869,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1082,6 +1082,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_drawFullscreen": {
+      "kind": "command._drawFullscreen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_drawImportFiles": {
       "kind": "command._drawImportFiles",
       "feedback_required": true,
@@ -1090,6 +1096,12 @@
     },
     "_drawImportInput": {
       "kind": "command._drawImportInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawInsertLibItem": {
+      "kind": "command._drawInsertLibItem",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1264,6 +1276,30 @@
     },
     "_drawSendToWorker": {
       "kind": "command._drawSendToWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawSyncOffsets": {
+      "kind": "command._drawSyncOffsets",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawSyncOffsetsSoon": {
+      "kind": "command._drawSyncOffsetsSoon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawToggleLib": {
+      "kind": "command._drawToggleLib",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawToggleLive": {
+      "kind": "command._drawToggleLive",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
