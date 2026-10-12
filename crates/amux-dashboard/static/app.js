@@ -14137,7 +14137,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1409';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1419';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -20807,6 +20807,16 @@ async function _approvalsRefresh() {
     }
     for (const p of pending) {
       const pv = p.preview || {};
+      // THE FULL DRAFT, NOT THE PREVIEW (Ethan, 2026-10-12: "did this get cut
+      // off"). preview.body is capped at 2000 characters server-side, so a
+      // 4510-character reply showed its first half and the pricing never
+      // appeared; Edit then copied that half into the box and Approve would
+      // have SENT it. review.body is the frozen message itself. When it is
+      // unavailable the card says how much it shows and Edit is withheld.
+      const _rv = p.review || {};
+      const _full = _rv.body_complete === true && typeof _rv.body === 'string';
+      const _bodyText = _full ? _rv.body : (pv.body || '');
+      if (!_full) _apprBeacon('preview-only', p.id, _bodyText.length);
       // AMUX-5240: email approvals no longer expire (expires_in_s is null), so
       // show how long the draft has waited and how often it was re-requested.
       const _ageM = Math.max(1, Math.round((p.age_s || 0) / 60));
@@ -20833,7 +20843,8 @@ async function _approvalsRefresh() {
         // Only the BODY is editable — the recipient and subject are what the
         // gate is protecting, and wanting a different recipient is a different
         // message rather than an edit of this one.
-        + '<button onclick="event.preventDefault();_apprEdit(\'' + esc(p.id) + '\',this)" '
+        + '<button ' + (_full ? '' : 'disabled title="The full draft is not available here, so it cannot be edited safely" ')
+        + 'onclick="event.preventDefault();_apprEdit(\'' + esc(p.id) + '\',this)" '
         + 'style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.45);'
         + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
         + 'min-height:34px;min-width:44px;">Edit</button>'
@@ -20856,7 +20867,10 @@ async function _approvalsRefresh() {
         + '<div id="appr-body-' + esc(p.id) + '" '
         + 'style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);'
         + 'border-radius:6px;padding:8px 10px;margin:6px 0;font-size:0.8rem;max-height:320px;overflow:auto;">'
-        + esc(pv.body || '') + '</div></details>';
+        + esc(_bodyText) + '</div>'
+        + (_full ? '' : '<div style="font-size:0.74rem;color:#fde68a;margin:0 0 6px;">Showing only the first '
+          + _bodyText.length + ' characters of this draft. Approve sends the complete stored message.</div>')
+        + '</details>';
     }
     html += '<div style="opacity:0.65;font-size:0.74rem;margin-top:4px;">'
       + (grants.length ? 'Allow once releases exactly ONE message to that worker, then the wall is back. ' : '')
@@ -20935,6 +20949,11 @@ async function _apprReject(id, btn) {
 /// The poll is paused while editing — a 60s refresh that rewrote innerHTML
 /// under a half-typed correction would throw the edit away, which is the worst
 /// possible failure on this surface.
+function _apprBeacon(action, id, shown) {
+  try { fetch(API + '/api/client-debug', { method: 'POST', headers: { ..._authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'email-approval', action, approval_id: id, shown_chars: shown, ver: APP_VER }) }).catch(() => {}); } catch (e) {}
+}
+
 function _apprEdit(id, btn) {
   const host = document.getElementById('appr-body-' + id);
   if (!host) return;

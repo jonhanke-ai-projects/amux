@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2869,
+  "n_considered": 2870,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -26,8 +26,50 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_apprApprove": {
+      "kind": "command._apprApprove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprBeacon": {
+      "kind": "command._apprBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprEdit": {
+      "kind": "command._apprEdit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprEditCancel": {
+      "kind": "command._apprEditCancel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_apprReject": {
       "kind": "command._apprReject",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprToggle": {
+      "kind": "command._apprToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_approvalsBoot": {
+      "kind": "command._approvalsBoot",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_approvalsRefresh": {
+      "kind": "command._approvalsRefresh",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
