@@ -121,6 +121,35 @@ check "an idle entry over the size floor is removed" gone    "$(has "$S/old-big"
 check "an idle entry under the size floor stays"     present "$(has "$S/old-note.py")"
 check "the session is still named OVER QUOTA"        yes     "$(printf '%s' "$out" | grep -q "OVER QUOTA .*$R/proj/livet" && echo yes || echo no)"
 
+echo "8. a container folder over quota is opened: its idle children are candidates, a clone with local work is kept"
+build
+S="$R/proj/livet/scratchpad/work"
+mb "$S/old-copy/a.tar" 4; mb "$S/fresh-copy/a.tar" 1
+# a full clone (.git DIR) holding a commit no remote has: somebody's only copy
+git clone -q "$FIX/repo" "$S/ahead-clone" 2>/dev/null; mb "$S/ahead-clone/big" 3
+git -C "$S/ahead-clone" add big; git -C "$S/ahead-clone" -c user.email=t@t -c user.name=t commit -q -m local
+# a full clone with nothing local: safe to drop when idle
+git clone -q "$FIX/repo" "$S/clean-clone" 2>/dev/null; mb "$S/clean-clone/scratch.out" 3; printf 'scratch.out\n' >> "$S/clean-clone/.git/info/exclude"
+age "$S/old-copy" "$S/ahead-clone" "$S/clean-clone"; touch "$P/proj/livet.jsonl"
+CLAUDE_TMP_QUOTA_KB=$(( 2 * 1024 )); CLAUDE_TMP_ENTRY_IDLE_H=6
+out=$(reap_claude_tmp "$R" 48 0)
+check "an idle child of the container is removed"   gone    "$(has "$S/old-copy")"
+check "a recent child stays"                         present "$(has "$S/fresh-copy")"
+check "a clone with an unpushed commit stays"        present "$(has "$S/ahead-clone/big")"
+check "an idle clone with nothing local is removed"  gone    "$(has "$S/clean-clone")"
+check "the container folder itself stays"            present "$(has "$S")"
+
+echo "9. a child too big to size in time is reported as uncounted, never claimed recent"
+build
+S="$R/proj/livet/scratchpad/work"; mb "$S/huge/a.tar" 3; age "$S/huge"; touch "$P/proj/livet.jsonl"
+CLAUDE_TMP_QUOTA_KB=$(( 1 * 1024 ))
+eval "real_$(declare -f du_kb)"
+du_kb() { case "$1" in */huge|*/work|*/livet) return 0 ;; *) real_du_kb "$@" ;; esac; }
+out=$(reap_claude_tmp "$R" 48 0)
+eval "$(declare -f real_du_kb | sed 's/^real_du_kb/du_kb/')"
+check "an unsized child is not removed"              present "$(has "$S/huge")"
+check "the line says it was not counted"            yes     "$(printf '%s' "$out" | grep -q "NOT counted and NOT considered" && echo yes || echo no)"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-claude-tmp — all checks passed"; exit 0; fi
 echo "mac-cleanup-claude-tmp: $fails check(s) FAILED"; exit 1

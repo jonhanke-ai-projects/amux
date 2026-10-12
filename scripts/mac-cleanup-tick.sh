@@ -1018,15 +1018,21 @@ any_recent() { # <hours> <budget_s> <path>...
   [ -n "$out" ]
 }
 
-# Is there a git worktree (a .git FILE) within three levels of <dir> with uncommitted
-# or untracked content? A dirty worktree is the one thing in a scratchpad most
-# likely to be somebody's only copy, so it keeps the whole session dir.
+# Is there a git checkout within three levels of <dir> that may hold somebody's only
+# copy of something? A worktree (.git FILE) or a full clone (.git DIR) counts when it
+# has uncommitted or untracked content, a stash, or a local commit no remote has. A
+# git that cannot answer in time, or at all, counts as dirty: this keeps on doubt.
 has_dirty_worktree() { # <dir>
-  local g w
+  local g w out ahead st
   while IFS= read -r g; do
     w=$(dirname "$g")
-    if [ -n "$(git -C "$w" status --porcelain --untracked-files=normal 2>/dev/null | head -1)" ]; then return 0; fi
-  done < <(find "$1" -maxdepth 3 -name .git -type f 2>/dev/null)
+    out=$(perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TMP_WALK_S" git -C "$w" status --porcelain --untracked-files=normal 2>/dev/null) || return 0
+    if [ -n "$out" ]; then return 0; fi
+    [ -d "$g" ] || continue
+    ahead=$(git -C "$w" log --branches --not --remotes -1 --format=%H 2>/dev/null) || return 0
+    st=$(git -C "$w" stash list 2>/dev/null | head -1)
+    if [ -n "$ahead" ] || [ -n "$st" ]; then return 0; fi
+  done < <(find "$1" -maxdepth 3 -name .git \( -type f -o -type d \) -prune 2>/dev/null)
   return 1
 }
 
@@ -1086,14 +1092,29 @@ reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
       kb=$(du_kb "$sess" "$CLAUDE_TMP_WALK_S")
       if [ -n "$kb" ] && [ "$kb" -le "$quota_kb" ]; then continue; fi
       ents=$(mktemp "${TMPDIR:-/tmp}/ctmp-ents.XXXXXX")
+      # A plain folder that is too big to size in time, or over quota while still
+      # holding recent files (so it can never go whole), is a container (gs12 keeps every repo copy under scratchpad/work): its children
+      # are the candidates. Before 2026-10-12 such a folder was dropped from the
+      # count, so a 451G session read 26.1G and none of its 405G was ever considered.
+      local qunk=0 c ckb
       for e in "$sess"/scratchpad/* "$sess"/scratchpad/.[!.]*; do
         [ -e "$e" ] || continue
-        if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then break; fi
+        if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
         ekb=$(du_kb "$e" "$CLAUDE_TMP_WALK_S")
-        if [ -n "$ekb" ]; then printf '%s\t%s\n' "$ekb" "$e" >> "$ents"; sum=$((sum+ekb)); fi
+        if [ -d "$e" ] && [ ! -e "$e/.git" ] && { [ -z "$ekb" ] || { [ "$ekb" -gt "$quota_kb" ] && any_recent "$CLAUDE_TMP_ENTRY_IDLE_H" "$CLAUDE_TMP_WALK_S" "$e"; }; }; then
+          for c in "$e"/* "$e"/.[!.]*; do
+            [ -e "$c" ] || continue
+            if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
+            ckb=$(du_kb "$c" "$CLAUDE_TMP_WALK_S")
+            if [ -n "$ckb" ]; then printf '%s\t%s\n' "$ckb" "$c" >> "$ents"; sum=$((sum+ckb)); else qunk=$((qunk+1)); fi
+          done
+          if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then break; fi
+          continue
+        fi
+        if [ -n "$ekb" ]; then printf '%s\t%s\n' "$ekb" "$e" >> "$ents"; sum=$((sum+ekb)); else qunk=$((qunk+1)); fi
       done
       total=${kb:-$sum}
-      if [ "$total" -le "$quota_kb" ]; then rm -f -- "${ents:?}"; [ -n "$kb" ] || n_unk=$((n_unk+1)); continue; fi
+      if [ "$total" -le "$quota_kb" ] && [ "$qunk" = 0 ]; then rm -f -- "${ents:?}"; [ -n "$kb" ] || n_unk=$((n_unk+1)); continue; fi
       n_quota=$((n_quota+1))
       sort -rn "$ents" -o "$ents"
       while IFS=$'\t' read -r ekb e; do
@@ -1111,7 +1132,13 @@ reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
         echo "mac-cleanup:   removed $(fmt_kb "$ekb") $e (session over ${CLAUDE_TMP_QUOTA_GB}G quota, entry idle >= ${CLAUDE_TMP_ENTRY_IDLE_H}h)"
       done < "$ents"
       rm -f -- "${ents:?}"
-      if [ "$total" -gt "$quota_kb" ]; then echo "mac-cleanup:   OVER QUOTA $(fmt_kb "$total") $sess (quota ${CLAUDE_TMP_QUOTA_GB}G): the rest is recent, open or a worktree, so it stays"; fi
+      if [ "$total" -gt "$quota_kb" ] || [ "$qunk" -gt 0 ]; then
+        if [ "$qunk" -gt 0 ]; then
+          echo "mac-cleanup:   OVER QUOTA at least $(fmt_kb "$total") $sess (quota ${CLAUDE_TMP_QUOTA_GB}G): ${qunk} entr(ies) too big to size in ${CLAUDE_TMP_WALK_S}s, or past the ${CLAUDE_TMP_BUDGET_S}s budget, are NOT counted and NOT considered; the counted rest is recent, open or a checkout with local work, so it stays"
+        else
+          echo "mac-cleanup:   OVER QUOTA $(fmt_kb "$total") $sess (quota ${CLAUDE_TMP_QUOTA_GB}G): the rest is recent, open or a checkout with local work, so it stays"
+        fi
+      fi
     done < "$live"
   fi
   echo "mac-cleanup: claude tmp: ${n_sess} session dir(s) under $root, removed ${CLAUDE_TMP_REAPED} ($(fmt_kb "$CLAUDE_TMP_REAPED_KB")), idle >= ${idle_h}h, quota ${CLAUDE_TMP_QUOTA_GB}G; kept: live ${n_live}, open ${n_open}, dirty worktree ${n_dirty}, unmeasured ${n_unk}, over budget ${n_over}, failed ${n_fail}; over quota ${n_quota} (entries kept ${n_qkept})"
