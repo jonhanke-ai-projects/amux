@@ -8568,7 +8568,12 @@ body.light #fc-container { color-scheme: light; }
 .sx-bulk > span { font-weight:600; margin-right:auto; }
 .sx-list { display:flex; flex-direction:column; gap:14px; padding:2px 16px 14px; }
 #peek-schedules-list.sx-list, #peek-schedules-list { gap:12px; }
-.sx-group { border:1px solid var(--border); border-radius:var(--radius-dialog); background:var(--card); overflow:hidden; }
+.sx-group { border:1px solid var(--border); border-radius:var(--radius-dialog); background:var(--card); overflow:hidden;
+  /* Never shrink below its content: in the worker tab the list is a fixed-height
+     flex column, and a long Inactive group squeezed Daily Routines to less than
+     its own header, hiding the active schedules (Ethan, 2026-10-12). The list
+     scrolls instead. */
+  flex-shrink:0; }
 .sx-group-head { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border); }
 .sx-group-ico { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0;
   font-size:1.05rem; background:color-mix(in srgb, var(--accent) 12%, transparent); color:var(--accent); }

@@ -14102,7 +14102,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1383';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1384';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15916,6 +15916,13 @@ function _syncPeekOverlayToVisualViewport() {
   const kbdPossible = ae && ov.contains(ae) &&
     (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable);
   if (!kbdPossible) kb = 0;
+  // A DESKTOP HAS NO ON-SCREEN KEYBOARD (Ethan, 2026-10-12: after macOS Split
+  // View, "this area gets stuck"). Leaving Split View resizes the window, and
+  // for a moment innerHeight and the visual viewport disagree; with the
+  // composer focused that difference was read as a keyboard and pinned as
+  // padding-bottom, so the composer sat mid-window over a blank strip until
+  // the next keyboard event, which on a desktop never comes.
+  if (window.matchMedia && matchMedia('(pointer: fine)').matches && !matchMedia('(any-pointer: coarse)').matches) kb = 0;
   const sig = 'kb' + kb;
   if (ov._vvSig === sig) return;
   ov._vvSig = sig;
@@ -16212,6 +16219,10 @@ function _vvTick() {
   if (!window.visualViewport) return;
   window.visualViewport.addEventListener('resize', () => _vvKick());
   window.visualViewport.addEventListener('scroll', () => _vvKick());
+  // A window resize (Split View, full screen, a drag) settles over several
+  // frames; recheck through it rather than trusting the first, mid-transition
+  // visual viewport event.
+  window.addEventListener('resize', () => _vvKick(1500));
   // Keyboard show/hide always follows a focus change inside the overlay
   const ov = document.getElementById('peek-overlay');
   if (ov) {
