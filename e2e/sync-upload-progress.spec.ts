@@ -25,18 +25,20 @@ test('a queued upload shows percent and MB on its sync row and in the pill', asy
   });
   await page.addInitScript(() => { localStorage.setItem('amux_walkthrough_done', '1'); localStorage.removeItem('amux_upload_bps'); });
   await page.goto('/', {waitUntil: 'domcontentloaded'});
-  await page.waitForFunction(() => typeof (window as any)._upqAdd === 'function' && typeof (window as any)._runSyncBanner === 'function');
+  await page.waitForFunction(() => typeof (window as any)._upqAdd === 'function' && typeof (window as any).runSyncBanner === 'function');
   await page.evaluate(async () => {
     const file = new File([new Uint8Array(24 * 1024 * 1024)], 'big.m4a', {type: 'audio/mp4'});
     await (window as any)._upqAdd(file, '/tmp/sync-up', 'file');
+    // The guarded entry the pill tap uses: one pass at a time. Calling the
+    // inner _runSyncBanner directly raced the app's own pass on the same file.
     (0, eval)('_syncBannerRequested = true');
-    (window as any)._runSyncBanner();
+    (window as any).runSyncBanner();
   });
   const row = page.locator('#sync-banner .sync-item.running').filter({hasText: 'big.m4a'});
   await expect(row.locator('.sync-progress-text')).toContainText(/Uploading \d+%/, {timeout: 20000});
   await expect(row.locator('.sync-progress-text')).toContainText('MB');
   await expect.poll(async () => Number(await row.locator('.sync-progress-bar').getAttribute('aria-valuenow'))).toBeGreaterThan(0);
-  expect(await page.evaluate(() => (0, eval)('_syncPillText'))).toMatch(/Syncing 0\/1 · \d+%/);
+  await expect.poll(() => page.evaluate(() => (0, eval)('_syncPillText'))).toMatch(/Syncing 0\/1 · \d+%/);
   release();
   await expect(page.locator('#sync-banner .sync-item.done').filter({hasText: 'big.m4a'})).toHaveCount(1, {timeout: 30000});
   await expect(page.locator('#sync-banner .sync-progress')).toHaveCount(0);

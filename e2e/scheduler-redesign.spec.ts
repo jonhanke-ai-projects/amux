@@ -237,8 +237,12 @@ test('row menu: run, pause, edit and delete are reachable from the list', async 
   expect(mb!.x + mb!.width).toBeLessThanOrEqual(vw);
   await menu.getByRole('menuitem', { name: 'Pause', exact: true }).click();
   await expect.poll(async () => (await getOne(request, tok, id)).body.enabled).toBe(0);
-  // The row switch resumes it.
-  await page.locator(`[data-sched-id="${id}"] .sx-toggle input`).click();
+  // The row switch shows the pause at once (AMUX-5865: it used to show "on"
+  // until a refetch landed, so this tap sent a second pause), then resumes it.
+  const sw = page.locator(`[data-sched-id="${id}"] .sx-toggle input`);
+  await expect(sw).not.toBeChecked();
+  await sw.click();
+  await expect(sw).toBeChecked();
   await expect.poll(async () => (await getOne(request, tok, id)).body.enabled).toBe(1);
   await page.locator(`[data-sched-id="${id}"] .sx-more-btn`).click();
   await menu.getByRole('menuitem', { name: 'Delete', exact: true }).click();

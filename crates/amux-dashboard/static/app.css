@@ -8871,3 +8871,12 @@ body.light #fc-container { color-scheme: light; }
 .sync-progress-text { font-size:0.75rem; color:var(--dim); }
 .sync-progress-bar { height:4px; border-radius:2px; background:var(--border); overflow:hidden; margin-top:3px; }
 .sync-progress-bar span { display:block; height:100%; background:var(--accent); transition:width .2s; }
+/* AMUX-5865. Under "All" the system job list scrolls inside a bounded box.
+   Expanded, its ~48 cards made the phone page ~11,000px tall, growing ~200px
+   per job, which also broke WebKit's 32767px full-page capture at 3x. The
+   System pill shows the list unbounded. Broken jobs sort first, so they are
+   always in view without scrolling. */
+.sysjob-viewall { display:none; margin-left:auto; align-items:center; text-decoration:none; }
+#scheduler-view.sx-all .sysjob-viewall { display:inline-flex; }
+#scheduler-view.sx-all #system-jobs-list { max-height:min(60dvh, 520px); overflow-y:auto; -webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain; border:1px solid var(--border); border-radius:var(--radius-control); padding:4px; }
