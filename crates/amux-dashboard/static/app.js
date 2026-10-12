@@ -14137,7 +14137,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1418';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1419';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -57402,10 +57402,17 @@ async function _drawPrefGet(key) {
     return d && typeof d.value === 'string' ? d.value : null;
   } catch (e) { return null; }
 }
+// Writes to one key go out one at a time, in order. Three quick snap toggles
+// used to send three overlapping POSTs, and whichever finished last won, so the
+// stored setting could be an older one than the editor showed (CI, 2026-10-12).
+const _drawPrefChain = {};
 function _drawPrefSet(key, value) {
   try { localStorage.setItem('amux_draw_' + key, value); } catch (e) {}
-  return fetch(API + '/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, value }) }).catch(() => {});
+  const send = () => fetch(API + '/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value }) })
+    .then(r => { if (!r.ok) _drawBeacon('pref-save-failed', { key, status: r.status }); })
+    .catch(e => _drawBeacon('pref-save-failed', { key, error: String(e && e.message || e) }));
+  return (_drawPrefChain[key] = (_drawPrefChain[key] || Promise.resolve()).then(send));
 }
 
 // Load the vendored editor once. Its stylesheet and fonts come from the same

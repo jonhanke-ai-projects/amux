@@ -170,28 +170,28 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:3104 | Hold to dictate (or click to start/stop) | `_dictToggleRec` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:24309 | Undo AI edit | `_dictUndo` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:1451 | Dismiss failed change | `_dismissQueuedOp` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:57976 | … | `_drawDirPop` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:58035 | Up | `_drawDirPop` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:58038 | … | `_drawDirPop` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:57983 | … | `_drawDirPop` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:58042 | Up | `_drawDirPop` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:58045 | … | `_drawDirPop` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:2221 | Choose folder | `_drawDirPopHere` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:2227 | PNG image | `_drawExport` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2228 | SVG image | `_drawExport` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2229 | .excalidraw file | `_drawExport` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2230 | Library (.excalidrawlib) | `_drawExport` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2253 | Full screen | `_drawFullscreen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:58284 | + | `_drawInsertLibItem` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:58291 | + | `_drawInsertLibItem` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2198 | Components | `_drawLibTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:2199 | Drawings | `_drawLibTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:2220 | New drawing | `_drawNew` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:58044 | New here | `_drawNewInDir` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:58051 | New here | `_drawNewInDir` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2231 | Show in Files | `_drawOpenInFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2223 | Send to worker | `_drawOpenSend` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:58039 | … | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:58440 | + | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:58460 | … | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:58046 | … | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:58447 | + | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:58467 | … | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2238 | Load disk version | `_drawResolveConflict` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2239 | Keep mine | `_drawResolveConflict` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:58043 | Save here | `_drawSaveInDir` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:58050 | Save here | `_drawSaveInDir` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2266 | Retry | `_drawSaveNow` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2203 | + Save selection | `_drawSaveSelectionToLib` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:2246 | Save to library | `_drawSaveSelectionToLib` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
@@ -1023,11 +1023,11 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js:53333 | b | `_dpPick` | addEventListener |
 | app.js:53281 | "prev"]') | `_dpShiftMonth` | addEventListener |
 | app.js:53282 | "next"]') | `_dpShiftMonth` | addEventListener |
-| app.js:58546 | Color  | `_drawPenColor` | onclick |
+| app.js:58553 | Color  | `_drawPenColor` | onclick |
 | index.html:2258 | Pen | `_drawPenTool` | onclick |
 | index.html:2259 | Eraser | `_drawPenTool` | onclick |
 | index.html:2260 | Laser pointer | `_drawPenTool` | onclick |
-| app.js:58548 | Thickness  | `_drawPenWidth` | onclick |
+| app.js:58555 | Thickness  | `_drawPenWidth` | onclick |
 | index.html:2204 | Import files | `_drawPickImport` | onclick |
 | index.html:2225 | Export | `_drawToggleExportMenu` | onclick |
 | index.html:2247 | Lock | `_drawToggleLock` | onclick |
@@ -1337,7 +1337,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:3728 | Console | `dtSwitchTab` | onclick |
 | index.html:3729 | Network | `dtSwitchTab` | onclick |
 | index.html:3730 | Info | `dtSwitchTab` | onclick |
-| app.js:58011 | draw-dir-pop | `e` | addEventListener |
+| app.js:58018 | draw-dir-pop | `e` | addEventListener |
 | app.js:37122 | el | `ev` | addEventListener |
 | index.html:3707 | Exit | `exitGridMode` | onclick |
 | index.html:762 | MD | `exportBoard` | onclick |
