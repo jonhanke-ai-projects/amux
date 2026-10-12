@@ -179,15 +179,15 @@ async fn get_history_item(
     let store = state.store.clone();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
         let conn = store.read()?;
-        let sql = "SELECT id, text, type, session, ts, origin, card_id, \
+        let sql = format!("SELECT id, text, type, session, ts, origin, {} AS sender, card_id, \
                    delivery, queued_at, delivered_at, submit_verdict, capture_pending, queue_id, repeat_of, \
                    (SELECT title FROM issues WHERE issues.id=cmd_history.card_id) AS card_title, \
                    (SELECT status FROM issues WHERE issues.id=cmd_history.card_id) AS card_status, \
                    (SELECT archived FROM issues WHERE issues.id=cmd_history.card_id) AS card_archived, \
                    (SELECT deleted FROM issues WHERE issues.id=cmd_history.card_id) AS card_deleted \
-                   FROM cmd_history WHERE id=?1";
+                   FROM cmd_history WHERE id=?1", sender_sql());
         let refs: Vec<&dyn rusqlite::types::ToSql> = vec![&nid];
-        let mut rows = super::calendar::query_rows_json(&conn, sql, &refs)?;
+        let mut rows = super::calendar::query_rows_json(&conn, &sql, &refs)?;
         if let Some(d) = rows.first_mut() {
             let mtype = d.get("type").and_then(Value::as_str).unwrap_or("").to_string();
             d["kind"] = json!(msg_kind(&mtype));
@@ -436,6 +436,100 @@ pub(crate) fn msg_kind(mtype: &str) -> &'static str {
     }
 }
 
+/// WHO SENT a message, as one SQL expression over the stored row.
+///
+/// Ethan, 2026-10-11: "messages list should also show WHO sent it not just
+/// that its human". The kind says Human; the person was never on screen.
+///
+/// NOTHING NEW IS RECORDED HERE, because the send path already stamps it.
+/// `origin` is written server-side from the authenticated request, never from
+/// body text: a verified local team member is `member:<email>` (org.rs strips
+/// any inbound copy of those headers), a gateway user is their
+/// `x-amux-user-email`, a lane is its `X-Amux-Session` stamp (AMUX-1768), a
+/// schedule is `[SCHED-n] title`. The one blank case is a HUMAN send carrying
+/// neither a member nor a gateway identity, which is the server's own login,
+/// so it reads `owner`. `messages.rs`'s rollup already relies on exactly that
+/// reading (`type='user' AND origin=''` is the owner's traffic).
+///
+/// SQL, not Rust, so the row value, the `?sender=` filter and the `senders`
+/// facet are the SAME expression: a filter built from a second copy of a
+/// derivation is how a chip and its rows drift (the AMUX-3737 lesson).
+/// A blank origin on anything that is not human says `unknown`, never `owner`:
+/// a machine row with no stamp must not wear the owner's name.
+pub(crate) fn sender_sql() -> String {
+    let quoted = |ts: &[&str]| ts.iter().map(|t| format!("'{t}'")).collect::<Vec<_>>().join(",");
+    format!(
+        "(CASE \
+           WHEN COALESCE(origin,'')='' THEN CASE \
+             WHEN COALESCE(type,'') IN ({human}) THEN 'owner' \
+             WHEN COALESCE(type,'') IN ({amux}) THEN 'harness' \
+             ELSE 'unknown' END \
+           WHEN origin LIKE 'member:%' THEN substr(origin, 8) \
+           WHEN COALESCE(type,'')='schedule' AND origin LIKE '[SCHED-%]%' AND instr(origin, ']')>2 \
+             THEN substr(origin, 2, instr(origin, ']')-2) \
+           ELSE origin END)",
+        human = quoted(&HUMAN_TYPES),
+        amux = quoted(&AMUX_TYPES),
+    )
+}
+
+/// The kind filter as one SQL predicate, shared by the list and the sender
+/// facet so a facet count is a count of the population the list would show.
+fn kind_predicate(raw: Option<&str>, params: &mut Vec<rusqlite::types::Value>) -> Option<String> {
+    let want: Vec<String> = raw
+        .unwrap_or("")
+        .split(',')
+        .map(|k| k.trim().to_lowercase())
+        .filter(|k| MSG_KINDS.contains(&k.as_str()))
+        .collect();
+    if want.is_empty() {
+        return None;
+    }
+    let mut ors: Vec<String> = Vec::new();
+    // THE FILTER IS THE CLASSIFIER WRITTEN A SECOND TIME, so it is
+    // built from the SAME lists rather than restated (AMUX-3737). It
+    // used to say `type NOT IN ('session','schedule','system')` for
+    // `human` — the denylist, matching msg_kind's old fallback exactly,
+    // which is the problem: the two agreed, and both were wrong. A
+    // filter that reproduces a misclassification is worse than one that
+    // drifts from it, because the badge and the filter corroborate each
+    // other.
+    let inlist = |types: &[&str], params: &mut Vec<rusqlite::types::Value>| {
+        for t in types {
+            params.push(rusqlite::types::Value::Text((*t).to_string()));
+        }
+        format!(
+            "COALESCE(type,'') IN ({})",
+            types.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+        )
+    };
+    for k in &want {
+        match k.as_str() {
+            "human" => ors.push(inlist(&HUMAN_TYPES, params)),
+            "amux" => ors.push(inlist(&AMUX_TYPES, params)),
+            "unstamped" => ors.push(inlist(&UNSTAMPED_TYPES, params)),
+            // Anything this build does not classify. Selecting it is how
+            // you FIND the types nobody taught msg_kind about, which is
+            // the whole reason `unknown` exists as a kind.
+            "unknown" => {
+                let known: Vec<&str> = HUMAN_TYPES
+                    .iter()
+                    .chain(AMUX_TYPES.iter())
+                    .chain(UNSTAMPED_TYPES.iter())
+                    .chain(["session", "schedule"].iter())
+                    .copied()
+                    .collect();
+                ors.push(format!("NOT {}", inlist(&known, params)));
+            }
+            other => {
+                ors.push("type=?".to_string());
+                params.push(rusqlite::types::Value::Text(other.to_string()));
+            }
+        }
+    }
+    Some(format!("({})", ors.join(" OR ")))
+}
+
 /// Python `_msg_is_queued`: steering = a human message queued rather than
 /// sent straight through. A delivery detail, not a kind.
 pub(crate) fn msg_is_queued(mtype: &str) -> bool {
@@ -560,6 +654,16 @@ pub struct ListParams {
     device: Option<String>,
     #[serde(default)]
     place: Option<String>,
+    /// Who sent it (see [`sender_sql`]): `owner`, a member email, a lane, a
+    /// `SCHED-n`. Exact match, server-side, like `device`.
+    #[serde(default)]
+    sender: Option<String>,
+    /// Kind scope for the `senders` facet ONLY, on `?counts=1`. A separate
+    /// name from `kind` so the per-kind totals stay visibly kind-free: the
+    /// chips need every kind's true total, and the dashboard pins that its
+    /// counts request carries no `kind=` (messages-default-kind.spec.ts).
+    #[serde(default)]
+    senders_for: Option<String>,
     /// Time window on `ts` (gs12-data, 2026-10-01: every bound was dropped as
     /// an unknown key, so a past window returned the newest 500 rows). ISO-8601
     /// or epoch seconds or milliseconds; `from`/`start`/`after` and
@@ -749,6 +853,44 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                         out.insert(format!("{field}s"), Value::Object(facet));
                     }
                 }
+                // SENDER FACET: who sent messages, with counts. Same session
+                // scope, and `senders_for` when one is given, so the From
+                // menu beside a Human chip lists the people who sent human
+                // messages rather than every lane in the fleet. The per-kind
+                // totals above stay kind-free on purpose (the chips need them).
+                {
+                    let mut fparams: Vec<rusqlite::types::Value> = Vec::new();
+                    let mut fwhere: Vec<String> = Vec::new();
+                    if !session.is_empty() {
+                        fwhere.push("session=?".into());
+                        fparams.push(rusqlite::types::Value::Text(session.clone()));
+                    }
+                    if let Some(pred) = kind_predicate(p.senders_for.as_deref(), &mut fparams) {
+                        fwhere.push(pred);
+                    }
+                    let mut sql = format!("SELECT {} AS s, COUNT(*) c FROM cmd_history", sender_sql());
+                    if !fwhere.is_empty() {
+                        sql.push_str(" WHERE ");
+                        sql.push_str(&fwhere.join(" AND "));
+                    }
+                    sql.push_str(" GROUP BY s ORDER BY c DESC, s ASC");
+                    let refs: Vec<&dyn rusqlite::types::ToSql> = fparams
+                        .iter()
+                        .map(|p| p as &dyn rusqlite::types::ToSql)
+                        .collect();
+                    let mut stmt = conn.prepare(&sql)?;
+                    let rows: Vec<(String, i64)> = stmt
+                        .query_map(refs.as_slice(), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                        .flatten()
+                        .collect();
+                    // An ARRAY, not an object: the order (most messages first) is
+                    // the answer to "who talks to this fleet most", and JSON
+                    // object key order is not something a client may rely on.
+                    out.insert(
+                        "senders".into(),
+                        Value::Array(rows.into_iter().map(|(s, c)| json!({"sender": s, "count": c})).collect()),
+                    );
+                }
                 return Ok((Value::Object(out), None));
             }
 
@@ -824,71 +966,28 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                 where_cl.push(format!("json_extract(client_meta,'$.{field}')=?"));
                 params.push(rusqlite::types::Value::Text(v.to_string()));
             }
-            let want: Vec<String> = p
-                .kind
-                .as_deref()
-                .unwrap_or("")
-                .split(',')
-                .map(|k| k.trim().to_lowercase())
-                .filter(|k| MSG_KINDS.contains(&k.as_str()))
-                .collect();
-            if !want.is_empty() {
-                let mut ors: Vec<String> = Vec::new();
-                // THE FILTER IS THE CLASSIFIER WRITTEN A SECOND TIME, so it is
-                // built from the SAME lists rather than restated (AMUX-3737). It
-                // used to say `type NOT IN ('session','schedule','system')` for
-                // `human` — the denylist, matching msg_kind's old fallback exactly,
-                // which is the problem: the two agreed, and both were wrong. A
-                // filter that reproduces a misclassification is worse than one that
-                // drifts from it, because the badge and the filter corroborate each
-                // other.
-                let inlist = |types: &[&str], params: &mut Vec<rusqlite::types::Value>| {
-                    for t in types {
-                        params.push(rusqlite::types::Value::Text((*t).to_string()));
-                    }
-                    format!(
-                        "COALESCE(type,'') IN ({})",
-                        types.iter().map(|_| "?").collect::<Vec<_>>().join(",")
-                    )
-                };
-                for k in &want {
-                    match k.as_str() {
-                        "human" => ors.push(inlist(&HUMAN_TYPES, &mut params)),
-                        "amux" => ors.push(inlist(&AMUX_TYPES, &mut params)),
-                        "unstamped" => ors.push(inlist(&UNSTAMPED_TYPES, &mut params)),
-                        // Anything this build does not classify. Selecting it is how
-                        // you FIND the types nobody taught msg_kind about, which is
-                        // the whole reason `unknown` exists as a kind.
-                        "unknown" => {
-                            let known: Vec<&str> = HUMAN_TYPES
-                                .iter()
-                                .chain(AMUX_TYPES.iter())
-                                .chain(UNSTAMPED_TYPES.iter())
-                                .chain(["session", "schedule"].iter())
-                                .copied()
-                                .collect();
-                            ors.push(format!("NOT {}", inlist(&known, &mut params)));
-                        }
-                        other => {
-                            ors.push("type=?".to_string());
-                            params.push(rusqlite::types::Value::Text(other.to_string()));
-                        }
-                    }
-                }
-                where_cl.push(format!("({})", ors.join(" OR ")));
+            if let Some(pred) = kind_predicate(p.kind.as_deref(), &mut params) {
+                where_cl.push(pred);
+            }
+            // WHO SENT IT (Ethan, 2026-10-11). Exact match on the same
+            // expression the row's `sender` field is read from.
+            let sender_f = p.sender.as_deref().unwrap_or("").trim().to_string();
+            if !sender_f.is_empty() {
+                where_cl.push(format!("{}=?", sender_sql()));
+                params.push(rusqlite::types::Value::Text(sender_f));
             }
             let mut sql = String::from(
                 // delivery/queued_at/delivered_at are migration 0014. They are
                 // NULL on the 12.4k pre-existing rows and must reach the client AS
                 // NULL — the UI distinguishes "not recorded" from "direct", and
                 // coalescing here would assert a delivery path nobody observed.
-                "SELECT id, text, type, session, ts, origin, card_id, \
+                &format!("SELECT id, text, type, session, ts, origin, {} AS sender, card_id, \
              delivery, queued_at, delivered_at, submit_verdict, capture_pending, client_meta, repeat_of, \
              (SELECT title FROM issues WHERE issues.id=cmd_history.card_id) AS card_title, \
              (SELECT status FROM issues WHERE issues.id=cmd_history.card_id) AS card_status, \
              (SELECT archived FROM issues WHERE issues.id=cmd_history.card_id) AS card_archived, \
              (SELECT deleted FROM issues WHERE issues.id=cmd_history.card_id) AS card_deleted \
-             FROM cmd_history",
+             FROM cmd_history", sender_sql()),
             );
             if !where_cl.is_empty() {
                 sql.push_str(" WHERE ");
@@ -2166,6 +2265,76 @@ mod tests {
         // the filter silently merges two answers into one.
         let (_, mini) = send(&app, "GET", "/api/history?device=Mac%20mini", None).await;
         assert_eq!(texts(&mini), vec!["from the mac mini"]);
+    }
+
+    /// WHO SENT IT (Ethan, 2026-10-11): each row names its sender, `?sender=`
+    /// narrows to one, and the facet lists every sender with its count, all
+    /// from the one `sender_sql` expression.
+    #[tokio::test]
+    async fn every_row_names_its_sender_and_the_sender_filter_and_facet_agree() {
+        let (app, state, _dir) = app_with_state();
+        state
+            .store
+            .write_async(|conn| {
+                for (text, ty, origin) in [
+                    ("owner says hi", "user", ""),
+                    ("member says hi", "user", "member:ann@org.io"),
+                    ("gateway says hi", "user", "bob@org.io"),
+                    ("lane says hi", "session", "gtm-engine"),
+                    ("lane again", "session", "gtm-engine"),
+                    ("cron says hi", "schedule", "[SCHED-7] Nightly gate"),
+                    ("pickup nudge", "pickup", "board-drive"),
+                    ("bare system", "system", ""),
+                    ("bare lane", "session", ""),
+                ] {
+                    conn.execute(
+                        "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?1, ?2, 'w', 1000, ?3)",
+                        rusqlite::params![text, ty, origin],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let (_, all) = send(&app, "GET", "/api/history", None).await;
+        let by_text: std::collections::HashMap<String, String> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["text"].as_str().unwrap().to_string(), r["sender"].as_str().unwrap_or("<missing>").to_string()))
+            .collect();
+        for (text, want) in [
+            ("owner says hi", "owner"),
+            ("member says hi", "ann@org.io"),
+            ("gateway says hi", "bob@org.io"),
+            ("lane says hi", "gtm-engine"),
+            ("cron says hi", "SCHED-7"),
+            ("pickup nudge", "board-drive"),
+            ("bare system", "harness"),
+            // A machine row with no stamp is unknown. It must never read owner.
+            ("bare lane", "unknown"),
+        ] {
+            assert_eq!(by_text.get(text).map(String::as_str), Some(want), "sender of {text:?}");
+        }
+
+        let (_, lane) = send(&app, "GET", "/api/history?sender=gtm-engine", None).await;
+        assert_eq!(lane.as_array().unwrap().len(), 2);
+        let (_, owner) = send(&app, "GET", "/api/history?sender=owner&kind=human", None).await;
+        let t: Vec<&str> = owner.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
+        assert_eq!(t, vec!["owner says hi"]);
+
+        let (_, c) = send(&app, "GET", "/api/history?counts=1", None).await;
+        let senders = c["senders"].as_array().expect("senders facet");
+        assert_eq!(senders[0], json!({"sender": "gtm-engine", "count": 2}), "most messages first");
+        assert_eq!(senders.len(), 8);
+        // The facet respects the kind, so the From menu beside Human lists people.
+        let (_, ch) = send(&app, "GET", "/api/history?counts=1&senders_for=human", None).await;
+        let names: Vec<&str> = ch["senders"].as_array().unwrap().iter().map(|s| s["sender"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["ann@org.io", "bob@org.io", "owner"]);
+        assert_eq!(ch["all"], c["all"], "kind totals stay kind-free");
+
+        let (_, one) = send(&app, "GET", "/api/history/1", None).await;
+        assert_eq!(one["sender"], json!("owner"), "the single-message lookup carries it too");
     }
 
     /// The filter's options come from the DATA, so the UI can only offer a

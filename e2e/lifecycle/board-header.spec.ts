@@ -2,7 +2,10 @@ import {test,expect} from '../fixtures';
 import {boot,checkpoint} from './evidence';
 test('LC-BOARD-HEADER: Verified and its terminal badge remain readable on a phone',async({page},info)=>{
  await page.setViewportSize({width:375,height:812});await boot(page);await page.locator('#tab-board').click();
- const col=page.locator('#board-view .board-col[data-col="verified"]');await col.scrollIntoViewIfNeeded();
+ const col=page.locator('#board-view .board-col[data-col="verified"]');
+ // A live board re-renders when another spec on the shared server adds a card,
+ // which can detach the column between locating and scrolling it. Retry the scroll.
+ await expect(async()=>{await col.scrollIntoViewIfNeeded({timeout:2000});}).toPass({timeout:15000});
  if(await col.evaluate(el=>el.classList.contains('col-collapsed')))await col.locator('.board-col-collapse').click();
  const label=col.locator('.board-col-label'),badge=col.locator('.col-terminal-chip');
  await expect(label).toHaveText(/verified/i);await expect(badge).toHaveText('terminal');
