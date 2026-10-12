@@ -253,6 +253,13 @@ pub(crate) fn lane_exists(name: &str) -> bool {
 /// A turn that has produced nothing for this long is killed and recorded as
 /// failed, so a hung provider cannot pin a worker `working` forever.
 const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
+/// How long a provider gets to exit after it reported its final result. Past
+/// this the turn is recorded anyway: a `claude -p` that started a background
+/// command stays alive until that command ends. Measured 2026-10-12 on
+/// mxp-gs12@chat: the reply was complete and a 30-minute retry loop held the
+/// Chat tab on "responding…" with a message queued behind it, and the idle
+/// timeout would then have killed the loop along with the turn.
+const RESULT_EXIT_GRACE: Duration = Duration::from_secs(3);
 /// How often a running turn re-asserts `active` (well under the 120s the
 /// status projection trusts a native report for).
 const HEARTBEAT: Duration = Duration::from_secs(45);
@@ -1545,6 +1552,9 @@ async fn follow_turn(
     // Draining: the turn has ended; read what is left, then stop.
     let mut draining = false;
     let mut lost = false;
+    // Set when the final result arrived and the process is still running.
+    let mut ended_at: Option<std::time::Instant> = None;
+    let mut lingering = false;
     loop {
         let mut buf = String::new();
         match reader.read_line(&mut buf).await {
@@ -1562,6 +1572,18 @@ async fn follow_turn(
                     lost = true;
                     draining = true;
                     continue;
+                }
+                if parser.turn_ended
+                    && ended_at.get_or_insert_with(std::time::Instant::now).elapsed() >= RESULT_EXIT_GRACE
+                {
+                    // The reply is complete. The process group is left alone:
+                    // what keeps it alive is work the turn started on purpose.
+                    lingering = true;
+                    tracing::warn!(session = %name, turn = %turn_id, pgid, measured = true, n_considered = 1,
+                        grace_s = RESULT_EXIT_GRACE.as_secs(), verdict = "chat_turn_ended_before_exit",
+                        "the provider reported its final result but is still running (a background command); \
+                         the turn is recorded now and the process is left to finish");
+                    break;
                 }
                 if last_output.elapsed() >= TURN_IDLE_TIMEOUT {
                     signal_turn(pgid);
@@ -1624,7 +1646,7 @@ async fn follow_turn(
     let code = files.exit_code();
     if lane.interrupt.load(Ordering::SeqCst) {
         lane.publish(json!({"type": "interrupted", "turn_id": turn_id}));
-    } else if out.asm.error.is_none() && code != Some(0) {
+    } else if out.asm.error.is_none() && code != Some(0) && !lingering {
         let tail: String = err_text
             .lines()
             .rev()
