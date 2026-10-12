@@ -650,6 +650,10 @@ const WRITABLE_EXTS: &[&str] = &[
     ".conf",
     ".log",
     ".makefile",
+    // The Draw tab autosaves drawings and its shared component library as
+    // these (standard Excalidraw JSON).
+    ".excalidraw",
+    ".excalidrawlib",
 ];
 
 async fn put_file(req: Request) -> Response {
@@ -2935,6 +2939,24 @@ pub(crate) mod tests {
             std::fs::read_to_string(&mdai).unwrap(),
             "---\nsources: []\n---\nbody"
         );
+
+        // The Draw tab autosaves drawings and its library through this route.
+        for name in ["d/arch.excalidraw", "d/library.excalidrawlib"] {
+            let p = dir.path().join(name);
+            let (status, _, body) = send(
+                &app,
+                HttpRequest::builder().method("PUT").uri("/api/file")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"path": p.to_str().unwrap(), "content": "{\"type\":\"excalidraw\"}"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+            let v: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(status, StatusCode::OK, "{name} must be writable: {v}");
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"type\":\"excalidraw\"}");
+        }
 
         // Unlisted extension → 400 with python's message.
         let exe = dir.path().join("x.exe");

@@ -9069,7 +9069,8 @@ const _EMBED_VIEW_EL = {
   scheduler:'scheduler-view', files:'files-view', proxies:'proxies-view', logs:'logs-view',
   messages:'messages-view', map:'map-view', metrics:'metrics-view', cost:'cost-view',
   torrents:'torrents-view', terminal:'terminal-view', browser:'browser-view', sql:'sql-view',
-  graph:'graph-view', journal:'journal-view', habits:'habits-view', skills:'skills-view'
+  graph:'graph-view', journal:'journal-view', habits:'habits-view', skills:'skills-view',
+  draw:'draw-view'
 };
 let _embedViewApplied = false;
 (function() {
@@ -14102,7 +14103,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1384';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1402';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -26022,6 +26023,8 @@ async function openFilePreview(path, options = {}) {
   // does. Route before touching the file-overlay DOM so a .mdai opened from the
   // file browser or a file link lands in the right viewer.
   if (!options.raw && /\.mdai$/i.test(path || '')) { openMdaiNode(path); return; }
+  // A drawing opens in the Draw tab, where it is editable and autosaves.
+  if (!options.raw && !options.readOnly && /\.excalidraw$/i.test(path || '')) { _drawOpenPath(path); return; }
   // Spreadsheets render as tables, not a download (AMUX-3343).
   if (/\.(xlsx|xls|ods)$/i.test(path || '')) { _openXlsxPreview(path); return; }
   _fileData = null;
@@ -32669,7 +32672,7 @@ function switchView(view) {
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
-    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'],
+    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -32692,6 +32695,9 @@ function switchView(view) {
   if (view === 'journal') _journalInit();
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
+  // Draw: load the editor lazily on first open; leaving flushes a pending
+  // save and stops the on-disk change poll.
+  if (view === 'draw') _drawEnter(); else _drawLeave();
   if (view === 'sql') _sqlInit();
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
@@ -56935,4 +56941,1270 @@ function _vxOnPeekClose() {
 }
 function _vxOnPeekOpen(name) {
   if (_vx && _vx.active && _vx.worker !== name) _vxEnd();
+}
+
+// ── Draw tab ─────────────────────────────────────────────────────────────────
+// Freehand diagrams on Excalidraw. Every drawing is a standard `.excalidraw`
+// JSON file in a folder the user picks; the tab autosaves it through the same
+// PUT /api/file the file viewer uses (with its ETag conflict check), and polls
+// GET /api/file/raw with If-None-Match so a worker's rewrite of the open file
+// reloads into the canvas. Nothing here is stored only in the browser:
+//
+//   <folder>/<name>.excalidraw              the drawing itself (user's folder)
+//   <amux data dir>/draw/library.excalidrawlib   shared component library
+//   <amux data dir>/draw/recents.json        recent drawings + PNG thumbnails
+//   pref draw_settings / draw_dir / draw_last   snap toggles, folder, last file
+//
+// The editor bundle (static/vendor/draw, scripts/build-draw.mjs) is imported
+// the first time the tab opens, so app boot never pays for it.
+//
+// Failures (editor load, save, library write, reload conflict) are beaconed to
+// /api/client-debug as kind "draw" so a sweep sees them; the status line says
+// what failed and never reports "saved" for a write the server refused.
+var _draw = null;
+const _DRAW_VENDOR = '/vendor/draw/';
+const _DRAW_LIB_MIME = 'application/vnd.excalidrawlib+json';
+const _DRAW_POLL_MS = 2000;
+const _DRAW_SAVE_DEBOUNCE_MS = 1000;
+const _DRAW_RECENTS_MAX = 12;
+const _DRAW_PEN_COLORS = ['#1e1e1e', '#6741d9', '#1971c2', '#e03131', '#2f9e44'];
+const _DRAW_PEN_WIDTHS = [1, 2, 4];
+const _DRAW_MERMAID_RE = /^(?:graph|flowchart)\s+(?:TD|TB|BT|RL|LR)\b|^(?:sequenceDiagram|classDiagram|erDiagram|stateDiagram(?:-v2)?|gantt|pie|journey|mindmap|gitGraph|timeline)\b/;
+
+function _drawS() {
+  if (!_draw) {
+    _draw = {
+      lib: null, loading: null, api: null, root: null, mounted: false,
+      path: '', dir: '', etag: null, savedVersion: null, curVersion: null,
+      saving: false, saveAgain: false, saveTimer: null, status: 'idle', statusMsg: '',
+      pollTimer: null, pollTick: 0, applying: false, conflict: null, opening: false,
+      libItems: [], libHash: null, libEtag: null, libSaveTimer: null, libLoaded: false,
+      recents: [], recentsLoaded: false, recentsTimer: null, thumbAt: 0,
+      libTab: 'components', settings: { grid: false, align: true, connect: true },
+      settingsLoaded: false, live: false, selCount: 0, selLocked: false, svgCache: new Map(),
+      themeObs: null, penColor: _DRAW_PEN_COLORS[1], penWidth: 2,
+    };
+  }
+  return _draw;
+}
+
+function _drawBeacon(event, extra) {
+  const d = _draw || {};
+  try {
+    console.warn('[draw]', event, extra || '');
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify(Object.assign({ kind: 'draw', event, path: d.path || null,
+        ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?'), measured: true }, extra || {})),
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+function _drawDataDir() {
+  const dd = (window._AMUX_DATA_DIR || '').replace(/\/+$/, '');
+  if (dd) return dd;
+  const home = (window._AMUX_HOME || '').replace(/\/+$/, '');
+  return home ? home + '/.amux' : '';
+}
+function _drawLibPath() { return _drawDataDir() + '/draw/library.excalidrawlib'; }
+function _drawRecentsPath() { return _drawDataDir() + '/draw/recents.json'; }
+function _drawDefaultDir() { return _drawDataDir() + '/draw/drawings'; }
+function _drawBase(p) { return String(p || '').split('/').pop() || ''; }
+function _drawDirOf(p) { const s = String(p || ''); return s.slice(0, s.lastIndexOf('/')) || '/'; }
+function _drawTitleOf(p) { return _drawBase(p).replace(/\.excalidraw$/i, ''); }
+function _drawIsDark() { return !document.body.classList.contains('light'); }
+
+async function _drawPrefGet(key) {
+  try {
+    const r = await fetch(API + '/api/prefs?key=' + encodeURIComponent(key), { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    return d && typeof d.value === 'string' ? d.value : null;
+  } catch (e) { return null; }
+}
+function _drawPrefSet(key, value) {
+  try { localStorage.setItem('amux_draw_' + key, value); } catch (e) {}
+  return fetch(API + '/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value }) }).catch(() => {});
+}
+
+// Load the vendored editor once. Its stylesheet and fonts come from the same
+// directory (EXCALIDRAW_ASSET_PATH), so nothing is fetched from a CDN.
+function _drawLoadLib() {
+  const d = _drawS();
+  if (d.lib) return Promise.resolve(d.lib);
+  if (d.loading) return d.loading;
+  window.EXCALIDRAW_ASSET_PATH = location.origin + _DRAW_VENDOR;
+  if (!document.getElementById('draw-css')) {
+    const l = document.createElement('link');
+    l.id = 'draw-css'; l.rel = 'stylesheet'; l.href = _DRAW_VENDOR + 'draw.css';
+    document.head.appendChild(l);
+  }
+  const t0 = performance.now();
+  d.loading = import(_DRAW_VENDOR + 'draw.js').then(m => {
+    d.lib = m;
+    _drawBeacon('editor-loaded', { ms: Math.round(performance.now() - t0) });
+    return m;
+  }).catch(e => {
+    d.loading = null;
+    _drawBeacon('editor-load-failed', { error: String(e && e.message || e) });
+    throw e;
+  });
+  return d.loading;
+}
+
+// The body is a padded, scrolling page, so the canvas sizes itself to the
+// viewport below the tab strip; on a phone it also bleeds past the body's side
+// and bottom padding so the canvas fills the screen.
+function _drawFit() {
+  const v = document.getElementById('draw-view');
+  if (!v || v.style.display === 'none' || v.classList.contains('draw-live')) return;
+  const cs = getComputedStyle(document.body);
+  const phone = innerWidth <= 700;
+  const pl = parseFloat(cs.paddingLeft) || 0, pr = parseFloat(cs.paddingRight) || 0, pb = parseFloat(cs.paddingBottom) || 0;
+  v.style.marginLeft = phone ? -pl + 'px' : '';
+  v.style.marginRight = phone ? -pr + 'px' : '';
+  v.style.marginBottom = phone ? -pb + 'px' : '';
+  const top = v.getBoundingClientRect().top + scrollY;
+  v.style.setProperty('--draw-top', (top + (phone ? 0 : pb)) + 'px');
+}
+
+async function _drawEnter() {
+  const d = _drawS();
+  document.documentElement.classList.add('draw-active');
+  if (!d.fitHooked) { d.fitHooked = true; addEventListener('resize', () => { if (activeView === 'draw') _drawFit(); }); }
+  scrollTo(0, 0);
+  _drawFit();
+  requestAnimationFrame(_drawFit);
+  _drawRenderChrome();
+  const loadingEl = document.getElementById('draw-loading');
+  if (!d.mounted) {
+    if (loadingEl) { loadingEl.hidden = false; loadingEl.textContent = 'Loading the editor…'; }
+    try {
+      await Promise.all([_drawLoadLib(), _drawLoadSettings()]);
+    } catch (e) {
+      if (loadingEl) loadingEl.textContent = 'The drawing editor could not load: ' + (e && e.message || e) + '. Check the connection and reopen the tab.';
+      return;
+    }
+    if (activeView !== 'draw' || d.mounted) return;
+    _drawMount();
+  }
+  _drawStartPoll();
+}
+
+function _drawLeave() {
+  document.documentElement.classList.remove('draw-active');
+  if (!_draw) return;
+  _drawStopPoll();
+  if (_draw.saveTimer) { clearTimeout(_draw.saveTimer); _draw.saveTimer = null; }
+  if (_draw.mounted && _drawDirty()) _drawSave();
+  _drawCloseMenus();
+}
+
+async function _drawLoadSettings() {
+  const d = _drawS();
+  if (d.settingsLoaded) return;
+  let raw = null;
+  try { raw = localStorage.getItem('amux_draw_draw_settings'); } catch (e) {}
+  const server = await _drawPrefGet('draw_settings');
+  if (server) raw = server;
+  try { if (raw) Object.assign(d.settings, JSON.parse(raw)); } catch (e) {}
+  const dir = await _drawPrefGet('draw_dir');
+  d.dir = dir || d.dir || _drawDefaultDir();
+  d.settingsLoaded = true;
+}
+
+function _drawExcalidrawProps() {
+  const d = _drawS();
+  return {
+    excalidrawAPI: api => { if (api && !d.api) { d.api = api; _drawOnApi(); } },
+    onChange: _drawOnChange,
+    onLibraryChange: _drawOnLibraryChange,
+    onPaste: _drawOnPaste,
+    // The snap toggles must be in the INITIAL state: Excalidraw finishes its
+    // own async scene initialization after excalidrawAPI fires, and that
+    // replaced an appState applied earlier with its defaults.
+    initialData: { appState: { gridModeEnabled: !!d.settings.grid, objectsSnapModeEnabled: !!d.settings.align,
+      isBindingEnabled: !!d.settings.connect } },
+    theme: _drawIsDark() ? 'dark' : 'light',
+    langCode: 'en',
+    aiEnabled: false,
+    autoFocus: true,
+    name: _drawTitleOf(d.path) || 'drawing',
+    UIOptions: {
+      canvasActions: { loadScene: false, saveToActiveFile: false, export: false, toggleTheme: null,
+        saveAsImage: true, clearCanvas: true, changeViewBackgroundColor: true },
+    },
+  };
+}
+
+function _drawRenderRoot() {
+  const d = _drawS();
+  if (!d.root || !d.lib) return;
+  const { React, X } = d.lib;
+  d.root.render(React.createElement(X.Excalidraw, _drawExcalidrawProps()));
+}
+
+function _drawMount() {
+  const d = _drawS();
+  const host = document.getElementById('draw-host');
+  if (!host || d.mounted) return;
+  d.root = d.lib.createRoot(host);
+  d.mounted = true;
+  _drawRenderRoot();
+  // The editor follows the amux theme.
+  if (!d.themeObs) {
+    d.themeObs = new MutationObserver(() => { if (d.mounted) _drawRenderRoot(); _drawLibRender(); });
+    d.themeObs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  }
+  // Drop a drawing file to MERGE it into the canvas. Excalidraw's own drop
+  // would replace the whole scene (and autosave would then overwrite this file
+  // with the other one); images and libraries still go to Excalidraw.
+  const wrap = document.getElementById('draw-canvas-wrap');
+  if (wrap && !wrap.dataset.dropHooked) {
+    wrap.dataset.dropHooked = '1';
+    wrap.addEventListener('drop', e => {
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (files.some(f => /\.(excalidraw|json)$/i.test(f.name))) {
+        e.preventDefault(); e.stopPropagation();
+        _drawImportFiles(files, e.clientX, e.clientY);
+      }
+    }, true);
+    wrap.addEventListener('dragover', e => e.preventDefault());
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && _draw && _draw.mounted && _drawDirty()) _drawSave();
+  });
+}
+
+async function _drawOnApi() {
+  const d = _drawS();
+  // Wait out Excalidraw's own scene initialization (it runs after this
+  // callback and would overwrite anything applied now).
+  for (let i = 0; i < 100 && d.api.getAppState().isLoading; i++) await new Promise(r => setTimeout(r, 20));
+  await new Promise(r => requestAnimationFrame(() => r()));
+  const loadingEl = document.getElementById('draw-loading');
+  if (loadingEl) loadingEl.hidden = true;
+  _drawFit();
+  _drawApplySnapSettings();
+  _drawRenderPenbar();
+  _drawLoadLibrary();
+  _drawLoadRecents();
+  // A file requested before the editor existed (Files tab, path link) wins;
+  // then the last drawing; otherwise a fresh untitled one in the folder.
+  if (d.pendingOpen) { const p = d.pendingOpen; d.pendingOpen = null; await _drawOpen(p); return; }
+  let last = null;
+  try { last = localStorage.getItem('amux_draw_draw_last'); } catch (e) {}
+  last = (await _drawPrefGet('draw_last')) || last;
+  if (last) await _drawOpen(last);
+  else await _drawNew(true);
+}
+
+// ── Scene state ──
+function _drawSceneVersion(elements, files) {
+  const X = _draw.lib.X;
+  const els = elements || _draw.api.getSceneElementsIncludingDeleted();
+  const v = typeof X.hashElementsVersion === 'function' ? X.hashElementsVersion(els) : X.getSceneVersion(els);
+  const f = files || _draw.api.getFiles() || {};
+  return v + ':' + Object.keys(f).length;
+}
+function _drawDirty() {
+  const d = _draw;
+  return !!(d && d.api && d.path && d.curVersion !== null && d.curVersion !== d.savedVersion);
+}
+
+function _drawOnChange(elements, appState, files) {
+  const d = _draw;
+  if (!d || !d.api) return;
+  const v = _drawSceneVersion(elements, files);
+  if (v !== d.curVersion) {
+    d.curVersion = v;
+    if (!d.applying && d.savedVersion !== null && v !== d.savedVersion) {
+      if (d.status !== 'error' && d.status !== 'conflict') _drawSetStatus('dirty');
+      _drawScheduleSave();
+    }
+  }
+  // Mirror Excalidraw's own state into the amux chrome, so a keyboard
+  // shortcut (Ctrl+' grid, Alt+S snapping) and the toggle bar never disagree.
+  const s = d.settings;
+  const grid = !!appState.gridModeEnabled, align = !!appState.objectsSnapModeEnabled, connect = appState.isBindingEnabled !== false;
+  if (grid !== s.grid || align !== s.align || connect !== s.connect) {
+    if (!d.applyingSnap && d.snapApplied) {
+      s.grid = grid; s.align = align; s.connect = connect;
+      _drawRenderSnapbar();
+      _drawPersistSettings();
+    }
+  }
+  const ids = appState.selectedElementIds || {};
+  let n = 0; for (const k in ids) if (ids[k]) n++;
+  if (n !== d.selCount) { d.selCount = n; _drawRenderSelbar(); }
+}
+
+function _drawScheduleSave() {
+  const d = _draw;
+  if (d.saveTimer) clearTimeout(d.saveTimer);
+  d.saveTimer = setTimeout(() => { d.saveTimer = null; _drawSave(); }, _DRAW_SAVE_DEBOUNCE_MS);
+}
+
+function _drawSetStatus(status, msg) {
+  const d = _drawS();
+  d.status = status; d.statusMsg = msg || '';
+  const text = {
+    idle: '', new: 'New drawing · saves when you draw', saved: 'All changes saved', dirty: 'Unsaved changes',
+    saving: 'Saving…', error: 'Save failed: ' + (msg || 'unknown error'),
+    conflict: 'Changed on disk while you were editing', loading: 'Opening…',
+    missing: 'Not on disk', 'load-error': 'Could not open: ' + (msg || ''),
+  }[status] || msg || '';
+  const short = { saved: 'Saved', dirty: 'Unsaved', saving: 'Saving…', error: 'Not saved', conflict: 'Conflict',
+    new: 'New', loading: 'Opening…', missing: 'Not on disk', 'load-error': 'Error' }[status] || '';
+  const st = document.getElementById('draw-status-text');
+  if (st) { st.textContent = text; st.dataset.state = status; }
+  const pill = document.getElementById('draw-save-state');
+  if (pill) { pill.textContent = short; pill.dataset.state = status; pill.title = text; }
+  const retry = document.getElementById('draw-status-retry');
+  if (retry) retry.hidden = status !== 'error';
+}
+
+// Write the open drawing. Honest about failure: a refused or failed write
+// leaves the state "error" (or "conflict") with the server's reason, and is
+// beaconed; only a 2xx with an ETag back is "saved".
+async function _drawSave() {
+  const d = _draw;
+  if (!d || !d.api || !d.path || d.conflict) return false;
+  if (d.saving) { d.saveAgain = true; return false; }
+  if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = null; }
+  const X = d.lib.X, api = d.api;
+  const version = _drawSceneVersion();
+  if (version === d.savedVersion) { _drawSetStatus('saved'); return true; }
+  const path = d.path;
+  const content = X.serializeAsJSON(api.getSceneElements(), api.getAppState(), api.getFiles(), 'local');
+  d.saving = true;
+  _drawSetStatus('saving');
+  let ok = false;
+  try {
+    const body = { path, content };
+    if (d.etag) body.expected_etag = d.etag;
+    // _skipOutbox: autosave is its own retry loop. A queued full-file write
+    // replayed later would overwrite whatever was saved in between, and the
+    // outbox's synthetic 202 must never read as "saved".
+    const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(20000), _skipOutbox: true });
+    const res = await r.json().catch(() => ({}));
+    if (path !== d.path) return false;   // switched drawings mid-save
+    if (r.status === 409 && res.code === 'file_changed') {
+      _drawBeacon('save-conflict', { current_etag: res.current_etag || null });
+      await _drawShowConflict('save');
+    } else if (!r.ok || res.error || !res.ok || res.queued || !res.etag) {
+      const msg = res.error || (res.queued ? 'the server did not confirm the write' : 'HTTP ' + r.status);
+      _drawSetStatus('error', msg);
+      _drawBeacon('save-failed', { status: r.status, error: msg });
+    } else {
+      d.etag = res.etag || null;
+      d.savedVersion = version;
+      ok = true;
+      _drawSetStatus(d.curVersion === version ? 'saved' : 'dirty');
+      _drawRememberRecent(false);
+    }
+  } catch (e) {
+    const msg = (e && e.name === 'TimeoutError') ? 'the server did not answer in 20s' : String(e && e.message || e);
+    _drawSetStatus('error', msg);
+    _drawBeacon('save-failed', { error: msg });
+  } finally {
+    d.saving = false;
+  }
+  if (d.saveAgain) { d.saveAgain = false; if (_drawDirty()) _drawScheduleSave(); }
+  else if (ok && _drawDirty()) _drawScheduleSave();
+  return ok;
+}
+function _drawSaveNow() { return _drawSave(); }
+
+// ── Open / new / rename ──
+function _drawOpenPath(path) {
+  const d = _drawS();
+  if (activeView !== 'draw') switchView('draw');
+  if (!d.api) { d.pendingOpen = path; return; }
+  _drawOpen(path);
+}
+
+async function _drawOpen(path) {
+  const d = _drawS();
+  if (!d.api || !path) return;
+  if (_drawDirty() && d.path && d.path !== path) await _drawSave();
+  d.opening = true;
+  d.conflict = null; _drawHideConflict();
+  d.path = path; d.dir = _drawDirOf(path);
+  _drawRenderChrome();
+  _drawSetStatus('loading');
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    if (d.path !== path) return;
+    if (r.status === 404) {
+      _drawResetScene();
+      d.etag = null;
+      _drawSetStatus('new');
+    } else if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    } else {
+      const text = await r.text();
+      await _drawApplyText(text, true);
+      d.etag = r.headers.get('ETag');
+      _drawSetStatus('saved');
+    }
+    _drawPrefSet('draw_last', path);
+    _drawRememberRecent(true);
+  } catch (e) {
+    _drawSetStatus('load-error', String(e && e.message || e));
+    _drawBeacon('open-failed', { error: String(e && e.message || e) });
+  } finally {
+    d.opening = false;
+  }
+}
+
+function _drawResetScene() {
+  const d = _draw;
+  d.applying = true;
+  try {
+    d.api.updateScene({ elements: [], captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
+    d.api.history.clear();
+    d.savedVersion = d.curVersion = _drawSceneVersion();
+  } finally { d.applying = false; }
+}
+
+async function _drawApplyText(text, initial) {
+  const d = _draw, X = d.lib.X;
+  const scene = await X.loadFromBlob(new Blob([text], { type: 'application/json' }), null, null);
+  d.applying = true;
+  try {
+    const bg = scene.appState && scene.appState.viewBackgroundColor;
+    d.api.updateScene({ elements: scene.elements || [], appState: bg ? { viewBackgroundColor: bg } : {},
+      captureUpdate: X.CaptureUpdateAction.NEVER });
+    const files = Object.values(scene.files || {});
+    if (files.length) d.api.addFiles(files);
+    if (initial) { d.api.history.clear(); if ((scene.elements || []).length) d.api.scrollToContent(); }
+    d.savedVersion = d.curVersion = _drawSceneVersion();
+  } finally { d.applying = false; }
+}
+
+async function _drawUniquePath(dir, stem) {
+  let names = new Set();
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dir), { signal: AbortSignal.timeout(8000) });
+    const data = await r.json();
+    names = new Set((data.entries || []).map(e => e.name));
+  } catch (e) {}
+  for (let i = 1; i < 1000; i++) {
+    const name = stem + (i === 1 ? '' : ' ' + i) + '.excalidraw';
+    if (!names.has(name)) return dir.replace(/\/+$/, '') + '/' + name;
+  }
+  return dir.replace(/\/+$/, '') + '/' + stem + ' ' + Date.now() + '.excalidraw';
+}
+
+async function _drawNew(quiet) {
+  const d = _drawS();
+  if (!d.api) return;
+  if (_drawDirty()) await _drawSave();
+  const dir = d.dir || _drawDefaultDir();
+  const path = await _drawUniquePath(dir, 'Untitled');
+  d.conflict = null; _drawHideConflict();
+  d.path = path; d.dir = dir; d.etag = null;
+  _drawResetScene();
+  _drawRenderChrome();
+  _drawSetStatus('new');
+  _drawPrefSet('draw_last', path);
+  if (!quiet) { const t = document.getElementById('draw-title'); if (t) { t.focus(); t.select(); } }
+}
+
+function _drawTitleKey(e) {
+  if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+  if (e.key === 'Escape') { e.target.value = _drawTitleOf(_draw && _draw.path); e.target.blur(); }
+}
+
+async function _drawRename(title) {
+  const d = _drawS();
+  const clean = String(title || '').trim().replace(/\.excalidraw$/i, '').replace(/[/\0]/g, '-');
+  if (!clean || !d.path || clean === _drawTitleOf(d.path)) { _drawRenderChrome(); return; }
+  const newName = clean + '.excalidraw';
+  const newPath = _drawDirOf(d.path).replace(/\/+$/, '') + '/' + newName;
+  if (d.etag) {
+    // On disk already: rename the file itself, so a worker holding the path
+    // sees one file move rather than a copy appear.
+    if (_drawDirty()) await _drawSave();
+    try {
+      const r = await fetch(API + '/api/fs/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: d.path, new_name: newName }), _skipOutbox: true });
+      const res = await r.json().catch(() => ({}));
+      if (!r.ok || res.error) throw new Error(res.error || ('HTTP ' + r.status));
+      const old = d.path;
+      d.path = res.path || newPath;
+      d.recents = d.recents.filter(x => x.path !== old);
+    } catch (e) {
+      showToast('Rename failed: ' + (e.message || e));
+      _drawRenderChrome();
+      return;
+    }
+  } else {
+    d.path = newPath;
+  }
+  _drawPrefSet('draw_last', d.path);
+  _drawRenderChrome();
+  _drawRememberRecent(true);
+  _drawRenderRoot();
+}
+
+// ── Live reload from disk ──
+function _drawStartPoll() {
+  const d = _drawS();
+  _drawStopPoll();
+  d.pollTimer = setInterval(_drawPoll, _DRAW_POLL_MS);
+}
+function _drawStopPoll() {
+  if (_draw && _draw.pollTimer) { clearInterval(_draw.pollTimer); _draw.pollTimer = null; }
+}
+
+async function _drawPoll() {
+  const d = _draw;
+  if (!d || !d.api || activeView !== 'draw' || document.hidden) return;
+  d.pollTick++;
+  if (d.pollTick % 5 === 0) _drawPollLibrary();
+  if (!d.path || d.saving || d.opening || d.conflict) return;
+  try {
+    const headers = d.etag ? { 'If-None-Match': d.etag } : {};
+    const path = d.path;
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (path !== d.path || d.saving) return;
+    if (r.status === 304) return;
+    if (r.status === 404) {
+      if (d.etag) { d.etag = null; _drawSetStatus('missing'); _drawBeacon('file-missing'); }
+      return;
+    }
+    if (!r.ok) return;
+    const etag = r.headers.get('ETag');
+    if (etag && etag === d.etag) return;
+    const text = await r.text();
+    try { JSON.parse(text); } catch (e) { return; }   // mid-write: try again next tick
+    if (path !== d.path || d.saving) return;
+    if (!_drawDirty()) {
+      await _drawApplyText(text, false);
+      d.etag = etag;
+      _drawSetStatus('saved');
+      showToast('Reloaded ' + _drawBase(path) + ' from disk');
+      _drawBeacon('reloaded-from-disk');
+    } else {
+      d.conflict = { etag, text };
+      _drawSetStatus('conflict');
+      _drawShowConflictBar('This file changed on disk while you were editing.');
+      _drawBeacon('reload-conflict');
+    }
+  } catch (e) {}
+}
+
+async function _drawShowConflict(source) {
+  const d = _draw;
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(d.path), { cache: 'no-store' });
+    d.conflict = { etag: r.headers.get('ETag'), text: r.ok ? await r.text() : null };
+  } catch (e) { d.conflict = { etag: null, text: null }; }
+  _drawSetStatus('conflict');
+  _drawShowConflictBar(source === 'save'
+    ? 'Not saved: this file changed on disk since you opened it.'
+    : 'This file changed on disk while you were editing.');
+}
+function _drawShowConflictBar(msg) {
+  const bar = document.getElementById('draw-conflict');
+  const m = document.getElementById('draw-conflict-msg');
+  if (m) m.textContent = msg;
+  if (bar) bar.hidden = false;
+}
+function _drawHideConflict() {
+  const bar = document.getElementById('draw-conflict');
+  if (bar) bar.hidden = true;
+}
+async function _drawResolveConflict(choice) {
+  const d = _draw;
+  if (!d || !d.conflict) return;
+  const c = d.conflict;
+  d.conflict = null;
+  _drawHideConflict();
+  _drawBeacon('conflict-resolved', { choice });
+  if (choice === 'disk') {
+    if (c.text) { await _drawApplyText(c.text, false); d.etag = c.etag; _drawSetStatus('saved'); }
+    else { d.etag = null; _drawSetStatus('missing'); }
+  } else {
+    // Keep mine: overwrite the disk version on purpose.
+    d.etag = c.etag;
+    d.savedVersion = null;
+    await _drawSave();
+  }
+}
+
+// ── Chrome: title, folder breadcrumb, menus ──
+function _drawRenderChrome() {
+  const d = _drawS();
+  const t = document.getElementById('draw-title');
+  if (t && document.activeElement !== t) t.value = _drawTitleOf(d.path) || 'Untitled';
+  const crumbs = document.getElementById('draw-crumbs');
+  const fb = document.getElementById('draw-folder-btn');
+  if (fb) fb.title = 'Folder: ' + (d.path ? _drawDirOf(d.path) : (d.dir || ''));
+  if (crumbs) {
+    const dir = d.path ? _drawDirOf(d.path) : (d.dir || '');
+    const home = (window._AMUX_HOME || '').replace(/\/+$/, '');
+    let segs, base;
+    if (home && (dir === home || dir.startsWith(home + '/'))) { base = home; segs = ['~'].concat(dir.slice(home.length).split('/').filter(Boolean)); }
+    else { base = ''; segs = ['/'].concat(dir.split('/').filter(Boolean)); }
+    let cum = base;
+    const parts = segs.map((s, i) => {
+      if (i > 0) cum = cum.replace(/\/+$/, '') + '/' + s;
+      else cum = base || '/';
+      // The filesystem root is its own crumb; it needs no separator after it.
+      const sep = i > 0 && !(i === 1 && segs[0] === '/') ? '<span class="draw-crumb-sep">/</span>' : '';
+      return sep + '<button class="draw-crumb" data-path="' + esc(cum) + '" onclick="_drawDirPop(this.dataset.path, this)" title="' + esc(cum) + '">' + esc(s) + '</button>';
+    });
+    crumbs.innerHTML = '<span class="draw-crumb-ico" aria-hidden="true">&#x1F5C0;</span>' + parts.join('')
+      + '<span class="draw-crumb-file">' + esc(_drawBase(d.path)) + '</span>';
+  }
+  _drawRenderSnapbar();
+  _drawRenderSelbar();
+  _drawLibTab(d.libTab);
+}
+
+function _drawCloseMenus() {
+  const m = document.getElementById('draw-export-menu');
+  if (m) m.hidden = true;
+  const b = document.getElementById('draw-export-btn');
+  if (b) b.setAttribute('aria-expanded', 'false');
+  const p = document.getElementById('draw-dir-pop');
+  if (p) p.remove();
+}
+function _drawToggleExportMenu(e) {
+  if (e) e.stopPropagation();
+  const m = document.getElementById('draw-export-menu');
+  if (!m) return;
+  const open = m.hidden;
+  _drawCloseMenus();
+  m.hidden = !open;
+  document.getElementById('draw-export-btn').setAttribute('aria-expanded', String(open));
+  if (open) setTimeout(() => document.addEventListener('click', _drawCloseMenus, { once: true }), 0);
+}
+
+// Folder picker: a small browser anchored to the breadcrumb.
+async function _drawDirPop(path, anchor) {
+  let pop = document.getElementById('draw-dir-pop');
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'draw-dir-pop'; pop.className = 'draw-menu draw-dir-pop';
+    pop.addEventListener('click', e => e.stopPropagation());
+    document.getElementById('draw-view').appendChild(pop);
+    setTimeout(() => document.addEventListener('click', function close() {
+      const p = document.getElementById('draw-dir-pop'); if (p) p.remove();
+    }, { once: true }), 0);
+  }
+  if (anchor) {
+    const r = anchor.getBoundingClientRect(), vr = document.getElementById('draw-view').getBoundingClientRect();
+    pop.style.left = Math.max(8, Math.min(r.left - vr.left, vr.width - 300)) + 'px';
+    pop.style.top = (r.bottom - vr.top + 4) + 'px';
+  }
+  pop.dataset.path = path;
+  pop.innerHTML = '<div class="draw-pop-path">' + esc(path) + '</div><div class="draw-pop-list">Loading…</div>';
+  let data;
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(path), { signal: AbortSignal.timeout(8000) });
+    data = await r.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    pop.querySelector('.draw-pop-list').textContent = 'Could not list this folder: ' + (e.message || e);
+    return;
+  }
+  const parent = _drawDirOf(path);
+  const rows = [];
+  if (path !== '/') rows.push('<button class="draw-pop-row" data-path="' + esc(parent) + '" onclick="_drawDirPop(this.dataset.path)">&#x2191; Up</button>');
+  for (const e of (data.entries || [])) {
+    const p = path.replace(/\/+$/, '') + '/' + e.name;
+    if (e.type === 'dir') rows.push('<button class="draw-pop-row" data-path="' + esc(p) + '" onclick="_drawDirPop(this.dataset.path)">&#x1F4C1; ' + esc(e.name) + '</button>');
+    else if (/\.excalidraw$/i.test(e.name)) rows.push('<button class="draw-pop-row draw-pop-file" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>');
+  }
+  pop.innerHTML = '<div class="draw-pop-path">' + esc(path) + '</div>'
+    + '<div class="draw-pop-list">' + (rows.join('') || '<div class="draw-pop-empty">Empty folder</div>') + '</div>'
+    + '<div class="draw-pop-foot"><button class="btn primary" data-path="' + esc(path) + '" onclick="_drawSaveInDir(this.dataset.path)" title="Saves this drawing into this folder; the old file is kept">Save here</button>'
+    + '<button class="btn" data-path="' + esc(path) + '" onclick="_drawNewInDir(this.dataset.path)">New here</button></div>';
+}
+function _drawDirPopHere(anchor) {
+  const d = _drawS();
+  _drawDirPop(d.path ? _drawDirOf(d.path) : (d.dir || _drawDefaultDir()), anchor);
+}
+function _drawPopOpen(path) { _drawCloseMenus(); _drawOpen(path); }
+async function _drawNewInDir(dir) {
+  _drawCloseMenus();
+  _drawS().dir = dir;
+  _drawPrefSet('draw_dir', dir);
+  await _drawNew();
+}
+async function _drawSaveInDir(dir) {
+  const d = _drawS();
+  _drawCloseMenus();
+  d.dir = dir;
+  _drawPrefSet('draw_dir', dir);
+  if (!d.api || !d.path) return;
+  if (_drawDirOf(d.path) === dir) return;
+  const target = await _drawUniquePath(dir, _drawTitleOf(d.path) || 'Untitled');
+  d.path = target; d.etag = null; d.savedVersion = null;
+  d.conflict = null; _drawHideConflict();
+  _drawRenderChrome();
+  const ok = await _drawSave();
+  if (ok) { _drawPrefSet('draw_last', target); showToast('Saved to ' + target); }
+}
+function _drawOpenInFiles() {
+  _drawCloseMenus();
+  const d = _drawS();
+  if (d.path && typeof _openPathInFiles === 'function') _openPathInFiles(_drawDirOf(d.path));
+}
+
+// ── Snap toggles ──
+function _drawPersistSettings() {
+  const d = _drawS();
+  _drawPrefSet('draw_settings', JSON.stringify(d.settings));
+}
+function _drawApplySnapSettings() {
+  const d = _draw;
+  if (!d || !d.api) return;
+  const s = d.settings;
+  d.applyingSnap = true;
+  d.snapApplied = true;
+  try {
+    d.api.updateScene({ appState: { gridModeEnabled: !!s.grid, objectsSnapModeEnabled: !!s.align, isBindingEnabled: !!s.connect },
+      captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
+  } finally { d.applyingSnap = false; }
+  _drawRenderSnapbar();
+}
+function _drawToggleSnap(which) {
+  const d = _drawS();
+  d.settings[which] = !d.settings[which];
+  _drawApplySnapSettings();
+  _drawPersistSettings();
+}
+function _drawRenderSnapbar() {
+  const d = _drawS();
+  for (const k of ['grid', 'align', 'connect']) {
+    const b = document.getElementById('draw-snap-' + k);
+    if (!b) continue;
+    const on = !!d.settings[k];
+    b.setAttribute('aria-pressed', String(on));
+    b.classList.toggle('on', on);
+    const st = b.querySelector('.draw-snap-state');
+    if (st) st.textContent = on ? 'ON' : 'OFF';
+  }
+}
+
+function _drawFullscreen() {
+  const v = document.getElementById('draw-view');
+  if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+  if (v && v.requestFullscreen) v.requestFullscreen().catch(() => _drawToggleLive());
+  else _drawToggleLive();   // iOS has no element fullscreen: live mode maximizes instead
+}
+
+// ── Selection bar ──
+function _drawSelected() {
+  const d = _draw;
+  if (!d || !d.api) return [];
+  const ids = d.api.getAppState().selectedElementIds || {};
+  const all = d.api.getSceneElements();
+  const sel = all.filter(e => ids[e.id]);
+  const selIds = new Set(sel.map(e => e.id));
+  // A container's label travels with it.
+  for (const e of all) if (e.containerId && selIds.has(e.containerId) && !selIds.has(e.id)) { sel.push(e); selIds.add(e.id); }
+  return sel;
+}
+function _drawRenderSelbar() {
+  const d = _drawS();
+  const bar = document.getElementById('draw-selbar');
+  if (!bar) return;
+  bar.hidden = !(d.selCount > 0) || d.live;
+  if (bar.hidden) return;
+  const sel = _drawSelected();
+  d.selLocked = sel.length > 0 && sel.every(e => e.locked);
+  const lbl = document.getElementById('draw-selbar-lbl');
+  if (lbl) lbl.textContent = sel.length + ' selected';
+  const lock = document.getElementById('draw-lock-btn');
+  if (lock) lock.textContent = d.selLocked ? 'Unlock' : 'Lock';
+}
+function _drawToggleLock() {
+  const d = _draw;
+  if (!d || !d.api) return;
+  const ids = new Set(_drawSelected().map(e => e.id));
+  const lock = !d.selLocked;
+  const X = d.lib.X;
+  d.api.updateScene({ elements: d.api.getSceneElementsIncludingDeleted().map(e => ids.has(e.id) ? X.newElementWith(e, { locked: lock }) : e),
+    captureUpdate: X.CaptureUpdateAction.IMMEDIATELY });
+  d.selLocked = lock;
+  _drawRenderSelbar();
+}
+
+// ── Library ──
+function _drawLibItemsHash(items) {
+  const X = _draw.lib.X;
+  try { return typeof X.getLibraryItemsHash === 'function' ? String(X.getLibraryItemsHash(items)) : JSON.stringify(items.map(i => i.id)); }
+  catch (e) { return String(Math.random()); }
+}
+async function _drawLoadLibrary() {
+  const d = _draw;
+  if (!d || !d.api) return;
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(_drawLibPath()), { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    if (r.status === 404) { d.libLoaded = true; d.libEtag = null; _drawLibRender(); return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const etag = r.headers.get('ETag');
+    const items = await d.lib.X.loadLibraryFromBlob(await r.blob(), 'unpublished');
+    d.libHash = _drawLibItemsHash(items);
+    d.libItems = items; d.libEtag = etag; d.libLoaded = true;
+    await d.api.updateLibrary({ libraryItems: items, merge: false });
+    _drawLibRender();
+  } catch (e) {
+    d.libLoaded = true;
+    _drawBeacon('library-load-failed', { error: String(e && e.message || e) });
+    _drawLibRender();
+  }
+}
+async function _drawPollLibrary() {
+  const d = _draw;
+  if (!d || !d.libLoaded || d.libSaveTimer || d.libSaving) return;
+  try {
+    const headers = d.libEtag ? { 'If-None-Match': d.libEtag } : {};
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(_drawLibPath()), { headers, cache: 'no-store' });
+    if (r.status !== 200) return;
+    const etag = r.headers.get('ETag');
+    if (etag === d.libEtag) return;
+    const items = await d.lib.X.loadLibraryFromBlob(await r.blob(), 'unpublished');
+    d.libHash = _drawLibItemsHash(items);
+    d.libItems = items; d.libEtag = etag;
+    await d.api.updateLibrary({ libraryItems: items, merge: false });
+    _drawLibRender();
+  } catch (e) {}
+}
+function _drawOnLibraryChange(items) {
+  const d = _draw;
+  if (!d || !d.libLoaded) return;
+  d.libItems = items;
+  _drawLibRender();
+  const h = _drawLibItemsHash(items);
+  if (h === d.libHash) return;
+  if (d.libSaveTimer) clearTimeout(d.libSaveTimer);
+  d.libSaveTimer = setTimeout(() => { d.libSaveTimer = null; _drawSaveLibrary(); }, 400);
+}
+async function _drawSaveLibrary(retried) {
+  const d = _draw;
+  const items = d.libItems;
+  const h = _drawLibItemsHash(items);
+  d.libSaving = true;
+  try {
+    const body = { path: _drawLibPath(), content: d.lib.X.serializeLibraryAsJSON(items) };
+    if (d.libEtag) body.expected_etag = d.libEtag;
+    const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), _skipOutbox: true });
+    const res = await r.json().catch(() => ({}));
+    if (r.status === 409 && !retried) {
+      // Another device wrote the library: merge theirs with ours, then save.
+      d.libSaving = false;
+      const rr = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(_drawLibPath()), { cache: 'no-store' });
+      const theirs = rr.ok ? await d.lib.X.loadLibraryFromBlob(await rr.blob(), 'unpublished') : [];
+      d.libEtag = rr.headers.get('ETag');
+      d.libItems = d.lib.X.mergeLibraryItems(items, theirs);
+      return _drawSaveLibrary(true);
+    }
+    if (!r.ok || res.error || res.queued) throw new Error(res.error || ('HTTP ' + r.status));
+    d.libEtag = res.etag || null;
+    d.libHash = h;
+  } catch (e) {
+    showToast('Library not saved: ' + (e.message || e));
+    _drawBeacon('library-save-failed', { error: String(e && e.message || e) });
+  } finally {
+    d.libSaving = false;
+  }
+}
+
+async function _drawSaveSelectionToLib() {
+  const d = _draw;
+  if (!d || !d.api) return;
+  const sel = _drawSelected();
+  if (!sel.length) { showToast('Select something on the canvas first'); return; }
+  const name = await showPrompt('Name this component', 'e.g. Service');
+  if (name === null) return;
+  const item = {
+    id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()).replace(/-/g, '').slice(0, 20),
+    status: 'unpublished', created: Date.now(), name: name || 'Untitled',
+    elements: JSON.parse(JSON.stringify(sel)),
+  };
+  await d.api.updateLibrary({ libraryItems: [item], merge: true, defaultStatus: 'unpublished' });
+  _drawLibTab('components');
+  showToast('Saved “' + item.name + '” to the library');
+}
+
+function _drawLibTab(tab) {
+  const d = _drawS();
+  d.libTab = tab === 'drawings' ? 'drawings' : 'components';
+  for (const t of ['components', 'drawings']) {
+    const b = document.getElementById('draw-libtab-' + t);
+    if (b) { b.classList.toggle('active', d.libTab === t); b.setAttribute('aria-selected', String(d.libTab === t)); }
+  }
+  const s = document.getElementById('draw-lib-search');
+  if (s) s.placeholder = d.libTab === 'drawings' ? 'Search drawings' : 'Search components';
+  _drawLibRender();
+}
+
+function _drawLibRender() {
+  const d = _draw;
+  const body = document.getElementById('draw-lib-body');
+  if (!d || !body) return;
+  const q = ((document.getElementById('draw-lib-search') || {}).value || '').trim().toLowerCase();
+  if (d.libTab === 'drawings') { _drawRenderDrawings(body, q); return; }
+  if (!d.lib) { _drawSetBody(body, '<div class="draw-empty">Loading…</div>'); return; }
+  const items = (d.libItems || []).filter(i => !q || String(i.name || '').toLowerCase().includes(q));
+  if (!items.length) {
+    _drawSetBody(body, '<div class="draw-empty">' + (q ? 'No components match.' : 'No components yet. Select shapes on the canvas and press <b>Save selection</b>.') + '</div>');
+    return;
+  }
+  // Unchanged markup is NOT rewritten: a re-render between a press's
+  // mousedown and mouseup (an autosave updating recents, a library echo)
+  // removed the pressed tile and the tap never became a click.
+  const fresh = _drawSetBody(body, '<div class="draw-lib-sub">My components</div><div class="draw-lib-grid">'
+    + items.map(i => '<button class="draw-lib-item" draggable="true" data-repeatable data-id="' + esc(i.id) + '" title="Drag onto the canvas, or tap to insert"'
+      + ' onclick="_drawInsertLibItem(this.dataset.id)" ondragstart="_drawLibDragStart(event, this.dataset.id)">'
+      + '<span class="draw-lib-thumb" data-thumb="' + esc(i.id) + '"></span><span class="draw-lib-name">' + esc(i.name || 'Untitled') + '</span></button>').join('')
+    + '</div>');
+  if (fresh || body.dataset.dark !== String(_drawIsDark())) { body.dataset.dark = String(_drawIsDark()); for (const i of items) _drawLibThumb(i); }
+}
+function _drawSetBody(body, html) {
+  if (body._drawHtml === html) return false;
+  body._drawHtml = html;
+  body.innerHTML = html;
+  return true;
+}
+async function _drawLibThumb(item) {
+  const d = _draw;
+  const key = item.id + (_drawIsDark() ? ':d' : ':l');
+  let svg = d.svgCache.get(key);
+  if (!svg) {
+    try {
+      const el = await d.lib.X.exportToSvg({ elements: item.elements, files: d.api ? d.api.getFiles() : null,
+        appState: { exportBackground: false, exportWithDarkMode: _drawIsDark() }, exportPadding: 6, skipInliningFonts: true });
+      svg = el.outerHTML;
+    } catch (e) { svg = ''; }
+    d.svgCache.set(key, svg);
+  }
+  const slot = document.querySelector('#draw-lib-body [data-thumb="' + CSS.escape(item.id) + '"]');
+  if (slot) slot.innerHTML = svg;
+}
+function _drawLibDragStart(e, id) {
+  const d = _draw;
+  const item = d && (d.libItems || []).find(i => i.id === id);
+  if (!item || !e.dataTransfer) return;
+  e.dataTransfer.setData(_DRAW_LIB_MIME, d.lib.X.serializeLibraryAsJSON([item]));
+  e.dataTransfer.effectAllowed = 'copy';
+}
+function _drawInsertLibItem(id) {
+  const d = _draw;
+  const item = d && (d.libItems || []).find(i => i.id === id);
+  if (!item) return;
+  _drawDropOnCanvas(dt => dt.setData(_DRAW_LIB_MIME, d.lib.X.serializeLibraryAsJSON([item])));
+  if (window.innerWidth <= 700) _drawToggleLib(false);
+}
+// Insert through Excalidraw's own drop handler, so it regenerates ids, keeps
+// arrow bindings and places the items where its own library drag would.
+function _drawDropOnCanvas(fill, clientX, clientY) {
+  const target = document.querySelector('#draw-host .excalidraw-container') || document.querySelector('#draw-host .excalidraw');
+  if (!target) return false;
+  const r = target.getBoundingClientRect();
+  const x = clientX != null ? clientX : r.left + r.width / 2;
+  const y = clientY != null ? clientY : r.top + r.height / 2;
+  const dt = new DataTransfer();
+  fill(dt);
+  let ev = null;
+  try { ev = new DragEvent('drop', { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }); } catch (e) {}
+  if (!ev || !ev.dataTransfer) {
+    // WebKit ignores dataTransfer in the DragEvent constructor.
+    ev = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, 'dataTransfer', { value: dt });
+    Object.defineProperty(ev, 'clientX', { value: x });
+    Object.defineProperty(ev, 'clientY', { value: y });
+  }
+  target.dispatchEvent(ev);
+  return true;
+}
+
+function _drawPickImport() { const i = document.getElementById('draw-import-input'); if (i) i.click(); }
+function _drawImportInput(input) { const f = Array.from(input.files || []); input.value = ''; _drawImportFiles(f); }
+async function _drawImportFiles(files, clientX, clientY) {
+  const d = _draw;
+  if (!d || !d.api) return;
+  const X = d.lib.X;
+  for (const f of files) {
+    try {
+      if (/\.excalidrawlib$/i.test(f.name)) {
+        const items = await X.loadLibraryFromBlob(f, 'unpublished');
+        await d.api.updateLibrary({ libraryItems: items, merge: true });
+        showToast('Added ' + items.length + ' component' + (items.length === 1 ? '' : 's') + ' to the library');
+      } else if (/\.(excalidraw|json)$/i.test(f.name)) {
+        const scene = await X.loadFromBlob(f, null, null);
+        const els = (scene.elements || []).filter(e => !e.isDeleted);
+        if (!els.length) { showToast(f.name + ' has nothing to import'); continue; }
+        const files2 = Object.values(scene.files || {});
+        if (files2.length) d.api.addFiles(files2);
+        _drawDropOnCanvas(dt => dt.setData(_DRAW_LIB_MIME, X.serializeLibraryAsJSON([{ id: 'import', status: 'unpublished', created: Date.now(), elements: els }])), clientX, clientY);
+        showToast('Imported ' + f.name);
+      } else if (/^image\//.test(f.type)) {
+        _drawDropOnCanvas(dt => dt.items.add(f), clientX, clientY);
+      } else {
+        showToast('Not a drawing, library or image: ' + f.name);
+      }
+    } catch (e) {
+      showToast('Could not import ' + f.name + ': ' + (e.message || e));
+      _drawBeacon('import-failed', { name: f.name, error: String(e && e.message || e) });
+    }
+  }
+}
+
+function _drawToggleLib(show) {
+  const v = document.getElementById('draw-view');
+  if (!v) return;
+  if (window.innerWidth <= 700) v.classList.toggle('draw-lib-sheet', !!show);
+  else v.classList.toggle('draw-lib-hidden', !show);
+  if (show) _drawLibRender();
+}
+
+// ── Recent drawings ──
+async function _drawLoadRecents() {
+  const d = _draw;
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(_drawRecentsPath()), { cache: 'no-store' });
+    if (r.ok) {
+      const data = await r.json();
+      if (Array.isArray(data.recents)) d.recents = data.recents.concat(d.recents.filter(x => !data.recents.some(y => y.path === x.path)));
+    }
+  } catch (e) {}
+  d.recentsLoaded = true;
+  _drawLibRender();
+}
+async function _drawRememberRecent(force) {
+  const d = _draw;
+  if (!d || !d.path || !d.api) return;
+  const now = Date.now();
+  let entry = d.recents.find(x => x.path === d.path);
+  if (!entry) { entry = { path: d.path }; d.recents.unshift(entry); }
+  entry.title = _drawTitleOf(d.path);
+  entry.ts = now;
+  d.recents = [entry].concat(d.recents.filter(x => x !== entry)).slice(0, _DRAW_RECENTS_MAX);
+  // A thumbnail at most every 10s while drawing; always on open/rename and
+  // whenever the entry has none yet.
+  if (force || !entry.thumb || now - d.thumbAt > 10000) {
+    try {
+      const els = d.api.getSceneElements();
+      if (els.length) {
+        d.thumbAt = now;
+        const blob = await d.lib.X.exportToBlob({ elements: els, files: d.api.getFiles(), mimeType: 'image/png',
+          appState: { exportBackground: true, viewBackgroundColor: '#ffffff', exportWithDarkMode: false },
+          exportPadding: 8, maxWidthOrHeight: 240 });
+        entry.thumb = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(''); fr.readAsDataURL(blob); });
+      }
+    } catch (e) {}
+  }
+  if (d.libTab === 'drawings') _drawLibRender();
+  if (d.recentsTimer) clearTimeout(d.recentsTimer);
+  d.recentsTimer = setTimeout(_drawSaveRecents, 1500);
+}
+async function _drawSaveRecents() {
+  const d = _draw;
+  d.recentsTimer = null;
+  try {
+    const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: _drawRecentsPath(), content: JSON.stringify({ recents: d.recents }) }), _skipOutbox: true });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch (e) { _drawBeacon('recents-save-failed', { error: String(e && e.message || e) }); }
+}
+async function _drawRenderDrawings(body, q) {
+  const d = _draw;
+  const rec = d.recents.filter(x => !q || String(x.title || '').toLowerCase().includes(q));
+  const row = x => '<button class="draw-recent' + (x.path === d.path ? ' current' : '') + '" data-path="' + esc(x.path) + '" onclick="_drawPopOpen(this.dataset.path)" title="' + esc(x.path) + '">'
+    + '<span class="draw-recent-thumb">' + (x.thumb ? '<img alt="" src="' + esc(x.thumb) + '">' : '') + '</span>'
+    + '<span class="draw-recent-meta"><span class="draw-recent-title">' + esc(x.title || _drawTitleOf(x.path)) + '</span>'
+    + '<span class="draw-recent-when">' + (x.ts ? esc(timeAgo(x.ts / 1000)) : '') + '</span></span></button>';
+  const prevList = document.getElementById('draw-folder-list');
+  const keep = prevList ? prevList.innerHTML : '<div class="draw-empty">Loading…</div>';
+  if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
+    + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
+    + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
+    document.getElementById('draw-folder-list').innerHTML = keep;
+  }
+  const dir = d.path ? _drawDirOf(d.path) : d.dir;
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dir), { signal: AbortSignal.timeout(8000) });
+    const data = await r.json();
+    const list = document.getElementById('draw-folder-list');
+    if (!list) return;
+    const files = (data.entries || []).filter(e => e.type !== 'dir' && /\.excalidraw$/i.test(e.name) && (!q || e.name.toLowerCase().includes(q)));
+    const html = files.length ? files.map(e => {
+      const p = dir.replace(/\/+$/, '') + '/' + e.name;
+      return '<button class="draw-pop-row draw-pop-file' + (p === d.path ? ' current' : '') + '" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>';
+    }).join('') : '<div class="draw-empty">No drawings in this folder yet.</div>';
+    _drawSetBody(list, html);
+  } catch (e) {}
+}
+
+// ── Mermaid paste ──
+function _drawOnPaste(data) {
+  let t = String((data && data.text) || '').trim();
+  const fenced = t.match(/^```mermaid\s*\n([\s\S]*?)\n```$/);
+  if (fenced) t = fenced[1].trim();
+  if (!_DRAW_MERMAID_RE.test(t)) return true;
+  _drawInsertMermaid(t);
+  return false;
+}
+async function _drawInsertMermaid(text) {
+  const d = _draw;
+  showToast('Converting Mermaid diagram…');
+  try {
+    const m = await d.lib.loadMermaid();
+    const { elements, files } = await m.parseMermaidToExcalidraw(text, { themeVariables: { fontSize: '16px' } });
+    const els = d.lib.X.convertToExcalidrawElements(elements, { regenerateIds: true });
+    if (files) d.api.addFiles(Object.values(files));
+    _drawDropOnCanvas(dt => dt.setData(_DRAW_LIB_MIME, d.lib.X.serializeLibraryAsJSON([{ id: 'mermaid', status: 'unpublished', created: Date.now(), elements: els }])));
+  } catch (e) {
+    showToast('Mermaid conversion failed: ' + (e.message || e));
+    _drawBeacon('mermaid-failed', { error: String(e && e.message || e) });
+  }
+}
+
+// ── Export ──
+function _drawDownload(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+async function _drawExport(kind) {
+  _drawCloseMenus();
+  const d = _draw;
+  if (!d || !d.api) return;
+  const X = d.lib.X, api = d.api;
+  const stem = _drawTitleOf(d.path) || 'drawing';
+  const sel = _drawSelected();
+  const els = sel.length ? sel : api.getSceneElements();
+  const appState = Object.assign({}, api.getAppState(), { exportBackground: true, exportWithDarkMode: false });
+  try {
+    if (kind === 'png') {
+      _drawDownload(await X.exportToBlob({ elements: els, appState, files: api.getFiles(), mimeType: 'image/png', exportPadding: 16 }), stem + '.png');
+    } else if (kind === 'svg') {
+      const svg = await X.exportToSvg({ elements: els, appState, files: api.getFiles(), exportPadding: 16 });
+      _drawDownload(new Blob([svg.outerHTML], { type: 'image/svg+xml' }), stem + '.svg');
+    } else if (kind === 'excalidraw') {
+      _drawDownload(new Blob([X.serializeAsJSON(api.getSceneElements(), api.getAppState(), api.getFiles(), 'local')], { type: 'application/json' }), stem + '.excalidraw');
+    } else if (kind === 'library') {
+      _drawDownload(new Blob([X.serializeLibraryAsJSON(d.libItems || [])], { type: 'application/json' }), 'library.excalidrawlib');
+    }
+  } catch (e) {
+    showToast('Export failed: ' + (e.message || e));
+    _drawBeacon('export-failed', { kind, error: String(e && e.message || e) });
+  }
+}
+
+// ── Live mode: canvas only, compact pen ──
+function _drawToggleLive() {
+  const d = _drawS();
+  d.live = !d.live;
+  const v = document.getElementById('draw-view');
+  if (v) v.classList.toggle('draw-live', d.live);
+  const pb = document.getElementById('draw-penbar');
+  if (pb) pb.hidden = !d.live;
+  const lb = document.getElementById('draw-live-btn');
+  if (lb) lb.setAttribute('aria-pressed', String(d.live));
+  if (d.api) {
+    d.api.updateScene({ appState: { zenModeEnabled: d.live }, captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
+    if (d.live) _drawPenTool('freedraw');
+  }
+  _drawRenderSelbar();
+  _drawRenderPenbar();
+}
+function _drawRenderPenbar() {
+  const d = _drawS();
+  const c = document.getElementById('draw-pen-colors');
+  if (c) c.innerHTML = _DRAW_PEN_COLORS.map(col => '<button class="draw-pen-color' + (col === d.penColor ? ' on' : '') + '" data-repeatable style="--c:' + col + '" data-c="' + col + '" onclick="_drawPenColor(this.dataset.c)" aria-label="Color ' + col + '"></button>').join('');
+  const w = document.getElementById('draw-pen-widths');
+  if (w) w.innerHTML = _DRAW_PEN_WIDTHS.map(px => '<button class="draw-pen-width' + (px === d.penWidth ? ' on' : '') + '" data-repeatable data-w="' + px + '" onclick="_drawPenWidth(this.dataset.w)" aria-label="Thickness ' + px + '"><span style="height:' + (px + 1) + 'px"></span></button>').join('');
+  const tool = d.api ? (d.api.getAppState().activeTool || {}).type : '';
+  for (const t of ['freedraw', 'eraser', 'laser']) {
+    const b = document.getElementById('draw-pen-' + t);
+    if (b) b.classList.toggle('on', tool === t);
+  }
+}
+function _drawPenColor(col) {
+  const d = _draw;
+  d.penColor = col;
+  if (d.api) d.api.updateScene({ appState: { currentItemStrokeColor: col }, captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
+  _drawPenTool('freedraw');
+}
+function _drawPenWidth(w) {
+  const d = _draw;
+  d.penWidth = Number(w) || 2;
+  if (d.api) d.api.updateScene({ appState: { currentItemStrokeWidth: d.penWidth }, captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
+  _drawPenTool('freedraw');
+}
+function _drawPenTool(t) {
+  const d = _draw;
+  if (!d || !d.api) return;
+  d.api.setActiveTool({ type: t });
+  setTimeout(_drawRenderPenbar, 0);
+}
+
+// ── Send to worker ──
+async function _drawUpload(blob, name) {
+  const start = await (await fetch(API + '/api/upload/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, size: blob.size, chunks: 1 }) })).json();
+  if (!start || typeof start.id !== 'string') throw new Error(start && start.error || 'upload did not start');
+  const url = API + '/api/upload/' + encodeURIComponent(start.id);
+  const c = await fetch(url + '/chunk/0', { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+  if (!c.ok) throw new Error('upload chunk failed (HTTP ' + c.status + ')');
+  const done = await (await fetch(url + '/finish', { method: 'POST' })).json();
+  if (!done || typeof done.path !== 'string' || !done.path) throw new Error(done && done.error || 'upload did not finish');
+  return done;
+}
+async function _drawOpenSend() {
+  const d = _draw;
+  if (!d || !d.api) return;
+  const sel = _drawSelected();
+  const names = (typeof sessions !== 'undefined' ? sessions : []).map(s => s.name).filter(n => n && !String(n).endsWith('@chat'));
+  let last = '';
+  try { last = localStorage.getItem('amux_draw_send_to') || ''; } catch (e) {}
+  const def = last || (typeof _lastPeekedSession !== 'undefined' && _lastPeekedSession) || names[0] || '';
+  const html = '<label class="ui-field">Worker<input id="draw-send-worker" class="input" list="draw-send-workers" value="' + esc(def) + '" autocomplete="off"></label>'
+    + '<datalist id="draw-send-workers">' + names.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>'
+    + '<label class="ui-field">What should it do?<textarea id="draw-send-prompt" class="input" rows="3" placeholder="e.g. implement this architecture"></textarea></label>'
+    + '<div class="ui-help">Sends ' + (sel.length ? 'the ' + sel.length + ' selected element' + (sel.length === 1 ? '' : 's') : 'the whole drawing')
+    + ' as a PNG, plus the path of the .excalidraw file so it can edit it.</div>';
+  const ok = await showFormModal('Send to worker', html, 'Send');
+  if (!ok) return;
+  const worker = (document.getElementById('draw-send-worker') || {}).value || '';
+  const prompt = ((document.getElementById('draw-send-prompt') || {}).value || '').trim();
+  if (!worker.trim()) { showToast('Pick a worker to send to'); return; }
+  try { localStorage.setItem('amux_draw_send_to', worker.trim()); } catch (e) {}
+  await _drawSendToWorker(worker.trim(), prompt, sel.length > 0);
+}
+async function _drawSendToWorker(worker, prompt, selectionOnly) {
+  const d = _draw;
+  const X = d.lib.X, api = d.api;
+  const els = selectionOnly ? _drawSelected() : api.getSceneElements();
+  if (!els.length) { showToast('The drawing is empty'); return 'empty'; }
+  try {
+    if (_drawDirty()) await _drawSave();
+    const blob = await X.exportToBlob({ elements: els, files: api.getFiles(), mimeType: 'image/png', exportPadding: 16,
+      appState: Object.assign({}, api.getAppState(), { exportBackground: true, exportWithDarkMode: false }) });
+    const up = await _drawUpload(blob, (_drawTitleOf(d.path) || 'drawing') + (selectionOnly ? '-selection' : '') + '.png');
+    const text = [prompt, '@' + up.path, d.etag ? 'Source drawing (Excalidraw JSON, editable): @' + d.path : '']
+      .filter(Boolean).join('\n');
+    const res = await doSend(worker, text);
+    if (res === 'sent' || res === 'queued') showToast((res === 'sent' ? 'Sent to ' : 'Queued for ') + worker);
+    else if (res !== 'declined') showToast('Not sent to ' + worker);
+    return res;
+  } catch (e) {
+    showToast('Send failed: ' + (e.message || e));
+    _drawBeacon('send-failed', { worker, error: String(e && e.message || e) });
+    return 'failed';
+  }
 }

@@ -584,7 +584,7 @@ fn inject_bootstrap(
          window._AMUX_POSTHOG_KEY={};window._AMUX_POSTHOG_HOST={};window._AMUX_USER_EMAIL={};\
          window._AMUX_USER_ID={};window._AMUX_UI_TOKEN={};window._AMUX_DEFAULT_MODEL={};\
          window._AMUX_LEGACY_PORT={};window._AMUX_CANONICAL_PORT={};\
-         window._AMUX_AUTH_WITHHELD={};window._AMUX_MDAI_ROOT={};</script>\n",
+         window._AMUX_AUTH_WITHHELD={};window._AMUX_MDAI_ROOT={};window._AMUX_DATA_DIR={};</script>\n",
         jstr(&ical_subscribe_url()),
         jstr(&auth),
         jstr(&home),
@@ -610,6 +610,10 @@ fn inject_bootstrap(
         // root instead of $HOME when a `mdai_root` pref points elsewhere
         // (AMUX-4477).
         jstr(&crate::api::mdai::mdai_root_str()),
+        // The amux data directory (AMUX_HOME, default ~/.amux). The Draw tab
+        // keeps its shared library and recent-drawings list under `draw/`
+        // here, so they follow the server rather than one browser.
+        jstr(&crate::config::amux_home().to_string_lossy()),
     );
     let with_bootstrap = format!("{}{}{}", &html[..b], block, &html[e..]);
     // Client update adoption is the SSE ping's job, exactly like Python
@@ -641,6 +645,10 @@ fn mime_for(path: &str) -> &'static str {
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         Some("webmanifest") => "application/manifest+json",
+        // The Draw tab's vendored editor (static/vendor/draw) ships fonts and
+        // a lazily loaded font-subsetting module.
+        Some("woff2") => "font/woff2",
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
 }

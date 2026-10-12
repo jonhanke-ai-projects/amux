@@ -108,7 +108,7 @@
 <link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="/state/feedback.css">
 <!-- AMUX-BOOTSTRAP-BEGIN (see extraction note at top of file) -->
-<script>window._AMUX_S3_ICAL_URL="";window._AMUX_AUTH_TOKEN="";window._AMUX_HOME="";window._AMUX_POSTHOG_KEY="";window._AMUX_POSTHOG_HOST="https://us.i.posthog.com";window._AMUX_USER_EMAIL="";window._AMUX_USER_ID="";window._AMUX_UI_TOKEN="";window._AMUX_DEFAULT_MODEL="sonnet";window._AMUX_AUTH_WITHHELD=false;</script>
+<script>window._AMUX_S3_ICAL_URL="";window._AMUX_AUTH_TOKEN="";window._AMUX_HOME="";window._AMUX_POSTHOG_KEY="";window._AMUX_POSTHOG_HOST="https://us.i.posthog.com";window._AMUX_USER_EMAIL="";window._AMUX_USER_ID="";window._AMUX_UI_TOKEN="";window._AMUX_DEFAULT_MODEL="sonnet";window._AMUX_AUTH_WITHHELD=false;window._AMUX_DATA_DIR="";</script>
 <!-- AMUX-BOOTSTRAP-END -->
 </head>
 <body>
@@ -671,6 +671,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-grid" onclick="enterGridMode()"><span class="tab-ico">▣</span><span class="tab-lbl">Workspace</span></button>
   <button id="tab-messages" onclick="switchView('messages')"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span></button>
   <button id="tab-skills" onclick="switchView('skills')"><span class="tab-ico">⚙</span><span class="tab-lbl">Skills</span></button>
+  <button id="tab-draw" onclick="switchView('draw')"><span class="tab-ico">&#x270E;</span><span class="tab-lbl">Draw</span></button>
   <button id="tab-sql" onclick="switchView('sql')"><span class="tab-ico">⛁</span><span class="tab-lbl">Database</span></button>
   <button id="tab-map" onclick="switchView('map')"><span class="tab-ico">◈</span><span class="tab-lbl">Map</span></button>
   <button id="tab-metrics" onclick="switchView('metrics')"><span class="tab-ico">↗</span><span class="tab-lbl">Metrics</span></button>
@@ -2181,6 +2182,91 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </aside>
     </div>
   </div>
+</div>
+
+<!-- Draw tab: freehand diagrams on Excalidraw, saved as .excalidraw files in a
+     folder you choose. The editor bundle (static/vendor/draw, built by
+     scripts/build-draw.mjs) loads the first time this tab opens. -->
+<div id="draw-view" class="draw-view" style="display:none;">
+  <aside id="draw-lib" class="draw-lib" aria-label="Drawing library">
+    <div class="draw-lib-head">
+      <h3>Library</h3>
+      <button class="draw-icon-btn" onclick="_drawToggleLib(false)" aria-label="Hide library" title="Hide library">&#x2039;</button>
+    </div>
+    <input class="input draw-lib-search" id="draw-lib-search" type="search" placeholder="Search components" aria-label="Search the library" autocomplete="off" oninput="_drawLibRender()">
+    <div class="draw-lib-tabs" role="tablist">
+      <button role="tab" id="draw-libtab-components" class="active" aria-selected="true" onclick="_drawLibTab('components')">Components</button>
+      <button role="tab" id="draw-libtab-drawings" aria-selected="false" onclick="_drawLibTab('drawings')">Drawings</button>
+    </div>
+    <div class="draw-lib-body" id="draw-lib-body"></div>
+    <div class="draw-lib-foot">
+      <button class="btn draw-lib-save" id="draw-lib-save" onclick="_drawSaveSelectionToLib()">+ Save selection</button>
+      <button class="btn" onclick="_drawPickImport()">&#x2191; Import files</button>
+      <input type="file" id="draw-import-input" multiple accept=".excalidraw,.excalidrawlib,.json,image/*" hidden onchange="_drawImportInput(this)">
+    </div>
+  </aside>
+  <div class="draw-lib-scrim" id="draw-lib-scrim" onclick="_drawToggleLib(false)"></div>
+  <section class="draw-main">
+    <header class="draw-head">
+      <button class="draw-icon-btn draw-lib-open" id="draw-lib-open" onclick="_drawToggleLib(true)" aria-label="Show library" title="Library">&#x2630;</button>
+      <div class="draw-title-wrap">
+        <div class="draw-title-row">
+          <input id="draw-title" class="draw-title" aria-label="Drawing name" spellcheck="false" onkeydown="_drawTitleKey(event)" onchange="_drawRename(this.value)">
+          <span id="draw-save-state" class="draw-save-state" role="status" aria-live="polite"></span>
+        </div>
+        <div class="draw-crumbs" id="draw-crumbs" aria-label="Folder"></div>
+      </div>
+      <div class="draw-actions">
+        <button class="btn draw-act" onclick="_drawNew()" title="New drawing" aria-label="New drawing"><span class="draw-act-ico">+</span><span class="draw-act-lbl">New</span></button>
+        <button class="btn draw-act draw-act-folder" id="draw-folder-btn" onclick="_drawDirPopHere(this)" title="Folder" aria-label="Choose folder"><span class="draw-act-ico">&#x1F4C1;</span></button>
+        <button class="btn draw-act" id="draw-live-btn" onclick="_drawToggleLive()" title="Live mode: canvas only, compact pen" aria-label="Live mode"><span class="draw-act-ico">&#x25C9;</span><span class="draw-act-lbl">Live mode</span></button>
+        <button class="btn draw-act" onclick="_drawOpenSend()" title="Send to a worker" aria-label="Send to worker"><span class="draw-act-ico">&#x27A4;</span><span class="draw-act-lbl">Send to worker</span></button>
+        <div class="draw-menu-wrap">
+          <button class="btn draw-act" id="draw-export-btn" onclick="_drawToggleExportMenu(event)" aria-haspopup="menu" aria-expanded="false" title="Export" aria-label="Export"><span class="draw-act-ico">&#x21E9;</span><span class="draw-act-lbl">Export &#x25BE;</span></button>
+          <div id="draw-export-menu" class="draw-menu" role="menu" hidden>
+            <button role="menuitem" onclick="_drawExport('png')">PNG image</button>
+            <button role="menuitem" onclick="_drawExport('svg')">SVG image</button>
+            <button role="menuitem" onclick="_drawExport('excalidraw')">.excalidraw file</button>
+            <button role="menuitem" onclick="_drawExport('library')">Library (.excalidrawlib)</button>
+            <button role="menuitem" onclick="_drawOpenInFiles()">Show in Files</button>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="draw-conflict" id="draw-conflict" role="alert" hidden>
+      <span id="draw-conflict-msg">This file changed on disk while you were editing.</span>
+      <button class="btn" onclick="_drawResolveConflict('disk')">Load disk version</button>
+      <button class="btn primary" onclick="_drawResolveConflict('mine')">Keep mine</button>
+    </div>
+    <div class="draw-canvas-wrap" id="draw-canvas-wrap">
+      <div id="draw-host" class="draw-host"></div>
+      <div class="draw-loading" id="draw-loading">Loading the editor&#x2026;</div>
+      <div class="draw-selbar" id="draw-selbar" hidden>
+        <span class="draw-selbar-lbl" id="draw-selbar-lbl">Selection</span>
+        <button class="btn" onclick="_drawSaveSelectionToLib()">Save to library</button>
+        <button class="btn" id="draw-lock-btn" onclick="_drawToggleLock()">Lock</button>
+      </div>
+      <div class="draw-snapbar" id="draw-snapbar" role="toolbar" aria-label="Snapping">
+        <button class="draw-snap" data-repeatable id="draw-snap-grid" aria-pressed="false" onclick="_drawToggleSnap('grid')" title="Snap to grid (hold Ctrl/Cmd to bypass)"><span class="draw-snap-ico">#</span><span class="draw-snap-lbl">Grid</span><span class="draw-snap-state"></span></button>
+        <button class="draw-snap" data-repeatable id="draw-snap-align" aria-pressed="false" onclick="_drawToggleSnap('align')" title="Snap to other objects (hold Ctrl/Cmd to bypass)"><span class="draw-snap-ico">&#x2261;</span><span class="draw-snap-lbl">Align</span><span class="draw-snap-state"></span></button>
+        <button class="draw-snap" data-repeatable id="draw-snap-connect" aria-pressed="false" onclick="_drawToggleSnap('connect')" title="Arrows bind to shapes (hold Ctrl/Cmd to bypass)"><span class="draw-snap-ico">&#x2194;</span><span class="draw-snap-lbl">Connect</span><span class="draw-snap-state"></span></button>
+        <button class="draw-snap draw-snap-fs" onclick="_drawFullscreen()" title="Full screen" aria-label="Full screen"><span class="draw-snap-ico">&#x26F6;</span></button>
+      </div>
+      <div class="draw-penbar" id="draw-penbar" role="toolbar" aria-label="Pen" hidden>
+        <div class="draw-pen-colors" id="draw-pen-colors"></div>
+        <div class="draw-pen-widths" id="draw-pen-widths"></div>
+        <button class="draw-pen-tool" data-repeatable id="draw-pen-freedraw" onclick="_drawPenTool('freedraw')" title="Pen" aria-label="Pen">&#x270E;</button>
+        <button class="draw-pen-tool" data-repeatable id="draw-pen-eraser" onclick="_drawPenTool('eraser')" title="Eraser" aria-label="Eraser">&#x232B;</button>
+        <button class="draw-pen-tool" data-repeatable id="draw-pen-laser" onclick="_drawPenTool('laser')" title="Laser pointer" aria-label="Laser pointer">&#x2726;</button>
+        <button class="draw-pen-tool" data-repeatable onclick="_drawToggleLive()" title="Exit live mode" aria-label="Exit live mode">&#x2715;</button>
+      </div>
+    </div>
+    <footer class="draw-status">
+      <span id="draw-status-text" class="draw-status-text"></span>
+      <button class="draw-status-retry" id="draw-status-retry" onclick="_drawSaveNow()" hidden>Retry</button>
+      <span class="draw-status-fmt">.excalidraw &#xB7; autosave</span>
+    </footer>
+  </section>
 </div>
 
 <!-- Schedule details: a side panel on desktop, a full-screen sheet on phones.

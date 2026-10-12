@@ -8895,3 +8895,181 @@ body.light #fc-container { color-scheme: light; }
 #scheduler-view.sx-all .sysjob-viewall { display:inline-flex; }
 #scheduler-view.sx-all #system-jobs-list { max-height:min(60dvh, 520px); overflow-y:auto; -webkit-overflow-scrolling:touch;
   overscroll-behavior:contain; border:1px solid var(--border); border-radius:var(--radius-control); padding:4px; }
+
+/* ── Draw tab ─────────────────────────────────────────────────────────────
+   amux chrome around the vendored Excalidraw editor (static/vendor/draw).
+   Desktop: library left, canvas right. ≤700px: canvas fills the screen and the
+   library is a bottom sheet. */
+#draw-view { flex:1; min-height:0; min-width:0; flex-direction:row; position:relative; overflow:hidden;
+  height:calc(100dvh - var(--draw-top, 0px)); min-height:320px; }
+.draw-lib { width:264px; flex:0 0 264px; display:flex; flex-direction:column; gap:var(--space-2); min-height:0;
+  border-right:1px solid var(--border); background:var(--bg); padding:var(--space-3) var(--space-3) 0; }
+.draw-lib-head { display:flex; align-items:center; justify-content:space-between; }
+.draw-lib-head h3 { font-size:1rem; font-weight:600; }
+.draw-lib-search { width:100%; }
+.draw-lib-tabs { display:flex; border-bottom:1px solid var(--border); }
+.draw-lib-tabs button { flex:1; background:none; border:none; border-bottom:2px solid transparent; color:var(--dim);
+  padding:8px 4px; font:inherit; font-size:0.86rem; cursor:pointer; min-height:36px; }
+.draw-lib-tabs button.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+.draw-lib-body { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
+.draw-lib-sub { font-size:0.78rem; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:0.04em; margin:var(--space-2) 0; }
+.draw-lib-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--space-2); }
+.draw-lib-item { display:flex; flex-direction:column; align-items:center; gap:4px; padding:var(--space-2); min-height:96px;
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-control); color:var(--text);
+  font:inherit; font-size:0.78rem; cursor:grab; touch-action:manipulation; }
+.draw-lib-item:hover, .draw-lib-item:focus-visible { border-color:var(--accent); }
+.draw-lib-thumb { width:100%; height:56px; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+.draw-lib-thumb svg { max-width:100%; max-height:100%; width:auto; height:auto; }
+.draw-lib-name { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.draw-lib-foot { display:flex; flex-direction:column; gap:var(--space-2); padding:var(--space-2) 0 calc(var(--space-3) + env(safe-area-inset-bottom)); border-top:1px solid var(--border); }
+.draw-lib-foot .btn { width:100%; justify-content:center; }
+.draw-lib-save { border-style:dashed; }
+.draw-empty { color:var(--dim); font-size:0.84rem; line-height:1.45; padding:var(--space-2) 0; }
+.draw-recent { display:flex; align-items:center; gap:var(--space-2); width:100%; text-align:left; padding:6px; margin-bottom:6px;
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-control); color:var(--text); font:inherit; cursor:pointer; min-height:56px; }
+.draw-recent.current, .draw-pop-row.current { border-color:var(--accent); }
+.draw-recent-thumb { flex:0 0 76px; height:48px; border-radius:6px; background:#fff; overflow:hidden; display:flex; align-items:center; justify-content:center; border:1px solid var(--border); }
+.draw-recent-thumb img { max-width:100%; max-height:100%; }
+.draw-recent-meta { display:flex; flex-direction:column; min-width:0; }
+.draw-recent-title { font-size:0.86rem; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.draw-recent-when { font-size:0.76rem; color:var(--dim); }
+.draw-lib-scrim { display:none; }
+
+.draw-main { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
+.draw-head { display:flex; align-items:center; gap:var(--space-3); padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); min-width:0; }
+.draw-icon-btn { min-width:36px; min-height:36px; display:inline-flex; align-items:center; justify-content:center; background:none;
+  border:1px solid transparent; border-radius:var(--radius-control); color:var(--dim); font-size:1.1rem; cursor:pointer; }
+.draw-icon-btn:hover { color:var(--text); border-color:var(--border); }
+.draw-lib-open { display:none; }
+#draw-view.draw-lib-hidden .draw-lib { display:none; }
+#draw-view.draw-lib-hidden .draw-lib-open { display:inline-flex; }
+.draw-title-wrap { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.draw-title-row { display:flex; align-items:center; gap:var(--space-2); min-width:0; }
+.draw-title { font:inherit; font-size:1.1rem; font-weight:600; color:var(--text); background:none; border:1px solid transparent;
+  border-radius:6px; padding:2px 6px; margin-left:-6px; min-width:0; width:100%; max-width:420px; text-overflow:ellipsis; }
+.draw-title:hover { border-color:var(--border); }
+.draw-title:focus { border-color:var(--accent); outline:none; box-shadow:var(--focus-ring); }
+.draw-save-state { flex:0 0 auto; font-size:0.8rem; color:var(--dim); display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+.draw-save-state:not(:empty)::before { content:''; width:8px; height:8px; border-radius:50%; background:var(--dim); }
+.draw-save-state[data-state="saved"]::before { background:var(--green); }
+.draw-save-state[data-state="saving"]::before, .draw-save-state[data-state="dirty"]::before { background:var(--yellow); }
+.draw-save-state[data-state="error"], .draw-save-state[data-state="conflict"], .draw-save-state[data-state="load-error"] { color:var(--red); }
+.draw-save-state[data-state="error"]::before, .draw-save-state[data-state="conflict"]::before, .draw-save-state[data-state="load-error"]::before { background:var(--red); }
+.draw-crumbs { display:flex; align-items:center; gap:2px; font-size:0.82rem; color:var(--dim); min-width:0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
+.draw-crumbs::-webkit-scrollbar { display:none; }
+.draw-crumb-ico { margin-right:4px; }
+.draw-crumb { background:none; border:none; color:var(--dim); font:inherit; padding:2px 4px; border-radius:4px; cursor:pointer; }
+.draw-crumb:hover { color:var(--text); background:var(--card); }
+.draw-crumb-sep { opacity:0.6; }
+.draw-crumb-file { color:var(--text); margin-left:6px; padding-left:8px; border-left:1px solid var(--border); }
+.draw-actions { display:flex; align-items:center; gap:var(--space-2); flex:0 0 auto; }
+.draw-act { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.draw-act[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); }
+.draw-act-ico { font-size:0.95rem; }
+.draw-act-folder { display:none; }
+.draw-menu-wrap { position:relative; }
+.draw-menu { position:absolute; z-index:30; min-width:200px; background:var(--card); border:1px solid var(--border);
+  border-radius:var(--radius-control); box-shadow:0 8px 24px rgba(0,0,0,0.25); padding:4px; display:flex; flex-direction:column; }
+.draw-menu[hidden] { display:none; }
+#draw-export-menu { right:0; top:calc(100% + 4px); }
+.draw-menu > button, .draw-pop-row { text-align:left; background:none; border:none; color:var(--text); font:inherit; font-size:0.86rem;
+  padding:8px 10px; border-radius:6px; cursor:pointer; min-height:36px; width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.draw-menu > button:hover, .draw-pop-row:hover { background:var(--bg); }
+.draw-dir-pop { width:300px; max-width:calc(100% - 16px); max-height:min(60dvh, 420px); }
+.draw-pop-path { font-size:0.76rem; color:var(--dim); padding:6px 10px; word-break:break-all; border-bottom:1px solid var(--border); }
+.draw-pop-list { overflow-y:auto; min-height:0; flex:1; padding:4px 0; }
+.draw-pop-empty { color:var(--dim); font-size:0.82rem; padding:8px 10px; }
+.draw-pop-foot { display:flex; gap:var(--space-2); padding:6px; border-top:1px solid var(--border); }
+.draw-pop-foot .btn { flex:1; justify-content:center; }
+#draw-folder-list .draw-pop-row { border:1px solid transparent; }
+
+.draw-conflict { display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-2); padding:var(--space-2) var(--space-3);
+  background:color-mix(in srgb, var(--yellow) 14%, var(--bg)); border-bottom:1px solid var(--border); font-size:0.86rem; }
+.draw-conflict[hidden] { display:none; }
+.draw-conflict span { flex:1; min-width:180px; }
+.draw-canvas-wrap { position:relative; flex:1; min-height:0; overflow:hidden; }
+.draw-host { position:absolute; inset:0; touch-action:none; overscroll-behavior:none; }
+.draw-loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:0.9rem; padding:var(--space-4); text-align:center; }
+.draw-loading[hidden] { display:none; }
+.draw-snapbar { position:absolute; left:50%; transform:translateX(-50%); bottom:calc(var(--space-3) + env(safe-area-inset-bottom)); z-index:5;
+  display:flex; align-items:center; gap:2px; padding:4px; background:var(--card); border:1px solid var(--border); border-radius:12px;
+  box-shadow:0 4px 14px rgba(0,0,0,0.18); }
+.draw-snap { display:inline-flex; align-items:center; gap:6px; background:none; border:none; color:var(--text); font:inherit; font-size:0.84rem;
+  padding:6px 10px; border-radius:8px; cursor:pointer; min-height:36px; }
+.draw-snap:hover { background:var(--bg); }
+.draw-snap-ico { font-weight:700; color:var(--dim); }
+.draw-snap-state { font-size:0.68rem; font-weight:700; padding:2px 6px; border-radius:999px; background:var(--bg); color:var(--dim); }
+.draw-snap.on .draw-snap-state { background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--accent); }
+.draw-snap.on .draw-snap-ico { color:var(--accent); }
+.draw-snap-fs { border-left:1px solid var(--border); border-radius:0 8px 8px 0; }
+.draw-selbar { position:absolute; right:var(--space-3); top:64px; z-index:5; display:flex; align-items:center; gap:var(--space-2);
+  padding:6px; background:var(--card); border:1px solid var(--border); border-radius:12px; box-shadow:0 4px 14px rgba(0,0,0,0.18); }
+.draw-selbar[hidden] { display:none; }
+.draw-selbar-lbl { font-size:0.8rem; color:var(--dim); padding:0 4px; }
+.draw-penbar { position:absolute; left:50%; transform:translateX(-50%); bottom:calc(var(--space-3) + env(safe-area-inset-bottom)); z-index:6;
+  display:flex; align-items:center; gap:var(--space-2); padding:6px 8px; background:var(--card); border:1px solid var(--border);
+  border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,0.25); max-width:calc(100% - 16px); overflow-x:auto; }
+.draw-penbar[hidden] { display:none; }
+.draw-pen-colors, .draw-pen-widths { display:flex; gap:4px; }
+.draw-pen-color { width:32px; height:32px; border-radius:50%; background:var(--c); border:2px solid var(--card); outline:2px solid transparent; cursor:pointer; }
+.draw-pen-color.on { outline-color:var(--accent); }
+.draw-pen-width { width:36px; height:32px; display:inline-flex; align-items:center; justify-content:center; background:var(--bg); border:1px solid var(--border); border-radius:8px; cursor:pointer; }
+.draw-pen-width span { display:block; width:18px; background:var(--text); border-radius:2px; }
+.draw-pen-width.on { border-color:var(--accent); }
+.draw-pen-tool { min-width:36px; height:36px; background:none; border:1px solid transparent; border-radius:8px; color:var(--text); font-size:1.05rem; cursor:pointer; }
+.draw-pen-tool.on { border-color:var(--accent); color:var(--accent); }
+.draw-status { display:flex; align-items:center; gap:var(--space-2); padding:4px var(--space-3); border-top:1px solid var(--border);
+  font-size:0.78rem; color:var(--dim); min-height:28px; }
+.draw-status-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.draw-status-text[data-state="error"], .draw-status-text[data-state="conflict"], .draw-status-text[data-state="load-error"] { color:var(--red); }
+.draw-status-retry { background:none; border:1px solid var(--border); border-radius:6px; color:var(--text); font:inherit; padding:2px 8px; cursor:pointer; }
+.draw-status-retry[hidden] { display:none; }
+/* Live mode: the canvas takes the whole screen with only the pen bar. */
+#draw-view.draw-live { position:fixed; inset:0; height:auto; z-index:calc(var(--layer-dialog) - 1); background:var(--bg); }
+#draw-view.draw-live .draw-lib, #draw-view.draw-live .draw-head, #draw-view.draw-live .draw-status,
+#draw-view.draw-live .draw-snapbar, #draw-view.draw-live .draw-selbar, #draw-view.draw-live .draw-lib-scrim { display:none !important; }
+#draw-view:fullscreen { height:100%; }
+/* No page scroll behind the canvas (on <html>: body is not a scroll container,
+   so the sticky header keeps its offset). */
+html.draw-active { overflow:hidden; }
+/* Excalidraw inherits the amux font stack for its UI chrome, not the canvas. */
+#draw-host .excalidraw { --ui-font: inherit; }
+
+@media (max-width: 700px) {
+  .draw-lib { position:fixed; left:0; right:0; bottom:0; top:auto; width:auto; flex:none; max-height:72dvh; z-index:calc(var(--layer-dialog) - 2);
+    border-right:none; border-top:1px solid var(--border); border-radius:16px 16px 0 0; box-shadow:0 -10px 30px rgba(0,0,0,0.3);
+    transform:translateY(105%); transition:transform 0.2s ease; padding-left:max(var(--space-3), env(safe-area-inset-left)); padding-right:max(var(--space-3), env(safe-area-inset-right)); }
+  #draw-view.draw-lib-sheet .draw-lib { transform:none; }
+  #draw-view.draw-lib-sheet .draw-lib-scrim { display:block; position:fixed; inset:0; z-index:calc(var(--layer-dialog) - 3); background:rgba(0,0,0,0.35); }
+  .draw-lib-open, #draw-view.draw-lib-hidden .draw-lib-open { display:inline-flex; }
+  #draw-view.draw-lib-hidden .draw-lib { display:flex; }
+  .draw-head { gap:var(--space-2); padding:6px max(var(--space-2), env(safe-area-inset-right)) 6px max(var(--space-2), env(safe-area-inset-left)); }
+  .draw-icon-btn, .draw-act { min-width:44px; min-height:44px; }
+  .draw-act { padding:0 10px; justify-content:center; }
+  .draw-act-lbl { display:none; }
+  .draw-actions > .draw-act:first-child { display:none; }
+  .draw-title { font-size:1rem; }
+  /* One header row on a phone: the folder lives behind its own button. */
+  .draw-crumbs { display:none; }
+  .draw-act-folder { display:inline-flex; }
+  .draw-title-wrap { min-width:72px; }
+  /* The save state is a dot on a phone; a failure still says so in words. */
+  .draw-save-state[data-state="saved"], .draw-save-state[data-state="saving"], .draw-save-state[data-state="dirty"],
+  .draw-save-state[data-state="new"], .draw-save-state[data-state="loading"] { font-size:0; gap:0; }
+  .draw-penbar { flex-wrap:wrap; justify-content:center; width:calc(100% - 16px); overflow:visible; }
+  .draw-status { display:none; }
+  .draw-lib-tabs button, .draw-crumb, .draw-menu > button, .draw-pop-row, .draw-snap, .draw-pen-tool, .draw-pen-color, .draw-pen-width, .draw-lib-head .draw-icon-btn { min-height:44px; }
+  .draw-pen-color { width:44px; height:44px; }
+  .draw-pen-width, .draw-pen-tool { min-width:44px; }
+  /* Excalidraw's phone UI owns the top and bottom edges (shape toolbar, menu,
+     undo) and a right-hand column, so the snap toggles are a column on the left. */
+  .draw-snapbar { top:50%; bottom:auto; left:max(6px, env(safe-area-inset-left)); transform:translateY(-50%); flex-direction:column; padding:3px; }
+  .draw-snap { min-width:44px; padding:0; justify-content:center; flex-direction:column; gap:1px; font-size:0.9rem; }
+  .draw-snap-lbl { display:none; }
+  .draw-snap-state { font-size:0.56rem; padding:1px 4px; }
+  .draw-snap-fs { border-left:none; border-top:1px solid var(--border); border-radius:0 0 8px 8px; }
+  .draw-main { padding-bottom:env(safe-area-inset-bottom); }
+  .draw-selbar { top:auto; bottom:calc(76px + env(safe-area-inset-bottom)); right:var(--space-2); }
+  .draw-selbar .btn { min-height:44px; }
+  .draw-dir-pop { left:8px !important; right:8px; width:auto; }
+}

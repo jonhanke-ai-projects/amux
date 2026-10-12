@@ -1,0 +1,2 @@
+/* amux vendor bundle: @excalidraw/excalidraw@0.18.1 react@18.3.1 react-dom@18.3.1 (scripts/build-draw.mjs) */
+import{a as r,c as e}from"./chunk-2ACY5UIP.js";import"./chunk-ZG27KX6N.js";import"./chunk-25A6IH4V.js";import"./chunk-KMI5IEE3.js";var i=import.meta.url?new URL(import.meta.url):void 0;typeof window>"u"&&typeof self<"u"&&(self.onmessage=async a=>{if(a.data.command===r.Subset){let t=await e(a.data.arrayBuffer,a.data.codePoints);self.postMessage(t,{transfer:[t]})}});export{i as WorkerUrl};
