@@ -14092,7 +14092,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1346';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1347';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -35461,6 +35461,11 @@ function renderScheduler(opts) {
     _sxRenderBulk();
     const sys = document.querySelector('#scheduler-view .sysjob-section');
     if (sys) sys.hidden = !(f.group === 'all' || f.group === 'system');
+    // Under "All" the system job list scrolls inside a bounded box (CSS
+    // .sx-all). Expanded, 48 job cards made the phone page ~11,000px tall
+    // and it grew by ~200px per job; the System pill shows them unbounded.
+    const view = document.getElementById('scheduler-view');
+    if (view) view.classList.toggle('sx-all', f.group === 'all');
   }
 
   if (!scope.length) {
@@ -36112,11 +36117,24 @@ function _schedWhen(s) {
 }
 
 async function toggleSchedEnabled(id, enabled) {
+  // Repaint the row FIRST. Until the refetch below lands, the row switch kept
+  // showing the old state, so pausing from the menu and then tapping the
+  // still-"on" switch to resume sent a second PAUSE (AMUX-5865: the e2e at
+  // 375px caught it; a fast thumb hits the same window). A server refusal
+  // restores the previous state; a queued offline write keeps the new one.
+  const s0 = (schedules || []).find(x => x.id === id);
+  const prev = s0 ? s0.enabled : null;
+  if (s0) {
+    s0.enabled = enabled ? 1 : 0;
+    renderScheduler();
+    _peekRefreshSchedIfActive();
+  }
   const r = await apiCall(API + '/api/schedules/' + id, {
     method: 'PATCH', headers: {'Content-Type':'application/json'},
     // Tag UI toggles so an audit flip reads "dashboard", not UNATTRIBUTED
     // (the recurring-disabler mystery, AMUX-1765 — it was this control).
-    body: JSON.stringify({ enabled: enabled ? 1 : 0, by: 'dashboard' })
+    body: JSON.stringify({ enabled: enabled ? 1 : 0, by: 'dashboard' }),
+    _onRefused: () => { if (s0) s0.enabled = prev; },
   });
   await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
   if (_sxDetailAudit && _sxDetailAudit.id === id) _sxDetailAudit = null;

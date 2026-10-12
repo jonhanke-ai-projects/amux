@@ -778,7 +778,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="fc-container" style="width:100%;padding:0;"></div>
 </div>
 <!-- Scheduler view -->
-<div id="scheduler-view" style="display:none;">
+<div id="scheduler-view" class="sx-all" style="display:none;">
   <div class="sx-head">
     <div class="sx-head-title">
       <h2>Scheduler</h2>
@@ -829,6 +829,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <span class="sysjob-head-title">System</span>
       <span class="sysjob-head-sub">amux&rsquo;s own background jobs</span>
       <span class="sysjob-head-count" id="system-jobs-count"></span>
+      <a href="#" class="sx-viewall sysjob-viewall" onclick="event.preventDefault();_sxSetGroup('system')">View all &rarr;</a>
     </div>
     <div class="sysjob-head-note">Internal plumbing, not schedules &mdash; amux runs these and you cannot edit or delete them. A job whose last tick is far past its interval reads as <b>STALLED</b>.</div>
     <div id="system-jobs-list"></div>
