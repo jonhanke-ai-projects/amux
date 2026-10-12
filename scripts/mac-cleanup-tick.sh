@@ -1746,6 +1746,18 @@ computer_sandboxes_report
 # but it CAN name it loudly rather than burying it in the disk report.
 vm_reference_report
 
+fseventsd_reading() {
+  local pid; pid=$(pgrep -x fseventsd 2>/dev/null | head -1)
+  [ -n "$pid" ] || return 0
+  echo "$(to_gb "$(top -l 1 -pid "$pid" -stats mem 2>/dev/null | tail -1 | tr -d ' ')") $(ps -o pcpu= -p "$pid" 2>/dev/null | tr -d ' ')"
+}
+# Baseline BEFORE any arm deletes a file. The reap arms below can remove a
+# cargo target or a scratch tree (hundreds of thousands of files), and that
+# deletion is fseventsd churn this tick made itself. Reading CPU only after them
+# escalated the tick's own aftermath as a root cause (RCA 20261012-161555: 83% CPU
+# right after 2 targets / 7.8G were reaped, 5-15% a few minutes later).
+fse_pre=$($FSEVENTSD_CMD 2>/dev/null)
+
 # ── act: purge ───────────────────────────────────────────────────────────────
 purged=no
 if [ "$measured" = true ] && should_purge "$level" "$free_gb" "$PRESSURE_PURGE" "$FREE_FLOOR_GB"; then
@@ -1923,11 +1935,6 @@ else
   echo "mac-cleanup: family scan produced no rows (ps unavailable?)"
 fi
 
-fseventsd_reading() {
-  local pid; pid=$(pgrep -x fseventsd 2>/dev/null | head -1)
-  [ -n "$pid" ] || return 0
-  echo "$(to_gb "$(top -l 1 -pid "$pid" -stats mem 2>/dev/null | tail -1 | tr -d ' ')") $(ps -o pcpu= -p "$pid" 2>/dev/null | tr -d ' ')"
-}
 fse_reading=$($FSEVENTSD_CMD 2>/dev/null)
 fse_verdict=""
 if [ -n "$fse_reading" ]; then
@@ -1936,6 +1943,14 @@ if [ -n "$fse_reading" ]; then
   fse_hot=0
   if needs_reboot "$fse_gb" "$FSEVENTSD_REBOOT_GB"; then fse_hot=1; fi
   if [ "${fse_cpu_int:-0}" -ge "$FSEVENTSD_CPU_PCT" ] 2>/dev/null; then fse_hot=1; fi
+  # CPU counts only when it was already hot before this tick deleted anything.
+  # Memory is not reset by a burst, so the GB threshold stands on its own.
+  fse_pre_cpu=${fse_pre#* }; fse_pre_cpu_int=${fse_pre_cpu%%.*}
+  if [ "$fse_hot" = 1 ] && [ -n "$fse_pre" ] && ! needs_reboot "$fse_gb" "$FSEVENTSD_REBOOT_GB" \
+     && [ "${fse_pre_cpu_int:-0}" -lt "$FSEVENTSD_CPU_PCT" ] 2>/dev/null; then
+    fse_hot=0
+    echo "mac-cleanup: fseventsd ${fse_cpu:-?}% CPU after this tick's own deletions, ${fse_pre_cpu:-?}% before them: the burst is this tick's, not a constraint (verdict=fseventsd_burst_self_inflicted)"
+  fi
   if [ "$fse_hot" = 1 ]; then
     echo "mac-cleanup: fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU and is SIP-protected — a reboot is the only remedy (owner runs: sudo fdesetup authrestart)"
     # In this shell, not $(...): churn_census sets CHURN_COMPLETE, which a subshell would lose.
