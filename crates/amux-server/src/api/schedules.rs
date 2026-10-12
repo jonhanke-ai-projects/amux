@@ -1603,6 +1603,37 @@ pub async fn skip_next(
 
 // ---- POST /api/schedules/{id}/run -----------------------------------------
 
+/// The acknowledgement of a manual shell run. The RUN is asynchronous
+/// (`status: running`, `pending`), but the COMMAND a Run now press issued,
+/// "start this run", is complete once this answers, so `phase` says so. Without
+/// it the dashboard's press tracker read the bare 202 as a command still in
+/// flight, waited 30s for a completion nobody reports, and then toasted "Run
+/// now: still waiting on the server; you can try again" over a run that had
+/// already finished (scheduler e2e, 2026-10-11). The run's result has its own
+/// home: the Runs tab and the run history.
+fn shell_run_ack(started: bool) -> Value {
+    json!({
+        "ok": true,
+        "pending": true,
+        "deduped": !started,
+        "status": "running",
+        "phase": if started { "applied" } else { "noop" },
+        "message": if started {
+            "Run started on the host; its result appears in Runs"
+        } else {
+            "Already running; attached to the existing run"
+        },
+        "note": if started {
+            "started on host; result pending"
+        } else {
+            "already running; attached to the existing run"
+        },
+        "delivery": "shell",
+        "submission": Value::Null,
+        "kind": "shell",
+    })
+}
+
 pub async fn run_now(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1742,29 +1773,13 @@ pub async fn run_now(
             });
         }
 
-        return (
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "ok": true,
-                "pending": true,
-                "deduped": !claim.started(),
-                "ran": sched.str_field("title"),
-                "run_id": claim.run_id(),
-                "ran_at": claim.ran_at(),
-                "status": "running",
-                "note": if claim.started() {
-                    "started on host; result pending"
-                } else {
-                    "already running; attached to the existing run"
-                },
-                "delivery": "shell",
-                "submission": Value::Null,
-                "session": sched.str_field("session"),
-                "kind": "shell",
-                "source": source,
-            })),
-        )
-            .into_response();
+        let mut body = shell_run_ack(claim.started());
+        body["ran"] = json!(sched.str_field("title"));
+        body["run_id"] = json!(claim.run_id());
+        body["ran_at"] = json!(claim.ran_at());
+        body["session"] = json!(sched.str_field("session"));
+        body["source"] = json!(source);
+        return (StatusCode::ACCEPTED, Json(body)).into_response();
     }
 
     let deliverer = LiveDeliverer::new(state.clone());
@@ -2471,6 +2486,17 @@ mod tests {
         )
         .await;
         assert_eq!(audit.as_array().unwrap().len(), 2, "{audit}");
+    }
+
+    #[test]
+    fn a_started_shell_run_acknowledges_the_command_as_done() {
+        let started = super::shell_run_ack(true);
+        assert_eq!(started["phase"], json!("applied"), "the start command completed");
+        assert_eq!(started["status"], json!("running"), "the run itself is still running");
+        assert_eq!(started["pending"], json!(true));
+        let attached = super::shell_run_ack(false);
+        assert_eq!(attached["phase"], json!("noop"));
+        assert_eq!(attached["deduped"], json!(true));
     }
 
     #[tokio::test]

@@ -3760,6 +3760,10 @@ async function _runSyncBanner(quiet = false) {
       item.status = 'failed'; item.label += ' — ' + String(error.message || error);
       _uploadStorageError('sync-unconfirmed', error);
     }
+    // A repaint queued by the last progress tick must not land AFTER the pass
+    // writes its final title ("7 synced"): on iOS Safari it did, and the
+    // finished checklist read "Syncing 7/7" (LC-OFFLINE-ROUNDTRIP).
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
     renderBanner();
   }
   _uploadSyncPending = (await _upqList()).length > 0;
@@ -4170,7 +4174,13 @@ async function apiCall(url, options) {
       amuxTrack('api_error', { url: url.split('?')[0], status: r.status, method: options.method || 'GET' });
       // null also means "queued" (offline, unreachable, locally queued 202), so
       // a caller that must undo optimistic UI ONLY on a real refusal asks here.
-      if (typeof options._onRefused === 'function') options._onRefused(r.status);
+      // The parsed body rides along, so a form can mark the field the server
+      // named instead of leaving a bare status in a toast.
+      if (typeof options._onRefused === 'function') {
+        let body = null;
+        try { body = await r.clone().json(); } catch (e) {}
+        options._onRefused(r.status, body);
+      }
       return null;
     }
     // A LOCALLY-QUEUED 202 IS NOT PROOF OF CONNECTIVITY (AMUX-2585).
@@ -14092,7 +14102,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1371';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1382';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -39443,7 +39453,17 @@ async function saveSchedModal() {
   const editId = _schedEditId;
   const url = editId ? API + '/api/schedules/' + editId : API + '/api/schedules';
   const method = editId ? 'PATCH' : 'POST';
-  const r = await apiCall(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  // An expression the server cannot parse is marked on the field it came from,
+  // with the parser's reason and forms that work. It used to surface only as
+  // a "400: unparseable schedule_expr" toast (scheduler e2e, 2026-10-11).
+  const onRefused = (status, j) => {
+    if (!j || j.error !== 'unparseable schedule_expr') return;
+    const field = ['sched-expr-adv', 'sched-expr'].find(id => _sxVal(id) && _sxVal(id) === j.schedule_expr) || 'sched-expr';
+    if (field === 'sched-expr-adv') _sxCreateSection('advanced'); else _sxCreateSection('basic');
+    _sxInvalid(field, 'Could not read "' + (j.schedule_expr || '') + '"' + (j.detail ? ' (' + j.detail + ')' : '')
+      + '. Try a 5-field cron like 0 9 * * 1, or: every 15m, daily at 09:00, weekly on monday at 09:00.');
+  };
+  const r = await apiCall(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload), _onRefused: onRefused });
   if (r) {
     await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
     renderCalendar();
