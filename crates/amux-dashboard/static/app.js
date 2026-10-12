@@ -21215,8 +21215,234 @@ function saveCustomChip() {
   showToast('Added "' + label + '" button');
 }
 
+// ── Media keeper: big files over a disruptive connection ──
+//
+// Owner report, 2026-10-12 (iOS app): a 106 MB .m4a sat at an hourglass and
+// "0:00 / 0:00" forever. Measured in the iOS 18.7 Simulator: WebKit loads the
+// metadata (duration 3459 s after 863 ms) and then SUSPENDS at readyState 1.
+// `canplay` never fires until a user-initiated play(), and the old _abPlay
+// only called play() from `canplay`, so it waited for an event iOS was waiting
+// on it to cause. A play() outside a gesture is NotAllowedError, so that case
+// now says "Tap play" instead of an hourglass.
+//
+// The rest is durability on a phone link: Apple WebKit gets the server's
+// byte-range HLS playlist (hls_url, api/media_hls.rs) when the file has one,
+// so a dropped connection costs one segment rather than the whole stream; an
+// error or a long stall reloads the source and seeks back to the last good
+// position with backoff (1s, 2s, 4s ... capped at 30s); `online` and a return
+// to the foreground retry at once. A CLOSED keeper never restarts: close()
+// detaches the source and every retry path checks `closed` first. Every
+// recovery is beaconed to /api/client-debug as kind=media-recovery so it lands
+// in server-rs.log.
+const _MEDIA_RETRY_MAX = 8;
+const _MEDIA_STALL_MS = 12000;
+// A reload that produces neither metadata nor an error: WebKit's HLS loader
+// can sit silent on a dead link (measured in the ios-safari e2e: an aborted
+// playlist fetch fired no error event at all), so silence is a failure too.
+const _MEDIA_LOAD_MS = 15000;
+const _mediaKeepers = new Set();
+
+// Native HLS on Apple WebKit only (iOS Safari, WKWebView, macOS Safari, and
+// every iOS browser, which are WebKit). Chromium also answers canPlayType for
+// HLS now, but it plays fragmented MP4 progressively without trouble and its
+// HLS path is young, so it keeps the raw URL.
+function _mediaPreferHls(el) {
+  try {
+    const ua = navigator.userAgent || '';
+    const apple = /AppleWebKit/.test(ua) && !/Chrome\/|Chromium\/|Edg\/|Firefox\/|Android/.test(ua);
+    return apple && !!el.canPlayType('application/vnd.apple.mpegurl');
+  } catch (_) { return false; }
+}
+
+function _mediaBeacon(fields) {
+  try {
+    fetch(API + '/api/client-debug', {method: 'POST', _skipOutbox: true,
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({kind: 'media-recovery', online: navigator.onLine,
+        visibility: document.visibilityState, measured: true, n_considered: 1}, fields))}).catch(() => {});
+  } catch (_) {}
+}
+
+class _MediaKeeper {
+  constructor(el, opts) {
+    this.el = el;
+    this.label = opts.label;
+    this.onState = opts.onState || (() => {});
+    this.closed = true;
+    this.src = '';
+    this.engine = '';
+    this.wantPlay = false;
+    this.attempt = 0;
+    this.timer = 0;
+    this.stallTimer = 0;
+    this.loadTimer = 0;
+    this.failed = false;
+    this.recovering = false;   // a retry ran since the last 'playing'
+    this.lastGood = 0;
+    this.pendingSeek = 0;
+    this.loadedOnce = false;
+    const on = (ev, fn) => el.addEventListener(ev, (e) => { if (this.mine()) fn(e); });
+    on('loadedmetadata', () => {
+      this.loadedOnce = true;
+      this._clearLoad();
+      const d = el.duration, s = this.pendingSeek;
+      this.pendingSeek = 0;
+      if (s > 0 && (!isFinite(d) || s < d - 1)) { try { el.currentTime = s; } catch (_) {} }
+      this.onState('meta');
+      // A paused player that recovered never fires 'playing'; close it out here.
+      if (this.recovering && !this.wantPlay) {
+        _mediaBeacon({label: this.label, reason: 'recovered', attempt: this.attempt,
+          position: Math.round(el.currentTime), engine: this.engine});
+        this.recovering = false; this.attempt = 0; this.failed = false;
+        this.onState('paused');
+      }
+    });
+    on('timeupdate', () => {
+      if (el.currentTime > 0 && el.readyState >= 2 && !el.seeking) this.lastGood = el.currentTime;
+      if (el.readyState >= 3) this._clearStall();
+    });
+    on('seeking', () => { this.lastGood = el.currentTime; });
+    on('playing', () => {
+      this._clearStall();
+      if (this.recovering || this.failed) {
+        _mediaBeacon({label: this.label, reason: 'recovered', attempt: this.attempt,
+          position: Math.round(el.currentTime), engine: this.engine});
+      }
+      this.attempt = 0; this.failed = false; this.recovering = false;
+      this.onState('playing');
+    });
+    on('pause', () => { if (!this.timer) this.onState('paused'); });
+    const stalled = () => {
+      if (el.paused || el.readyState >= 3 || this.timer) return;
+      this.onState('buffering');
+      if (this.stallTimer) return;
+      this.stallTimer = setTimeout(() => {
+        this.stallTimer = 0;
+        if (this.mine() && !el.paused && el.readyState < 3) this._schedule('stall', 0);
+      }, _MEDIA_STALL_MS);
+    };
+    on('waiting', stalled);
+    on('stalled', stalled);
+    on('error', () => {
+      const code = el.error ? el.error.code : 0;
+      if (this.engine === 'data') { this.onState('error', {code}); return; }
+      // A playlist that never produced metadata falls back to the raw URL.
+      if (this.engine === 'hls' && !this.loadedOnce) {
+        this.engine = 'raw';
+        _mediaBeacon({label: this.label, reason: 'hls-fallback', attempt: this.attempt, code,
+          position: Math.round(this.lastGood), engine: 'hls'});
+      }
+      this._schedule('error', code);
+    });
+    _mediaKeepers.add(this);
+  }
+  mine() { return !this.closed && !!this.src && this.el.getAttribute('src') === this.src; }
+  load({rawUrl, hlsUrl, start, autoplay, ephemeral}) {
+    this._clearTimers();
+    this.closed = false;
+    this.rawUrl = rawUrl;
+    this.hlsUrl = hlsUrl || '';
+    this.engine = ephemeral ? 'data' : (this.hlsUrl && _mediaPreferHls(this.el) ? 'hls' : 'raw');
+    this.attempt = 0; this.failed = false; this.recovering = false;
+    this.lastGood = start || 0;
+    this.pendingSeek = start || 0;
+    this.wantPlay = !!autoplay;
+    this._setSrc();
+    if (autoplay) this.play();
+  }
+  _setSrc() {
+    this.loadedOnce = false;
+    this.src = this.engine === 'data' ? this.rawUrl
+      : _authUrl(this.engine === 'hls' ? this.hlsUrl : this.rawUrl);
+    this.el.src = this.src;   // assigning src runs the load algorithm; no load() needed
+    this._clearLoad();
+    if (this.engine !== 'data') {
+      this.loadTimer = setTimeout(() => {
+        this.loadTimer = 0;
+        if (this.mine() && !this.loadedOnce && !this.timer) this._schedule('load-timeout', 0);
+      }, _MEDIA_LOAD_MS);
+    }
+  }
+  // Call play() synchronously from whatever user activation is still live.
+  play() {
+    if (this.closed || !this.src) return;
+    this.wantPlay = true;
+    if (this.failed) { this.retryNow('tap'); return; }
+    let p;
+    try { p = this.el.play(); } catch (_) { return; }
+    if (p && p.catch) p.catch((e) => {
+      if (!this.mine()) return;
+      if (e && e.name === 'NotAllowedError') this.onState('tap');
+    });
+  }
+  pause() { this.wantPlay = false; try { this.el.pause(); } catch (_) {} }
+  // Stop for good: pause, abort the fetch, and make every retry path a no-op.
+  close() {
+    this.closed = true;
+    this.wantPlay = false;
+    this._clearTimers();
+    try { this.el.pause(); } catch (_) {}
+    if (this.el.getAttribute('src') === this.src) {
+      this.el.removeAttribute('src');
+      try { this.el.load(); } catch (_) {}
+    }
+    this.src = '';
+  }
+  needsRecovery() {
+    if (this.closed || !this.src) return false;
+    if (!this.el.isConnected) { this.close(); return false; }
+    return !!this.timer || this.failed || !!this.el.error;
+  }
+  retryNow(reason) {
+    if (this.closed || !this.src) return;
+    this._clearTimers();
+    this.failed = false;
+    this.recovering = true;
+    _mediaBeacon({label: this.label, reason, attempt: this.attempt, code: this.el.error ? this.el.error.code : 0,
+      position: Math.round(this.lastGood), engine: this.engine});
+    this._reload();
+  }
+  _reload() {
+    if (this.closed) return;
+    this.pendingSeek = this.lastGood;
+    this.onState('reconnecting', {attempt: this.attempt, delay: 0});
+    this._setSrc();
+    if (this.wantPlay) this.play();
+  }
+  _schedule(reason, code) {
+    if (this.closed || this.timer) return;
+    this._clearStall(); this._clearLoad();
+    this.recovering = true;
+    this.attempt++;
+    if (this.attempt > _MEDIA_RETRY_MAX) {
+      this.failed = true;
+      this.onState('failed', {code});
+      _mediaBeacon({label: this.label, reason: 'gave-up', attempt: this.attempt, code,
+        position: Math.round(this.lastGood), engine: this.engine});
+      return;
+    }
+    const delay = Math.min(30000, 1000 * Math.pow(2, this.attempt - 1));
+    this.onState('reconnecting', {attempt: this.attempt, delay});
+    _mediaBeacon({label: this.label, reason, attempt: this.attempt, code, delay_ms: delay,
+      position: Math.round(this.lastGood), engine: this.engine});
+    this.timer = setTimeout(() => { this.timer = 0; this._reload(); }, delay);
+  }
+  _clearStall() { if (this.stallTimer) { clearTimeout(this.stallTimer); this.stallTimer = 0; } }
+  _clearLoad() { if (this.loadTimer) { clearTimeout(this.loadTimer); this.loadTimer = 0; } }
+  _clearTimers() { this._clearStall(); this._clearLoad(); if (this.timer) { clearTimeout(this.timer); this.timer = 0; } }
+}
+
+function _mediaResumeAll(reason) {
+  for (const k of [..._mediaKeepers]) {
+    if (!k.el.isConnected && k.label !== 'audio-bar') { k.close(); _mediaKeepers.delete(k); continue; }
+    if (k.needsRecovery()) { k.attempt = 0; k.retryNow(reason); }
+  }
+}
+window.addEventListener('online', () => _mediaResumeAll('online'));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') _mediaResumeAll('visible'); });
+
 // ── Persistent audio player ──
-let _abCurrentFile = '';
+let _abCurrentFile = '';   // position key: the raw URL, never the HLS URL or a token
 const _abAudio = document.getElementById('amux-audio');
 const _abSpeeds = [0.75, 1, 1.25, 1.5, 1.75, 2];
 let _abSpeedIdx = 1;
@@ -21232,14 +21458,40 @@ const _abEls = {
   seek: document.getElementById('ab-seek'),
   playBtn: document.getElementById('ab-play-btn'),
   speed: document.getElementById('ab-speed'),
+  state: document.getElementById('ab-state'),
 };
 
-function _abPlay(url, title) {
+// What the bar says. Never an hourglass with no words: every waiting state
+// names what it is waiting for.
+function _abSetState(kind, info) {
+  const btn = _abEls.playBtn, st = _abEls.state;
+  if (!btn) return;
+  // Metadata only fills in the duration; it must not erase "Tap play to start".
+  if (kind === 'meta') { _abShowDur(); return; }
+  const text = {
+    loading: 'Loading', tap: 'Tap play to start', buffering: 'Buffering',
+    reconnecting: info && info.delay ? 'Connection lost, retrying in ' + Math.round(info.delay / 1000) + 's'
+      : 'Reconnecting',
+    failed: 'Could not load. Tap play to retry', error: 'Cannot play this audio',
+  }[kind];
+  if (st) { st.textContent = text || ''; st.dataset.state = kind; }
+  if (_abEls.bar) _abEls.bar.dataset.state = kind;
+  if (kind === 'playing') btn.innerHTML = '&#x23F8;';
+  else if (kind === 'loading' || kind === 'buffering' || kind === 'reconnecting') btn.innerHTML = '&#x23F3;';
+  else if (kind === 'error') btn.innerHTML = '&#x26A0;';
+  else btn.innerHTML = '&#x25B6;';
+}
+
+const _abKeeper = _abAudio ? new _MediaKeeper(_abAudio, {label: 'audio-bar', onState: _abSetState}) : null;
+
+// opts.hlsUrl: the server's byte-range HLS playlist, when the file has one.
+function _abPlay(url, title, opts) {
   const audio = _abAudio;
-  // If same file, just show bar and resume
-  if (_abCurrentFile === url && audio.src) {
+  opts = opts || {};
+  // Same file still attached: show the bar and resume.
+  if (_abCurrentFile === url && _abKeeper.mine()) {
     _abEls.bar.classList.add('visible');
-    if (audio.paused) audio.play().catch(() => {});
+    if (audio.paused) _abKeeper.play();
     return;
   }
   _abCurrentFile = url;
@@ -21253,36 +21505,58 @@ function _abPlay(url, title) {
   const ephemeral = /^(data|blob):/i.test(url);
   _abEls.title.textContent = title
     || (ephemeral ? 'audio' : decodeURIComponent(url.split('/').pop().split('?')[0]));
-  _abEls.playBtn.innerHTML = '&#x23F3;'; // hourglass while loading
-  const saved = ephemeral ? 0 : _abLoadPos(url);
-  audio.preload = 'auto';
-  audio.src = ephemeral ? url : _authUrl(url);
-  // Don't call audio.load() — setting src already triggers load
+  _abEls.cur.textContent = '0:00';
+  _abEls.dur.textContent = '--:--';
+  _abSetBuffered(0, 0);
+  _abSetState('loading');
+  // metadata, not auto: a 100 MB file should not be pulled down just because
+  // the bar opened; playback fetches what it needs.
+  audio.preload = ephemeral ? 'auto' : 'metadata';
   audio.playbackRate = _abSpeeds[_abSpeedIdx];
-  audio.addEventListener('canplay', function onReady() {
-    audio.removeEventListener('canplay', onReady);
-    if (saved > 0 && saved < audio.duration - 1) audio.currentTime = saved;
-    audio.play().catch(() => {});
-  });
-  audio.addEventListener('error', function onErr() {
-    audio.removeEventListener('error', onErr);
-    _abEls.playBtn.innerHTML = '&#x26A0;'; // warning icon
-    _abEls.cur.textContent = 'Error';
-  }, { once: true });
   _abEls.bar.classList.add('visible');
   _abUpdateMediaSession(title);
+  // play() runs synchronously inside load(): waiting for `canplay` is what
+  // hung iOS, which never reaches canplay before a play() (see the header).
+  _abKeeper.load({rawUrl: url, hlsUrl: ephemeral ? '' : opts.hlsUrl, ephemeral,
+    start: ephemeral ? 0 : _abLoadPos(url), autoplay: true});
+  audio.playbackRate = _abSpeeds[_abSpeedIdx];
+}
+
+// A file tap is the last user activation before the /api/file round trip, and
+// iOS drops activation across that await. Claim the shared element inside the
+// tap (the same trick read-aloud uses) so the play() after it is allowed.
+// Never while something is playing: that would cut it off.
+function _abClaimForFileOpen(path) {
+  if (!_abAudio || !/\.(mp3|wav|ogg|m4a|m4b|aac|flac)$/i.test(path || '')) return;
+  if (!_abAudio.paused) return;
+  _abSavePos();
+  if (_abKeeper) _abKeeper.close();
+  _ttsClaimGesture();
 }
 
 function _abTogglePlay() {
   const audio = _abAudio;
-  if (!audio.src) return;
-  if (audio.paused) { audio.play().catch(() => {}); } else { audio.pause(); }
+  if (!_abKeeper || !_abKeeper.src) return;
+  if (audio.paused || _abKeeper.failed) { _abKeeper.play(); } else { _abKeeper.pause(); }
 }
 
+// Closing the bar STOPS playback (owner, 2026-10-12: "it continues playing even
+// if i close the little play bar thing"). Pausing alone left the source
+// attached and the lock-screen controls live, so iOS could resume it. Save the
+// position first so reopening the file resumes where it was.
 function _abClose() {
   _abSavePos();
-  _abAudio.pause();
+  if (_abKeeper) _abKeeper.close();
+  _abCurrentFile = '';
   _abEls.bar.classList.remove('visible');
+  _abSetState('closed');
+  if ('mediaSession' in navigator) {
+    try { navigator.mediaSession.metadata = null; } catch (_) {}
+    for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'seekto']) {
+      try { navigator.mediaSession.setActionHandler(a, null); } catch (_) {}
+    }
+    try { navigator.mediaSession.playbackState = 'none'; } catch (_) {}
+  }
 }
 
 function _abSeekStart() { _abSeeking = true; }
@@ -21311,11 +21585,34 @@ function _abFmtTime(s) {
   return h ? h + ':' + mm + ':' + ss : mm + ':' + ss;
 }
 
+function _abShowDur() {
+  const d = _abAudio.duration;
+  _abEls.dur.textContent = isFinite(d) && d > 0 ? _abFmtTime(d) : '--:--';
+}
+
+// Played and buffered share the scrubber track, so "it is loading" is visible.
+function _abSetBuffered(posPct, bufPct) {
+  if (!_abEls.seek) return;
+  _abEls.seek.style.setProperty('--ab-pos', posPct.toFixed(2) + '%');
+  _abEls.seek.style.setProperty('--ab-buf', bufPct.toFixed(2) + '%');
+}
+function _abUpdateBuffered() {
+  const a = _abAudio, d = a.duration;
+  if (!isFinite(d) || d <= 0) return;
+  let end = 0;
+  for (let i = 0; i < a.buffered.length; i++) {
+    if (a.buffered.start(i) <= a.currentTime + 0.5) end = Math.max(end, a.buffered.end(i));
+  }
+  _abSetBuffered(100 * a.currentTime / d, 100 * Math.max(end, a.currentTime) / d);
+}
+
 function _abSavePos() {
-  if (_abCurrentFile && _abAudio.currentTime > 0) {
+  if (!_abCurrentFile || !_abKeeper || !_abKeeper.mine() || _abKeeper.engine === 'data') return;
+  const t = _abAudio.currentTime > 0 ? _abAudio.currentTime : _abKeeper.lastGood;
+  if (t > 0) {
     try {
       const store = JSON.parse(localStorage.getItem('amux_audio_pos') || '{}');
-      store[_abCurrentFile] = _abAudio.currentTime;
+      store[_abCurrentFile] = t;
       localStorage.setItem('amux_audio_pos', JSON.stringify(store));
     } catch(e) {}
   }
@@ -21330,32 +21627,32 @@ function _abLoadPos(url) {
 function _abUpdateMediaSession(title) {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.metadata = new MediaMetadata({ title: title || 'Amux Audio', artist: 'Amux' });
-  navigator.mediaSession.setActionHandler('play', () => _abAudio.play());
-  navigator.mediaSession.setActionHandler('pause', () => _abAudio.pause());
+  navigator.mediaSession.setActionHandler('play', () => _abKeeper.play());
+  navigator.mediaSession.setActionHandler('pause', () => _abKeeper.pause());
   navigator.mediaSession.setActionHandler('seekbackward', () => { _abAudio.currentTime = Math.max(0, _abAudio.currentTime - 15); });
   navigator.mediaSession.setActionHandler('seekforward', () => { _abAudio.currentTime = Math.min(_abAudio.duration || 0, _abAudio.currentTime + 30); });
   navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) _abAudio.currentTime = d.seekTime; });
 }
 
-// Update UI during playback — throttled
+// Update UI during playback — throttled. Only for the source the keeper owns:
+// the read-aloud gesture claim plays a silent clip on this same element.
 if (_abAudio) {
   _abAudio.addEventListener('timeupdate', () => {
+    if (!_abKeeper.mine()) return;
+    _abUpdateBuffered();
     if (_abSeeking) return; // don't fight the user's drag
     const t = _abAudio.currentTime, d = _abAudio.duration;
     _abEls.cur.textContent = _abFmtTime(t);
-    if (d) _abEls.seek.value = (t / d) * 100;
-    // Save position every 10s (throttled by wall clock, not audio clock)
+    if (d && isFinite(d)) _abEls.seek.value = (t / d) * 100;
+    // Save position every 5s (throttled by wall clock, not audio clock)
     const now = Date.now();
-    if (now - _abLastSaveTime > 10000) { _abLastSaveTime = now; _abSavePos(); }
+    if (now - _abLastSaveTime > 5000) { _abLastSaveTime = now; _abSavePos(); }
   });
-  _abAudio.addEventListener('loadedmetadata', () => {
-    _abEls.dur.textContent = _abFmtTime(_abAudio.duration);
-  });
-  _abAudio.addEventListener('play', () => { _abEls.playBtn.innerHTML = '&#x23F8;'; });
-  _abAudio.addEventListener('pause', () => { _abEls.playBtn.innerHTML = '&#x25B6;'; _abSavePos(); });
-  _abAudio.addEventListener('waiting', () => { _abEls.playBtn.innerHTML = '&#x23F3;'; });
-  _abAudio.addEventListener('playing', () => { _abEls.playBtn.innerHTML = '&#x23F8;'; });
+  _abAudio.addEventListener('progress', () => { if (_abKeeper.mine()) _abUpdateBuffered(); });
+  _abAudio.addEventListener('durationchange', () => { if (_abKeeper.mine()) _abShowDur(); });
+  _abAudio.addEventListener('pause', () => { if (_abKeeper.mine()) _abSavePos(); });
   _abAudio.addEventListener('ended', () => {
+    if (!_abKeeper.mine()) return;
     _abEls.playBtn.innerHTML = '&#x25B6;';
     try {
       const store = JSON.parse(localStorage.getItem('amux_audio_pos') || '{}');
@@ -21364,6 +21661,7 @@ if (_abAudio) {
     } catch(e) {}
   });
   window.addEventListener('beforeunload', _abSavePos);
+  window.addEventListener('pagehide', _abSavePos);
 }
 
 // ── Text-to-Speech (Piper local, free — ElevenLabs as fallback if keyed) ──
@@ -25149,26 +25447,36 @@ function _renderFileBody(data, mode) {
       // v.src = _authUrl(url) and played the same .webm. A failed <source>
       // also fires its error on the source, not the video, so the "cannot
       // play" fallback below never ran and the player sat black at 00:00.
-      + '<video class="file-video" controls playsinline preload="metadata" src="' + esc(_authUrl(rawUrl)) + '"></video>'
+      // The source is attached by the media keeper below (authed, HLS on Apple
+      // WebKit when the server offers it, with reconnect and resume).
+      + '<video class="file-video" controls playsinline preload="metadata"></video>'
       + '<div class="file-video-meta"><span>' + esc(size) + '</span>'
       + '<button class="btn" onclick="_fileVideoFullscreen()">Full-screen player</button></div></div>';
     const v = body.querySelector('video');
     v._vpUrl = rawUrl;
     const saved = parseFloat(localStorage.getItem(_vpPosKey(rawUrl)));
-    if (saved > 0) v.addEventListener('loadedmetadata', () => { v.currentTime = saved; }, { once: true });
     v.onpause = () => _vpSavePos(v);
     v.onseeked = () => _vpSavePos(v);
-    v.onerror = () => {
-      const meta = body.querySelector('.file-video-meta span');
-      if (meta) meta.textContent = 'This browser cannot play this video; use Download.';
-    };
+    const metaEl = body.querySelector('.file-video-meta span');
+    for (const k of [..._mediaKeepers]) {
+      if (k.label === 'file-video' && !k.el.isConnected) { k.close(); _mediaKeepers.delete(k); }
+    }
+    const keeper = new _MediaKeeper(v, {label: 'file-video', onState: (kind, info) => {
+      if (!metaEl) return;
+      metaEl.textContent = kind === 'reconnecting'
+        ? (info && info.delay ? 'Could not load, retrying in ' + Math.round(info.delay / 1000) + 's (Download also works)' : 'Reconnecting')
+        : kind === 'buffering' ? 'Buffering'
+        : kind === 'failed' ? 'This browser cannot play this video; use Download.'
+        : size;
+    }});
+    keeper.load({rawUrl, hlsUrl: data.hls_url ? API + data.hls_url : '', start: saved > 0 ? saved : 0, autoplay: false});
     return;
   }
   if (data.is_audio) {
     const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
     const fname = data.path.split('/').pop();
     // Use persistent player — plays in background, survives overlay close
-    _abPlay(rawUrl, fname);
+    _abPlay(rawUrl, fname, {hlsUrl: data.hls_url ? API + data.hls_url : ''});
     // Show info in overlay too
     body.className = 'file-overlay-body file-image';
     // _fmtBytes, not hardcoded MB: a 5,707-byte .xlsx rendered as "0.0 MB",
@@ -26027,6 +26335,9 @@ async function openFilePreview(path, options = {}) {
   if (!options.raw && !options.readOnly && /\.excalidraw$/i.test(path || '')) { _drawOpenPath(path); return; }
   // Spreadsheets render as tables, not a download (AMUX-3343).
   if (/\.(xlsx|xls|ods)$/i.test(path || '')) { _openXlsxPreview(path); return; }
+  // Synchronously, inside the tap: iOS drops user activation across the
+  // /api/file await below, and the bottom player's play() needs it.
+  _abClaimForFileOpen(path);
   _fileData = null;
   _fileViewMode = options.raw ? 'raw' : 'preview';
   document.getElementById('file-save-btn').style.display = 'none';

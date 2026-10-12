@@ -82,6 +82,7 @@ pub fn routes() -> Router<AppState> {
         .route("/raw-path/{*rest}", any(raw_path))
         .route("/xlsx", any(xlsx))
         .route("/vtt", any(vtt))
+        .route("/hls", any(hls))
         .route("/prepare", any(prepare))
         .route("/transcode", any(transcode))
         .route("/{*rest}", any(not_found))
@@ -418,23 +419,21 @@ async fn view(req: Request) -> Response {
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .unwrap_or(Value::Null);
-        return j(
-            200,
-            json!({
-                "path": pystr(&p), "is_video": true, "mime": mime,
-                "size": meta.len(), "modified": mtime_secs(&meta),
-                "srt": if srt.exists() { json!(pystr(&srt)) } else { Value::Null },
-                "profile": side.get("profile").cloned().unwrap_or(Value::Null),
-                "task": side.get("task").cloned().unwrap_or(Value::Null),
-            }),
-        );
+        let mut out = json!({
+            "path": pystr(&p), "is_video": true, "mime": mime,
+            "size": meta.len(), "modified": mtime_secs(&meta),
+            "srt": if srt.exists() { json!(pystr(&srt)) } else { Value::Null },
+            "profile": side.get("profile").cloned().unwrap_or(Value::Null),
+            "task": side.get("task").cloned().unwrap_or(Value::Null),
+        });
+        add_stream_urls(&mut out, &p, &ext);
+        return j(200, out);
     }
 
     if let Some(mime) = mime_of(AUDIO_MIMES, &ext) {
-        return j(
-            200,
-            json!({"path": pystr(&p), "is_audio": true, "mime": mime, "size": meta.len()}),
-        );
+        let mut out = json!({"path": pystr(&p), "is_audio": true, "mime": mime, "size": meta.len()});
+        add_stream_urls(&mut out, &p, &ext);
+        return j(200, out);
     }
 
     let renderable = EBOOK_RENDERABLE.contains(&ext.as_str());
@@ -527,6 +526,92 @@ async fn view(req: Request) -> Response {
             "is_markdown": is_md, "is_csv": is_csv, "is_html": is_html,
         }),
     )
+}
+
+/// MP4-family extensions: the only ones `media_hls` can slice.
+const MP4_FAMILY: &[&str] = &[".mp4", ".m4a", ".m4b", ".m4v", ".mov"];
+
+/// `raw_url` always, and `hls_url` when the file is a FRAGMENTED MP4 that
+/// `GET /api/file/hls` can serve as byte-range HLS (api/media_hls.rs).
+/// `stream.hls_checked` says whether the probe ran at all, so a missing
+/// `hls_url` on a non-MP4 reads as "not applicable", never as "probed, no".
+fn add_stream_urls(out: &mut Value, p: &Path, ext: &str) {
+    let q = py_quote(&pystr(p));
+    out["raw_url"] = json!(format!("/api/file/raw?path={q}"));
+    let checked = MP4_FAMILY.contains(&ext);
+    let fragmented = checked && super::media_hls::is_fragmented(p);
+    if fragmented {
+        out["hls_url"] = json!(format!("/api/file/hls?path={q}"));
+    }
+    out["stream"] = json!({"hls_checked": checked, "fragmented": fragmented});
+}
+
+/// `GET /api/file/hls?path=...`: a VOD playlist over a fragmented MP4, with
+/// every segment a byte range of `/api/file/raw` (api/media_hls.rs has the
+/// why). A `_token` the request carried is echoed into the segment URIs so a
+/// native player, which cannot add headers, can fetch them; nothing new is
+/// minted, and the request log records the path without the query.
+async fn hls(req: Request) -> Response {
+    if req.method() != Method::GET {
+        return not_found().await;
+    }
+    let qs = parse_qs(req.uri().query().unwrap_or(""));
+    let p = match qpath(&qs) {
+        Ok(p) => p,
+        Err(r) => return *r,
+    };
+    if !is_path_allowed(&p) {
+        return j(403, json!({"error": "access denied"}));
+    }
+    let meta = match std::fs::metadata(&p) {
+        Ok(m) if m.is_file() => m,
+        _ => return j(404, json!({"error": "file not found"})),
+    };
+    let ext = py_suffix(&p);
+    if !MP4_FAMILY.contains(&ext.as_str()) {
+        return j(
+            422,
+            json!({"error": "HLS is only built for MP4-family media", "hls": false,
+                   "measured": true, "n_considered": 0}),
+        );
+    }
+    let t0 = std::time::Instant::now();
+    let (idx, cache_hit) = match super::media_hls::index(&p, mtime_secs(&meta), meta.len()) {
+        Ok(v) => v,
+        Err(why) => {
+            tracing::info!(path = %pystr(&p), size = meta.len(), verdict = "hls_unavailable",
+                reason = %why.reason(), "media hls: no playlist for this file");
+            return j(
+                422,
+                json!({"error": why.reason(), "hls": false, "measured": true, "n_considered": 1}),
+            );
+        }
+    };
+    let segs = super::media_hls::segments(&idx.fragments, super::media_hls::segment_target_secs());
+    let token = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("_token=")))
+        .map(|t| format!("&_token={t}"))
+        .unwrap_or_default();
+    let seg_uri = format!("raw?path={}{token}", pct_encode_query(&pystr(&p)));
+    let body = super::media_hls::playlist(&idx, &segs, &seg_uri);
+    if !cache_hit {
+        let total: f64 = segs.iter().map(|s| s.secs).sum();
+        tracing::info!(path = %pystr(&p), size = meta.len(), fragments = idx.fragments.len(),
+            segments = segs.len(), boxes = idx.boxes_scanned, duration_s = total,
+            ms = t0.elapsed().as_millis() as u64, verdict = "hls_indexed",
+            "media hls: indexed fragmented MP4");
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/vnd.apple.mpegurl")
+        .header("cache-control", "private, max-age=60")
+        .header("x-amux-hls-fragments", idx.fragments.len().to_string())
+        .header("x-amux-hls-segments", segs.len().to_string())
+        .header("x-amux-hls-cache", if cache_hit { "hit" } else { "miss" })
+        .body(Body::from(body))
+        .expect("hls response")
 }
 
 /// Serve a file's content from `origin/main` when it does not exist on disk.
@@ -2573,6 +2658,88 @@ pub(crate) mod tests {
             h["content-disposition"],
             "attachment; filename=\"report.html\""
         );
+    }
+
+    /// A fragmented MP4 gets `hls_url`; its playlist's init map and every
+    /// segment byte range, fetched back through /raw with the playlist's own
+    /// URIs, tile the file exactly. A classic MP4 gets no `hls_url` and the
+    /// playlist route answers a measured 422 naming why.
+    #[tokio::test]
+    async fn fragmented_mp4_gets_a_byte_range_hls_playlist_over_raw() {
+        let app = app();
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("talk one.m4a");
+        let bytes = crate::api::media_hls::tests::synth(8, 4, true);
+        std::fs::write(&p, &bytes).unwrap();
+        let (status, v) = get(&app, &format!("/api/file?path={}", enc(p.to_str().unwrap()))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["is_audio"], true);
+        assert_eq!(v["stream"]["fragmented"], true);
+        let hls_url = v["hls_url"].as_str().expect("hls_url").to_string();
+        assert!(v["raw_url"].as_str().unwrap().starts_with("/api/file/raw?path="));
+
+        let (status, h, body) = send(
+            &app,
+            HttpRequest::builder()
+                .uri(format!("{hls_url}&_token=tok%2Babc"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(h["content-type"], "application/vnd.apple.mpegurl");
+        assert_eq!(h["x-amux-hls-fragments"], "8");
+        let m = String::from_utf8(body).unwrap();
+        assert!(m.trim_end().ends_with("#EXT-X-ENDLIST"), "{m}");
+        // Pull (uri, len, off) for the map and every segment.
+        let mut ranges: Vec<(String, u64, u64)> = Vec::new();
+        let map_re = regex::Regex::new(r#"#EXT-X-MAP:URI="([^"]+)",BYTERANGE="(\d+)@(\d+)""#).unwrap();
+        let c = map_re.captures(&m).expect("map line");
+        ranges.push((c[1].to_string(), c[2].parse().unwrap(), c[3].parse().unwrap()));
+        let lines: Vec<&str> = m.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            if let Some(br) = l.strip_prefix("#EXT-X-BYTERANGE:") {
+                let (len, off) = br.split_once('@').unwrap();
+                ranges.push((lines[i + 1].to_string(), len.parse().unwrap(), off.parse().unwrap()));
+            }
+        }
+        assert!(ranges.len() >= 3, "{m}");
+        let mut rebuilt = Vec::new();
+        for (uri, len, off) in &ranges {
+            // The native player cannot add headers, so the token rides along.
+            assert!(uri.starts_with("raw?path=") && uri.ends_with("&_token=tok%2Babc"), "{uri}");
+            let (status, _, chunk) = send(
+                &app,
+                HttpRequest::builder()
+                    .uri(format!("/api/file/{uri}"))
+                    .header("range", format!("bytes={}-{}", off, off + len - 1))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+            assert_eq!(chunk.len() as u64, *len);
+            rebuilt.extend(chunk);
+        }
+        assert_eq!(rebuilt, bytes, "map + segments must tile the file");
+
+        // Classic MP4: no hls_url, and /hls says why with a measured verdict.
+        let q = dir.path().join("classic.mp4");
+        std::fs::write(&q, crate::api::media_hls::tests::synth(0, 0, false)).unwrap();
+        let (_, v) = get(&app, &format!("/api/file?path={}", enc(q.to_str().unwrap()))).await;
+        assert!(v.get("hls_url").is_none());
+        assert_eq!(v["stream"]["hls_checked"], true);
+        assert_eq!(v["stream"]["fragmented"], false);
+        let (status, v) = get(&app, &format!("/api/file/hls?path={}", enc(q.to_str().unwrap()))).await;
+        assert_eq!(status.as_u16(), 422);
+        assert_eq!(v["measured"], true);
+        assert!(v["error"].as_str().unwrap().contains("not a fragmented MP4"), "{v}");
+        // A non-MP4 audio type is not probed at all, and says so.
+        let w = dir.path().join("a.mp3");
+        std::fs::write(&w, b"ID3 not really").unwrap();
+        let (_, v) = get(&app, &format!("/api/file?path={}", enc(w.to_str().unwrap()))).await;
+        assert_eq!(v["stream"]["hls_checked"], false);
+        assert!(v.get("hls_url").is_none());
     }
 
     #[tokio::test]

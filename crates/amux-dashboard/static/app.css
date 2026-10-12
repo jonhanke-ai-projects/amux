@@ -822,8 +822,12 @@
   .amux-audio-bar .ab-progress { flex: 2; min-width: 80px; }
   .amux-audio-bar .ab-progress input[type=range] { width: 100%; height: 4px; -webkit-appearance: none; appearance: none; background: var(--border); border-radius: 2px; outline: none; cursor: pointer; }
   .amux-audio-bar .ab-progress input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+  .amux-audio-bar .ab-state { color: var(--accent); margin-left: 4px; }
+  .amux-audio-bar .ab-state[data-state="failed"], .amux-audio-bar .ab-state[data-state="error"] { color: var(--red); }
+  /* Played, then buffered, then the rest of the track. */
+  .amux-audio-bar .ab-progress input[type=range] { background: linear-gradient(to right, var(--accent) 0 var(--ab-pos, 0%), var(--dim) var(--ab-pos, 0%) var(--ab-buf, 0%), var(--border) var(--ab-buf, 0%)); }
   .amux-audio-bar .ab-speed { font-size: 0.7rem; color: var(--dim); cursor: pointer; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; background: none; }
-  @media (max-width: 600px) { .amux-audio-bar { padding: 6px 10px; padding-bottom: max(6px, env(safe-area-inset-bottom)); } .amux-audio-bar .ab-progress { flex: 1; } }
+  @media (max-width: 600px) { .amux-audio-bar { padding: 6px 10px; padding-bottom: max(6px, env(safe-area-inset-bottom)); } .amux-audio-bar .ab-progress { flex: 1; } .amux-audio-bar .ab-btn, .amux-audio-bar .ab-speed { min-width: 44px; min-height: 44px; } }
 
   .tts-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; display: flex; align-items: center; justify-content: center; }
   .tts-dialog { background: var(--card); border: 1px solid var(--border); border-radius: 14px; width: 420px; max-width: 92vw; max-height: 80dvh; display: flex; flex-direction: column; overflow: hidden; }

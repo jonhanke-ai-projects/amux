@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2859,
+  "n_considered": 2867,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2068,6 +2068,12 @@
     },
     "_mdaiWriteFile": {
       "kind": "command._mdaiWriteFile",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mediaBeacon": {
+      "kind": "command._mediaBeacon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
