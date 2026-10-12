@@ -2660,6 +2660,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </label>
       <div id="create-isolated-info" style="display:none;margin-top:6px;font-size:0.78rem;color:var(--dim);background:rgba(240,136,62,0.08);border-radius:6px;padding:8px 10px;line-height:1.5;">
         Direct CLI messages, unchanged. No boards, task creation, automated prompts, or MCP tools; peers cannot discover or message it.
+        Scoped memory and rules (global, group or worker) never reach it; scoped environment variables still do.
         You can still peek and send to it yourself. Set at creation because an isolated worker must
         start that way &mdash; a worker isolated later has already launched with the harness attached.
       </div>

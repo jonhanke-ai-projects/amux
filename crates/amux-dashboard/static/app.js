@@ -11144,7 +11144,11 @@ function _renderGroupsTab() {
         + '<div class="grp-ov-links">'
         +   '<span class="grp-ov-link" onclick="event.stopPropagation();switchView(\'sessions\');toggleTagFilter(\'' + gj + '\')">workers</span>'
         +   '<span class="grp-ov-link" onclick="event.stopPropagation();_grpOpenBoard(\'' + gj + '\')">board</span>'
-        + '</div>';
+        + '</div>'
+        // The group's own configuration (memory, env, gates). `_scopeTargetId`
+        // and the save path already render into this id; nothing created it,
+        // so group-scoped memory and env had no owner surface at all.
+        + '<div class="grp-scope-body" id="grp-scope-body-' + esc(g) + '" onclick="event.stopPropagation()"></div>';
     }
     return '<div class="grp-ov-row grp-tab-row" onclick="_grpTabToggle(\'' + gj + '\')">'
       + '<div class="grp-ov-r1">'
@@ -11153,7 +11157,10 @@ function _renderGroupsTab() {
       +   '<span class="grp-ov-sum">' + (_grpSummary(g) || '') + '</span>'
       + '</div>' + body + '</div>';
   }).join('') + '</div>';
-  if (el._want !== html) { el.innerHTML = html; el._want = html; }
+  if (el._want !== html) {
+    el.innerHTML = html; el._want = html;
+    groups.filter(g => _grpTabOpen[g]).forEach(g => _scopeLoad({ level: 'group', name: g }, 'grp-scope-body-' + g));
+  }
 }
 // Board at this group's scope. Compiles to the query language like every other
 // filter entry point, so the search box shows what you are looking at and the
@@ -11184,7 +11191,14 @@ function _scopeTargetId(lvl, name) {
 }
 
 function _scopeRowToggle(key) {
-  _scopeRowOpen[key] = !_scopeRowOpen[key];
+  const opening = !_scopeRowOpen[key];
+  // ONE detail at a time per panel. The detail renders the FIRST open tile in
+  // capability order, so with Memory still open a tap on Environment kept
+  // showing Memory, and its "Edit ... at this level" button saved env text
+  // into the group's memory (found by the scoped-context e2e).
+  const prefix = key.split(':').slice(0, 2).join(':') + ':';
+  Object.keys(_scopeRowOpen).forEach(k => { if (k.startsWith(prefix)) delete _scopeRowOpen[k]; });
+  _scopeRowOpen[key] = opening;
   const parts = key.split(':');
   const lvl = parts[0], name = parts[1];
   const tgt = (lvl === 'group') ? ('grp-scope-body-' + name) : 'peek-scope-body';
@@ -11265,8 +11279,8 @@ async function _scopeEditClose() {
 }
 
 const _SCOPE_EDIT_HINT = {
-  memory: 'Markdown. Composed ABOVE each member worker’s own memory — global › group › worker.',
-  rules:  'Markdown. Binding rules, composed the same way as memory.',
+  memory: 'Markdown. Composed with each member worker’s own memory, global › group › worker. Running workers re-read it on save; isolated workers never receive it.',
+  rules:  'Markdown. Binding rules, composed the same way as memory. Running workers re-read them on save; isolated workers never receive them.',
   env:    'KEY=VALUE per line, shell style. Merged by key; a worker’s own .env wins on a clash.',
   gates:  'JSON: {"status": ["criterion", ...]}. Replaces this level’s gate for the statuses named; omit a status to inherit.',
   status_mode: 'JSON array of status ids this level opts into, e.g. ["verified"].',
@@ -11341,6 +11355,18 @@ async function _scopeEditOpen(lvl, name, key) {
   }
 }
 
+// One sentence on who a memory/rules save reached, from the server's own
+// answer (affected_workers / delivered_live / isolated_not_reached), so the
+// toast cannot claim "all workers will see it" for workers that cannot.
+function _scopedContextToast(what, d) {
+  if (!d || !Array.isArray(d.affected_workers)) return what + ' saved. A running worker re-reads it now; others from their next start.';
+  const live = (d.delivered_live || []).length, all = d.affected_workers.length;
+  const iso = (d.isolated_not_reached || []).length;
+  return what + ' saved: ' + live + ' running worker' + (live === 1 ? '' : 's') + ' told to re-read it, '
+    + (all - live - iso) + ' from next start'
+    + (iso ? ', ' + iso + ' isolated (never receive it)' : '') + '.';
+}
+
 function _scopeEditPreview() {
   const ta = document.getElementById('scope-edit-input');
   const pv = document.getElementById('scope-edit-render');
@@ -11401,7 +11427,9 @@ async function _scopeEditSave() {
     }
     _scopeEditDirty = false;
     msg.textContent = 'Saved'; msg.style.color = 'var(--green)';
-    showToast(key + ' saved at ' + (lvl === 'global' ? 'global' : lvl + ' ' + name));
+    showToast((key === 'memory' || key === 'rules')
+      ? _scopedContextToast(key + ' at ' + (lvl === 'global' ? 'global' : lvl + ' ' + name), d)
+      : key + ' saved at ' + (lvl === 'global' ? 'global' : lvl + ' ' + name));
     _scopeLoad(lvl === 'global' ? { level: 'global' } : { level: lvl, name: name },
                _scopeTargetId(lvl, name));
   } catch (e) {
@@ -13981,15 +14009,23 @@ function peekMemoryTab(tab) {
 function _peekMemorySharedBanner(data) {
   const el = document.getElementById('peek-memory-shared');
   if (!el) return;
+  const me = (sessions || []).find(x => x.name === peekSession) || {};
   const others = (data && data.shared_with) || [];
+  // Two true statements replace one false one. This file is PER WORKER: it
+  // rides only this worker's launch (compose_lane_context), and the scoped
+  // e2e proved a peer in the same directory never received it. What IS shared
+  // by directory is Claude Code's own auto-memory, which amux does not scope.
+  if (me.isolated) {
+    el.style.display = '';
+    el.innerHTML = '<b>Isolated worker.</b> Scoped memory and rules never reach it, so this text is saved '
+      + 'but the worker does not receive it. Turn isolation off and restart to apply it.';
+    return;
+  }
   if (!others.length) { el.style.display = 'none'; el.textContent = ''; return; }
   el.style.display = '';
-  el.innerHTML = '<b>Shared, not per-worker.</b> Claude keys memory by directory, so this text is the '
-    + 'same for ' + others.length + ' other worker' + (others.length === 1 ? '' : 's')
-    + ' in <code>' + esc(data.work_dir || '') + '</code>: '
-    + others.map(n => '<b>' + esc(n) + '</b>').join(', ')
-    + '. Editing it here changes what all of them see, and a header naming another worker is '
-    + 'expected rather than a mix-up.';
+  el.innerHTML = '<b>Per worker.</b> Only ' + esc(peekSession || '') + ' receives this memory. Claude Code’s '
+    + 'own auto-memory for <code>' + esc(data.work_dir || '') + '</code> is separate and is shared with '
+    + others.map(n => '<b>' + esc(n) + '</b>').join(', ') + ', so anything a worker writes there reaches them too.';
 }
 
 
@@ -14045,29 +14081,25 @@ async function savePeekMemory() {
   const save = document.getElementById('peek-memory-save');
   save.disabled = true; save.textContent = 'Saving...';
   try {
-    await apiCall(API + '/api/sessions/' + peekSession + '/memory', {
+    // SAVE SAVES. It used to follow every save with a prompt asking the worker
+    // to "update your memory file now", so the worker rewrote the owner's text
+    // with its own notes. Measured with real workers: an owner who emptied a
+    // Codex worker's memory found it refilled with the deleted facts a minute
+    // later, and a Claude worker wrote the turn into its directory's shared
+    // auto-memory, which a peer in another group then loaded. The server now
+    // tells a running worker to re-read its scoped context instead.
+    const r = await apiCall(API + '/api/sessions/' + peekSession + '/memory', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ content: inp.value })
     });
-    save.textContent = 'Syncing...';
-    await syncPeekMemory();
+    if (!r) throw new Error('save failed');
+    showToast(_scopedContextToast('Memory', await r.json().catch(() => null)));
     save.textContent = 'Saved!';
     setTimeout(() => { save.disabled = false; save.textContent = 'Save'; }, 1500);
   } catch(e) {
     save.disabled = false; save.textContent = 'Save';
     showToast('Failed to save memory');
   }
-}
-async function syncPeekMemory() {
-  const prompt = 'Please update your memory file now with any new facts, decisions, constraints, ' +
-    'API details, file paths, or patterns from our recent work. Be concise and add only what ' +
-    'is not already captured. Do not remove existing entries unless they are wrong.';
-  await apiCall(API + '/api/sessions/' + peekSession + '/send', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ text: prompt })
-  });
-  showToast('Memory saved — sync requested');
-  setTimeout(() => setPeekTab('terminal'), 1000);
 }
 
 let _globalMemLoaded = false;
@@ -14090,13 +14122,14 @@ async function saveGlobalMemory() {
   const save = document.getElementById('peek-memory-save');
   save.disabled = true; save.textContent = 'Saving...';
   try {
-    await apiCall(API + '/api/memory/global', {
+    const r = await apiCall(API + '/api/memory/global', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ content: inp.value })
     });
     _globalMemLoaded = false; // force reload next open
     save.textContent = 'Saved!';
-    showToast('Global memory saved — all workers will see it');
+    const d = r ? await r.json().catch(() => null) : null;
+    showToast(_scopedContextToast('Global memory', d));
     setTimeout(() => { save.disabled = false; save.textContent = 'Save'; }, 1500);
   } catch(e) {
     save.disabled = false; save.textContent = 'Save';
@@ -14104,7 +14137,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1398';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1438';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}

@@ -1153,6 +1153,8 @@ async fn global_memory_get() -> axum::Json<serde_json::Value> {
 }
 
 async fn global_memory_post(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -1162,7 +1164,21 @@ async fn global_memory_post(
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(&path, content) {
-        Ok(_) => axum::Json(serde_json::json!({"ok": true})).into_response(),
+        Ok(_) => {
+            // "Global memory saved: all workers will see it" is the UI's
+            // promise. Every worker's composed context is rewritten and the
+            // running ones are told to re-read it (session_verbs::refresh_scoped_context).
+            let reached = session_verbs::workers_in_scope("global", "");
+            let origin = session_verbs::hdr_worker(&headers);
+            let live = session_verbs::refresh_scoped_context(&state, &reached, "memory (global scope)", &origin).await;
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "affected_workers": reached,
+                "delivered_live": live,
+                "takes_effect": session_verbs::SCOPED_CONTEXT_TAKES_EFFECT,
+            }))
+            .into_response()
+        }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(serde_json::json!({"error": e.to_string()})),
