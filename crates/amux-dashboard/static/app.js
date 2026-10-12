@@ -14102,7 +14102,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1385';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1386';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -21274,6 +21274,7 @@ class _MediaKeeper {
     this.attempt = 0;
     this.timer = 0;
     this.stallTimer = 0;
+    this.stallAt = 0;
     this.loadTimer = 0;
     this.failed = false;
     this.recovering = false;   // a retry ran since the last 'playing'
@@ -21298,9 +21299,14 @@ class _MediaKeeper {
     });
     on('timeupdate', () => {
       if (el.currentTime > 0 && el.readyState >= 2 && !el.seeking) this.lastGood = el.currentTime;
-      if (el.readyState >= 3) this._clearStall();
+      // Progress, not readyState, ends a stall: GStreamer WebKit plays along
+      // at readyState 2, and a readyState test reloaded a healthy stream.
+      if (this.stallTimer && el.currentTime > this.stallAt + 0.25) {
+        this._clearStall();
+        if (!el.paused) this.onState('playing');
+      }
     });
-    on('seeking', () => { this.lastGood = el.currentTime; });
+    on('seeking', () => { this.lastGood = el.currentTime; this._clearStall(); });
     on('playing', () => {
       this._clearStall();
       if (this.recovering || this.failed) {
@@ -21311,13 +21317,17 @@ class _MediaKeeper {
       this.onState('playing');
     });
     on('pause', () => { if (!this.timer) this.onState('paused'); });
-    const stalled = () => {
-      if (el.paused || el.readyState >= 3 || this.timer) return;
-      this.onState('buffering');
+    // 'waiting' means playback stopped for data; 'stalled' only means the fetch
+    // went quiet, which a fully buffered file also does. Either arms a watchdog
+    // that fires only if the clock has not moved by the deadline.
+    const stalled = (e) => {
+      if (el.paused || this.timer) return;
+      if (e.type === 'waiting') this.onState('buffering');
       if (this.stallTimer) return;
+      this.stallAt = el.currentTime;
       this.stallTimer = setTimeout(() => {
         this.stallTimer = 0;
-        if (this.mine() && !el.paused && el.readyState < 3) this._schedule('stall', 0);
+        if (this.mine() && !el.paused && el.currentTime <= this.stallAt + 0.25) this._schedule('stall', 0);
       }, _MEDIA_STALL_MS);
     };
     on('waiting', stalled);
