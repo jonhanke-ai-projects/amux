@@ -15,6 +15,10 @@ const BANNED: &[&str] = &[
     "gcloud compute",
     "hashicorp/google",
     "terraform apply",
+    // The deleted VM's addresses, both released: a default that names one can
+    // reach whoever Google assigns it to next.
+    "34.121.177.76",
+    "136.71.186.209",
 ];
 
 fn root() -> PathBuf {

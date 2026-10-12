@@ -34,7 +34,9 @@ import sys
 import time
 
 CLOUD = "https://cloud.amux.io"
-HOST = os.environ.get("AMUX_CLOUD_HOST", "34.121.177.76")
+# No default host: the GCP VM this used to name is deleted and its address was
+# released, so a default could reach whoever Google assigns it to next.
+HOST = os.environ.get("AMUX_CLOUD_HOST", "")
 SSH_KEY = os.path.expanduser("~/.ssh/amux_cloud")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRITICAL_ENV_KEYS = ["CLERK_PUBLISHABLE_KEY", "CLERK_SECRET_KEY", "COOKIE_SECRET"]
@@ -51,6 +53,8 @@ def trace(action, detail, ok=None):
 
 def ssh(script, timeout=90):
     """Run a python3 script on the cloud host via stdin. Returns stdout or ''."""
+    if not HOST:
+        return "SSH_ERROR: AMUX_CLOUD_HOST is not set (cloud.amux.io has no host)"
     try:
         r = subprocess.run(
             ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=30",
