@@ -651,10 +651,11 @@ async fn log_action(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     }
     let b = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let action = str_of(&b, "action");
-    const ACTIONS: [&str; 7] = [
+    const ACTIONS: [&str; 8] = [
         "approve",
         "decline",
         "reply",
+        "dismiss",
         "approve_always",
         "snooze",
         "open",
