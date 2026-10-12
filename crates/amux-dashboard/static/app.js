@@ -14102,7 +14102,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1382';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1383';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -38371,6 +38371,44 @@ function _boardColSortableCreate(colEl, group, rerender) {
 // Stamps data-component="board-columns" on the host so a test can assert
 // every surface renders through this one component. Returns the bucket so
 // global-only post-passes (FLIP, count bump) reuse it instead of re-deriving.
+// KEEP UNCHANGED COLUMNS (AMUX-5872). Every poll and SSE event re-rendered the
+// whole board with innerHTML, so a column a person was scrolling, or a node a
+// test held, was replaced mid-interaction ("Element is not attached to the
+// DOM", LC-BOARD-HEADER flaking on CI). When the new markup has the same
+// columns in the same order, only a column whose markup changed is replaced;
+// anything else falls back to the full replace it always did. Old non-column
+// children (the "+ Add column" button, the archived section the caller appends
+// afterwards) are removed so they are re-added once, never duplicated.
+let _boardMorphStats = {morphed: 0, full: 0, kept: 0, replaced: 0};
+function _boardMorphColumns(host, html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const next = [...tpl.content.children];
+  const oldCols = [...host.children].filter(e => e.classList.contains('board-col'));
+  const newCols = next.filter(e => e.classList.contains('board-col'));
+  const keys = els => els.map(e => e.dataset.col).join('|');
+  // Compare against the markup each column was RENDERED from, kept on the
+  // node. Its live outerHTML is decorated after insertion (Sortable, the FLIP
+  // move animation), so it never equals freshly built markup.
+  const stamp = () => host.querySelectorAll(':scope > .board-col').forEach(c => { if (c._amuxSrc === undefined) c._amuxSrc = c.outerHTML; });
+  if (!oldCols.length || keys(oldCols) !== keys(newCols)) {
+    host.innerHTML = html;
+    stamp();
+    _boardMorphStats.full++;
+    return false;
+  }
+  for (const el of [...host.children]) if (!el.classList.contains('board-col')) el.remove();
+  newCols.forEach((col, i) => {
+    const src = col.outerHTML;
+    if (oldCols[i]._amuxSrc === src) { _boardMorphStats.kept++; return; }
+    col._amuxSrc = src;
+    oldCols[i].replaceWith(col);
+    _boardMorphStats.replaced++;
+  });
+  for (const el of next) if (!el.classList.contains('board-col')) host.appendChild(el);
+  _boardMorphStats.morphed++;
+  return true;
+}
 function _renderBoardColumnsInto(host, items, scope) {
   const isGlobal = scope.kind === 'global';
   const bucket = _boardBucketByStatus(items);
@@ -38494,7 +38532,7 @@ function _renderBoardColumnsInto(host, items, scope) {
   });
   if (isGlobal) html += '<button class="board-add-col-btn" onclick="addBoardStatus()">+ Add column</button>';
   host.dataset.component = 'board-columns';
-  host.innerHTML = html;
+  _boardMorphColumns(host, html);
   if (typeof Sortable !== 'undefined') {
     host.querySelectorAll('.board-col').forEach(colEl => {
       scope.sortables.push(_boardColSortableCreate(colEl, scope.sortGroup, scope.rerender));
