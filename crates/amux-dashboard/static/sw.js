@@ -1,4 +1,4 @@
-const CACHE = 'amux-v0.9.1387';
+const CACHE = 'amux-v0.9.1397';
 const SHELL_URLS = ['/', '/state/kernel.js', '/vendor/md.js', '/state/feedback.css', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Every CDN library and stylesheet index.html loads. Pre-cached one by one at
@@ -43,12 +43,25 @@ self.addEventListener('install', e => {
       await c.addAll(SHELL_URLS);
       const results = await Promise.allSettled(CDN_URLS.map(u => c.add(new Request(u, { mode: 'cors' }))));
       const failed = CDN_URLS.filter((u, i) => results[i].status !== 'fulfilled');
+      // The Draw tab's editor is vendored under /vendor/draw/ with hashed chunk
+      // names, so its core file list comes from the manifest the build writes
+      // (scripts/build-draw.mjs). Best effort, like the CDN list: the tab
+      // still loads online, and lazy chunks are cached on first use below.
+      let drawTotal = 0, drawFailed = [];
+      try {
+        const m = await (await fetch('/vendor/draw/precache.json')).json();
+        const files = Array.isArray(m.files) ? m.files : [];
+        drawTotal = files.length;
+        const r = await Promise.allSettled(files.map(u => c.add(u)));
+        drawFailed = files.filter((u, i) => r[i].status !== 'fulfilled');
+      } catch (_) { drawFailed = ['/vendor/draw/precache.json']; }
       // Log signal: a sweep can see an install that left libraries uncached.
       try {
         await fetch('/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ kind: 'sw-precache', cache: CACHE, cdn_total: CDN_URLS.length,
             cdn_cached: CDN_URLS.length - failed.length, cdn_failed: failed.slice(0, 5),
-            verdict: failed.length ? 'cdn_precache_partial' : 'cdn_precache_complete', measured: true }) });
+            draw_total: drawTotal, draw_cached: drawTotal - drawFailed.length, draw_failed: drawFailed.slice(0, 5),
+            verdict: failed.length || drawFailed.length ? 'cdn_precache_partial' : 'cdn_precache_complete', measured: true }) });
       } catch (_) {}
     })
   );
