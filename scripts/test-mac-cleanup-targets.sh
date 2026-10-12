@@ -496,6 +496,23 @@ else
   echo "  skip macOS-only cell (the tick's probes are macOS commands): not run on $(uname)"
 fi
 
+echo "claude tmp depth: the default root reaches a target under scratchpad/work/<clone>/"
+fresh_root cdepth
+cdep=$(printf '%s' "$DEFAULT_ROOTS" | tr ':' '\n' | grep '^/private/tmp/claude-' | sed 's/.*@//')
+mk_target "$R/-proj/sid/scratchpad/work/clone/target" old
+find_cargo_targets "$R@${cdep:-0}" 8 30 > "$FIX/found.txt"
+check "the default claude tmp depth finds the nested target" "yes" "$(yn grep -qx "$R/-proj/sid/scratchpad/work/clone/target" "$FIX/found.txt")"
+
+echo "fair budget: a slow first root does not starve the roots after it"
+fresh_root slow; SLOW=$R; mk_target "$SLOW/p/target" old
+fresh_root fast; mk_target "$R/p/target" old
+mkdir -p "$FIX/slowbin"
+printf '#!/bin/sh\ncase "$1" in %s) sleep 30 ;; esac\nexec /usr/bin/find "$@"\n' "$SLOW" > "$FIX/slowbin/find"; chmod +x "$FIX/slowbin/find"
+PATH="$FIX/slowbin:$PATH" find_cargo_targets "$SLOW:$R" 8 6 > "$FIX/found.txt"
+check "the root after the slow one is still scanned"   "yes" "$(yn grep -qx "$R/p/target" "$FIX/found.txt")"
+check "both roots count as scanned"                    "2"   "$TARGET_ROOTS_SCANNED"
+check "the cut-off scan still says incomplete"         "no"  "$TARGET_SCAN_COMPLETE"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-targets — all checks passed"; exit 0; fi
 echo "mac-cleanup-targets: $fails check(s) FAILED"; exit 1

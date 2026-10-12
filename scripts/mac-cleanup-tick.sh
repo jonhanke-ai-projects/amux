@@ -168,7 +168,11 @@ USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
 # covered it, so 106G sat there unseen while one afternoon added 58G of new ones.
 # Depth 2 reaches <name>/CACHEDIR.TAG and nothing deeper; the shared target is in
 # TARGET_KEEP, and a target being built holds open files, which the lsof guard keeps.
-TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-/private/tmp/claude-$(id -u)@6:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
+# /private/tmp/claude-<uid>@8 (disk RCA 2026-10-12): a session that keeps its clones under
+# scratchpad/work/<clone>/ puts the tag at <proj>/<session>/scratchpad/work/<clone>/target/CACHEDIR.TAG,
+# seven levels down. At @6 the scan never saw them: one session held 47G and 23G of targets idle
+# over 6h with 21G free on the disk, and the summary read "eligible 0".
+TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
 TARGET_IDLE_H=${AMUX_CLEANUP_TARGET_IDLE_H:-24}
 # Under disk pressure the idle floor drops (DESKT-62). On 2026-10-01 the disk fell
 # from 574G to 155G in five days, and about 60G of build output sat 21-23h idle in
@@ -665,7 +669,7 @@ CARGO_TAG_SIG=8a477f597d28d172789f06886806bc55
 # Pruned names never contain a target root and are where the file count lives:
 # node_modules, .git, virtualenvs, and cargo's own build internals.
 find_cargo_targets() { # <colon-roots> <maxdepth> <budget_s>
-  local roots=$1 depth=$2 budget=$3 deadline left rc tag d r tmp rdepth
+  local roots=$1 depth=$2 budget=$3 deadline left rc tag d r tmp rdepth slice todo=0
   local -a rootarr
   TARGET_SCAN_COMPLETE=yes
   TARGET_ROOTS_SCANNED=0
@@ -673,12 +677,18 @@ find_cargo_targets() { # <colon-roots> <maxdepth> <budget_s>
   IFS=':' read -r -a rootarr <<< "$roots"
   # ${arr[@]+"${arr[@]}"}: bash 3.2 (macOS /bin/bash) treats an EMPTY array as unset under
   # `set -u`, so a bare "${arr[@]}" aborts the tick when the list is empty.
+  # Each root gets an equal share of what is left, so one slow root cannot spend the
+  # whole budget and leave every root after it unscanned (2026-10-12: 5 of 8 reached,
+  # tick after tick, always the same 5). Time a fast root does not use goes to the rest.
+  for r in ${rootarr[@]+"${rootarr[@]}"}; do r=${r%@*}; if [ -n "$r" ] && [ -d "$r" ]; then todo=$((todo+1)); fi; done
   for r in ${rootarr[@]+"${rootarr[@]}"}; do
     rdepth=$depth
     case "$r" in *@[0-9]*) rdepth=${r##*@}; r=${r%@*} ;; esac
     [ -n "$r" ] && [ -d "$r" ] || continue
     left=$(( deadline - $(date +%s) ))
-    if [ "$left" -le 0 ]; then TARGET_SCAN_COMPLETE=no; continue; fi
+    slice=$(( left / todo )); todo=$((todo-1))
+    if [ "$slice" -le 0 ]; then TARGET_SCAN_COMPLETE=no; continue; fi
+    left=$slice
     TARGET_ROOTS_SCANNED=$((TARGET_ROOTS_SCANNED+1))
     tmp=$(mktemp "${TMPDIR:-/tmp}/cargo-scan.XXXXXX")
     # `|| rc=$?`, never `cmd; rc=$?`: the tests source this under `set -e`, where a
