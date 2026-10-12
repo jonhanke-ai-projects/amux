@@ -20,17 +20,16 @@ What is built and what only Ethan can do. Tracking card: AMUX-5397.
 
 ## What is blocking the listing
 
-cloud.amux.io has no host. Its VM (`amux-dev`, GCP mixpeek-inference-463103,
-us-central1-a) was deleted on 2026-09-21, after a final snapshot
-(`amux-dev-final-2026-09-22`). The front door runs inside the cloud gateway, so
-the listing cannot go live until the gateway runs somewhere again. Nothing was
-restored, because that spends money.
+cloud.amux.io has no host. Its GCP VM (`amux-dev`) is deleted for good and amux
+cloud is moving to Hetzner. The front door runs inside the cloud gateway, so the
+listing cannot go live until the gateway runs on the new host.
 
 ## Ethan-only steps, in order
 
-1. **Host for cloud.amux.io (money).** Restore the VM from
-   `amux-dev-final-2026-09-22`, or pick another host for the gateway. Once it
-   runs, a normal push deploys the front door (`deploy-cloud.yml`). Then check
+1. **Host for cloud.amux.io (money).** Bootstrap the Hetzner host with
+   `cloud/setup-cloud.sh`, then point the repo variable `CLOUD_HOST` and the
+   `cloud.amux.io` DNS record at it. Once it runs, a normal push deploys the
+   front door (`deploy-cloud.yml`). Then check
    `https://cloud.amux.io/.well-known/oauth-authorization-server` names
    `https://cloud.amux.io` as its issuer.
 2. **Terms of service.** Review `terms-draft.md` and publish it at
