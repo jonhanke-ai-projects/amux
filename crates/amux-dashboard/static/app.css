@@ -8413,10 +8413,13 @@ body.light #fc-container { color-scheme: light; }
   .cv-hint { display:none; }
   .cv-head-people { display:none; }
   #msgs-log-pane { padding:8px 10px; }
+  /* The search takes its own row on a phone so the two filters below it get
+     half the width each instead of being squeezed beside it to "All w". */
+  #msgs-controls > .search-wrap { flex:1 1 100% !important; min-width:0 !important; }
   /* Worker and From filters share one row at 375px and stay 44px tall. */
   /* WebKit ignores min-height on a native menulist select, so the control
      drops its native chrome here and draws its own chevron. */
-  #msgs-session-filter, #msgs-sender-filter { flex:1 1 0; min-width:0; max-width:none !important; min-height:44px; -webkit-appearance:none; appearance:none; padding-right:26px !important; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E") !important; background-repeat:no-repeat !important; background-position:right 10px center !important; }
+  #msgs-session-filter, #msgs-sender-filter { flex:1 1 calc(50% - 5px); min-width:0; max-width:none !important; min-height:44px; -webkit-appearance:none; appearance:none; padding-right:26px !important; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E") !important; background-repeat:no-repeat !important; background-position:right 10px center !important; }
   .cv-attach-bar { padding:0 10px; }
 }
 

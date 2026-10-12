@@ -84,6 +84,11 @@ test('at 375px the From filter fits beside the worker filter and stays tappable'
   const box = await from.boundingBox();
   expect(box!.height).toBeGreaterThanOrEqual(44);
   expect(box!.x + box!.width).toBeLessThanOrEqual(375);
+  // Wide enough to read its label rather than squeezed beside the search box,
+  // and on the same row as the worker filter.
+  expect(box!.width).toBeGreaterThanOrEqual(140);
+  const worker = await page.locator('#msgs-session-filter').boundingBox();
+  expect(Math.abs(worker!.y - box!.y)).toBeLessThan(4);
   const overflow = await page.locator('#msgs-controls').evaluate((n: HTMLElement) => n.scrollWidth - n.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
