@@ -14092,7 +14092,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1348';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1370';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14820,7 +14820,7 @@ function _chatMessageHtml(m) {
     // The send-time stamp stays in what the model received (the shared send
     // contract); the bubble's meta line already shows the time.
     const shown = _hasSendTimeStamp(m.text) ? (m.text || '').replace(/^\[[^\]]*\]\s/, '') : (m.text || '');
-    return _chatBubble('user', esc(shown).replace(/\n/g, '<br>'), esc(who) + ' · ' + _chatTime(m.ts));
+    return _chatBubble('user', _chatLinkify(esc(shown)).replace(/\n/g, '<br>'), esc(who) + ' · ' + _chatTime(m.ts));
   }
   const head = _chatThinkingHtml(m.thinking, false, m.thinking_truncated) + _chatToolsHtml(m.tool_calls, m.tools);
   if (m.error) {
@@ -55250,18 +55250,39 @@ function _cvRenderHead(sel, d) {
   document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:8px"><span class="cv-dot on" style="display:inline-block;margin-right:4px"></span>' + on + ' online</span>' : '') +
     ppl.slice(0, 4).map(p => _cvAvatar(p.name)).join('');
 }
+// A POST RENDERS LIKE CHAT (Ethan, 2026-10-11: "make sure chat has the same
+// rendering stuff", screenshot of `@/Users/ethan/.amux/uploads/x.png` as dead
+// text in #amux). The body used to be esc() plus its own path regex, which
+// required a space before the slash, so the `@path` every attachment rides on
+// never matched. It now goes through the worker Chat tab's pipeline:
+// renderMarkdown (sanitized) then _linkifyPaths, the peek/chat path linkifier.
+// Only absolute and ~/ paths link here: a channel has no working folder, so the
+// peek's cwd (whichever worker was opened last) must not resolve a relative one.
+// An image path also gets a thumbnail that opens the viewer.
 function _cvBodyHtml(p) {
-  let h = esc(p.body || '');
+  const body = String(p.body || '');
+  const savedDir = peekSessionDir;
+  let h;
+  try { peekSessionDir = ''; h = _linkifyPaths(renderMarkdown(body, '')); }
+  finally { peekSessionDir = savedDir; }
   const me = _cvMeKey();
   const names = {};
   (p.mentions || []).forEach(k => { const n = k.replace(/^(person|worker):/, ''); names[n.split('@')[0].toLowerCase()] = k; });
   ((_cv.info && _cv.info.people) || []).forEach(pp => { if ((p.mentions || []).includes(pp.key)) names[pp.name.toLowerCase()] = pp.key; });
-  h = h.replace(/(^|[^\w.])@([\w.\-]+)/g, (m, pre, tok) => {
+  h = h.replace(/(^|[^\w.])@([\w.\-]+)(?![^<]*>)/g, (m, pre, tok) => {
     const k = names[tok.replace(/\.$/, '').toLowerCase()];
     return k ? pre + '<span class="cv-mention' + (k === me ? ' me' : '') + '">@' + tok + '</span>' : m;
   });
-  h = h.replace(/(^|\s)(\/[\w.\-\/]+\.[A-Za-z0-9]{1,6})(?=$|[\s,;:)])/g, (m, pre, path) =>
-    pre + '<span class="cv-file" role="button" tabindex="0" data-path="' + path + '" onclick="openFilePreview(this.dataset.path)" title="Open ' + path + '">&#x1F4C4; ' + path + '</span>');
+  const imgs = [];
+  body.replace(/(?:^|[\s(\[>"'`,;=@])((?:~\/|\/)[^\s'"`<>()]+\.(?:png|jpe?g|gif|webp))(?=$|[\s,;:)\].])/gim, (m, path) => {
+    if (!imgs.includes(path) && imgs.length < 4) imgs.push(path);
+    return m;
+  });
+  if (imgs.length) {
+    h += '<div class="cv-thumbs">' + imgs.map(path => '<img class="cv-thumb" loading="lazy" alt="' + esc(path.split('/').pop())
+      + '" title="Open ' + esc(path) + '" data-path="' + esc(path) + '" src="'
+      + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(path))) + '" onclick="openFilePreview(this.dataset.path)">').join('') + '</div>';
+  }
   return h;
 }
 function _cvDelivHtml(p) {
@@ -55285,7 +55306,7 @@ function _cvPostHtml(p, showConv) {
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
     (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvSelect(this.dataset.cv)">in ' + esc(_cvFindName(p.conv)) + '</span>' : '') +
     (p.pending ? '<span class="cv-post-tag">Queued: sends when you are back online</span>' : p.tag ? '<span class="cv-post-tag">' + esc(p.tag) + '</span>' : '') +
-    '</div><div class="cv-post-body">' + _cvBodyHtml(p) + '</div>' + _cvDelivHtml(p) + '</div></div>';
+    '</div><div class="cv-post-body cv-md">' + _cvBodyHtml(p) + '</div>' + _cvDelivHtml(p) + '</div></div>';
 }
 function _cvDayLabel(ts) {
   const d = new Date(ts), today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);
