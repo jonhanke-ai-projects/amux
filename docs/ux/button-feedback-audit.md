@@ -150,7 +150,7 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:1684 | button | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1685 | cv-all-item | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:55118 | … | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:55282 | in … | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:55286 | in … | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1709 | Send | `_cvSend` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | index.html:1597 | Refresh | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js:49707 | ? | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
@@ -526,17 +526,17 @@ Counts are over control occurrences in the source (one markup site may render ma
 | app.js:44684 | Save limit | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:44780 | Delete | `_vaultSecretRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:44779 | Replace value | `_vaultSecretReplace` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:55577 | Start conversation | `_vxCallButton` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:56536 | … | `_vxDelete` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:56534 | Download transcript | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:56535 | Download audio | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:56646 | Download | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:55595 | + New | `_vxNew` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:56644 | … | `_vxPlayToggle` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:56526 | Play  | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:56527 | + | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:55715 | Delete expired now | `_vxSweepNow` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:55572 | Mute | `_vxToggleMute` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:55581 | Start conversation | `_vxCallButton` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:56540 | … | `_vxDelete` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:56538 | Download transcript | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js:56539 | Download audio | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js:56650 | Download | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js:55599 | + New | `_vxNew` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:56648 | … | `_vxPlayToggle` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:56530 | Play  | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:56531 | + | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:55719 | Delete expired now | `_vxSweepNow` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:55576 | Mute | `_vxToggleMute` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:11603 | … | `_workerBoardConfigurationSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:11606 | Inherit | `_workerBoardConfigurationSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:11571 | … | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -654,7 +654,7 @@ Counts are over control occurrences in the source (one markup site may render ma
 | app.js:39717 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:54264 | Review worker log | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:54628 | Review worker log | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:55260 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:55264 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1034 | button | `openInFinder` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:28754 | + | `openMdaiNode` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:45754 | change | `openMemberScope` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
@@ -1207,16 +1207,16 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:2069 | vp-mute | `_vpToggleMute` | onclick |
 | index.html:2063 | vp-play | `_vpTogglePlay` | onclick |
 | app.js:48818 | video-player | `_vpTogglePlay` | addEventListener |
-| app.js:56540 | + (_vxShowAll ? Show less : Show more (…)) + | `_vxRenderList` | onclick |
-| app.js:56648 | Transcript | `_vxRenderPlayer` | onclick |
-| app.js:56649 | Details | `_vxRenderPlayer` | onclick |
-| app.js:55591 | Manage retention | `_vxRetentionToggle` | onclick |
-| app.js:56620 | + | `_vxSeek` | onclick |
-| app.js:56643 | Back 15 seconds | `_vxSeek` | onclick |
-| app.js:56645 | Forward 15 seconds | `_vxSeek` | onclick |
-| app.js:56642 | Playback speed | `_vxSpeed` | onclick |
-| app.js:56532 | More actions | `_vxToggleMenu` | onclick |
-| app.js:55578 | Voice settings | `_vxToggleSettings` | onclick |
+| app.js:56544 | + (_vxShowAll ? Show less : Show more (…)) + | `_vxRenderList` | onclick |
+| app.js:56652 | Transcript | `_vxRenderPlayer` | onclick |
+| app.js:56653 | Details | `_vxRenderPlayer` | onclick |
+| app.js:55595 | Manage retention | `_vxRetentionToggle` | onclick |
+| app.js:56624 | + | `_vxSeek` | onclick |
+| app.js:56647 | Back 15 seconds | `_vxSeek` | onclick |
+| app.js:56649 | Forward 15 seconds | `_vxSeek` | onclick |
+| app.js:56646 | Playback speed | `_vxSpeed` | onclick |
+| app.js:56536 | More actions | `_vxToggleMenu` | onclick |
+| app.js:55582 | Voice settings | `_vxToggleSettings` | onclick |
 | app.js:46804 | + _WT_CHAPTERS[k].label + (done[k] ? | `_wtChapter` | onclick |
 | app.js:46808 | Finish | `_wtDismiss` | onclick |
 | app.js:46821 | Skip | `_wtDismiss` | onclick |

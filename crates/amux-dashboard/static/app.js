@@ -14092,7 +14092,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1347';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1348';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -55216,7 +55216,11 @@ async function _cvPoll(full) {
     if (!r.ok) { document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">' + esc(d.error || ('HTTP ' + r.status)) + '</div>'; return; }
   } catch (e) { return; }
   if (sel !== _cv.sel) return;
+  const hadInfo = !!_cv.info;
   _cv.info = d;
+  // Typing "@" before the member list arrived left the picker empty; offer
+  // it again now that the names are here.
+  if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
   if (full) _cv.posts = d.posts || [];
   else if ((d.posts || []).length) _cv.posts = _cv.posts.concat(d.posts);
   // Deliveries are written back after a post lands: refresh recent ones that are still pending.
@@ -55301,7 +55305,7 @@ async function _cvLoadWorkerHistory(sel) {
     if (!r.ok || _cv.sel !== sel) return;
     const rows = await r.json();
     if (_cv.sel !== sel || !Array.isArray(rows)) return;
-    _cv.history = rows.filter(h => h && h.text && !/\(From amux Messages\. To reply/.test(h.text)).map(h => ({
+    _cv.history = rows.filter(h => h && h.text && !/\(From amux Messages\. To reply|\bamux post [gpw]:\S+ <<'EOF'/.test(h.text)).map(h => ({
       id: 'h' + h.id, conv: sel, history: true, ts: h.ts || 0, body: _msgStripPrefix(h.text),
       author_key: h.type === 'session' && h.origin ? 'worker:' + h.origin : 'person:' + (h.origin || 'owner'),
       author_name: h.type === 'session' && h.origin ? h.origin : (h.type === 'schedule' ? 'scheduler' : (h.origin || 'owner')),
