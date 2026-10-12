@@ -5324,12 +5324,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "syncPeekMemory": {
-      "kind": "command.syncPeekMemory",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "toggle": {
       "kind": "command.toggle",
       "feedback_required": true,
