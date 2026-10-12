@@ -126,16 +126,21 @@ test('a fetch that fails while the network is down shows reconnecting, then resu
     down = true;
     // The element refetches its source while the link is down (the fixture is
     // small enough to be fully buffered, so a drop alone would never be felt).
-    const before: number = await ev(page, `(() => { const t = _abAudio.currentTime; _abAudio.src = _abAudio.getAttribute('src'); return t; })()`);
+    // The first 'playing' after the drop is the resume point; recorded in the
+    // page because the clip is short enough to finish before a poll sees it.
+    const before: number = await ev(page, `(() => {
+      window.__resumedAt = null;
+      _abAudio.addEventListener('playing', () => { if (window.__resumedAt == null) window.__resumedAt = _abAudio.currentTime; });
+      const t = _abAudio.currentTime; _abAudio.src = _abAudio.getAttribute('src'); return t; })()`);
     await expect(page.locator('#ab-state')).toHaveText(/Connection lost, retrying in \d+s|Reconnecting/, {timeout: 10000});
     await expect(page.locator('#amux-audio-bar')).toHaveAttribute('data-state', 'reconnecting');
     // An 'online' event retries at once instead of waiting out the backoff.
     await ev(page, `window.dispatchEvent(new Event('online'))`);
     await expect.poll(() => blocked, {timeout: 10000, message: 'no retry reached the network'}).toBeGreaterThan(1);
     down = false;
-    await expect.poll(() => ev(page, `_abKeeper.attempt === 0 && !_abAudio.paused && _abAudio.readyState >= 3 ? _abAudio.currentTime : -1`),
+    await expect.poll(() => ev(page, `window.__resumedAt == null ? -1 : window.__resumedAt`),
       {timeout: 45000, message: 'playback never recovered'}).toBeGreaterThan(before - 1);
-    const resumed: number = await ev(page, '_abAudio.currentTime');
+    const resumed: number = await ev(page, 'window.__resumedAt');
     expect(resumed, `resumed at ${resumed}s after dropping at ${before}s`).toBeGreaterThan(before - 1);
     expect(resumed).toBeLessThan(before + 15);
     await expect(page.locator('#ab-state')).toHaveText('');

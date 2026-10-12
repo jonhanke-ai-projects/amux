@@ -2538,6 +2538,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: ANY,
     },
     RouteEntry {
+        path: "/api/file/hls",
+        methods: ANY,
+    },
+    RouteEntry {
         path: "/api/file/xlsx",
         methods: ANY,
     },
