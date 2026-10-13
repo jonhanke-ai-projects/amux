@@ -68,7 +68,7 @@ pub(crate) fn actor(headers: &HeaderMap) -> String {
 }
 
 /// A short human label: the email's local part for members, else the actor.
-fn label(actor: &str) -> String {
+pub(crate) fn label(actor: &str) -> String {
     let a = actor.strip_prefix("member:").unwrap_or(actor);
     a.split('@').next().unwrap_or(a).to_string()
 }

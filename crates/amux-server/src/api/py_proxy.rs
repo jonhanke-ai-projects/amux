@@ -85,6 +85,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/calendar.ics", "iCal feed"),
     ("/api/sync", "delta sync"),
     ("/api/events", "SSE stream"),
+    ("/api/rt", "realtime rooms: one WebSocket per tab multiplexing ephemeral per-resource rooms, SSE + POST fallback (api/rt.rs)"),
     ("/api/board", "board/tasks CRUD, gates, contract"),
     ("/api/projects", "project-owned board execution, command intake, evidence and explicit migration"),
     ("/api/board-lifecycle", "durable command decisions and measured planning costs"),
