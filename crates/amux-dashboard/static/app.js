@@ -7304,10 +7304,7 @@ function render() {
   if (allTags.length || sessions.length) {
     // RESET FIRST (Ethan, 2026-10-01: "put the reset on the left most side when
     // it's available ... as opposed to the right").
-    tagEl.innerHTML = ((activeTag || hiddenTags.size)
-          ? '<button type="button" class="tag-filter tag-reset-btn" onclick="resetGroupView()" '
-            + 'title="Show every group again">\u21ba Reset</button>'
-          : '')
+    tagEl.innerHTML = ((activeTag || hiddenTags.size || expanded.size) ? _resetPillHtml() : '')
       + allTags.map(t =>
       `<span class="tag-filter${activeTag === t ? ' active' : ''}${hiddenTags.has(t) ? ' hidden-tag' : ''}" `
       + `title="${activeTag === t ? 'Showing only this group. Tap to hide it' : hiddenTags.has(t) ? 'Hidden. Tap to show it again' : 'Tap to show only this group'}" `
@@ -8193,6 +8190,7 @@ function toggle(name) {
   if (expanded.has(name)) { expanded.delete(name); } else { expanded.add(name); }
   closeAllMenus();
   render();
+  _updateResetBtn();
   if (expanded.has(name)) {
     fetchStats(name);
   }
@@ -14198,7 +14196,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1457';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1458';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -25027,9 +25025,13 @@ function _workerVisibleWithHiddenTags(tags, active, hidden) {
   if (active && tags.includes(active)) return true;
   return !tags.some(t => hidden.has(t));
 }
+// Reset also collapses every expanded card (Ethan, 2026-10-13: "when I click
+// reset, on worker list page it should also un expand all the worker cards").
 function resetGroupView() {
   activeTag = '';
   hiddenTags = new Set();
+  expanded.clear();   // Reset collapses every card too
+  _updateResetBtn();
   render();   // render() persists the list view
 }
 function toggleTagFilter(tag) {
@@ -32257,7 +32259,22 @@ function toggleFreeze() {
   render();
 }
 
+function _resetPillHtml() {
+  return '<button type="button" class="tag-filter tag-reset-btn" onclick="resetGroupView()" '
+    + 'title="Show every group again and collapse every card">\u21ba Reset</button>';
+}
+// The Reset pill follows expansion directly: a card toggle can repaint the
+// card without rebuilding the group row, which left the pill missing.
+function _syncResetPill() {
+  const tagEl = document.getElementById('tag-filters');
+  if (!tagEl) return;
+  const want = !!(activeTag || hiddenTags.size || expanded.size);
+  const pill = tagEl.querySelector('.tag-reset-btn');
+  if (want && !pill) tagEl.insertAdjacentHTML('afterbegin', _resetPillHtml());
+  else if (!want && pill) pill.remove();
+}
 function _updateResetBtn() {
+  _syncResetPill();
   const eb = document.getElementById('tile-expand-btn');
   if (eb) eb.classList.toggle('active', expanded.size > 0);
   const fb = document.getElementById('tile-freeze-btn');
