@@ -272,6 +272,42 @@ test('a form opened while an edit save refetches stays open', async ({ page, req
   await expect.poll(async () => (await listAll(request, tok)).filter((s: any) => s.title === 'Copy of ' + p + 'one').length).toBe(1);
 });
 
+// Opening the form adds `active` one frame after display:flex, and closing
+// hides it 250ms after removing `active`. On a slow WebKit frame (CI iOS,
+// 2026-10-13) Create right after a save let the stale close timer run between
+// the two halves of the open: the form ended `active` but display:none, and
+// every field read "not visible" until the test timed out. The frame is
+// delayed here so the race is certain rather than lucky.
+async function withSlowFrames(page: Page, script: string): Promise<void> {
+  await page.evaluate(`(() => {
+    const raf = window.requestAnimationFrame;
+    window.requestAnimationFrame = (cb) => setTimeout(() => raf(cb), 400);
+    try { ${script} } finally { window.requestAnimationFrame = raf; }
+  })()`);
+}
+test('a form reopened inside the close fade stays visible when the frame is slow', async ({ page }) => {
+  await settle(page);
+  await openScheduler(page);
+  await page.locator('.sx-new').click();
+  await expect(page.locator('#sched-overlay')).toHaveClass(/active/);
+  await withSlowFrames(page, 'closeSchedModal(); openSchedModal();');
+  await page.waitForTimeout(600);   // past both the 250ms hide and the 400ms frame
+  await expect(page.locator('#sched-overlay')).toHaveClass(/active/);
+  await expect(page.locator('#sched-overlay')).toHaveCSS('display', 'flex');
+  await expect(page.locator('#sched-title')).toBeVisible();
+  await page.fill('#sched-title', 'reopened');
+  await page.locator('#sched-overlay .sched-modal-foot .btn', { hasText: 'Cancel' }).click();
+  await expect(page.locator('#sched-overlay')).toBeHidden();
+});
+test('a form closed before its opening frame stays closed', async ({ page }) => {
+  await settle(page);
+  await openScheduler(page);
+  await withSlowFrames(page, 'openSchedModal(); closeSchedModal();');
+  await page.waitForTimeout(600);
+  await expect(page.locator('#sched-overlay')).not.toHaveClass(/active/);
+  await expect(page.locator('#sched-overlay')).toBeHidden();
+});
+
 test('row menu: run, pause, edit and delete are reachable from the list', async ({ page, request }) => {
   await settle(page);
   const tok = await token(page);
