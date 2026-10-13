@@ -30,7 +30,7 @@
     "description": "amux is the open-source, self-hosted alternative to Amazon Q Developer. Run parallel fleets of Claude Code, Codex, and Gemini CLI agents on your own infrastructure.",
     "url": "https://amux.io/compare/amux-vs-amazon-q-developer/",
     "datePublished": "2026-08-24",
-    "dateModified": "2026-08-24",
+    "dateModified": "2026-10-13",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png"
@@ -114,11 +114,12 @@
         <strong style="color:#6ee7b7;">No AWS lock-in. No per-seat subscription. Full fleet control.</strong>
         <span style="color:var(--muted);margin-left:0.5rem;">amux is the open-source alternative — Claude Code, Codex, Gemini CLI, self-hosted, MIT licensed.</span>
       </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="btn btn-primary" style="white-space:nowrap;" onclick="posthog&&posthog.capture('exp058_amazon_q_compare_topofpage_cta_click')">View amux on GitHub ★</a>
+      <!-- EXP-131: /compare/amux-vs-amazon-q-developer/ top CTA — October 2026 refresh -->
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="btn btn-primary" style="white-space:nowrap;" onclick="posthog&&posthog.capture('exp131_amazon_q_compare_topofpage_cta_click')">View amux on GitHub ★</a>
     </div>
 
     <h1>amux vs Amazon Q Developer</h1>
-    <p class="subtitle">Comparing an open-source, self-hosted fleet control plane with AWS's proprietary AI coding assistant. August 2026.</p>
+    <p class="subtitle">Comparing an open-source, self-hosted fleet control plane with AWS's proprietary AI coding assistant. Updated October 2026.</p>
 
     <p><strong>Amazon Q Developer</strong> is AWS's AI coding product. It provides IDE-level inline suggestions, an agentic mode for multi-step development tasks, a CLI tool, and deep integration with AWS services like CloudFormation, Lambda, and CodeCatalyst. It runs entirely on AWS infrastructure and is available via a free tier or Pro subscription ($19/month). It is proprietary and AWS-specific.</p>
 
@@ -142,6 +143,9 @@
         <tr><td>Board / task tracking</td><td>Built-in kanban board, fleet-wide</td><td>No task board</td></tr>
         <tr><td>Mobile monitoring</td><td>iOS app + PWA, push notifications</td><td>No native mobile app</td></tr>
         <tr><td>Overnight / unattended runs</td><td>Self-healing watchdog, auto-restart</td><td>Not designed for unattended fleet runs</td></tr>
+        <tr><td>Secrets management</td><td>Vault: scoped to worker/group/global, never in transcripts</td><td>AWS Secrets Manager integration (separate AWS service)</td></tr>
+        <tr><td>Workspace isolation</td><td>Per-agent git worktree, scratch dir, TMPDIR via AMUX_WORKSPACE_ISOLATION</td><td>Single agent, no parallel workspace isolation</td></tr>
+        <tr><td>Standing approvals</td><td>Pre-authorize action categories for unattended overnight runs</td><td>No equivalent — each agent run requires manual oversight</td></tr>
         <tr><td>Compliance out-of-box</td><td>Self-managed (data never leaves you)</td><td>AWS SOC2, ISO27001, HIPAA eligibility</td></tr>
         <tr><td>Pricing</td><td>API tokens only, no subscription</td><td>Free tier + Pro $19/user/month</td></tr>
       </tbody>
