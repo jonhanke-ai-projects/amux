@@ -14210,7 +14210,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1460';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1480';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -57915,12 +57915,14 @@ async function _drawEnter() {
     _drawMount();
   }
   _drawStartPoll();
+  if (d.api && d.path && !d.opening) _drawRtJoin(d.path);
 }
 
 function _drawLeave() {
   document.documentElement.classList.remove('draw-active');
   if (!_draw) return;
   _drawStopPoll();
+  _drawRtLeave();
   if (_draw.saveTimer) { clearTimeout(_draw.saveTimer); _draw.saveTimer = null; }
   if (_draw.mounted && _drawDirty()) _drawSave();
   _drawCloseMenus();
@@ -57944,6 +57946,7 @@ function _drawExcalidrawProps() {
   return {
     excalidrawAPI: api => { if (api && !d.api) { d.api = api; _drawOnApi(); } },
     onChange: _drawOnChange,
+    onPointerUpdate: p => _drawRtOnPointer(p),
     onLibraryChange: _drawOnLibraryChange,
     onPaste: _drawOnPaste,
     // The snap toggles must be in the INITIAL state: Excalidraw finishes its
@@ -58050,6 +58053,7 @@ function _drawOnChange(elements, appState, files) {
   const v = _drawSceneVersion(elements, files);
   if (v !== d.curVersion) {
     d.curVersion = v;
+    _drawRtOnChange();
     if (!d.applying && d.savedVersion !== null && v !== d.savedVersion) {
       if (d.status !== 'error' && d.status !== 'conflict') _drawSetStatus('dirty');
       _drawScheduleSave();
@@ -58085,9 +58089,10 @@ function _drawSetStatus(status, msg) {
     saving: 'Saving…', error: 'Save failed: ' + (msg || 'unknown error'),
     conflict: 'Changed on disk while you were editing', loading: 'Opening…',
     missing: 'Not on disk', 'load-error': 'Could not open: ' + (msg || ''),
+    synced: 'Live: ' + (msg || 'another tab') + ' saves this file',
   }[status] || msg || '';
   const short = { saved: 'Saved', dirty: 'Unsaved', saving: 'Saving…', error: 'Not saved', conflict: 'Conflict',
-    new: 'New', loading: 'Opening…', missing: 'Not on disk', 'load-error': 'Error' }[status] || '';
+    new: 'New', loading: 'Opening…', missing: 'Not on disk', 'load-error': 'Error', synced: 'Live' }[status] || '';
   const st = document.getElementById('draw-status-text');
   if (st) { st.textContent = text; st.dataset.state = status; }
   const pill = document.getElementById('draw-save-state');
@@ -58102,6 +58107,8 @@ function _drawSetStatus(status, msg) {
 async function _drawSave() {
   const d = _draw;
   if (!d || !d.api || !d.path || d.conflict) return false;
+  // In a shared room only the saver writes; this tab's edits reach it live.
+  if (_drawRtFollower()) { d.savedVersion = _drawSceneVersion(); _drawSetStatus('synced', _drawRtSaverLabel()); return true; }
   if (d.saving) { d.saveAgain = true; return false; }
   if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = null; }
   const X = d.lib.X, api = d.api;
@@ -58133,6 +58140,7 @@ async function _drawSave() {
       d.etag = res.etag || null;
       d.savedVersion = version;
       ok = true;
+      _drawRtAfterSave(d.etag);
       _drawSetStatus(d.curVersion === version ? 'saved' : 'dirty');
       _drawRememberRecent(false);
     }
@@ -58184,6 +58192,7 @@ async function _drawOpen(path) {
     }
     _drawPrefSet('draw_last', path);
     _drawRememberRecent(true);
+    _drawRtJoin(path);
   } catch (e) {
     _drawSetStatus('load-error', String(e && e.message || e));
     _drawBeacon('open-failed', { error: String(e && e.message || e) });
@@ -58243,6 +58252,7 @@ async function _drawNew(quiet) {
   _drawRenderChrome();
   _drawSetStatus('new');
   _drawPrefSet('draw_last', path);
+  _drawRtJoin(path);
   if (!quiet) { const t = document.getElementById('draw-title'); if (t) { t.focus(); t.select(); } }
 }
 
@@ -58281,6 +58291,7 @@ async function _drawRename(title) {
   _drawRenderChrome();
   _drawRememberRecent(true);
   _drawRenderRoot();
+  _drawRtJoin(d.path);
 }
 
 // ── Live reload from disk ──
@@ -58299,6 +58310,7 @@ async function _drawPoll() {
   d.pollTick++;
   if (d.pollTick % 5 === 0) _drawPollLibrary();
   if (!d.path || d.saving || d.opening || d.conflict) return;
+  if (_drawRtFollower()) return;   // the room's saver watches the file for us
   try {
     const headers = d.etag ? { 'If-None-Match': d.etag } : {};
     const path = d.path;
@@ -58319,6 +58331,7 @@ async function _drawPoll() {
       await _drawApplyText(text, false);
       d.etag = etag;
       _drawSetStatus('saved');
+      _drawRtAfterDiskReload(text, etag);
       showToast('Reloaded ' + _drawBase(path) + ' from disk');
       _drawBeacon('reloaded-from-disk');
     } else {
@@ -59041,4 +59054,448 @@ async function _drawSendToWorker(worker, prompt, selectionOnly) {
     _drawBeacon('send-failed', { worker, error: String(e && e.message || e) });
     return 'failed';
   }
+}
+
+// ── Realtime rooms (docs/design/realtime-rooms.md) ──
+//
+// One WebSocket per tab (`/api/rt`) multiplexes any number of rooms keyed by
+// resource (`file:<absolute path>`). A feature joins a room with handlers and
+// gets back a handle to send ops, presence and snapshots. The server relays,
+// orders (per-room `seq`, per-recipient `prev`), stamps the verified actor and
+// elects one saver per room; it never stores content. When the socket cannot
+// open (a proxy that blocks upgrades), the same messages ride SSE down
+// (`/api/rt/events`) and batched POSTs up (`/api/rt/send`).
+//
+// Failures are beaconed to /api/client-debug as kind "rt" (ws-failed,
+// fallback, resync, reconnect), and every 10s the tab reports its apply
+// latency and remote-update fps percentiles, which /api/debug/rt aggregates.
+var _rt = {
+  ws: null, es: null, cid: null, me: null, transport: null, open: false,
+  rooms: new Map(), upq: [], upTimer: null, retry: 0, wsFails: 0, timer: null,
+  lat: [], frames: [], statsTimer: null, gapAt: new Map(),
+  // The server names a room by its resolved key (symlinks and `..` folded);
+  // this maps that name back to the key the feature joined with.
+  alias: new Map(),
+};
+function _rtNow() { return performance.timeOrigin + performance.now(); }
+function _rtBeacon(event, extra) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify(Object.assign({ kind: 'rt', event, transport: _rt.transport, cid: _rt.cid,
+        ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?'), measured: true }, extra || {})) }).catch(() => {});
+  } catch (e) {}
+}
+function _rtWantSse() {
+  try { if (localStorage.getItem('amux_rt_transport') === 'sse') return true; } catch (e) {}
+  return _rt.wsFails >= 2 || typeof WebSocket === 'undefined';
+}
+function _rtConnect() {
+  if (_rt.ws || _rt.es) return;
+  clearTimeout(_rt.timer); _rt.timer = null;
+  if (_rtWantSse()) return _rtConnectSse();
+  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + _authUrl(API + '/api/rt');
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) { _rt.wsFails++; _rtBeacon('ws-failed', { error: String(e && e.message || e) }); return _rtSchedule(); }
+  _rt.ws = ws; _rt.transport = 'ws';
+  let opened = false;
+  ws.onopen = () => { opened = true; _rt.wsFails = 0; };
+  ws.onmessage = e => { try { _rtDispatch(JSON.parse(e.data)); } catch (err) { console.warn('[rt] bad message', err); } };
+  ws.onclose = ev => {
+    if (_rt.ws !== ws) return;
+    _rt.ws = null; _rt.open = false; _rt.cid = null;
+    if (!opened) {
+      _rt.wsFails++;
+      _rtBeacon('ws-failed', { code: ev.code, fails: _rt.wsFails });
+      if (_rtWantSse()) { _rtBeacon('fallback', { to: 'sse' }); _rt.retry = 0; }
+    } else _rtBeacon('reconnect', { code: ev.code });
+    _rtSchedule();
+  };
+}
+function _rtConnectSse() {
+  let es;
+  try { es = new EventSource(_authUrl(API + '/api/rt/events')); } catch (e) { return _rtSchedule(); }
+  _rt.es = es; _rt.transport = 'sse';
+  es.onmessage = e => { try { _rtDispatch(JSON.parse(e.data)); } catch (err) {} };
+  es.onerror = () => {
+    if (_rt.es !== es) return;
+    es.close(); _rt.es = null; _rt.open = false; _rt.cid = null;
+    _rtBeacon('reconnect', { transport: 'sse' });
+    _rtSchedule();
+  };
+}
+function _rtSchedule() {
+  if (_rt.timer || !_rt.rooms.size) return;
+  const ms = Math.min(10000, 250 * Math.pow(2, _rt.retry++));
+  _rt.timer = setTimeout(() => { _rt.timer = null; if (_rt.rooms.size) _rtConnect(); }, ms);
+}
+function _rtSend(msg) {
+  if (!_rt.open) return false;
+  if (_rt.ws) { try { _rt.ws.send(JSON.stringify(msg)); return true; } catch (e) { return false; } }
+  if (_rt.es) {
+    _rt.upq.push(msg);
+    if (!_rt.upTimer) _rt.upTimer = setTimeout(_rtFlushUp, 30);
+    return true;
+  }
+  return false;
+}
+async function _rtFlushUp() {
+  _rt.upTimer = null;
+  if (!_rt.upq.length || !_rt.cid) return;
+  const msgs = _rt.upq.splice(0);
+  try {
+    const r = await fetch(API + '/api/rt/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cid: _rt.cid, msgs }), _skipOutbox: true });
+    if (r.status === 410 && _rt.es) { _rt.es.close(); _rt.es = null; _rt.open = false; _rtSchedule(); }
+  } catch (e) {}
+  if (_rt.upq.length && !_rt.upTimer) _rt.upTimer = setTimeout(_rtFlushUp, 30);
+}
+function _rtDispatch(m) {
+  if (m.type === 'hello') {
+    _rt.cid = m.cid; _rt.me = m; _rt.open = true; _rt.retry = 0;
+    for (const [room, h] of _rt.rooms) { h.last = null; h.joined = false; _rtSend({ t: 'join', room }); }
+    if (!_rt.statsTimer) _rt.statsTimer = setInterval(_rtReportStats, 10000);
+    return;
+  }
+  if (m.type === 'ping' || m.type === 'pong') return;
+  if (m.type === 'joined' && m.asked && m.asked !== m.room) _rt.alias.set(m.room, m.asked);
+  const h = m.room && _rt.rooms.get(_rt.alias.get(m.room) || m.room);
+  if (m.type === 'error') {
+    console.warn('[rt]', m.code, m.error, m.room || '');
+    if (h && h.onError) h.onError(m);
+    return;
+  }
+  if (!h) return;
+  switch (m.type) {
+    case 'joined': h.last = m.seq; h.joined = true; h.you = m.you; h.canWrite = !!m.can_write; if (h.onJoined) h.onJoined(m); break;
+    case 'members': h.members = m.members || []; h.saver = m.saver; if (h.onMembers) h.onMembers(m); break;
+    case 'presence': if (h.onPresence) h.onPresence(m); break;
+    case 'op':
+      // `prev` is the seq of the last op this tab was due in this room. A
+      // mismatch means something was lost: apply anyway (ops are
+      // version-ordered) and ask a peer for a snapshot.
+      if (h.last != null && m.prev != null && m.prev !== h.last) _rtGap(m.room, h, 'prev ' + m.prev + ' != last ' + h.last);
+      h.last = m.seq;
+      if (h.onOp) h.onOp(m);
+      break;
+    case 'gap': _rtGap(m.room, h, 'server dropped ops'); break;
+    case 'snapshot': h.last = m.base; if (h.onSnapshot) h.onSnapshot(m); break;
+    case 'snapshot_request': if (h.onSnapshotRequest) h.onSnapshotRequest(m); break;
+    case 'ack': if (h.onAck) h.onAck(m); break;
+  }
+}
+function _rtGap(room, h, why) {
+  const now = Date.now();
+  h.resyncs = (h.resyncs || 0) + 1;
+  if (now - (_rt.gapAt.get(room) || 0) < 1000) return;
+  _rt.gapAt.set(room, now);
+  _rtBeacon('resync', { why, room_kind: room.split(':')[0] });
+  _rtSend({ t: 'snapshot_request', room, why: 'gap' });
+}
+function _rtPct(arr, q) {
+  if (!arr.length) return null;
+  const v = arr.slice().sort((a, b) => a - b);
+  return v[Math.min(v.length - 1, Math.round((v.length - 1) * q))];
+}
+function _rtReportStats() {
+  if (!_rt.open || !_rt.lat.length) return;
+  const f = _rt.frames;
+  // fps over the stretch where remote updates were arriving.
+  const fps = f.length > 10 ? Math.round((f.length - 1) * 1000 / Math.max(1, f[f.length - 1] - f[0])) : null;
+  _rtSend({ t: 'stats', lat_p50: _rtPct(_rt.lat, 0.5), lat_p95: _rtPct(_rt.lat, 0.95), fps, n: _rt.lat.length });
+  _rt.lat = []; _rt.frames = [];
+}
+// Record one applied remote update: latency from the sender's timestamp, and
+// the frame it landed in.
+function _rtRecordApply(sentAt, frameAt) {
+  if (sentAt) { _rt.lat.push(Math.max(0, frameAt - sentAt)); if (_rt.lat.length > 2000) _rt.lat.shift(); }
+  if (_rt.frames[_rt.frames.length - 1] !== frameAt) { _rt.frames.push(frameAt); if (_rt.frames.length > 2000) _rt.frames.shift(); }
+}
+// Join a room. `handlers`: onJoined, onMembers, onOp, onPresence, onSnapshot,
+// onSnapshotRequest, onAck, onError. Returns the handle a feature uses.
+function rtJoin(room, handlers) {
+  const h = Object.assign({ last: null, joined: false, members: [], saver: null, canWrite: false, room }, handlers || {});
+  h.op = (data, opts) => _rtSend(Object.assign({ t: 'op', room, data }, opts || {}));
+  h.presence = data => _rtSend({ t: 'presence', room, data });
+  h.snapshot = (forCid, data) => _rtSend({ t: 'snapshot', room, for: forCid, data });
+  h.requestSnapshot = why => _rtSend({ t: 'snapshot_request', room, why: why || 'request' });
+  h.isSaver = () => !!(_rt.cid && h.saver === _rt.cid);
+  h.peers = () => (h.members || []).filter(x => x.cid !== _rt.cid);
+  h.leave = () => {
+    if (_rt.rooms.get(room) !== h) return;
+    _rt.rooms.delete(room);
+    _rtSend({ t: 'leave', room });
+  };
+  _rt.rooms.set(room, h);
+  if (_rt.open) _rtSend({ t: 'join', room }); else _rtConnect();
+  return h;
+}
+
+// ── Draw adapter for realtime rooms ──
+//
+// Joins `file:<path>` while a drawing is open. Each animation frame it sends
+// at most one op with the elements whose `version` rose since it last sent
+// them; a freehand stroke still being drawn goes out as append-only point
+// deltas, then as the whole element when it ends. Remote ops are queued and
+// applied once per frame with Excalidraw's own reconcile (higher version wins)
+// and CaptureUpdateAction.NEVER, so they never enter local undo. Only the
+// room's saver autosaves or polls the file; the others follow the saver's
+// `saved`/`reload` ops. Alone in the room, saving is exactly as before.
+var _drawRt = {
+  h: null, path: '', sent: new Map(), sentPts: new Map(), sentFiles: new Set(), dirty: false,
+  inbox: [], raf: 0, peers: new Map(), pointer: null, pointerDirty: false, presenceAt: 0,
+  wasSaver: false, seenMembers: false, collabSig: '',
+  stats: { applied: 0, frames: 0, lat: [], frameTimes: [] },
+};
+function _drawRtFollower() {
+  const h = _drawRt.h;
+  return !!(h && h.joined && h.saver != null && !h.isSaver() && h.peers().length > 0);
+}
+function _drawRtJoin(path) {
+  if (!path) return;
+  if (_drawRt.h && _drawRt.path === path) { _drawRtResync(); return; }
+  _drawRtLeave();
+  _drawRt.path = path;
+  _drawRt.sent = new Map(); _drawRt.sentPts = new Map(); _drawRt.sentFiles = new Set(); _drawRt.inbox = [];
+  _drawRt.wasSaver = false; _drawRt.seenMembers = false;
+  const h = rtJoin('file:' + path, {
+    onJoined: m => {
+      const d = _draw;
+      if (!d || !d.api) return;
+      // Peers already here: offer them everything we hold (reconcile drops
+      // what they already have). Alone: what we hold is what the file holds.
+      if (m.peers > 0) { _drawRt.sent.clear(); _drawRt.sentPts.clear(); _drawRt.dirty = true; _drawRtKick(); }
+      else for (const el of d.api.getSceneElementsIncludingDeleted()) _drawRt.sent.set(el.id, el.version);
+    },
+    onMembers: m => {
+      const d = _draw, me = h.isSaver();
+      const cids = new Set((m.members || []).map(x => String(x.cid)));
+      for (const k of Array.from(_drawRt.peers.keys())) if (!cids.has(k)) _drawRt.peers.delete(k);
+      if (me && !_drawRt.wasSaver && _drawRt.seenMembers && d && d.api) {
+        // Handed the saver role: persist what the previous saver may not have.
+        d.savedVersion = null; _drawScheduleSave(); _drawBeacon('rt-saver-handoff');
+      }
+      _drawRt.seenMembers = true; _drawRt.wasSaver = me;
+      if (d && d.api) {
+        if (_drawRtFollower()) { if (d.status !== 'conflict') _drawSetStatus('synced', _drawRtSaverLabel()); }
+        else if (d.status === 'synced') _drawSetStatus(_drawDirty() ? 'dirty' : 'saved');
+      }
+      _drawRtKick();
+    },
+    onOp: m => { _drawRt.inbox.push(m); _drawRtKick(); },
+    onSnapshot: m => {
+      if (m.source !== 'peer' || !m.data) return;
+      _drawRt.stats.snapshots = (_drawRt.stats.snapshots || 0) + 1;
+      _drawRt.inbox.push({ data: Object.assign({}, m.data, { kind: 'els' }), from: m.from });
+      _drawRtKick();
+    },
+    onSnapshotRequest: m => {
+      const d = _draw;
+      if (!d || !d.api) return;
+      h.snapshot(m.for, { elements: d.api.getSceneElementsIncludingDeleted(), files: d.api.getFiles() || {},
+        etag: d.etag || null, t: _rtNow() });
+    },
+    onPresence: m => {
+      const k = String(m.from.cid), p = m.data || {};
+      let peer = _drawRt.peers.get(k);
+      if (!peer) { peer = { disp: null }; _drawRt.peers.set(k, peer); }
+      Object.assign(peer, { label: m.from.label, color: m.from.color, target: (p.x != null ? { x: p.x, y: p.y } : null),
+        tool: p.tool || 'pointer', button: p.button || 'up', sel: p.sel || [] });
+      if (!peer.disp && peer.target) peer.disp = Object.assign({}, peer.target);
+      _drawRtKick();
+    },
+  });
+  _drawRt.h = h;
+}
+// The open drawing was reloaded from disk while already in its room (opened
+// again, or re-entering the tab): the disk copy can be behind the room, so ask
+// a peer for the current scene and offer ours.
+function _drawRtResync() {
+  const h = _drawRt.h, d = _draw;
+  if (!h || !h.joined || !d || !d.api) return;
+  if (h.peers().length) {
+    h.requestSnapshot('reopen');
+    _drawRt.sent.clear(); _drawRt.sentPts.clear(); _drawRt.dirty = true; _drawRtKick();
+  }
+  if (_drawRtFollower() && d.status !== 'conflict') _drawSetStatus('synced', _drawRtSaverLabel());
+}
+function _drawRtSaverLabel() {
+  const h = _drawRt.h; if (!h) return '';
+  const s = (h.members || []).find(x => x.cid === h.saver);
+  return s ? s.label : '';
+}
+function _drawRtLeave() {
+  if (_drawRt.h) _drawRt.h.leave();
+  _drawRt.h = null; _drawRt.path = ''; _drawRt.inbox = []; _drawRt.peers.clear();
+  const d = _draw;
+  if (d && d.api && _drawRt.collabSig) { _drawRt.collabSig = ''; try { d.api.updateScene({ collaborators: new Map() }); } catch (e) {} }
+  if (d && d.status === 'synced') _drawSetStatus(_drawDirty() ? 'dirty' : 'saved');
+}
+function _drawRtKick() {
+  if (!_drawRt.raf) _drawRt.raf = requestAnimationFrame(_drawRtFrame);
+}
+// From Excalidraw's onChange: something local changed; send it next frame.
+function _drawRtOnChange() {
+  if (!_drawRt.h || (_draw && _draw.applying)) return;
+  _drawRt.dirty = true; _drawRtKick();
+}
+function _drawRtOnPointer(p) {
+  if (!_drawRt.h || !p || !p.pointer) return;
+  _drawRt.pointer = { x: Math.round(p.pointer.x * 10) / 10, y: Math.round(p.pointer.y * 10) / 10, tool: p.pointer.tool, button: p.button };
+  _drawRt.pointerDirty = true; _drawRtKick();
+}
+function _drawRtFrame() {
+  _drawRt.raf = 0;
+  const d = _draw, h = _drawRt.h;
+  if (!d || !d.api || !h) return;
+  const frameAt = _rtNow();
+  _drawRt.stats.frames++;
+  let more = false;
+  if (_drawRt.inbox.length) _drawRtApply(frameAt);
+  if (_drawRt.dirty && h.joined && h.canWrite) { _drawRt.dirty = false; _drawRtSendLocal(); }
+  if (_drawRt.pointerDirty && h.joined) {
+    if (frameAt - _drawRt.presenceAt >= 30) {
+      _drawRt.pointerDirty = false; _drawRt.presenceAt = frameAt;
+      const sel = Object.keys(d.api.getAppState().selectedElementIds || {}).slice(0, 50);
+      h.presence(Object.assign({ sel }, _drawRt.pointer));
+    } else more = true;
+  }
+  if (_drawRtCursors()) more = true;
+  if (more) _drawRtKick();
+}
+function _drawRtSendLocal() {
+  const d = _draw, h = _drawRt.h;
+  const st = d.api.getAppState();
+  const drawing = st.newElement && st.newElement.type === 'freedraw' ? st.newElement.id : null;
+  const els = [], deltas = [], files = {};
+  let nf = 0;
+  const allFiles = d.api.getFiles() || {};
+  for (const el of d.api.getSceneElementsIncludingDeleted()) {
+    const was = _drawRt.sent.get(el.id);
+    const basePts = _drawRt.sentPts.get(el.id);
+    const strokeEnded = basePts != null && el.id !== drawing;
+    if (was != null && el.version <= was && !strokeEnded) continue;
+    if (el.id === drawing && basePts != null && el.points && el.points.length >= basePts) {
+      deltas.push({ id: el.id, from: basePts, pts: el.points.slice(basePts), pr: el.pressures ? el.pressures.slice(basePts) : null,
+        version: el.version, versionNonce: el.versionNonce, x: el.x, y: el.y, width: el.width, height: el.height, updated: el.updated });
+      _drawRt.sentPts.set(el.id, el.points.length);
+    } else {
+      els.push(el);
+      if (el.id === drawing && el.points) _drawRt.sentPts.set(el.id, el.points.length);
+      else _drawRt.sentPts.delete(el.id);
+    }
+    _drawRt.sent.set(el.id, el.version);
+    if (el.fileId && !_drawRt.sentFiles.has(el.fileId) && allFiles[el.fileId]) {
+      files[el.fileId] = allFiles[el.fileId]; _drawRt.sentFiles.add(el.fileId); nf++;
+    }
+  }
+  if (!els.length && !deltas.length) return;
+  const op = { kind: 'els', elements: els, deltas, t: _rtNow() };
+  if (nf) op.files = files;
+  h.op(op);
+}
+function _drawRtApply(frameAt) {
+  const d = _draw, X = d.lib.X, api = d.api, h = _drawRt.h;
+  const batch = _drawRt.inbox.splice(0);
+  const remote = new Map();
+  let files = [], reload = null, saved = null, sentAt = 0;
+  const local = new Map(api.getSceneElementsIncludingDeleted().map(e => [e.id, e]));
+  for (const m of batch) {
+    const p = m.data || {};
+    if (p.t) sentAt = Math.max(sentAt, p.t);
+    if (p.kind === 'reload') { reload = p; remote.clear(); continue; }
+    if (p.kind === 'saved') { saved = p; continue; }
+    if (p.kind !== 'els') continue;
+    if (p.etag && !h.isSaver()) d.etag = p.etag;
+    for (const el of p.elements || []) {
+      const cur = remote.get(el.id);
+      if (!cur || el.version >= cur.version) remote.set(el.id, el);
+    }
+    for (const dl of p.deltas || []) {
+      const base = remote.get(dl.id) || local.get(dl.id);
+      if (!base || !base.points || base.points.length !== dl.from) { _rtGap(h.room, h, 'delta base missing'); continue; }
+      const next = Object.assign({}, base, { points: base.points.concat(dl.pts), version: dl.version, versionNonce: dl.versionNonce,
+        x: dl.x, y: dl.y, width: dl.width, height: dl.height, updated: dl.updated });
+      if (dl.pr && base.pressures) next.pressures = base.pressures.concat(dl.pr);
+      remote.set(dl.id, next);
+    }
+    if (p.files) files = files.concat(Object.values(p.files));
+  }
+  if (reload) {
+    _drawApplyText(reload.text, false).then(() => {
+      if (reload.etag) d.etag = reload.etag;
+      for (const el of api.getSceneElementsIncludingDeleted()) _drawRt.sent.set(el.id, el.version);
+      if (_drawRtFollower()) _drawSetStatus('synced', _drawRtSaverLabel());
+    });
+  }
+  if (files.length) api.addFiles(files);
+  if (remote.size) {
+    const restored = X.restoreElements(Array.from(remote.values()), null);
+    const merged = X.reconcileElements(api.getSceneElementsIncludingDeleted(), restored, api.getAppState());
+    d.applying = true;
+    try {
+      api.updateScene({ elements: merged, captureUpdate: X.CaptureUpdateAction.NEVER });
+    } finally { d.applying = false; }
+    // What we just took from the room is not ours to send back.
+    for (const el of api.getSceneElementsIncludingDeleted()) {
+      const r = remote.get(el.id);
+      if (r && el.version === r.version) { _drawRt.sent.set(el.id, el.version); _drawRt.sentPts.delete(el.id); }
+    }
+    const s = _drawRt.stats;
+    s.applied++; s.frameTimes.push(frameAt);
+    if (sentAt) s.lat.push(frameAt - sentAt);
+    if (s.lat.length > 5000) s.lat.splice(0, 1000);
+    if (s.frameTimes.length > 5000) s.frameTimes.splice(0, 1000);
+    _rtRecordApply(sentAt, frameAt);
+    const v = _drawSceneVersion();
+    if (v !== d.curVersion) {
+      d.curVersion = v;
+      if (_drawRtFollower()) { d.savedVersion = v; if (d.status !== 'conflict') _drawSetStatus('synced', _drawRtSaverLabel()); }
+      else if (d.savedVersion !== null && v !== d.savedVersion) {
+        if (d.status !== 'error' && d.status !== 'conflict') _drawSetStatus('dirty');
+        _drawScheduleSave();
+      }
+    }
+  }
+  if (saved) {
+    if (saved.etag) d.etag = saved.etag;
+    if (_drawRtFollower()) { d.savedVersion = d.curVersion; if (d.status !== 'conflict') _drawSetStatus('synced', _drawRtSaverLabel()); }
+  }
+}
+// Move each remote cursor part of the way to its last reported position, so
+// throttled presence renders as smooth motion. True while still moving.
+function _drawRtCursors() {
+  const d = _draw;
+  if (!d || !d.api) return false;
+  let moving = false;
+  const collab = new Map();
+  for (const [k, p] of _drawRt.peers) {
+    if (p.target && p.disp) {
+      const dx = p.target.x - p.disp.x, dy = p.target.y - p.disp.y;
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) { p.disp.x += dx * 0.45; p.disp.y += dy * 0.45; moving = true; }
+      else { p.disp.x = p.target.x; p.disp.y = p.target.y; }
+    }
+    const sel = {}; for (const id of p.sel || []) sel[id] = true;
+    collab.set(k, { id: k, socketId: k, username: p.label, color: { background: p.color, stroke: p.color },
+      pointer: p.disp ? { x: p.disp.x, y: p.disp.y, tool: p.tool === 'laser' ? 'laser' : 'pointer' } : undefined,
+      button: p.button, selectedElementIds: sel });
+  }
+  const sig = JSON.stringify(Array.from(collab.values()).map(c => [c.id, c.pointer && Math.round(c.pointer.x * 2), c.pointer && Math.round(c.pointer.y * 2), c.button, Object.keys(c.selectedElementIds).join()]));
+  if (sig !== _drawRt.collabSig) {
+    _drawRt.collabSig = sig;
+    d.api.updateScene({ collaborators: collab, captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
+  }
+  return moving;
+}
+// The saver tells the room each successful write, so other tabs adopt its
+// ETag and never race it with their own.
+function _drawRtAfterSave(etag) {
+  const h = _drawRt.h;
+  if (h && h.joined && h.peers().length) h.op({ kind: 'saved', etag, t: _rtNow() });
+}
+// A worker rewrote the file and the saver reloaded it: push it to the room.
+function _drawRtAfterDiskReload(text, etag) {
+  const d = _draw, h = _drawRt.h;
+  if (!d || !d.api) return;
+  for (const el of d.api.getSceneElementsIncludingDeleted()) _drawRt.sent.set(el.id, el.version);
+  if (h && h.joined && h.canWrite && h.peers().length) h.op({ kind: 'reload', text, etag, t: _rtNow() });
 }

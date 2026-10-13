@@ -27,7 +27,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 # `parking_lot_core::thread_parker::unix` and taking the whole UI offline as a
 # sync error. amux uses these capabilities but not Tokio's parking_lot backend.
 tokio = { version = "1", features = ["fs", "io-util", "io-std", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
-axum = { version = "0.8", features = ["http2"] }
+axum = { version = "0.8", features = ["http2", "ws"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite = { version = "0.32", features = ["bundled", "functions"] }

@@ -251,7 +251,7 @@ pub(crate) fn pystr(p: &Path) -> String {
 /// on exhaustion remaining links pass through unresolved, which errs toward
 /// the containment check seeing the raw path (deny-safe: the blocked-set
 /// checks run on whatever comes back).
-fn resolve_nonstrict(p: &Path) -> PathBuf {
+pub(crate) fn resolve_nonstrict(p: &Path) -> PathBuf {
     let abs = if p.is_absolute() {
         p.to_path_buf()
     } else {
