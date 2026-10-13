@@ -1,12 +1,171 @@
 [
   {
+    "hash": "02ac552c8177756514d64846ac4358f90f2171d7",
+    "short": "02ac552c",
+    "title": "Scheduler form saves close only the form that was open",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "scheduler"
+    ],
+    "description": "Saving a scheduler entry closed every open scheduler form instead of just the one being edited. Now only the form that triggered the save is closed."
+  },
+  {
+    "hash": "e2326700240fd76460e477e8fd29b0cfcb57b2d3",
+    "short": "e2326700",
+    "title": "Split side panel nesting guards scoped to split side only",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "split"
+    ],
+    "description": "Nesting-prevention guards for the split side panel were applying to the main panel too, causing view-switching issues when navigating between a worker in split view and other views. Guards are now scoped to the split side panel only."
+  },
+  {
+    "hash": "10400b6d2398deb1d74eb8898b90869871a00f22",
+    "short": "10400b6d",
+    "title": "Chat status bar agent count shows the session switcher, not live work count",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "chat",
+      "dashboard"
+    ],
+    "description": "The agent count shown in the Chat tab status bar was displaying the number of agents actively doing work rather than the number available in the session switcher. These are different numbers when some agents are idle. The count now correctly reflects the switcher list."
+  },
+  {
+    "hash": "4a94ce3a8cf89b78122da3800449aaa0d1e325f3",
+    "short": "4a94ce3a",
+    "title": "Companion chat context names background work and touched cards",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "chat",
+      "companion"
+    ],
+    "description": "The companion chat context summary was not showing background work or cards touched by the agent during a turn. The context now names background work in progress and references board cards the agent read or updated, giving a more complete picture of what the agent has been doing."
+  },
+  {
+    "hash": "681fa58fba8e24220560bcc70bb304b81be134ca",
+    "short": "681fa58f",
+    "title": "Typing in a Chat tab no longer shows an invalid session name toast",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "chat",
+      "dashboard"
+    ],
+    "description": "Typing in the Chat tab input box was triggering a validation pass that produced a toast notification saying the session name was invalid. The validation was running against the wrong field. The toast no longer appears when typing a chat message."
+  },
+  {
+    "hash": "ea6042ed4d844fb35cdab4421c364c00cbfd458b",
+    "short": "ea6042ed",
+    "title": "Draw settings saves apply in click order",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "draw",
+      "dashboard"
+    ],
+    "description": "Rapid successive saves in the Draw settings panel could arrive out of order, leaving an earlier value applied. Saves now land in the order they were triggered."
+  },
+  {
+    "hash": "757f01a4c39da01086b2f8fd9d6d9320a7328947",
+    "short": "757f01a4",
+    "title": "Held email card shows the full draft body; Edit starts from it",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "email",
+      "dashboard"
+    ],
+    "description": "The held-email approval card was showing a truncated preview of the draft rather than the full body. The Edit button was also starting from a blank compose window rather than the held draft. Both are fixed: the card shows the complete draft, and clicking Edit pre-fills the compose panel with it."
+  },
+  {
+    "hash": "e9b6a827be4e9fe374e4e613af9e0fd607ebf1a2",
+    "short": "e9b6a827",
+    "title": "Memory toolbar wraps on mobile instead of scrolling the panel",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "memory",
+      "mobile"
+    ],
+    "description": "The memory panel toolbar was overflowing horizontally on phone-sized screens and making the panel scroll sideways. The toolbar now wraps onto a second line on narrow screens."
+  },
+  {
+    "hash": "6f384f80586321dbac327be8c032eb703a0322d5",
+    "short": "6f384f80",
+    "title": "Scoped memory and rules follow their worker through every edit",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "memory",
+      "scope"
+    ],
+    "description": "Memory entries and rules scoped to a specific worker were not reliably reaching that worker after the scope was edited. The scoping mechanism now tracks the worker correctly through renames and re-scoping operations."
+  },
+  {
+    "hash": "0c5e160b5f669b48bef04b8d6819b6396170edcd",
+    "short": "0c5e160b",
+    "title": "Draw canvas pointer coordinates re-measured before each drag",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "draw"
+    ],
+    "description": "The Draw canvas was reading pointer coordinates against a cached bounding rect that could be stale after the panel was scrolled or the window was resized. The bounding rect is now re-measured at the start of each drag operation."
+  },
+  {
+    "hash": "78a783f8931d60ee3c6a885949c455506d556991",
+    "short": "78a783f8",
+    "title": "Chat turn ends on the provider final result, not process exit",
+    "date": "2026-10-13",
+    "type": "fix",
+    "tags": [
+      "chat",
+      "companion"
+    ],
+    "description": "A chat turn was considered complete when the Claude Code process exited, which could be before the provider had sent its final streaming result. This caused the last message in some turns to be cut off. The turn now ends when the provider signals completion."
+  },
+  {
+    "hash": "a646afab8b79ffae53d3d372560da6b6d813224b",
+    "short": "a646afab",
+    "title": "X on Waiting on you card permanently dismisses the ask after confirm",
+    "date": "2026-10-12",
+    "type": "fix",
+    "tags": [
+      "board",
+      "dashboard"
+    ],
+    "description": "Clicking the X on a Waiting on you card was dismissing it from view but not marking the ask as resolved, so it would reappear on the next render. The X now shows a confirmation and, on confirm, permanently dismisses the ask."
+  },
+  {
+    "hash": "2a2d9117c0e467541aab94a9ffbc7cb391de05ea",
+    "short": "2a2d9117",
+    "title": "Large audio and video play reliably on flaky mobile connections",
+    "date": "2026-10-12",
+    "type": "fix",
+    "tags": [
+      "media",
+      "mobile"
+    ],
+    "description": "Large audio and video files were stalling on mobile connections with intermittent packet loss. Playback progress is now tracked against actual playback events rather than readyState, so stalls are detected and recovery is attempted. Closing the media player now stops playback and releases resources."
+  },
+  {
     "hash": "b4c191b2a2f03cf37a3b06fe15c0b7ccdb893245",
     "short": "b4c191b",
     "title": "Skill examples shown when a skill is expanded, inferred from its Markdown",
     "date": "2026-10-10",
     "type": "feat",
-    "tags": ["dashboard", "skills", "examples"],
-    "description": "Expanding a skill in the Skills tab now shows example invocations for that skill. amux infers these automatically by reading the skill's Markdown body — imperative sentences, numbered step verbs, and code block trigger descriptions are turned into clickable example phrases. You can also supply explicit examples by adding an ## Examples section to the skill body. Explicit examples take precedence over inferred ones; amux shows up to 5 total. A clipboard button copies any example to paste elsewhere."
+    "tags": [
+      "dashboard",
+      "skills",
+      "examples"
+    ],
+    "description": "Expanding a skill in the Skills tab now shows example invocations for that skill. amux infers these automatically by reading the skill's Markdown body \u2014 imperative sentences, numbered step verbs, and code block trigger descriptions are turned into clickable example phrases. You can also supply explicit examples by adding an ## Examples section to the skill body. Explicit examples take precedence over inferred ones; amux shows up to 5 total. A clipboard button copies any example to paste elsewhere."
   },
   {
     "hash": "2db6fd94c761df8ad236c2ac58b8700e6eba73e5",
@@ -14,8 +173,12 @@
     "title": "Skill examples appear in the / dropdown across the whole dashboard",
     "date": "2026-10-10",
     "type": "feat",
-    "tags": ["dashboard", "skills", "examples"],
-    "description": "Type / in any steering bar — worker, Chat, or board card input — to open the command palette. Every skill now lists its inferred or explicit example invocations as clickable suggestions directly below its name. Click an example to send it as a prompt to the session. This makes skills discoverable without memorizing exact command names or reading skill bodies."
+    "tags": [
+      "dashboard",
+      "skills",
+      "examples"
+    ],
+    "description": "Type / in any steering bar \u2014 worker, Chat, or board card input \u2014 to open the command palette. Every skill now lists its inferred or explicit example invocations as clickable suggestions directly below its name. Click an example to send it as a prompt to the session. This makes skills discoverable without memorizing exact command names or reading skill bodies."
   },
   {
     "hash": "88d041b72f0d34d575627303100e1d77c01b1eef",
@@ -23,8 +186,12 @@
     "title": "Calendar shows every Google Calendar, Google-Calendar visual style, mobile-first, refreshes every minute",
     "date": "2026-10-10",
     "type": "feat",
-    "tags": ["calendar", "google-calendar", "mobile"],
-    "description": "The amux calendar tab now syncs every Google Calendar you own — not just the primary calendar. Each calendar keeps its color from Google. The week and day view grids use a Google-Calendar-style layout with time-block rendering, so events look the same whether you're viewing them in Google Calendar or in the amux dashboard. The view is mobile-first and fits any screen. The calendar feed now refreshes every minute automatically without requiring a page reload."
+    "tags": [
+      "calendar",
+      "google-calendar",
+      "mobile"
+    ],
+    "description": "The amux calendar tab now syncs every Google Calendar you own \u2014 not just the primary calendar. Each calendar keeps its color from Google. The week and day view grids use a Google-Calendar-style layout with time-block rendering, so events look the same whether you're viewing them in Google Calendar or in the amux dashboard. The view is mobile-first and fits any screen. The calendar feed now refreshes every minute automatically without requiring a page reload."
   },
   {
     "hash": "88d926f47c0a42287926626dc0c775780dadc7b6",
@@ -32,7 +199,10 @@
     "title": "Google Calendar sync: all occurrences in a time window, calendar colors, your own RSVP status",
     "date": "2026-10-10",
     "type": "feat",
-    "tags": ["calendar", "google-calendar"],
+    "tags": [
+      "calendar",
+      "google-calendar"
+    ],
     "description": "The Google Calendar read is now windowed: amux fetches every occurrence of every event (including recurring events) within the current view's time window, not just the first instance. Each event shows the calendar color it has in Google. For events with an invite, amux shows your RSVP status (accepted, tentative, declined) directly on the event block."
   },
   {
@@ -41,7 +211,10 @@
     "title": "Connectors: Forget button confirms in-modal before removing credentials",
     "date": "2026-10-10",
     "type": "fix",
-    "tags": ["connectors", "dashboard"],
+    "tags": [
+      "connectors",
+      "dashboard"
+    ],
     "description": "The Forget button in the connector detail modal previously removed credentials immediately without asking for confirmation. It now shows an in-modal confirmation step before removing. The modal also confirms that the credentials were actually removed before it closes, so you can be confident the connector is fully disconnected."
   },
   {
@@ -50,7 +223,10 @@
     "title": "Connectors: Test saves the health result back to the panel without a refresh",
     "date": "2026-10-10",
     "type": "fix",
-    "tags": ["connectors", "dashboard"],
+    "tags": [
+      "connectors",
+      "dashboard"
+    ],
     "description": "After clicking Test on a connector in the dashboard, the health status previously showed stale data until you left and returned to the panel. The connector health state is now saved back immediately after a browser-side Test, so the panel reflects the current health without requiring a reload."
   },
   {
