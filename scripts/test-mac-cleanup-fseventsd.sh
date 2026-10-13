@@ -61,8 +61,11 @@ if [ "$(uname)" = Darwin ]; then
   out=$(tick "$SEQ")
   check "a burst after the tick's own deletions is named as such" "yes" "$(has "$out" 'verdict=fseventsd_burst_self_inflicted')"
   check "and is not escalated"                          "no"  "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
-  rm -f "$FIX/seq.n"; printf '0.01 92\n0.01 95\n' > "$FIX/seq.vals"
+  # Fresh state: the first cell's escalation started the cooldown, which would
+  # suppress this one for the wrong reason.
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/seq.n"; printf '0.01 92\n0.01 95\n' > "$FIX/seq.vals"
   out=$(tick "$SEQ")
+  check "it is not suppressed by an earlier cell's cooldown" "no" "$(has "$out" 'escalation suppressed')"
   check "hot before and after still escalates"          "yes" "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
 else
   echo "  skip (the end-to-end tick needs macOS)"
