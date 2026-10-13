@@ -14176,7 +14176,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1440';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1441';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -32849,6 +32849,9 @@ let boardTimer = null;
 let schedules = [];
 let schedSearchQuery = '';
 let _schedEditId = null;
+// Bumped on every open of the schedule form, so a save closes only the form
+// it was started from (see saveSchedModal).
+let _sxModalGen = 0;
 let boardEditId = null;
 let boardEditStatus = 'todo';
 let lastBoardJSON = '';
@@ -39865,6 +39868,7 @@ function _sxApplyToForm(src, opts) {
 }
 function openSchedModal(editId, opts) {
   opts = opts || {};
+  _sxModalGen++;
   _schedEditId = editId || null;
   _sxOrig = null;
   _sxSchedDirty = false;
@@ -39995,6 +39999,16 @@ function _sxInvalid(id, msg) {
   if (el) { el.setAttribute('aria-invalid', 'true'); try { el.focus(); } catch (e) {} }
   showToast(msg);
 }
+function _sxModalBeacon(event, extra) {
+  try {
+    console.warn('[sched]', event, extra || '');
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify(Object.assign({ kind: 'sched-form', event,
+        ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?'), measured: true, n_considered: 1 }, extra || {})),
+    }).catch(() => {});
+  } catch (e) {}
+}
 async function saveSchedModal() {
   document.querySelectorAll('#sched-overlay [aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
   const title = _sxVal('sched-title');
@@ -40022,6 +40036,7 @@ async function saveSchedModal() {
                     worktree, worker,
                     by: 'dashboard' };
   const editId = _schedEditId;
+  const gen = _sxModalGen;
   const url = editId ? API + '/api/schedules/' + editId : API + '/api/schedules';
   const method = editId ? 'PATCH' : 'POST';
   // An expression the server cannot parse is marked on the field it came from,
@@ -40041,7 +40056,11 @@ async function saveSchedModal() {
     renderScheduler();
     renderSchedulerAudit();
     if (typeof peekSession !== 'undefined' && peekSession) _peekLoadSchedules();
-    closeSchedModal();
+    // The form may have been reopened while this save refetched (Duplicate
+    // tapped right after Save changes). Closing then hid the NEW form and left
+    // its fields filled behind display:none (scheduler e2e on iOS, 2026-10-13).
+    if (gen === _sxModalGen) closeSchedModal();
+    else _sxModalBeacon('sched-form-reopened-during-save', { saved: editId || 'new', gens_behind: _sxModalGen - gen });
     if (editId) { _sxDetailAudit = null; openSchedDetail(editId); }
   }
 }

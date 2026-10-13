@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2877,
+  "n_considered": 2878,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3742,6 +3742,12 @@
     },
     "_sxBulk": {
       "kind": "command._sxBulk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_sxModalBeacon": {
+      "kind": "command._sxModalBeacon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
