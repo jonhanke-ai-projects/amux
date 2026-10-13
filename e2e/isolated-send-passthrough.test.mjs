@@ -8,7 +8,7 @@ for (const isolated of [true,false]) test(`real composer send: isolated=${isolat
   const sent=[];
   const ctx=vm.createContext({sessions:[{name:'worker',isolated}], API:'',_cloudEmail:null,_localMemberEmail:null,
     crypto:{randomUUID:()=> 'one-send'},AbortSignal, amuxTrack:()=>{},_sendContext:()=>({source:'worker'}),
-    _authHeaders:()=>({}),_isLocallyQueued:()=>false,showSendingIndicator:()=>{},
+    _authHeaders:()=>({}),_ownerMentionHeaders:(u,b,h)=>h,_isLocallyQueued:()=>false,showSendingIndicator:()=>{},
     // doSend asks whether the target is a chat before choosing the path; this
     // worker is a terminal worker.
     _workerRenderer:()=>'terminal',_chatCompanionOf:()=>null,

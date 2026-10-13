@@ -39,7 +39,7 @@ function fixture(names = [], shared = {}) {
     _chat: {name: null}, _chatShowing: () => false, _workerRenderer: () => 'terminal', _workersAsOfNote: () => '',
     window:{isSecureContext:true}, APP_VER:'test', _writeError: '', _outboxActive: new Set(), _bdSaveRequests: new Set(), consecutiveFailures: 0,
     _OUTBOX_SKIP: /\/api\/client-debug/, _OUTBOX_METHODS: {POST:1,PATCH:1,PUT:1,DELETE:1},
-    _getDeviceName: () => 'test device', _authHeaders: h => h, esc: s => s, escJs: s => s, describeOp: q => q.url,
+    _getDeviceName: () => 'test device', _authHeaders: h => h, _ownerMentionHeaders: (u, b, h) => h, esc: s => s, escJs: s => s, describeOp: q => q.url,
     showToast() {}, amuxTrack() {}, updateConnectionStatus() {}, fetchSessions() {}, fetchBoard() {},
     _loadCmdHistoryFromServer: () => Promise.resolve(), _peekMessagesBadge() {}, _outboxBoardAcknowledged() {},
     _waitForMessageReceipt: () => new Promise(() => {}),

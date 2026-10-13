@@ -107,6 +107,7 @@ pub mod ids {
     pub const TUNNEL: &str = "tunnel-relay";
     pub const BROWSER_REAPER: &str = "browser-idle-reaper";
     pub const COMPUTER_REAPER: &str = "computer-sandbox-reaper";
+    pub const ZOMBIE_REAPER: &str = "orphan-zombie-reaper";
     pub const SEARCH_INGEST: &str = "search-ingest";
     // The PeriodicTask ids below are NOT referenced by any spawn site — they
     // register themselves through `spawn_periodic_every` under the name their
@@ -166,6 +167,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::TUNNEL,
     ids::BROWSER_REAPER,
     ids::COMPUTER_REAPER,
+    ids::ZOMBIE_REAPER,
     ids::SEARCH_INGEST,
     ids::AUTOFIX,
     ids::BOARD_DRIVE,
@@ -514,6 +516,18 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: Some("/api/computer/status"),
+    },
+    Doc {
+        id: ids::ZOMBIE_REAPER,
+        name: "Orphan zombie reaper",
+        purpose: "Reaps this server's zombie children that nobody waits on: children of a build it exec'd over (self-adoption keeps the pid), or a spawn that dropped its handle. Reaps only zombies seen on two ticks in a row. Logs verdict=orphan_zombies_reaped.",
+        env: &[EnvControl {
+            var: "AMUX_ZOMBIE_REAP_TICK_S",
+            effect: "sweep interval in seconds (default 60); 0 turns the reaper off",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: None,
     },
     Doc {
         id: ids::BROWSER_REAPER,

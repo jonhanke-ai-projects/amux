@@ -428,6 +428,46 @@ STALE_PS_CMD=${AMUX_CLEANUP_STALE_PS_CMD:-ps -eo pid=,etime=,args=}
 SQLITE_ORPHAN_MIN=${AMUX_CLEANUP_SQLITE_ORPHAN_MIN:-20}
 SQLITE_PS_CMD=${AMUX_CLEANUP_SQLITE_PS_CMD:-ps -Ao pid=,ppid=,etime=,args=}
 SQLITE_DB_ROOT=${AMUX_CLEANUP_SQLITE_DB_ROOT:-${AMUX_HOME:-$HOME/.amux}}
+# ── system health beyond disk and memory (2026-10-13) ─────────────────────────
+# The tick grew up around disk and memory. Ethan asked for a general health check
+# with the power to fix what it safely can. Each probe below is cheap (the whole
+# section stays under ~15s) and goes through a seam. AMUX_CLEANUP_HEALTH_PROBES=off
+# turns every live probe off at once, which is what the suites that run the
+# whole tick use so a test can never stop a real process.
+HEALTH_PROBES=${AMUX_CLEANUP_HEALTH_PROBES:-on}
+# CPU: a process at or over CPU_HOG_PCT on two ticks in a row is a hog. A hog on
+# the restart list (user-owned macOS helpers that launchd starts again on demand)
+# is sent TERM; ReportCrash sat at 98% for four days on 2026-10-12. Anything else
+# is reported, and escalated once over CPU_HOG_ESCALATE_PCT (launchservicesd ran
+# at ~1450% on 2026-10-08 with nobody told).
+CPU_HOG_PCT=${AMUX_CLEANUP_CPU_HOG_PCT:-80}
+CPU_HOG_ESCALATE_PCT=${AMUX_CLEANUP_CPU_HOG_ESCALATE_PCT:-300}
+CPU_RESTART_NAMES=${AMUX_CLEANUP_CPU_RESTART_NAMES:-ReportCrash ecosystemanalyticsd mediaanalysisd photoanalysisd mdworker_shared spotlightknowledged}
+HEALTH_PS_CMD=${AMUX_CLEANUP_HEALTH_PS_CMD:-ps -Ao pid=,ppid=,uid=,pcpu=,etime=,comm=}
+# Leftover test helpers: a process whose command runs out of a pytest temp dir,
+# whose parent has exited (ppid 1), and that is older than TEST_ORPHAN_MIN. On
+# 2026-10-12, 99 fake kubectl stubs from mixpeek tests had sat 4-22h this way.
+TEST_ORPHAN_MIN=${AMUX_CLEANUP_TEST_ORPHAN_MIN:-120}
+ORPHAN_PS_CMD=${AMUX_CLEANUP_ORPHAN_PS_CMD:-ps -Ao pid=,ppid=,uid=,etime=,args=}
+# Kernel limits: open files, this user's processes, inodes, zombies. Over
+# LIMITS_PCT of a limit is a constraint and escalates; zombies are reported.
+LIMITS_PCT=${AMUX_CLEANUP_LIMITS_PCT:-85}
+# One parent holding this many zombies is not reaping its children, which is a
+# bug in that parent: on 2026-10-13 amux-server-rs held 590 after 4.8 days.
+ZOMBIE_PARENT_N=${AMUX_CLEANUP_ZOMBIE_PARENT_N:-200}
+LIMITS_CMD=${AMUX_CLEANUP_LIMITS_CMD:-limits_reading}
+# Crash reports: an app that crashed CRASH_LOOP_N times in 24h is crash-looping
+# and escalates. Reports older than CRASH_KEEP_DAYS are pruned (they are the
+# user's own diagnostic copies; macOS keeps its own submitted ones elsewhere).
+CRASH_DIR=${AMUX_CLEANUP_CRASH_DIR:-$HOME/Library/Logs/DiagnosticReports}
+CRASH_LOOP_N=${AMUX_CLEANUP_CRASH_LOOP_N:-10}
+CRASH_KEEP_DAYS=${AMUX_CLEANUP_CRASH_KEEP_DAYS:-30}
+# Report-only probes: launchd jobs outside com.apple that last exited non-zero
+# and are not running, the default gateway's packet loss with DNS lookup time,
+# and macOS thermal/CPU-speed limits.
+LAUNCHD_LIST_CMD=${AMUX_CLEANUP_LAUNCHD_LIST_CMD:-launchctl list}
+NET_CMD=${AMUX_CLEANUP_NET_CMD:-net_reading}
+THERMAL_CMD=${AMUX_CLEANUP_THERMAL_CMD:-pmset -g therm}
 
 # ── pure decisions (no side effects, so the tests can exercise them) ──────────
 
@@ -783,6 +823,156 @@ reap_orphan_sqlite_backups() { # <dry:0|1>
     fi
   done < <($SQLITE_PS_CMD 2>/dev/null)   # not a heredoc: this body is indented, and an indented EOF never closes one
   echo "mac-cleanup: sqlite .backup: found=${sqlite_found} stopped=${sqlite_stopped} live_caller=${sqlite_live} (floor ${SQLITE_ORPHAN_MIN}m)"
+}
+
+# ── system health: CPU, leftover processes, limits, crashes, launchd, net ─────
+# Every function prints its own "mac-cleanup: ..." line and appends any
+# constraint to HEALTH_VERDICTS (one per line, first word = escalation class).
+
+in_list() { # <word> <space-separated list>
+  case " $2 " in *" $1 "*) return 0 ;; esac; return 1
+}
+
+check_cpu_hogs() { # <dry:0|1>
+  local DRY=${1:-0} prev="$STATE_DIR/cpu-hogs.prev" cur pid ppid puid pcpu et comm name n=0 sus=0 cpu_restart=0 i
+  cur=$(mktemp "${TMPDIR:-/tmp}/cpu-hogs.XXXXXX")
+  while read -r pid ppid puid pcpu et comm; do
+    [ -n "$comm" ] || continue
+    awk -v c="$pcpu" -v t="$CPU_HOG_PCT" 'BEGIN{exit !(c+0 >= t+0)}' || continue
+    name=$(basename "$comm")
+    printf '%s %s\n' "$pid" "$name" >> "$cur"; n=$((n+1))
+    if ! grep -qx "$pid $name" "$prev" 2>/dev/null; then continue; fi
+    sus=$((sus+1))
+    if [ "$puid" = "$(id -u)" ] && in_list "$name" "$CPU_RESTART_NAMES"; then
+      if [ "$DRY" = 1 ]; then echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% for two ticks would be restarted (dry run)"; continue; fi
+      kill -TERM "$pid" 2>/dev/null || true
+      for i in 1 2 3; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+      if kill -0 "$pid" 2>/dev/null; then echo "mac-cleanup: FAILED to restart cpu hog $name pid=$pid (still running after TERM)"; continue; fi
+      cpu_restart=$((cpu_restart+1)); mkdir -p "$STATE_DIR"
+      printf '%s\trestarted\t%s\t%s\t%s%%\n' "$(date '+%F %T')" "$pid" "$name" "$pcpu" >> "$STATE_DIR/cpu-restarts.log"
+      echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% for two ticks: restarted (a macOS helper launchd starts again on demand)"
+    else
+      echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% for two ticks, reported, not touched ($(owner_label_for_pid "$pid"))"
+      if awk -v c="$pcpu" -v t="$CPU_HOG_ESCALATE_PCT" 'BEGIN{exit !(c+0 >= t+0)}'; then
+        HEALTH_VERDICTS=$(printf '%s\nhog %s pid %s at %s%% CPU on two ticks in a row (over %s%%)\n' "$HEALTH_VERDICTS" "$name" "$pid" "$pcpu" "$CPU_HOG_ESCALATE_PCT")
+      fi
+    fi
+  done < <($HEALTH_PS_CMD 2>/dev/null)
+  if [ "$DRY" != 1 ]; then mkdir -p "$STATE_DIR" && mv -f "$cur" "$prev"; else rm -f -- "${cur:?}"; fi
+  CPU_RESTARTED=$cpu_restart
+  echo "mac-cleanup: cpu hogs: ${n} at or over ${CPU_HOG_PCT}% now, ${sus} also last tick, restarted ${cpu_restart}"
+}
+
+reap_test_orphans() { # <dry:0|1>
+  local DRY=${1:-0} pid ppid puid et args s found=0 stopped=0 ex=""
+  while read -r pid ppid puid et args; do
+    [ "$ppid" = 1 ] && [ "$puid" = "$(id -u)" ] || continue
+    case "$args" in *"/pytest-of-"*) ;; *) continue ;; esac
+    s=$(etime_secs "$et"); case "$s" in ''|*[!0-9]*) continue ;; esac
+    [ "$s" -ge $(( TEST_ORPHAN_MIN * 60 )) ] || continue
+    found=$((found+1))
+    [ "$found" -le 3 ] && ex="${ex}${ex:+; }pid $pid age $et: ...${args: -110}"
+    if [ "$DRY" = 1 ]; then continue; fi
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.2; kill -0 "$pid" 2>/dev/null && { sleep 1; kill -KILL "$pid" 2>/dev/null; }
+    if kill -0 "$pid" 2>/dev/null; then echo "mac-cleanup: FAILED to stop leftover test process pid=$pid"; continue; fi
+    stopped=$((stopped+1)); mkdir -p "$STATE_DIR"
+    printf '%s\tstopped\t%s\t%s\t%s\n' "$(date '+%F %T')" "$pid" "$et" "${args:0:300}" >> "$STATE_DIR/test-orphans.log"
+  done < <($ORPHAN_PS_CMD 2>/dev/null)
+  TEST_ORPHANS_STOPPED=$stopped
+  echo "mac-cleanup: leftover test processes (ppid 1, under a pytest temp dir, over ${TEST_ORPHAN_MIN}m): found ${found}, stopped ${stopped}$( [ "$DRY" = 1 ] && [ "$found" -gt 0 ] && echo " (dry run)")"
+  [ -z "$ex" ] || echo "mac-cleanup:   e.g. $ex (full list in $STATE_DIR/test-orphans.log)"
+}
+
+# Prints "<open_files> <max_files> <user_procs> <max_user_procs> <inode_pct> <zombies> <top_zombie_ppid> <its_zombies>".
+limits_reading() {
+  local f mf p mp ip z zp
+  f=$(/usr/sbin/sysctl -n kern.num_files 2>/dev/null); mf=$(/usr/sbin/sysctl -n kern.maxfiles 2>/dev/null)
+  p=$(ps -U "$(id -u)" -o pid= 2>/dev/null | grep -c .); mp=$(/usr/sbin/sysctl -n kern.maxprocperuid 2>/dev/null)
+  ip=$(df -i "$HOME" 2>/dev/null | awk 'NR==2{for(i=1;i<=NF;i++) if($i ~ /%$/) v=$i} END{gsub("%","",v); print v+0}')
+  z=$(ps -Ao stat= 2>/dev/null | grep -c '^Z' || true)
+  zp=$(ps -Ao ppid=,stat= 2>/dev/null | awk '$2 ~ /^Z/{c[$1]++} END{for(p in c) if(c[p]>m){m=c[p]; t=p} if(m) print t, m}')
+  echo "${f:--} ${mf:--} ${p:--} ${mp:--} ${ip:--} ${z:-0} ${zp:-- 0}"
+}
+
+check_limits() {
+  local f mf p mp ip z zpid zn zname out
+  read -r f mf p mp ip z zpid zn <<< "$($LIMITS_CMD 2>/dev/null)"
+  if [ -z "${f:-}" ] || [ "$f" = - ] || [ "$mf" = - ]; then echo "mac-cleanup: limits: unmeasured (the limits probe printed nothing)"; return 0; fi
+  out=$(awk -v f="$f" -v mf="$mf" -v p="$p" -v mp="$mp" -v ip="$ip" -v lim="$LIMITS_PCT" 'BEGIN{
+    if (mf > 0 && f/mf*100 >= lim) printf "limits open files %d is %.0f%% of kern.maxfiles %d (over %d%%)\n", f, f/mf*100, mf, lim
+    if (p != "-" && mp > 0 && p/mp*100 >= lim) printf "limits this user runs %d processes, %.0f%% of kern.maxprocperuid %d (over %d%%)\n", p, p/mp*100, mp, lim
+    if (ip != "-" && ip+0 >= lim) printf "limits inodes %d%% used on the data volume (over %d%%)\n", ip, lim
+  }')
+  zname=""
+  if [ -n "${zpid:-}" ] && [ "$zpid" != - ] && [ "${zn:-0}" -gt 0 ]; then
+    zname=$(ps -o comm= -p "$zpid" 2>/dev/null); zname=$(basename "${zname:-pid $zpid}")
+    if [ "$zn" -ge "$ZOMBIE_PARENT_N" ]; then
+      out=$(printf '%s\nzombies %s (pid %s) holds %s unreaped children (at or over %s): it is not waiting on what it spawns\n' "$out" "$zname" "$zpid" "$zn" "$ZOMBIE_PARENT_N" | grep . || true)
+    fi
+  fi
+  [ -z "$out" ] || HEALTH_VERDICTS=$(printf '%s\n%s\n' "$HEALTH_VERDICTS" "$out")
+  echo "mac-cleanup: limits: open files ${f}/${mf}, user processes ${p}/${mp}, inodes ${ip}% used, zombies ${z}$( [ -n "$zname" ] && echo " (most under $zname pid $zpid: $zn)")$( [ -z "$out" ] && echo ", none at a limit" || echo ", $(printf '%s\n' "$out" | grep -c .) constraint(s)")"
+}
+
+check_crash_reports() { # <dry:0|1>
+  local DRY=${1:-0} top name cnt pruned=0 old
+  if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
+  # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
+  top=$(find "$CRASH_DIR" -maxdepth 1 -type f -mtime -1 2>/dev/null | sed 's#.*/##; s/[-_][0-9]\{4\}-[0-9][0-9]-[0-9][0-9].*//' | sort | uniq -c | sort -rn | head -3)
+  while read -r cnt name; do
+    [ -n "${cnt:-}" ] || continue
+    if [ "$cnt" -ge "$CRASH_LOOP_N" ]; then
+      HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
+    fi
+  done <<< "$top"
+  old=$(find "$CRASH_DIR" -maxdepth 1 -type f \( -name '*.ips' -o -name '*.crash' -o -name '*.diag' -o -name '*.hang' -o -name '*.spin' \) -mtime +"$CRASH_KEEP_DAYS" 2>/dev/null | grep -c . || true)
+  if [ "$old" -gt 0 ] && [ "$DRY" != 1 ]; then
+    find "$CRASH_DIR" -maxdepth 1 -type f \( -name '*.ips' -o -name '*.crash' -o -name '*.diag' -o -name '*.hang' -o -name '*.spin' \) -mtime +"$CRASH_KEEP_DAYS" -delete 2>/dev/null
+    pruned=$old
+  fi
+  CRASH_PRUNED=$pruned
+  echo "mac-cleanup: crash reports: last 24h $( [ -n "$top" ] && printf '%s' "$top" | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s%s x%d", s, $0, c; s=", "}' || echo none), pruned ${pruned} older than ${CRASH_KEEP_DAYS}d$( [ "$DRY" = 1 ] && [ "$old" -gt 0 ] && echo " (would prune ${old}, dry run)")"
+}
+
+check_launchd_failing() {
+  local rows
+  rows=$($LAUNCHD_LIST_CMD 2>/dev/null | awk 'NR>1 && $1=="-" && $2!="0" && $3 !~ /^com\.apple\./ {printf "%s%s (last exit %s)", s, $3, $2; s=", "}')
+  echo "mac-cleanup: launchd jobs not running after a non-zero exit (outside com.apple): ${rows:-none}"
+}
+
+# Prints "<gateway> <loss_pct> <dns_ms>", or nothing when there is no default route.
+net_reading() {
+  local gw loss t0 t1
+  gw=$(route -n get default 2>/dev/null | awk '/gateway:/{print $2}')
+  [ -n "$gw" ] || return 0
+  loss=$(ping -c 3 -i 0.2 -t 3 "$gw" 2>/dev/null | awk -F', ' '/packet loss/{for(i=1;i<=NF;i++) if($i ~ /packet loss/){sub("%.*","",$i); print $i+0}}')
+  t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000'); dscacheutil -q host -a name github.com >/dev/null 2>&1; t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+  echo "$gw ${loss:--} $((t1 - t0))"
+}
+
+check_network() {
+  local gw loss dns
+  read -r gw loss dns <<< "$($NET_CMD 2>/dev/null)"
+  if [ -z "${gw:-}" ]; then echo "mac-cleanup: network: no default route (offline, or the probe printed nothing)"; return 0; fi
+  echo "mac-cleanup: network: gateway $gw loss ${loss}% over 3 pings, DNS lookup ${dns}ms (reported, never changed)"
+}
+
+check_thermal() {
+  local out lim
+  out=$($THERMAL_CMD 2>/dev/null)
+  lim=$(printf '%s\n' "$out" | awk -F= '/CPU_Speed_Limit/{gsub(/[ \t]/,"",$2); print $2}')
+  if [ -n "$lim" ]; then echo "mac-cleanup: thermal: CPU speed limit ${lim}%$( [ "$lim" -lt 100 ] 2>/dev/null && echo " (throttled)")"
+  elif printf '%s' "$out" | grep -q 'No thermal warning'; then echo "mac-cleanup: thermal: no thermal warning recorded"
+  else echo "mac-cleanup: thermal: unmeasured"; fi
+}
+
+system_health() { # <dry:0|1>
+  HEALTH_VERDICTS=""; CPU_RESTARTED=0; TEST_ORPHANS_STOPPED=0; CRASH_PRUNED=0
+  if [ "$HEALTH_PROBES" = off ]; then echo "mac-cleanup: system health: probes off (AMUX_CLEANUP_HEALTH_PROBES=off)"; return 0; fi
+  check_cpu_hogs "$1"; reap_test_orphans "$1"; check_limits; check_crash_reports "$1"
+  check_launchd_failing; check_network; check_thermal
+  HEALTH_VERDICTS=$(printf '%s\n' "$HEALTH_VERDICTS" | grep . || true)
 }
 
 # 0 = nothing inside was written in the last <hours>; 1 = something was; 2 = the
@@ -1895,6 +2085,7 @@ echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} (
 
 # ── act: stop orphaned sqlite .backup copies of amux's databases ─────────────
 reap_orphan_sqlite_backups "$DRY"
+system_health "$DRY"
 
 # ── report: the consumers this script must not touch ─────────────────────────
 # Named with an owner, because the useful half of a hog report is who can act.
@@ -2050,6 +2241,7 @@ if [ "$htf" = "-" ]; then htf_txt="not filling"; else htf_txt="full in ${htf}h";
 [ "$DRY" = "1" ] || state_put "$STATE" "last_ts=$now" "last_disk_free_gb=$disk_now"
 verdicts=$(classify_constraints "$disk_now" "$burn" "$htf" "$level_now" "$swap_free_now" "$load15" "$ncpu" "$fam_over" "$swap_total_now")
 if [ -n "${fse_verdict:-}" ]; then verdicts=$(printf '%s\n%s\n' "$verdicts" "$fse_verdict" | grep . || true); fi
+if [ -n "${HEALTH_VERDICTS:-}" ]; then verdicts=$(printf '%s\n%s\n' "$verdicts" "$HEALTH_VERDICTS" | grep . || true); fi
 echo "mac-cleanup: assess disk=${disk_now}G burn=${burn_txt} ${htf_txt} pressure=${level_now} swap_free=${swap_free_now}MB swap_total=${swap_total_now}MB load15=${load15}/${ncpu}"
 escalated=0
 if [ -z "$verdicts" ]; then
@@ -2132,5 +2324,5 @@ fi
 if [ "$SECONDS" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: WARN tick took ${SECONDS}s, over ${TICK_WARN_S}s: the scheduler kills it at 600s, so a slower run is lost; tighten the budgets"
 fi
-echo "mac-cleanup: done elapsed=${SECONDS}s purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
+echo "mac-cleanup: done elapsed=${SECONDS}s purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
 exit 0

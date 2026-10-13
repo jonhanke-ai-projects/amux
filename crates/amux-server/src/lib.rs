@@ -1078,6 +1078,10 @@ async fn async_main() {
     // desktop; idle, exited, duplicate and unowned ones are removed by label.
     runtime_jobs::computer_reaper::spawn();
 
+    // REAP ORPHAN ZOMBIES (Mac RCA 2026-10-13: 616 unreaped children). A self-
+    // exec keeps the pid, so the previous build's children are ours to wait on.
+    runtime_jobs::zombie_reaper::spawn();
+
     // SEARCH INDEX FOR LOGS AND TRANSCRIPTS. Incremental FTS5 ingest into
     // ~/.amux/search-firehose.db; /api/log-search and /api/search read it.
     runtime_jobs::search_ingest::spawn();

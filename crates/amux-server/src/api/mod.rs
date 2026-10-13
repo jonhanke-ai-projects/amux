@@ -146,6 +146,7 @@ pub mod worker_create;
 pub mod worker_exec;
 pub mod workers;
 mod worker_messaging;
+mod mention_grants;
 pub mod workers_deadletters;
 
 use crate::db::SharedStore;

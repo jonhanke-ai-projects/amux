@@ -3662,7 +3662,7 @@ async function _runSyncBanner(quiet = false) {
       await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) { saved.attempted_at = q.attempted_at; saved.not_attempted = false; stillQueued = true; } });
       if (!stillQueued) { item.status = 'skipped'; item.label += ' — removed before delivery'; skipped++; return; }
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
-      const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
+      const opts = { ...q.options, headers: _ownerMentionHeaders(q.url, q.options.body, _authHeaders(q.options.headers)) };
       let retryableMessageRefusal = false;
       const attemptStarted = Date.now();
       _outboxMessageProgress(q, 'attempt', attemptStarted);
@@ -4219,6 +4219,20 @@ function _pendingStop(queue, url, options) {
   const worker = url.slice(0, -4);
   const previous = [...queue].reverse().find(q => q.url.startsWith(worker));
   return previous?.url === url && previous.options?.method?.toUpperCase() === 'POST' ? previous : null;
+}
+// An owner message that @-mentions a worker lets the receiver message that
+// worker for 2 hours, outside its groups (server: api/mention_grants.rs). The
+// server honours only the dashboard's UI token, so it is added here, at send
+// time, to /send requests whose text has an @, and never stored in the outbox.
+function _ownerMentionHeaders(url, body, headers) {
+  try {
+    if (!/\/api\/sessions\/[^/]+\/send$/.test(String(url || ''))) return headers;
+    const text = (JSON.parse(body || '{}') || {}).text || '';
+    if (!/@[A-Za-z0-9]/.test(text) || !window._AMUX_UI_TOKEN) return headers;
+    const h = new Headers(headers || {});
+    h.set('X-Amux-UI-Token', window._AMUX_UI_TOKEN);
+    return Object.fromEntries(h.entries());
+  } catch (e) { return headers; }
 }
 async function _queueOp(url, options) {
   // THE SINGLE ENFORCEMENT POINT for what may enter the outbox.
@@ -10650,7 +10664,7 @@ async function doSend(name, text, identity = {}) {
   // Ordinary messages return after durable local acceptance. The outbox owns
   // network delivery and retry; only interactive slash commands await the API.
   const sendUrl = API + '/api/sessions/' + encodeURIComponent(name) + '/send';
-  const sendOpts = { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, _authHeaders()), body: sendBody };
+  const sendOpts = { method: 'POST', headers: _ownerMentionHeaders(sendUrl, sendBody, Object.assign({'Content-Type':'application/json'}, _authHeaders())), body: sendBody };
   try {
     // WAIT FOR THE REAL ANSWER. This was a 10s abort, and on this host /send
     // routinely takes longer (the CLI's own beacons log curl exit 28 on the
@@ -14196,7 +14210,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1483';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1470';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
