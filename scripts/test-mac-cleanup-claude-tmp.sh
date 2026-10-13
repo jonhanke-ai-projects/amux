@@ -150,6 +150,20 @@ eval "$(declare -f real_du_kb | sed 's/^real_du_kb/du_kb/')"
 check "an unsized child is not removed"              present "$(has "$S/huge")"
 check "the line says it was not counted"            yes     "$(printf '%s' "$out" | grep -q "NOT counted and NOT considered" && echo yes || echo no)"
 
+echo "10. the quota pass keeps its own budget after the session pass spends its share"
+build
+rm -rf -- "${R:?}/proj/dead" "${R:?}/proj/dirty" "${R:?}/proj/livef" "${R:?}/proj/open"
+S="$R/proj/livet/scratchpad"; mb "$S/old-big/a.tar" 4; age "$S/old-big"; touch "$P/proj/livet.jsonl"
+CLAUDE_TMP_QUOTA_KB=$(( 2 * 1024 )); CLAUDE_TMP_ENTRY_IDLE_H=6
+saved_b=$CLAUDE_TMP_BUDGET_S saved_q=$CLAUDE_TMP_QUOTA_BUDGET_S
+CLAUDE_TMP_BUDGET_S=2; CLAUDE_TMP_QUOTA_BUDGET_S=1
+eval "real_$(declare -f any_recent)"
+any_recent() { if [ "$1" = 48 ]; then sleep 2; fi; real_any_recent "$@"; }   # the session pass uses up the whole shared clock
+out=$(reap_claude_tmp "$R" 48 0)
+eval "$(declare -f real_any_recent | sed 's/^real_any_recent/any_recent/')"
+CLAUDE_TMP_BUDGET_S=$saved_b; CLAUDE_TMP_QUOTA_BUDGET_S=$saved_q
+check "an idle entry is still removed by the quota pass" gone "$(has "$S/old-big")"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-claude-tmp — all checks passed"; exit 0; fi
 echo "mac-cleanup-claude-tmp: $fails check(s) FAILED"; exit 1

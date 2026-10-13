@@ -375,6 +375,14 @@ CLAUDE_TMP_ENTRY_IDLE_H=${AMUX_CLEANUP_CLAUDE_TMP_ENTRY_IDLE_H:-6}
 CLAUDE_TMP_ENTRY_MIN_MB=${AMUX_CLEANUP_CLAUDE_TMP_ENTRY_MIN_MB:-256}
 CLAUDE_TMP_WALK_S=${AMUX_CLEANUP_CLAUDE_TMP_WALK_S:-45}   # 15s measured too short: a 16G idle session walks in 8-10s unloaded, longer under load
 CLAUDE_TMP_BUDGET_S=${AMUX_CLEANUP_CLAUDE_TMP_BUDGET_S:-150}
+# The quota pass gets its own share of that budget. Before 2026-10-12 the
+# session pass spent all 150s on 92 sessions (53 never reached), so the quota
+# pass reached mxp-gs12's 391G with no time left and judged nothing (AMUX-5904).
+CLAUDE_TMP_QUOTA_BUDGET_S=${AMUX_CLEANUP_CLAUDE_TMP_QUOTA_BUDGET_S:-90}
+# A whole session or a container folder that cannot be sized in this long is big
+# by definition; deciding that with a full 45s walk each spent the quota pass's
+# whole budget before it reached a single copy.
+CLAUDE_TMP_PROBE_S=${AMUX_CLEANUP_CLAUDE_TMP_PROBE_S:-10}
 # Not the desktop lane: it is ISOLATED, and amux refuses automated sends into an
 # isolated worker by design (round 1 of DESKT-57 measured exactly that refusal).
 # mac-ops is a non-isolated sonnet worker whose brief is the runbook below.
@@ -1045,11 +1053,30 @@ claude_tmp_ledger() { # <reason> <kb> <path>
   printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$1" "${2:-?}" "$3" >> "$STATE_DIR/claude-tmp-reaps.log"
 }
 
+# Judge one quota candidate and remove it when it is idle, closed and holds no
+# local work. Uses (and updates) the caller's counters. 0 = removed, 1 = kept.
+quota_try_remove() { # <kb> <path> <dry>
+  local ekb=$1 e=$2 dry=$3 rc=0
+  if [ -f "$e/.git" ]; then n_qkept=$((n_qkept+1)); q_local=$((q_local+1)); return 1; fi
+  any_recent "$CLAUDE_TMP_ENTRY_IDLE_H" "$CLAUDE_TMP_WALK_S" "$e" || rc=$?
+  if [ "$rc" != 1 ]; then n_qkept=$((n_qkept+1)); q_recent=$((q_recent+1)); return 1; fi
+  if has_open_handle "$e" "$lsofsnap" || has_dirty_worktree "$e"; then n_qkept=$((n_qkept+1)); q_local=$((q_local+1)); return 1; fi
+  if [ "$dry" = 1 ]; then echo "mac-cleanup:   would remove $(fmt_kb "$ekb") $e (session over ${CLAUDE_TMP_QUOTA_GB}G quota, entry idle >= ${CLAUDE_TMP_ENTRY_IDLE_H}h, dry run)"; return 0; fi
+  rm -rf -- "${e:?}"
+  if [ -e "$e" ]; then n_fail=$((n_fail+1)); echo "mac-cleanup:   FAILED to remove $e (still present after rm)"; return 1; fi
+  CLAUDE_TMP_REAPED=$((CLAUDE_TMP_REAPED+1)); CLAUDE_TMP_REAPED_KB=$((CLAUDE_TMP_REAPED_KB+ekb))
+  claude_tmp_ledger "over ${CLAUDE_TMP_QUOTA_GB}G quota, entry idle >= ${CLAUDE_TMP_ENTRY_IDLE_H}h" "$ekb" "$e"
+  echo "mac-cleanup:   removed $(fmt_kb "$ekb") $e (session over ${CLAUDE_TMP_QUOTA_GB}G quota, entry idle >= ${CLAUDE_TMP_ENTRY_IDLE_H}h)"
+  return 0
+}
+
 # Sets CLAUDE_TMP_REAPED / CLAUDE_TMP_REAPED_KB. Fails closed like the arms above:
 # no lsof snapshot means nothing is removed, and a walk that runs out of time keeps.
 reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
   local root=$1 idle_h=$2 dry=${3:-0}
   local t0 lsofsnap live sess proj uuid rc kb q n_sess=0 n_live=0 n_open=0 n_dirty=0 n_unk=0 n_over=0 n_fail=0 n_quota=0 n_qkept=0 handles=measured
+  local sess_budget=$(( CLAUDE_TMP_BUDGET_S - CLAUDE_TMP_QUOTA_BUDGET_S )) qt0
+  [ "$sess_budget" -gt 0 ] || sess_budget=1
   local quota_kb=${CLAUDE_TMP_QUOTA_KB:-$(( CLAUDE_TMP_QUOTA_GB * 1048576 ))}   # KB override: the suite's fixtures are megabytes
   CLAUDE_TMP_REAPED=0; CLAUDE_TMP_REAPED_KB=0
   if [ ! -d "$root" ]; then echo "mac-cleanup: claude tmp: no root at $root (not present)"; return 0; fi
@@ -1065,7 +1092,7 @@ reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
     [ -d "$sess" ] || continue
     n_sess=$((n_sess+1))
     uuid=${sess##*/}; proj=${sess%/*}; proj=${proj##*/}
-    if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then n_over=$((n_over+1)); continue; fi
+    if [ $(( $(date +%s) - t0 )) -ge "$sess_budget" ]; then n_over=$((n_over+1)); continue; fi
     if [ "$idle_h" -le 0 ]; then printf '%s\n' "$sess" >> "$live"; n_live=$((n_live+1)); continue; fi
     rc=0; any_recent "$idle_h" "$CLAUDE_TMP_WALK_S" "$CLAUDE_PROJECTS/$proj/$uuid.jsonl" "$CLAUDE_PROJECTS/$proj/$uuid" "$sess" || rc=$?
     if [ "$rc" = 0 ]; then printf '%s\n' "$sess" >> "$live"; n_live=$((n_live+1)); continue; fi
@@ -1082,33 +1109,48 @@ reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
   done
   # Rule 2: the quota on live sessions, biggest idle entries first.
   if [ "$quota_kb" -gt 0 ]; then
+    qt0=$(date +%s)
     while IFS= read -r sess; do
       [ -d "$sess" ] || continue
-      if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then n_over=$((n_over+1)); continue; fi
+      if [ $(( $(date +%s) - qt0 )) -ge "$CLAUDE_TMP_QUOTA_BUDGET_S" ]; then n_over=$((n_over+1)); continue; fi
       # A session too big to sum inside the walk budget is measured by its entries
       # instead: skipping it would exempt exactly the sessions the quota is for
       # (gs12-cicd's 45.8G did not finish a 15s walk on 2026-10-02).
       local total ents ekb e sum=0
-      kb=$(du_kb "$sess" "$CLAUDE_TMP_WALK_S")
+      kb=$(du_kb "$sess" "$CLAUDE_TMP_PROBE_S")
       if [ -n "$kb" ] && [ "$kb" -le "$quota_kb" ]; then continue; fi
+      # A session too big to size has no known total, so the entries cannot say
+      # when it is under quota: every eligible idle entry goes, judged as soon as
+      # it is sized (sizing everything first spent the budget before any judging).
+      local qall=0; [ -n "$kb" ] || qall=1
       ents=$(mktemp "${TMPDIR:-/tmp}/ctmp-ents.XXXXXX")
       # A plain folder that is too big to size in time, or over quota while still
       # holding recent files (so it can never go whole), is a container (gs12 keeps every repo copy under scratchpad/work): its children
       # are the candidates. Before 2026-10-12 such a folder was dropped from the
       # count, so a 451G session read 26.1G and none of its 405G was ever considered.
-      local qunk=0 c ckb
+      local qunk=0 c ckb q_recent=0 q_local=0 q_small=0
       for e in "$sess"/scratchpad/* "$sess"/scratchpad/.[!.]*; do
         [ -e "$e" ] || continue
-        if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
-        ekb=$(du_kb "$e" "$CLAUDE_TMP_WALK_S")
+        if [ $(( $(date +%s) - qt0 )) -ge "$CLAUDE_TMP_QUOTA_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
+        ekb=$(du_kb "$e" "$CLAUDE_TMP_PROBE_S")
+        # A file, or a checkout, that the probe could not size gets the full walk.
+        if [ -z "$ekb" ] && { [ ! -d "$e" ] || [ -e "$e/.git" ]; }; then ekb=$(du_kb "$e" "$CLAUDE_TMP_WALK_S"); fi
         if [ -d "$e" ] && [ ! -e "$e/.git" ] && { [ -z "$ekb" ] || { [ "$ekb" -gt "$quota_kb" ] && any_recent "$CLAUDE_TMP_ENTRY_IDLE_H" "$CLAUDE_TMP_WALK_S" "$e"; }; }; then
           for c in "$e"/* "$e"/.[!.]*; do
             [ -e "$c" ] || continue
-            if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
+            if [ $(( $(date +%s) - qt0 )) -ge "$CLAUDE_TMP_QUOTA_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
+            # A copy in use cannot go, so it is not worth a size walk: judging
+            # recency first is what lets the budget reach the idle ones.
+            rc=0; any_recent "$CLAUDE_TMP_ENTRY_IDLE_H" "$CLAUDE_TMP_PROBE_S" "$c" || rc=$?
+            if [ "$rc" = 0 ]; then n_qkept=$((n_qkept+1)); q_recent=$((q_recent+1)); continue; fi
+            if [ "$rc" = 2 ]; then qunk=$((qunk+1)); continue; fi
             ckb=$(du_kb "$c" "$CLAUDE_TMP_WALK_S")
-            if [ -n "$ckb" ]; then printf '%s\t%s\n' "$ckb" "$c" >> "$ents"; sum=$((sum+ckb)); else qunk=$((qunk+1)); fi
+            if [ -z "$ckb" ]; then qunk=$((qunk+1)); continue; fi
+            sum=$((sum+ckb))
+            if [ "$qall" = 1 ] && [ "$ckb" -ge $(( CLAUDE_TMP_ENTRY_MIN_MB * 1024 )) ]; then quota_try_remove "$ckb" "$c" "$dry" || true; continue; fi
+            printf '%s\t%s\n' "$ckb" "$c" >> "$ents"
           done
-          if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then break; fi
+          if [ $(( $(date +%s) - qt0 )) -ge "$CLAUDE_TMP_QUOTA_BUDGET_S" ]; then break; fi
           continue
         fi
         if [ -n "$ekb" ]; then printf '%s\t%s\n' "$ekb" "$e" >> "$ents"; sum=$((sum+ekb)); else qunk=$((qunk+1)); fi
@@ -1118,26 +1160,18 @@ reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
       n_quota=$((n_quota+1))
       sort -rn "$ents" -o "$ents"
       while IFS=$'\t' read -r ekb e; do
-        [ "$total" -gt "$quota_kb" ] || break
-        if [ "$ekb" -lt $(( CLAUDE_TMP_ENTRY_MIN_MB * 1024 )) ]; then break; fi   # sorted biggest first: everything after is smaller
+        [ "$qall" = 1 ] || [ "$total" -gt "$quota_kb" ] || break
+        if [ "$ekb" -lt $(( CLAUDE_TMP_ENTRY_MIN_MB * 1024 )) ]; then q_small=$((q_small+1)); break; fi   # sorted biggest first: everything after is smaller
         # Each candidate can cost a find and a git status per checkout (up to the
         # walk budget each); without this the arm could outlast the tick's 600s kill.
-        if [ $(( $(date +%s) - t0 )) -ge "$CLAUDE_TMP_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
-        if [ -f "$e/.git" ]; then n_qkept=$((n_qkept+1)); continue; fi
-        rc=0; any_recent "$CLAUDE_TMP_ENTRY_IDLE_H" "$CLAUDE_TMP_WALK_S" "$e" || rc=$?
-        if [ "$rc" != 1 ]; then n_qkept=$((n_qkept+1)); continue; fi
-        if has_open_handle "$e" "$lsofsnap" || has_dirty_worktree "$e"; then n_qkept=$((n_qkept+1)); continue; fi
-        if [ "$dry" = 1 ]; then echo "mac-cleanup:   would remove $(fmt_kb "$ekb") $e (session over ${CLAUDE_TMP_QUOTA_GB}G quota, entry idle >= ${CLAUDE_TMP_ENTRY_IDLE_H}h, dry run)"; total=$((total-ekb)); continue; fi
-        rm -rf -- "${e:?}"
-        if [ -e "$e" ]; then n_fail=$((n_fail+1)); echo "mac-cleanup:   FAILED to remove $e (still present after rm)"; continue; fi
-        total=$((total-ekb)); CLAUDE_TMP_REAPED=$((CLAUDE_TMP_REAPED+1)); CLAUDE_TMP_REAPED_KB=$((CLAUDE_TMP_REAPED_KB+ekb))
-        claude_tmp_ledger "over ${CLAUDE_TMP_QUOTA_GB}G quota, entry idle >= ${CLAUDE_TMP_ENTRY_IDLE_H}h" "$ekb" "$e"
-        echo "mac-cleanup:   removed $(fmt_kb "$ekb") $e (session over ${CLAUDE_TMP_QUOTA_GB}G quota, entry idle >= ${CLAUDE_TMP_ENTRY_IDLE_H}h)"
+        if [ $(( $(date +%s) - qt0 )) -ge "$CLAUDE_TMP_QUOTA_BUDGET_S" ]; then qunk=$((qunk+1)); break; fi
+        if quota_try_remove "$ekb" "$e" "$dry"; then total=$((total-ekb)); fi
       done < "$ents"
       rm -f -- "${ents:?}"
       if [ "$total" -gt "$quota_kb" ] || [ "$qunk" -gt 0 ]; then
+        echo "mac-cleanup:   quota kept in $sess: ${q_recent} in use within ${CLAUDE_TMP_ENTRY_IDLE_H}h, ${q_local} open or holding local work, ${qunk} unsized or past the budget, ${q_small} under ${CLAUDE_TMP_ENTRY_MIN_MB}M (verdict=claude_tmp_quota_kept)"
         if [ "$qunk" -gt 0 ]; then
-          echo "mac-cleanup:   OVER QUOTA at least $(fmt_kb "$total") $sess (quota ${CLAUDE_TMP_QUOTA_GB}G): ${qunk} entr(ies) too big to size in ${CLAUDE_TMP_WALK_S}s, or past the ${CLAUDE_TMP_BUDGET_S}s budget, are NOT counted and NOT considered; the counted rest is recent, open or a checkout with local work, so it stays"
+          echo "mac-cleanup:   OVER QUOTA at least $(fmt_kb "$total") $sess (quota ${CLAUDE_TMP_QUOTA_GB}G): ${qunk} entr(ies) too big to size in ${CLAUDE_TMP_WALK_S}s, or past the ${CLAUDE_TMP_QUOTA_BUDGET_S}s quota budget, are NOT counted and NOT considered; the counted rest is recent, open or a checkout with local work, so it stays"
         else
           echo "mac-cleanup:   OVER QUOTA $(fmt_kb "$total") $sess (quota ${CLAUDE_TMP_QUOTA_GB}G): the rest is recent, open or a checkout with local work, so it stays"
         fi
