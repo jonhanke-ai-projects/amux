@@ -774,7 +774,40 @@ impl Hub {
 
 // ───────────────────────────── transports ─────────────────────────────
 
-async fn ws_upgrade(ws: WebSocketUpgrade, headers: HeaderMap) -> Response {
+/// A browser page from another origin must not reach a room (cross-site
+/// WebSocket hijacking). Browsers send `Origin` on every WebSocket handshake
+/// and cross-origin POST, and do not apply CORS to a WebSocket, so a same-site
+/// sibling page carrying the SameSite=Lax member cookie could otherwise open
+/// one. A request with no `Origin` is not a browser page (CLI, tests) and is
+/// left to the normal auth layer.
+pub(crate) fn cross_origin(headers: &HeaderMap, uri: &axum::http::Uri) -> bool {
+    let Some(origin) = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let origin_host = origin.split_once("://").map(|(_, h)| h).unwrap_or(origin).trim_end_matches('/');
+    // HTTP/2 carries the host as `:authority`, which reaches a handler as the
+    // request URI's authority, not as a Host header.
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(axum::http::header::HOST))
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| uri.authority().map(|a| a.as_str().to_string()))
+        .unwrap_or_default();
+    !origin_host.eq_ignore_ascii_case(&host)
+}
+
+fn refuse_cross_origin(headers: &HeaderMap, path: &str) -> Response {
+    let origin = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("");
+    tracing::warn!(path, origin, verdict = "rt_cross_origin_refused", measured = true, n_considered = 1,
+        "realtime request from another origin refused");
+    (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "cross-origin realtime request refused"}))).into_response()
+}
+
+async fn ws_upgrade(ws: WebSocketUpgrade, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+    if cross_origin(&headers, &uri) {
+        return refuse_cross_origin(&headers, "/api/rt");
+    }
     let ident = Ident::from_headers(&headers);
     ws.max_message_size(MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| run_ws(socket, ident))
@@ -837,7 +870,10 @@ async fn sse_events(headers: HeaderMap) -> Sse<impl futures::Stream<Item = Resul
 
 /// `POST /api/rt/send`: the fallback's upstream: `{cid, msgs: [...]}`. The
 /// cid must belong to the same verified actor as this request.
-async fn sse_send(headers: HeaderMap, Json(body): Json<Value>) -> Response {
+async fn sse_send(uri: axum::http::Uri, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    if cross_origin(&headers, &uri) {
+        return refuse_cross_origin(&headers, "/api/rt/send");
+    }
     let Some(cid) = body.get("cid").and_then(Value::as_u64) else {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "missing cid"}))).into_response();
     };
@@ -874,6 +910,31 @@ pub fn routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_page_from_another_origin_is_refused_and_same_origin_or_no_origin_is_not() {
+        let u = axum::http::Uri::from_static("/api/rt");
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::HOST, "sandbox.amux.io".parse().unwrap());
+        assert!(!cross_origin(&h, &u), "no Origin: a CLI or test client, left to auth");
+        h.insert(axum::http::header::ORIGIN, "https://sandbox.amux.io".parse().unwrap());
+        assert!(!cross_origin(&h, &u), "same origin");
+        h.insert(axum::http::header::ORIGIN, "https://evil.amux.io".parse().unwrap());
+        assert!(cross_origin(&h, &u), "same-site sibling is still another origin");
+        h.insert(axum::http::header::ORIGIN, "https://example.com".parse().unwrap());
+        assert!(cross_origin(&h, &u));
+        let mut t = HeaderMap::new();
+        t.insert(axum::http::header::HOST, "desktop.tailnet.ts.net:8824".parse().unwrap());
+        t.insert(axum::http::header::ORIGIN, "https://desktop.tailnet.ts.net:8824".parse().unwrap());
+        assert!(!cross_origin(&t, &u), "a port is part of the origin and matches");
+        // HTTP/2: no Host header, the host is the URI authority.
+        let h2 = axum::http::Uri::from_static("https://localhost:18823/api/rt/send");
+        let mut o = HeaderMap::new();
+        o.insert(axum::http::header::ORIGIN, "https://localhost:18823".parse().unwrap());
+        assert!(!cross_origin(&o, &h2), "same origin over HTTP/2 (no Host header)");
+        o.insert(axum::http::header::ORIGIN, "https://example.com".parse().unwrap());
+        assert!(cross_origin(&o, &h2));
+    }
+
     use super::*;
 
     fn owner() -> Ident {
