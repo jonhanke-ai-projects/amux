@@ -4,13 +4,13 @@
 # network and thermal (2026-10-13). Every probe is a seam; each cell stubs the
 # one it tests, and the processes a cell stops are real children of this script
 # so the kill path runs for real. Each cell fails if its guard is removed.
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane
 export AMUX_CLEANUP_FSEVENTSD_CMD=true AMUX_CLEANUP_SQLITE_PS_CMD=true
 PIDS=()
-cleanup() { local p; for p in ${PIDS[@]+"${PIDS[@]}"}; do kill -KILL "$p" 2>/dev/null; done; rm -rf -- "$FIX"; }
+cleanup() { local p; for p in ${PIDS[@]+"${PIDS[@]}"}; do kill -KILL "$p" 2>/dev/null || true; done; rm -rf -- "$FIX"; }
 trap cleanup EXIT
 fails=0
 [ -x "$TICK" ] || { echo "FAIL: $TICK missing or not executable, no cell below ran"; exit 1; }
