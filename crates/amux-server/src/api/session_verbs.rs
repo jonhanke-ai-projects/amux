@@ -19389,8 +19389,13 @@ pub(crate) const WORKER_MESSAGING_POLICY: &str =
     "Workers may message only workers in a shared group. Owner input remains permitted.";
 
 fn roster_footer(n: usize) -> String {
+    let open = super::worker_messaging::all_open_inbound_groups(&crate::config::amux_home());
+    let open_line = if open.is_empty() { String::new() } else {
+        format!(" Open groups take messages from any worker: {}. Their members still message only \
+            workers they share a group with.", open.join(", "))
+    };
     format!(
-        "\n{n} discoverable peer worker(s). {WORKER_MESSAGING_POLICY} To reach a worker outside \
+        "\n{n} discoverable peer worker(s). {WORKER_MESSAGING_POLICY}{open_line} To reach a worker outside \
          your groups, ask the owner on your card (the owner can put you in a shared group); a \
          refused send is not retried or rerouted.\n"
     )
@@ -26909,7 +26914,9 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
     if let Some(reason) = peer_receive_refusal(origin, target) {
         return Some(PeerInputRefusal { code: "peer_receive_denied", reason });
     }
-    worker_group_refusal(origin, target, &lane_groups(origin), &lane_groups(target))
+    let target_groups = lane_groups(target);
+    let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &target_groups);
+    worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open)
 }
 
 /// Queue producers use an empty sender for system input and "owner" for saved
@@ -26947,8 +26954,10 @@ pub(crate) fn cross_group_policy_ok(origin: &str, target: &str) -> Result<&'stat
 
 /// Effective fleet worker messaging policy; legacy overrides cannot widen it.
 async fn get_cross_group_config() -> Response {
+    let open = super::worker_messaging::all_open_inbound_groups(&crate::config::amux_home());
     j200(json!({"default_allow":"", "enabled":false, "gate_enforcing":true,
         "editable":false, "policy":"shared-group-only", "measured":true, "n_considered":1,
+        "open_inbound_groups": open, "open_inbound_key": super::worker_messaging::OPEN_INBOUND_KEY,
         "note": WORKER_MESSAGING_POLICY}))
 }
 
