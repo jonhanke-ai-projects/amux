@@ -8936,7 +8936,7 @@ button.cv-sec:hover { color:var(--text); }
    Desktop: library left, canvas right. ≤700px: canvas fills the screen and the
    library is a bottom sheet. */
 #draw-view { flex:1; min-height:0; min-width:0; flex-direction:row; position:relative; overflow:hidden;
-  height:calc(100dvh - var(--draw-top, 0px)); min-height:320px; }
+  height:calc(100dvh - var(--draw-top, 0px)); }
 .draw-lib { width:264px; flex:0 0 264px; display:flex; flex-direction:column; gap:var(--space-2); min-height:0;
   border-right:1px solid var(--border); background:var(--bg); padding:var(--space-3) var(--space-3) 0; }
 .draw-lib-head { display:flex; align-items:center; justify-content:space-between; }
@@ -9059,8 +9059,11 @@ button.cv-sec:hover { color:var(--text); }
 .draw-status-text[data-state="error"], .draw-status-text[data-state="conflict"], .draw-status-text[data-state="load-error"] { color:var(--red); }
 .draw-status-retry { background:none; border:1px solid var(--border); border-radius:6px; color:var(--text); font:inherit; padding:2px 8px; cursor:pointer; }
 .draw-status-retry[hidden] { display:none; }
-/* Live mode: the canvas takes the whole screen with only the pen bar. */
-#draw-view.draw-live { position:fixed; inset:0; height:auto; z-index:calc(var(--layer-dialog) - 1); background:var(--bg); }
+/* Live mode: the canvas fills the Draw tab's area with only the pen bar. The
+   view stays where it is in the page, so the amux header and tab bar remain
+   (Ethan, 2026-10-13: "it should be full but it should still show the amux
+   harness"). */
+#draw-view.draw-live { background:var(--bg); }
 #draw-view.draw-live .draw-lib, #draw-view.draw-live .draw-head, #draw-view.draw-live .draw-status,
 #draw-view.draw-live .draw-snapbar, #draw-view.draw-live .draw-selbar, #draw-view.draw-live .draw-lib-scrim { display:none !important; }
 #draw-view:fullscreen { height:100%; }
