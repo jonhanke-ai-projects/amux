@@ -12364,6 +12364,9 @@ function setPeekTab(tab) {
     if (tab === 'terminal') refreshPeek(false);
   }
   _peekComposerSwap();
+  // The chips and Send/Queue follow the composer's target (worker or chat).
+  { const c = document.getElementById('peek-chips'); if (c) renderChips(c, '', true); }
+  _syncComposerPending();
   _peekAgentsPaint();
   const bodyShown = tab === 'terminal' || !!chatTarget;
   document.getElementById('peek-terminal-panel').style.display = bodyShown ? '' : 'none';
@@ -14176,7 +14179,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1451';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1452';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15068,8 +15071,8 @@ function _chatScheduleLive() {
   else _chat.raf = run();
 }
 
-async function _chatInterrupt() {
-  const name = _chat.name;
+async function _chatInterrupt(target) {
+  const name = target || _chat.name;
   if (!name) return;
   const btn = document.querySelector('.chat-stop');
   if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
@@ -20041,6 +20044,11 @@ function _sendLabelFor(_session) {
   return _sendMode === 'queue' ? 'Queue' : 'Send';
 }
 function _sendTitleFor(session) {
+  // A chat answers one message at a time: either mode waits for a reply
+  // already in progress (Esc stops it).
+  if (_chatCompanionOf(session)) return _sendMode === 'queue'
+    ? 'Queue mode: the chat answers after its current reply'
+    : 'Send now: the chat answers next (after a reply in progress; Esc stops it)';
   if (_sendMode !== 'queue') return 'Send now';
   const s = (typeof sessions !== 'undefined' && sessions.find(x => x.name === session)) || {};
   return s.status === 'active'
@@ -21260,7 +21268,26 @@ function _getChips() {
   return DEFAULT_CHIPS.map(c => ({...c}));
 }
 
+// The Chat tab shows the same chips as the terminal, acting on the chat the
+// composer sends to: Esc and Ctrl C stop its reply (the server's chat
+// equivalent of Escape), Enter sends the box, Up and Down browse history.
+// Keys with no chat meaning (Space, custom keys) are not shown there.
+const _CHAT_CHIP_KEYS = { Escape: 'stop', 'C-c': 'stop', Enter: 'send', Up: 'up', Down: 'down' };
+function _chipChatAction(chip, target) {
+  const inp = document.getElementById('peek-cmd-input');
+  if (chip.action === 'send') return doSend(target, chip.value).then(() => _refreshPeekSoon());
+  const k = _CHAT_CHIP_KEYS[chip.value];
+  if (k === 'stop') return _chatInterrupt(target);
+  if (k === 'send') {
+    if (inp && (inp.value.trim() || peekFiles.some(f => f.path))) return sendPeekCmd();
+    return showToast('Nothing to send to the chat');
+  }
+  if (k === 'up' && inp) return cmdHistoryUp(inp, target);
+  if (k === 'down' && inp) return cmdHistoryDown(inp, target);
+}
 function _chipAction(chip, sessionName, isPeek) {
+  const chatTarget = isPeek && (chip.action === 'send' || chip.action === 'keys') && _peekChatTarget();
+  if (chatTarget) return _chipChatAction(chip, chatTarget);
   if (chip.action === 'send') {
     if (isPeek) peekQuickSend(chip.value);
     else doSend(sessionName, chip.value);
@@ -21299,9 +21326,10 @@ function renderChips(container, sessionName, isPeek) {
   // terminal (chat) has nothing for them to press. Indexes stay the originals.
   const who = sessionName || (isPeek ? peekSession : '');
   const noKeys = !!who && _workerRenderer(who) !== 'terminal';
+  const chatTab = isPeek && !sessionName && !!_peekChatTarget();
   let html = '';
   chips.forEach((chip, i) => {
-    if (noKeys && chip.action === 'keys') return;
+    if (chatTab ? (chip.action === 'keys' && !_CHAT_CHIP_KEYS[chip.value]) : (noKeys && chip.action === 'keys')) return;
     const cls = chip.danger ? 'chip danger' : 'chip';
     const drag = _chipEditing ? 'draggable="true"' : '';
     html += '<div class="' + cls + '" ' + drag + ' data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'

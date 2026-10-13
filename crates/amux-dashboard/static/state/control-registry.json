@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2887,
+  "n_considered": 2888,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -736,6 +736,12 @@
     },
     "_chipAction": {
       "kind": "command._chipAction",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chipChatAction": {
+      "kind": "command._chipChatAction",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
