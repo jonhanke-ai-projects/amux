@@ -1091,6 +1091,8 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
         )
     };
     let last = super::session_verbs::last_assistant_message(worker, 1500);
+    let (prompt_state, background) = background_context(state, worker, running, &last).await;
+    let touched = touched_cards(state, worker, &last, &activity_log).await;
     out.push_str(&format!("[context: {worker}, {}]\n", chrono::Local::now().format("%Y-%m-%d %H:%M")));
     out.push_str(&format!("- worker directory: {dir}\n"));
     let isolated = super::session_verbs::env_flag_on(wenv.get("CC_ISOLATED"));
@@ -1127,6 +1129,22 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     } else {
         out.push_str("- board: could not be read\n");
     }
+    // 2026-10-12 (mixpeek-frustrations' Chat tab): an idle prompt with a
+    // background shell or agents is a worker still working. Name it, and the
+    // cards it is touching that the doing list above does not show.
+    out.push_str(&format!("- prompt: {prompt_state}\n"));
+    out.push_str(&background.lines);
+    if let Some((line, _)) = &touched {
+        out.push_str(line);
+    }
+    let prompt_idle = prompt_state.starts_with("idle");
+    if prompt_idle && (background.present() || !background.wait.is_empty()) {
+        tracing::info!(worker, shells = background.shells.unwrap_or(0), agents = background.agents.unwrap_or(0),
+            wait_announced = !background.wait.is_empty(), measured = background.measured, n_considered = 1,
+            touched = touched.as_ref().map(|(_, n)| *n).unwrap_or(0),
+            verdict = "chat_context_background_work",
+            "Chat context: the prompt is idle but the worker has background work; the companion is told to name it");
+    }
     if let Some(b) = branch {
         out.push_str(&format!("- git: branch {b}, {} changed file(s) uncommitted", dirty.unwrap_or(0)));
         if let Some(l) = last_commit {
@@ -1150,6 +1168,12 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     if let Some(fleet) = hub_fleet_section(state, worker).await {
         out.push_str(&fleet);
     }
+    out.push_str(
+        "- an idle prompt is not an idle worker: when the background line shows a running shell or live agents, or its \
+         last reply announced a pending wait, the worker is still working on that. Asked what it is working on, \
+         name the background work, the wait and the card it is for (the recently touched line), not \"no active \
+         task\". Agents the status bar merely lists may be finished; call them live only when the line says so.\n",
+    );
     // THE ESCALATION LADDER (AMUX-5432, Ethan 2026-10-01). Sent every turn,
     // not only on a fresh conversation, so existing Chats learn it too.
     out.push_str(&format!(
@@ -1168,6 +1192,114 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     out.push_str("\n[owner]\n");
     out.push_str(text);
     out
+}
+
+/// The prompt state and the background-work summary for the context block.
+/// Prompt: the hook report when it applies, else the pane. Background: the
+/// pane's provider status bar (shells, agents) and the hook-reported live
+/// subagent count, with descriptions from recently written subagent
+/// transcripts. See `chat_context`.
+async fn background_context(
+    state: &AppState,
+    worker: &str,
+    running: bool,
+    last: &str,
+) -> (String, super::chat_context::BackgroundSummary) {
+    use super::chat_context as cc;
+    let report = super::session_verbs::lane_report(state, worker);
+    let pane = if running { super::session_verbs::tmux_capture(worker, 0).await } else { String::new() };
+    let prompt = match &report {
+        Some(r) if r.applies => format!("{} (hook report, {}s ago)", r.state, r.age_s.round() as i64),
+        _ if !pane.is_empty() => match super::session_verbs::detect_claude_status(&pane).as_str() {
+            "" => "unknown (pane unreadable)".to_string(),
+            s => format!("{s} (read from the pane)"),
+        },
+        _ if !running => "not running".to_string(),
+        _ => "not measured".to_string(),
+    };
+    let w = worker.to_string();
+    let recent_window = 15 * 60;
+    let descriptions = tokio::task::spawn_blocking(move || {
+        let now = chrono::Utc::now().timestamp();
+        let v = super::session_verbs::session_subagents(&w, None);
+        v["subagents"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|s| now - s["last_active"].as_i64().unwrap_or(0) < recent_window)
+                    .filter_map(|s| s["description"].as_str().map(str::to_string))
+                    .filter(|d| !d.trim().is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+    let summary = cc::background_section(&cc::BackgroundInputs {
+        footer: if pane.is_empty() { None } else { cc::claude_footer_counts(&pane) },
+        waiting_agents: if pane.is_empty() { None } else { cc::claude_waiting_agents(&pane) },
+        reported_agents: report.as_ref().and_then(|r| r.subagents_live),
+        agent_descriptions: descriptions,
+        last_reply: last.to_string(),
+    });
+    (prompt, summary)
+}
+
+/// Cards the worker is touching that are not in its doing/needsyou list: ids
+/// named in its last reply or recent log (any owner, any status), then its own
+/// cards updated in the last 6 hours. `None` when the board could not be read.
+/// The count returned is how many cards were considered.
+async fn touched_cards(
+    state: &AppState,
+    worker: &str,
+    last: &str,
+    log: &[(f64, String, String, String)],
+) -> Option<(String, usize)> {
+    use super::chat_context as cc;
+    let ids = cc::referenced_card_ids(std::iter::once(last).chain(log.iter().map(|(_, _, _, t)| t.as_str())));
+    let w = worker.to_string();
+    let now = chrono::Utc::now().timestamp() as f64;
+    let (cards, considered) = state
+        .store
+        .read_async(move |c| {
+            let mut out: Vec<cc::TouchedCard> = Vec::new();
+            let mut considered = 0usize;
+            for id in &ids {
+                let r = c.query_row(
+                    "SELECT id, status, COALESCE(session,''), COALESCE(updated,0) FROM issues WHERE id=?1 AND deleted IS NULL",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, f64>(3)?)),
+                );
+                let Ok((id, status, session, updated)) = r else { continue };
+                considered += 1;
+                if session == w && matches!(status.as_str(), "doing" | "needsyou") {
+                    continue; // already listed above
+                }
+                out.push(cc::TouchedCard { id, status, session, updated, why: "named in its last reply or recent log" });
+            }
+            let mut st = c.prepare(
+                "SELECT id, status, updated FROM issues WHERE session=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 \
+                 AND status NOT IN ('doing','needsyou') AND updated >= ?2 ORDER BY updated DESC LIMIT 6",
+            )?;
+            let own = st
+                .query_map(rusqlite::params![w, now - 6.0 * 3600.0], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+                })?
+                .flatten()
+                .collect::<Vec<_>>();
+            for (id, status, updated) in own {
+                considered += 1;
+                if out.iter().any(|t| t.id == id) {
+                    continue;
+                }
+                out.push(cc::TouchedCard { id, status, session: w.clone(), updated, why: "its own card, updated recently" });
+            }
+            out.truncate(6);
+            Ok((out, considered))
+        })
+        .await
+        .ok()?;
+    Some((cc::touched_line(worker, &cards, now, considered), considered))
 }
 
 /// For a hub (other lanes name it AMUX_CONTRACT_HUB, as every GS-12 lane names
@@ -1261,7 +1393,7 @@ mod unchecked_reply_tests {
     }
 }
 
-fn clip(s: &str, n: usize) -> String {
+pub(crate) fn clip(s: &str, n: usize) -> String {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.chars().count() <= n { s } else { s.chars().take(n).collect::<String>() + "…" }
 }
@@ -2443,5 +2575,37 @@ mod companion_tests {
         // Later turns carry the context but not the role preamble again.
         let p2 = companion_prompt(&state, w, false, "and now?").await;
         assert!(p2.starts_with("[context: companion-test-worker-zz"), "{p2}");
+    }
+
+    /// 2026-10-12: a card the worker is still checking (done, owned by
+    /// another lane) appears as recently touched; a worker with no pane and no
+    /// hook report says its background work was not measured rather than 0;
+    /// and the companion is told an idle prompt is not an idle worker.
+    #[tokio::test]
+    async fn a_companion_sees_cards_the_worker_touches_outside_doing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("companion.db")).unwrap();
+        let state = AppState {
+            store: std::sync::Arc::new(store),
+            started: std::time::Instant::now(),
+            build_hash: "t".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let w = "companion-test-worker-touch";
+        let now = chrono::Utc::now().timestamp();
+        state.store.write(move |c| {
+            c.execute("INSERT INTO issues (id,title,desc,status,session,created,updated,type,archived,owner_type) VALUES ('MF-4026','Retry flake','', 'done','another-lane',1,?1,'code',0,'agent')", [now - 720])?;
+            c.execute("INSERT INTO issues (id,title,desc,status,session,created,updated,type,archived,owner_type) VALUES ('CT-9','Own review','', 'review',?1,1,?2,'code',0,'agent')", rusqlite::params![w, now - 60])?;
+            c.execute("INSERT INTO cmd_history (text,type,session,ts,origin) VALUES ('watch CI run 38306792417 for MF-4026','direct',?1,?2,'owner')", rusqlite::params![w, now])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let p = companion_prompt(&state, w, false, "what is this worker working on?").await;
+        assert!(p.contains("- board: 0 doing"), "{p}");
+        assert!(p.contains("- recently touched (not in doing): MF-4026 (done, owned by another-lane, updated 12m ago; named in its last reply or recent log)"), "{p}");
+        assert!(p.contains("CT-9 (review, updated 1m ago; its own card, updated recently)"), "{p}");
+        assert!(p.contains("- background: not measured"), "{p}");
+        assert!(p.contains("- an idle prompt is not an idle worker"), "{p}");
+        assert!(!p.contains('\u{2014}'), "no em dashes");
     }
 }

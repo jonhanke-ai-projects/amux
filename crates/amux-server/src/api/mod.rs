@@ -30,6 +30,7 @@ pub mod calendar;
 pub mod channels;
 pub mod chat_stream;
 pub mod chat_delegate;
+pub mod chat_context;
 pub mod chat_worker;
 pub mod commit_mentions;
 pub mod computer;

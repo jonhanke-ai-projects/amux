@@ -291,7 +291,7 @@ pub(crate) fn claude_background_agents_waiting(line: &str) -> bool {
 /// a later completed-turn marker is the terminal edge for every older wait,
 /// while a newer wait still wins over a completion from the preceding turn.
 /// Raw lines are retained so pasted/indented replicas cannot become chrome.
-fn claude_background_wait_verdict(raw: &str) -> (bool, bool) {
+pub(crate) fn claude_background_wait_verdict(raw: &str) -> (bool, bool) {
     let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
     for line in lines[lines.len().saturating_sub(12)..].iter().rev() {
         let line = line.trim_end();

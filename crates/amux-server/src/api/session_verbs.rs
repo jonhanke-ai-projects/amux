@@ -24402,7 +24402,7 @@ async fn dispatch(
 /// `subagent_type` and a human-readable `description`. Both are reported when
 /// present and omitted when not — a made-up label is worse than none in a
 /// switcher, because it cannot be told from a real one.
-fn session_subagents(name: &str, selected: Option<(&str, &str)>) -> Value {
+pub(crate) fn session_subagents(name: &str, selected: Option<(&str, &str)>) -> Value {
     // A terminal follows the current conversation, not every historical fork.
     // Resolve once instead of scanning the whole fleet on each output poll.
     let conversations: Vec<PathBuf> = session_jsonl_path(name).into_iter().collect();
