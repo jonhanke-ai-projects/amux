@@ -1100,16 +1100,32 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- MDAI view: global list of every .mdai computed node (global-only: a top-bar
      tab in ALL_TABS/switchView, never in the per-worker peek overlay). -->
 <div id="mdai-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
-  <!-- List page -->
-  <div id="mdai-list-page" class="mdai-page-wrap">
-    <div class="mdai-list-head">
-      <div class="mdai-list-titles"><h2 class="mdai-h">MDAI</h2>
-        <span id="mdai-count" class="mdai-dim"></span></div>
-      <input class="input mdai-search" id="mdai-search" type="search" placeholder="Search nodes" oninput="_mdaiFilterList(this.value)" aria-label="Search .mdai nodes">
-      <button class="btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Reload the node list">Refresh</button>
-      <button class="btn primary" onclick="_mdaiCreatePage()" title="Create a new .mdai node">+ New .mdai</button>
+  <!-- List page: the MDAI folder as a directory (same view as Files and Scratchpad) -->
+  <div id="mdai-list-page" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+    <div class="fe-toolbar">
+      <div class="fe-breadcrumb sp-dir" id="mdai-dir" title=""></div>
+      <span id="mdai-count" class="mdai-dim" style="white-space:nowrap;"></span>
+      <button class="fe-tb-btn" onclick="_mdaiCreatePage({ dir: _mdaiDirPath })" title="Create a new .mdai node in this folder">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 6.6 7 7.9 8.3 8.4 7 8.9 6.5 10.2 6 8.9 4.7 8.4 6 7.9Z" fill="currentColor"/></svg>
+        <span>New .mdai</span>
+      </button>
+      <button class="fe-tb-btn" onclick="_mdaiNewFolder()" title="Create a subfolder">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3a1 1 0 011-1h2.6l1.2 1.5h4.2a1 1 0 011 1V10a1 1 0 01-1 1h-8a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/></svg>
+        <span>New Folder</span>
+      </button>
+      <button class="fe-tb-btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Refresh">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        <span>Refresh</span>
+      </button>
     </div>
-    <div id="mdai-list" class="mdai-list"></div>
+    <div class="fe-col-headers" id="mdai-col-headers" style="display:none;">
+      <div class="fe-cell-name fe-col-hdr" onclick="_mdaiDirSortBy('name')">Name <span id="mdai-sort-name"></span></div>
+      <div class="fe-cell-size fe-col-hdr" onclick="_mdaiDirSortBy('size')">Size <span id="mdai-sort-size"></span></div>
+      <div class="fe-cell-date fe-col-hdr" onclick="_mdaiDirSortBy('modified')">Modified <span id="mdai-sort-modified"></span></div>
+      <div class="fe-cell-actions"></div>
+    </div>
+    <div id="mdai-breadcrumb" class="fe-breadcrumb" style="padding:0 12px;font-size:0.78rem;display:none;"></div>
+    <div id="mdai-list" class="fe-body" style="flex:1;overflow-y:auto;min-height:0;"></div>
   </div>
   <!-- Create page -->
   <div id="mdai-create-page" class="mdai-page-wrap" style="display:none">
@@ -3666,7 +3682,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div id="mdai-badges" class="mdai-badges"></div>
     </div>
     <div class="mdai-actions">
-      <span class="mdai-split"><button id="mdai-run-btn" class="btn" onclick="_mdaiRun()" title="Run this node and everything it reads">&#9655; Run</button><button class="btn mdai-split-more" onclick="event.stopPropagation();_mdaiRunMenu(this)" aria-label="Run options">&#9662;</button></span>
+      <span class="mdai-split"><button id="mdai-run-btn" class="btn" onclick="_mdaiRun({show:true})" title="Run this node and everything it reads">&#9655; Run</button><button class="btn mdai-split-more" onclick="event.stopPropagation();_mdaiRunMenu(this)" aria-label="Run options">&#9662;</button></span>
       <button id="mdai-menu-btn" class="btn" onclick="event.stopPropagation();_mdaiMenu(this)" title="Copy, export, raw file, read aloud" aria-label="More actions">&#x22EF;</button>
       <button id="mdai-save-btn" class="btn" onclick="_mdaiSave()">Saved</button>
     </div>

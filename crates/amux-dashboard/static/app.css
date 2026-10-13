@@ -9201,7 +9201,7 @@ html.draw-active { overflow:hidden; }
 .mdai-rrow { display: grid; grid-template-columns: 10px 1fr 1fr auto; gap: 8px; align-items: center; font-size: 0.78rem; padding: 6px 2px; border-top: 1px solid var(--border); cursor: pointer; }
 .mdai-rrow:first-of-type { border-top: none; }
 /* Edit */
-.mdai-editor { display: flex; flex: 1; min-height: 320px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.mdai-editor { display: flex; flex: 1 1 auto; min-height: 96px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg); }
 .mdai-gutter { margin: 0; padding: 10px 8px; text-align: right; color: var(--dim); background: var(--card); font-family: 'SF Mono', 'Fira Code', Menlo, monospace; font-size: 0.82rem; line-height: 1.55; overflow: hidden; user-select: none; min-width: 34px; border-right: 1px solid var(--border); }
 .mdai-editor textarea { flex: 1; border: none; outline: none; resize: none; background: transparent; color: var(--text); padding: 10px 12px; white-space: pre-wrap; overflow-wrap: break-word; overflow: auto; min-height: 0; tab-size: 2; }
 .mdai-mirror { position: absolute; left: -10000px; top: 0; visibility: hidden; white-space: pre-wrap; overflow-wrap: break-word; }
@@ -9225,14 +9225,26 @@ html.draw-active { overflow:hidden; }
 .mdai-kv > span:first-child { color: var(--dim); min-width: 80px; }
 .mdai-kv code { word-break: break-all; }
 .mdai-err-cycle { margin-top: 4px; font-size: 0.78rem; }
+/* A .mdai row in the directory view carries its last run beside the name. */
+.mdai-row-run { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; font-size: 0.72rem; color: var(--dim); white-space: nowrap; }
+@media (max-width: 600px) { .mdai-row-run { display: none; } }
 /* A wide report table scrolls sideways instead of breaking words mid-letter. */
 .mdai-detail .mdai-output table { display: block; overflow-x: auto; max-width: 100%; }
 .mdai-detail .mdai-output td, .mdai-detail .mdai-output th { overflow-wrap: normal; min-width: 72px; }
 body.light #mdai-overlay.mdai-detail { background: var(--bg); }
+.mdai-side-inline { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
 @media (max-width: 900px) {
-  .mdai-cols { flex-direction: column; overflow-y: auto; }
-  .mdai-main.mdai-node-body { flex: 0 0 auto; min-height: 60vh; }
-  .mdai-side { width: auto; flex: 0 0 auto; overflow: visible; }
+  .mdai-cols { flex-direction: column; }
+  .mdai-side { display: none; }
+}
+/* A short window: give the editor the height, not the header. */
+@media (max-height: 520px) {
+  .mdai-dhead { padding-top: 6px; padding-bottom: 4px; }
+  .mdai-dicon, .mdai-badges { display: none; }
+  .mdai-tab { min-height: 32px; padding-top: 6px; padding-bottom: 6px; }
+  .mdai-cols { padding-top: 6px; padding-bottom: 6px; }
+  .mdai-main.mdai-node-body { padding: 8px; gap: 6px; }
+  .mdai-detail .mdai-hint { display: none; }
 }
 @media (max-width: 600px) {
   .mdai-page-wrap { padding: 10px; }
@@ -9253,4 +9265,13 @@ body.light #mdai-overlay.mdai-detail { background: var(--bg); }
   .mdai-run-h { display: none; }
   .mdai-run > span[data-l]::before { content: attr(data-l) ': '; color: var(--dim); }
   .mdai-prev-nav .btn, .mdai-row-end .btn, .mdai-rrow { min-height: 44px; }
+}
+/* MDAI directory list on a phone: same treatment as Scratchpad (no sideways
+   scroll wrapper here), so drop Size and keep Name, Modified and the menu. */
+@media (max-width: 600px) {
+  #mdai-view .fe-row, #mdai-view .fe-col-headers, #mdai-view .fe-back-row {
+    min-width: 0; grid-template-columns: minmax(0,1fr) 84px 44px;
+  }
+  #mdai-view .fe-cell-size { display: none; }
+  #mdai-view .fe-menu-btn { min-width: 44px; min-height: 44px; }
 }

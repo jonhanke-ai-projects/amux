@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2939,
+  "n_considered": 2944,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1502,6 +1502,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileViewRefresh": {
+      "kind": "command._fileViewRefresh",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_filesAddBookmark": {
       "kind": "command._filesAddBookmark",
       "feedback_required": true,
@@ -2144,6 +2150,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiDirSortBy": {
+      "kind": "command._mdaiDirSortBy",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiDoConnect": {
       "kind": "command._mdaiDoConnect",
       "feedback_required": true,
@@ -2162,8 +2174,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiNav": {
+      "kind": "command._mdaiNav",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiNewFile": {
       "kind": "command._mdaiNewFile",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiNewFolder": {
+      "kind": "command._mdaiNewFolder",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2176,6 +2200,12 @@
     },
     "_mdaiRemoveSource": {
       "kind": "command._mdaiRemoveSource",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiRenderDir": {
+      "kind": "command._mdaiRenderDir",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2206,6 +2236,12 @@
     },
     "_mdaiSetModel": {
       "kind": "command._mdaiSetModel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiTabLoad": {
+      "kind": "command._mdaiTabLoad",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4564,6 +4600,12 @@
     },
     "closeExplore": {
       "kind": "command.closeExplore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "closeMdaiNode": {
+      "kind": "command.closeMdaiNode",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
