@@ -1,0 +1,13 @@
+-- The MDAI details page shows what a run cost and whether it worked. Before
+-- this, a run row had no tokens, no cost and no status, and a failed run left
+-- no row at all, so "Recent runs" could only ever list successes.
+--   tokens_in / tokens_out: as the provider reported them; NULL when it did not.
+--   cost_usd: only when the provider reported a cost (the claude CLI does; the
+--     raw API does not), never estimated here.
+--   status: 'ok' or 'error'. Legacy rows are successes ('ok').
+--   error: the failure message for an 'error' row.
+-- ADDCOL: mdai_runs tokens_in INTEGER
+-- ADDCOL: mdai_runs tokens_out INTEGER
+-- ADDCOL: mdai_runs cost_usd REAL
+-- ADDCOL: mdai_runs status TEXT NOT NULL DEFAULT 'ok'
+-- ADDCOL: mdai_runs error TEXT

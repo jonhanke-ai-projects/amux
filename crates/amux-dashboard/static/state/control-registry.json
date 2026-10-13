@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2907,
+  "n_considered": 2939,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2114,8 +2114,32 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiAddSource": {
+      "kind": "command._mdaiAddSource",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiConnectPicker": {
       "kind": "command._mdaiConnectPicker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiCreatePage": {
+      "kind": "command._mdaiCreatePage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiCreateSubmit": {
+      "kind": "command._mdaiCreateSubmit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiDelete": {
+      "kind": "command._mdaiDelete",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2126,8 +2150,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiHistNav": {
-      "kind": "command._mdaiHistNav",
+    "_mdaiEditKey": {
+      "kind": "command._mdaiEditKey",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2156,20 +2180,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiRender": {
-      "kind": "command._mdaiRender",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_mdaiRun": {
       "kind": "command._mdaiRun",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiSaveBody": {
-      "kind": "command._mdaiSaveBody",
+    "_mdaiRunMenu": {
+      "kind": "command._mdaiRunMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiSave": {
+      "kind": "command._mdaiSave",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2180,20 +2204,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiSetBottomTab": {
-      "kind": "command._mdaiSetBottomTab",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_mdaiTabLoad": {
-      "kind": "command._mdaiTabLoad",
+    "_mdaiSetModel": {
+      "kind": "command._mdaiSetModel",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
     "_mdaiWriteFile": {
       "kind": "command._mdaiWriteFile",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiWriteText": {
+      "kind": "command._mdaiWriteText",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
