@@ -8,7 +8,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Page } from '@playwright/test';
+import type { APIRequestContext, Page, TestInfo } from '@playwright/test';
 import { test, expect } from './fixtures';
 import { cleanup } from './teardown';
 
@@ -282,4 +282,330 @@ test('Draw tab fits a phone: no horizontal overflow, library and actions reachab
     await cleanup('clear draw_last', () => pref('draw_last', ''), info);
     await cleanup('remove temp folder', () => rm(dir, { recursive: true, force: true }), info);
   }
+});
+
+// Draw tab (Ethan, 2026-10-13): "in draw when I click one it should open it,
+// live mode should be zen mode and it should be full but it should still show
+// the amux harness".
+//
+// Opening: every assertion reads the scene's element ids against the FILE ON
+// DISK, and checks the other file is byte-for-byte unchanged, because the
+// failure behind the report was a drawing whose content never reached (or was
+// lost from) its file while the list still showed a picture of it.
+//
+// Live mode: Excalidraw's zen mode inside the amux shell. The header and tab
+// bar keep their boxes, the canvas fills everything below them.
+// These live in this file, not their own, because every Draw test writes the
+// same global prefs (draw_dir, draw_last) and files run in parallel workers.
+const sceneOf = (els: { id: string; type: string; x: number }[]) => JSON.stringify({ type: 'excalidraw', version: 2, source: 'e2e', appState: {}, files: {},
+  elements: els.map((e, i) => ({ id: e.id, type: e.type, x: e.x, y: 0, width: 100, height: 60, angle: 0, strokeColor: '#1e1e1e',
+    backgroundColor: 'transparent', fillStyle: 'solid', strokeWidth: 2, strokeStyle: 'solid', roughness: 1, opacity: 100,
+    groupIds: [], frameId: null, roundness: null, seed: i + 1, version: 1, versionNonce: i + 1, isDeleted: false,
+    boundElements: null, updated: 1, link: null, locked: false })) });
+
+const sceneIds = (page: Page) => page.evaluate(() =>
+  (window as unknown as Win)._draw.api.getSceneElements().map((e: any) => e.id).sort());
+const diskIds = async (path: string) => JSON.parse(await readFile(path, 'utf8')).elements.filter((e: any) => !e.isDeleted).map((e: any) => e.id).sort();
+const isPhone = (page: Page) => (page.viewportSize()?.width || 1280) <= 700;
+
+// The library is a sidebar on a desktop and a bottom sheet on a phone; open
+// whichever is closed, then the Drawings tab.
+async function libOnScreen(page: Page) {
+  return page.locator('#draw-lib').evaluate(el => { const r = el.getBoundingClientRect();
+    return getComputedStyle(el).display !== 'none' && r.height > 0 && r.top < innerHeight - 10; });
+}
+async function showDrawings(page: Page) {
+  if (!(await libOnScreen(page))) await page.locator('#draw-lib-open').click();
+  await page.locator('#draw-libtab-drawings').click();
+  await expect(page.locator('#draw-lib')).toBeInViewport();
+}
+
+// Click a row in the library. On a phone the sheet then closes so the opened
+// drawing is what shows.
+async function clickRow(page: Page, sel: string) {
+  await showDrawings(page);
+  await page.locator(sel).scrollIntoViewIfNeeded();
+  await page.locator(sel).click();
+  if (isPhone(page)) await expect(page.locator('#draw-lib')).not.toBeInViewport();
+}
+
+const addEl = (page: Page, id: string, type = 'rectangle') => page.evaluate(([nid, t]) => {
+  const d = (window as unknown as Win)._draw, X = d.lib.X;
+  const els = X.convertToExcalidrawElements([{ type: t, x: 400, y: 200 + Math.random() * 200, width: 80, height: 40, id: nid }], { regenerateIds: false });
+  d.api.updateScene({ elements: d.api.getSceneElementsIncludingDeleted().concat(els) });
+}, [id, type]);
+
+async function withDrawPrefs(page: Page, request: APIRequestContext, info: TestInfo, prefix: string, body: (dir: string) => Promise<void>) {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.goto('/');
+  const headers = await page.evaluate(() => ({ Authorization: 'Bearer ' + (window as unknown as Win)._AMUX_AUTH_TOKEN }));
+  const pref = (key: string, value: string) => request.post('/api/prefs', { headers, data: { key, value } });
+  const prior = await (await request.get('/api/prefs?key=draw_dir', { headers })).json();
+  try {
+    expect((await pref('draw_dir', dir)).ok()).toBeTruthy();
+    expect((await pref('draw_last', '')).ok()).toBeTruthy();
+    await body(dir);
+  } finally {
+    await cleanup('restore draw_dir', () => pref('draw_dir', prior.value || ''), info);
+    await cleanup('clear draw_last', () => pref('draw_last', ''), info);
+    await cleanup('remove temp folder', () => rm(dir, { recursive: true, force: true }), info);
+  }
+}
+
+test('Draw: clicking a drawing in Recent or In this folder opens it, and no file is written over', async ({ page, request }, info) => {
+  test.setTimeout(150_000);
+  page.on('console', m => { if (/\[draw\]/.test(m.text())) console.log('[page]', m.text().slice(0, 300)); });
+  await withDrawPrefs(page, request, info, 'amux-draw-open-', async dir => {
+    const a = join(dir, 'Alpha.excalidraw'), b = join(dir, 'Beta.excalidraw');
+    await writeFile(a, sceneOf([{ id: 'alpha-rect', type: 'rectangle', x: 0 }, { id: 'alpha-ell', type: 'ellipse', x: 150 }]));
+    await writeFile(b, sceneOf([{ id: 'beta-diamond', type: 'diamond', x: 0 }]));
+    await page.reload();
+    await openDraw(page);
+    const saved = () => expect(page.locator('#draw-save-state')).toHaveAttribute('data-state', 'saved', { timeout: 15_000 });
+    // Edit each through the app so both files were last written by it.
+    await page.evaluate(p => (window as any)._drawOpen(p), a);
+    await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-rect']);
+    await addEl(page, 'alpha-new');
+    await saved();
+    expect(await diskIds(a)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
+    await page.evaluate(p => (window as any)._drawOpen(p), b);
+    await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond']);
+    await addEl(page, 'beta-new');
+    await saved();
+    const aBytes = await readFile(a, 'utf8');
+    let bBytes = await readFile(b, 'utf8');
+
+    // Recent drawings: click Alpha.
+    await showDrawings(page);
+    await clickRow(page, '.draw-recent[data-path$="/Alpha.excalidraw"]');
+    await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
+    expect(await page.evaluate(() => (window as unknown as Win)._draw.path)).toBe(a);
+    await expect(page.locator('#draw-title')).toHaveValue('Alpha');
+    await page.screenshot({ path: join(process.env.DRAW_SHOTS_DIR || info.outputPath(), 'open-' + info.project.name + '.png') });
+    expect(await readFile(b, 'utf8'), 'opening Alpha left Beta untouched').toBe(bBytes);
+    expect(await readFile(a, 'utf8'), 'opening Alpha did not rewrite it').toBe(aBytes);
+
+    // In this folder: click Beta.
+    await clickRow(page, '.draw-pop-file[data-path$="/Beta.excalidraw"]');
+    await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond', 'beta-new']);
+    expect(await readFile(a, 'utf8'), 'opening Beta left Alpha untouched').toBe(aBytes);
+
+    // After a reload the list still opens what it shows. (The recents list
+    // is written 1.5s after a change; let that write land first.)
+    await page.waitForFunction(() => !(window as unknown as Win)._draw.recentsTimer, null, { timeout: 10_000 });
+    await page.waitForTimeout(500);
+    await page.reload();
+    await openDraw(page);
+    await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond', 'beta-new']);
+    await showDrawings(page);
+    await clickRow(page, '.draw-recent[data-path$="/Alpha.excalidraw"]');
+    await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
+    expect(await readFile(b, 'utf8')).toBe(bBytes);
+
+    // An edit still inside the autosave debounce survives switching away, and
+    // a write already in flight is not overtaken: Alpha keeps both edits and
+    // Beta is not written.
+    let slowWrites = true;
+    await page.route('**/api/file', async route => {
+      if (slowWrites && route.request().method() === 'PUT') await new Promise(r => setTimeout(r, 1500));
+      await route.fallback();
+    });
+    await addEl(page, 'alpha-inflight', 'ellipse');
+    await expect(page.locator('#draw-save-state')).toHaveAttribute('data-state', 'saving', { timeout: 5_000 });
+    await addEl(page, 'alpha-pending', 'ellipse');
+    bBytes = await readFile(b, 'utf8');
+    await clickRow(page, '.draw-pop-file[data-path$="/Beta.excalidraw"]');
+    await expect.poll(() => sceneIds(page), { timeout: 15_000 }).toEqual(['beta-diamond', 'beta-new']);
+    expect(await diskIds(a)).toEqual(['alpha-ell', 'alpha-inflight', 'alpha-new', 'alpha-pending', 'alpha-rect']);
+    expect(await readFile(b, 'utf8')).toBe(bBytes);
+    slowWrites = false;
+
+    // An editor that loses its scene (no elements at all, not even deleted
+    // ones) is never saved over a file that has content.
+    // The refusal is announced, and the drawing comes back from its file.
+    const refused = page.waitForEvent('console', { predicate: m => m.text().includes('save-refused-empty-scene'), timeout: 10_000 });
+    await page.evaluate(() => (window as unknown as Win)._draw.api.updateScene({ elements: [] }));
+    await refused;
+    await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond', 'beta-new']);
+    expect(await readFile(b, 'utf8'), 'the lost scene was not written').toBe(bBytes);
+
+    // A drawing the user really empties saves empty, and its list entry stops
+    // showing a picture of the old content.
+    await page.evaluate(p => (window as any)._drawOpen(p), a);
+    await expect.poll(() => sceneIds(page)).toEqual(await diskIds(a));
+    await page.evaluate(() => { const api = (window as unknown as Win)._draw.api;
+      api.updateScene({ elements: api.getSceneElementsIncludingDeleted().map((e: any) => ({ ...e, isDeleted: true, version: e.version + 1, versionNonce: e.versionNonce + 1 })) }); });
+    await saved();
+    expect(await diskIds(a)).toEqual([]);
+    await page.evaluate(p => (window as any)._drawOpen(p), a);
+    await expect.poll(() => page.evaluate(() => { const d = (window as unknown as Win)._draw;
+      const e = d.recents.find((x: any) => x.path === d.path); return e ? !!e.thumb : null; })).toBe(false);
+  });
+});
+
+test('Draw: live mode is zen mode inside the amux shell, and every exit restores the layout', async ({ page, request }, info) => {
+  test.setTimeout(120_000);
+  await withDrawPrefs(page, request, info, 'amux-draw-live-', async dir => {
+    await writeFile(join(dir, 'Live.excalidraw'), sceneOf([{ id: 'live-rect', type: 'rectangle', x: 0 }]));
+    await page.reload();
+    await openDraw(page);
+    await page.evaluate(p => (window as any)._drawOpen(p), join(dir, 'Live.excalidraw'));
+    await expect.poll(() => sceneIds(page)).toEqual(['live-rect']);
+    const vw = page.viewportSize()!.width, vh = page.viewportSize()!.height;
+    const shell = () => page.evaluate(() => ['.header-row', '.tab-bar-outer'].map(sel => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (!el || !el.offsetParent) return { sel, visible: false };
+      const r = el.getBoundingClientRect();
+      return { sel, visible: r.height > 0, top: Math.round(r.top), bottom: Math.round(r.bottom) };
+    }));
+    const zen = () => page.evaluate(() => !!(window as unknown as Win)._draw.api.getAppState().zenModeEnabled);
+    const before = await shell();
+    expect(before.some(s => s.visible), JSON.stringify(before)).toBe(true);
+
+    const enter = async () => {
+      await page.locator('#draw-live-btn').click();
+      await expect.poll(zen).toBe(true);
+      await expect(page.locator('#draw-penbar')).toBeVisible();
+    };
+    const assertLive = async (label: string) => {
+      expect(await shell(), label + ': the amux header and tab bar stay where they were').toEqual(before);
+      await expect(page.locator('#draw-view .draw-head')).toBeHidden();
+      await expect(page.locator('#draw-view .draw-status')).toBeHidden();
+      await expect(page.locator('#draw-lib')).not.toBeInViewport();
+      const shellBottom = Math.max(...before.filter(s => s.visible).map(s => s.bottom!));
+      const c = (await page.locator('#draw-host').boundingBox())!;
+      const m = { c, shellBottom, vw, vh, sw: await page.evaluate(() => document.documentElement.scrollWidth) };
+      expect(c.y, label + ' canvas starts below the shell ' + JSON.stringify(m)).toBeGreaterThanOrEqual(shellBottom - 1);
+      expect(c.y - shellBottom, label + ' and right below it ' + JSON.stringify(m)).toBeLessThan(24);
+      expect(c.x, JSON.stringify(m)).toBeLessThanOrEqual(isPhone(page) ? 1 : 24);
+      expect(c.x, JSON.stringify(m)).toBeGreaterThanOrEqual(-1);
+      expect(c.x + c.width, JSON.stringify(m)).toBeGreaterThanOrEqual(vw - (isPhone(page) ? 1 : 24));
+      expect(c.x + c.width, JSON.stringify(m)).toBeLessThanOrEqual(vw + 1);
+      expect(c.y + c.height, JSON.stringify(m)).toBeGreaterThan(vh - 40);
+      expect(c.y + c.height, JSON.stringify(m)).toBeLessThanOrEqual(vh + 1);
+      expect(m.sw, 'no horizontal overflow').toBeLessThanOrEqual(vw);
+      // The pen bar sits inside the screen.
+      const pb = (await page.locator('#draw-penbar').boundingBox())!;
+      expect(pb.x).toBeGreaterThanOrEqual(0);
+      expect(pb.x + pb.width).toBeLessThanOrEqual(vw + 1);
+      expect(pb.y + pb.height).toBeLessThanOrEqual(vh + 1);
+    };
+    const assertNormal = async (label: string) => {
+      await expect.poll(zen, label + ': zen is off').toBe(false);
+      await expect(page.locator('#draw-penbar')).toBeHidden();
+      await expect(page.locator('#draw-view .draw-head')).toBeVisible();
+      await expect(page.locator('#draw-view')).not.toHaveClass(/draw-live/);
+      if (!isPhone(page)) await expect(page.locator('#draw-lib')).toBeVisible();
+      expect(await shell()).toEqual(before);
+    };
+
+    // Exit 1: the pen bar's close button.
+    await enter();
+    await assertLive('live');
+    await page.screenshot({ path: join(process.env.DRAW_SHOTS_DIR || info.outputPath(), 'live-' + info.project.name + '.png') });
+    await page.locator('#draw-penbar [aria-label="Exit live mode"]').click();
+    await assertNormal('pen bar close');
+
+    // Exit 2: Excalidraw's own "Exit zen mode". Its phone layout has no such
+    // button (zen exits there through the pen bar or Esc).
+    if (!isPhone(page)) {
+      await enter();
+      await page.locator('#draw-host .disable-zen-mode').click();
+      await assertNormal('Exit zen mode');
+    }
+
+    // Exit 3: Esc.
+    await enter();
+    await page.keyboard.press('Escape');
+    await assertNormal('Esc');
+
+    // Zen turned on from the editor's side is live mode too.
+    await page.evaluate(() => (window as unknown as Win)._draw.api.updateScene({ appState: { zenModeEnabled: true } }));
+    await expect(page.locator('#draw-view')).toHaveClass(/draw-live/);
+    await expect(page.locator('#draw-penbar')).toBeVisible();
+    await page.locator('#draw-penbar [aria-label="Exit live mode"]').click();
+    await assertNormal('zen from the editor');
+  });
+});
+
+// "looks like its stuck" (Ethan, 2026-10-13): the page behind the Draw view had
+// scrolled, so the Draw header and the editor toolbar were off screen and the
+// canvas sat under the snap bar. <html> is overflow:hidden, which stops a user
+// scrolling back but not a focus() inside the editor or a header that grew
+// after the view was measured. After every step here the page is at the top,
+// the view fits the window, both toolbars are on screen, and a drag draws.
+test('Draw: the page behind the editor never scrolls, and input still reaches the canvas', async ({ page, request }, info) => {
+  test.setTimeout(150_000);
+  await withDrawPrefs(page, request, info, 'amux-draw-pin-', async dir => {
+    const one = join(dir, 'One.excalidraw'), two = join(dir, 'Two.excalidraw');
+    await writeFile(one, sceneOf([{ id: 'one-rect', type: 'rectangle', x: 0 }]));
+    await writeFile(two, sceneOf([{ id: 'two-ell', type: 'ellipse', x: 0 }]));
+    await page.reload();
+    await openDraw(page);
+    await page.evaluate(p => (window as any)._drawOpen(p), one);
+    await expect.poll(() => sceneIds(page)).toEqual(['one-rect']);
+
+    const settled = async (label: string) => {
+      await expect.poll(() => page.evaluate(() => (document.scrollingElement || document.documentElement).scrollTop), { message: label + ': page at the top' }).toBe(0);
+      const vh = page.viewportSize()!.height;
+      await expect.poll(() => page.evaluate(() => Math.round(document.getElementById('draw-view')!.getBoundingClientRect().bottom)),
+        { message: label + ': the view fits the window' }).toBeLessThanOrEqual(vh + 1);
+      for (const sel of ['#draw-view .draw-head', '#draw-host .App-toolbar']) {
+        const b = await page.locator(sel).first().boundingBox();
+        expect(b, label + ': ' + sel).toBeTruthy();
+        expect(b!.y, label + ': ' + sel + ' top on screen').toBeGreaterThanOrEqual(0);
+        expect(b!.y + b!.height, label + ': ' + sel + ' bottom on screen').toBeLessThanOrEqual(vh + 1);
+      }
+      // A drag on the canvas still draws.
+      const before = (await sceneIds(page)).length;
+      await setTool(page, 'rectangle');
+      const c = (await page.locator('#draw-host canvas.interactive').boundingBox())!;
+      const x = c.x + c.width * 0.55, y = c.y + c.height * 0.45;
+      await drag(page, [x, y], [x + 50, y + 30], 6);
+      await expect.poll(() => sceneIds(page).then(a => a.length), { message: label + ': a drag draws' }).toBe(before + 1);
+    };
+
+    await settled('after a drawing opened');
+    await clickRow(page, '.draw-pop-file[data-path$="/Two.excalidraw"]');
+    await expect.poll(() => sceneIds(page).then(a => a.includes('two-ell'))).toBe(true);
+    await settled('after clicking another drawing');
+
+    await page.locator('#draw-live-btn').click();
+    await expect(page.locator('#draw-penbar')).toBeVisible();
+    await page.locator('#draw-penbar [aria-label="Exit live mode"]').click();
+    await expect(page.locator('#draw-penbar')).toBeHidden();
+    await settled('after live mode in and out');
+
+    const vp = page.viewportSize()!;
+    await page.setViewportSize({ width: vp.width, height: vp.height - 120 });
+    await settled('after the window got shorter');
+    await page.setViewportSize(vp);
+    await settled('after it grew back');
+
+    // The shell above the view grows after the view was measured, and
+    // something inside scrolls the page: both heal on their own.
+    await page.evaluate(() => {
+      const b = document.createElement('div');
+      b.id = 'e2e-draw-banner'; b.style.height = '90px'; b.textContent = 'banner';
+      const bar = document.querySelector('.tab-bar-outer')!;
+      bar.parentElement!.insertBefore(b, bar);
+    });
+    await settled('after the header grew');
+    await page.evaluate(() => document.getElementById('e2e-draw-banner')!.remove());
+    await settled('after the header shrank back');
+    // Something gives the page room to scroll (content below the view) and a
+    // focus or scrollIntoView inside scrolls it: the page goes back to the top.
+    await page.evaluate(() => {
+      const s = document.createElement('div');
+      s.id = 'e2e-draw-spacer'; s.style.height = '1500px';
+      document.body.appendChild(s);
+    });
+    // Scroll only after the resize has been handled, so this step tests the
+    // scroll path on its own.
+    await page.waitForTimeout(400);
+    await page.evaluate(() => { (document.scrollingElement || document.documentElement).scrollTop = 400; });
+    await settled('after the page was scrolled');
+    await page.evaluate(() => document.getElementById('e2e-draw-spacer')!.remove());
+  });
 });
