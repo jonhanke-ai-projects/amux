@@ -1999,7 +1999,8 @@ impl LiveDeliverer {
                 .trim_start_matches(':')
                 .trim_start()
                 .to_string();
-            self.wake_owner(sched, code, &detail).await;
+            // The owning worker is told by `schedule_failure::on_run_outcome`
+            // once the run is recorded, for this and every other failure.
             return RunOutcome::ShellError {
                 note: format!(
                     "exit {code} [{}] {detail}",
@@ -2033,41 +2034,6 @@ impl LiveDeliverer {
                 .filter(|s| !s.trim().is_empty()),
             output,
         }
-    }
-
-    /// Tell the owning lane its schedule failed, through the steering queue.
-    ///
-    /// Python called `_push_alert` here, which writes an SSE blip and a Web Push
-    /// broadcast — and `push_subscriptions` is empty on this deployment, so the
-    /// action named "alert" alerted nobody: mvs-infra logged five exit-1 runs
-    /// and zero wakes. The steering queue is the one channel that provably
-    /// reaches a session, and it lands at a turn boundary.
-    async fn wake_owner(&self, sched: &DurableSchedule, code: i32, why: &str) {
-        let owner = sched.str_field("session").trim().to_string();
-        if owner.is_empty() || !crate::api::session_verbs::is_running(&owner).await {
-            tracing::warn!(
-                schedule = %sched.id(), code,
-                "schedule alert has no reachable owning lane — nobody was told"
-            );
-            return;
-        }
-        let text = format!(
-            "[amux] SCHEDULE FAILED — '{}' ({}) exited {code}.\n\n{why}\n\nThis is the `alert` exit \
-             action on your schedule. Investigate, fix, or change the schedule's exit_actions if a \
-             non-zero exit is expected here. If this is noise, say so on a card rather than \
-             silencing it quietly — a schedule that alerts on a normal exit trains you to ignore \
-             the channel.",
-            sched.str_field("title"),
-            sched.id()
-        );
-        let _ = crate::api::session_verbs::steer_enqueue(
-            &self.state,
-            &owner,
-            &text,
-            &format!("sched:{}", sched.id()),
-            "",
-        )
-        .await;
     }
 }
 
@@ -2442,6 +2408,10 @@ async fn fire_recorded(
                 rusqlite::params![bump, chrono::Utc::now().timestamp(), eid])?;
             Ok(WriteOutcome { applied: true, events: vec![] })
         }).await?;
+        let (rid, reason) = (id.to_string(), format!("fire aborted: {e}"));
+        if let Ok(Some(sched)) = store.read_async(move |c| Ok(get_schedule(c, &rid)?)).await {
+            super::schedule_failure::on_run_outcome(store, &sched, &RunOutcome::Failed { reason }, "cron-rs").await;
+        }
     }
     result
 }
@@ -2695,6 +2665,7 @@ async fn fire_one(
     let run_ids = claim.run_ids;
     let all_lost = should_warn_undelivered(&outcomes);
     let statuses: Vec<&'static str> = outcomes.iter().map(|o| o.status()).collect();
+    let for_notice = outcomes.clone();
     store
         .write_async(move |conn| {
             let now_ts = chrono::Utc::now().timestamp();
@@ -2761,6 +2732,10 @@ async fn fire_one(
             session = %claim.sched.str_field("session"), outcomes = ?statuses,
             "schedule fired but nothing was delivered"
         );
+    }
+    // Tell the owning worker (or the owner) when a run failed, once per streak.
+    for outcome in &for_notice {
+        super::schedule_failure::on_run_outcome(store, &claim.sched, outcome, "cron-rs").await;
     }
     Ok(true)
 }

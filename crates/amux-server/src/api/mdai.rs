@@ -186,6 +186,7 @@ const _: () = assert!(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/graph", get(graph))
         .route("/", get(list))
         .route("/run", post(run))
         .route("/history", get(history))
@@ -876,7 +877,51 @@ pub struct CliModel;
 
 impl ModelClient for CliModel {
     fn complete(&self, model: &str, prompt: &str) -> Result<String, String> {
-        complete_cli(model, prompt, false)
+        self.complete_measured(model, prompt).map(|c| c.text)
+    }
+    /// JSON output so the run row can say what the call cost: the result event
+    /// carries `usage` and the CLI's own `total_cost_usd`. Plain `--print` text
+    /// threw both away, so the details page could only show "?" for every run.
+    fn complete_measured(&self, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
+        let transcript = complete_cli(model, prompt)?;
+        let mut done = warm_helper::parse_completion(&transcript)?;
+        if let Some(cost) = result_cost_usd(&transcript) {
+            let usage = done.usage.get_or_insert_with(|| json!({}));
+            if let Some(obj) = usage.as_object_mut() {
+                obj.insert("total_cost_usd".into(), json!(cost));
+            }
+        }
+        Ok(done)
+    }
+}
+
+/// The `total_cost_usd` the claude CLI reports on its result event, if any.
+fn result_cost_usd(transcript: &str) -> Option<f64> {
+    transcript.lines().filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+        .filter(|e| e.get("type").and_then(Value::as_str) == Some("result"))
+        .filter_map(|e| e.get("total_cost_usd").and_then(Value::as_f64))
+        .next_back()
+}
+
+/// What one model call consumed, as the provider reported it. A field the
+/// provider did not report stays `None`: missing is not zero.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub(crate) struct CallUsage {
+    pub tokens_in: Option<i64>,
+    pub tokens_out: Option<i64>,
+    pub cost_usd: Option<f64>,
+}
+
+pub(crate) fn call_usage(usage: Option<&Value>) -> CallUsage {
+    let Some(u) = usage else { return CallUsage::default() };
+    let n = |k: &str| u.get(k).and_then(Value::as_i64);
+    // Input is every token the provider read: fresh, cache writes and cache reads.
+    let parts = [n("input_tokens"), n("cache_creation_input_tokens"), n("cache_read_input_tokens")];
+    let tokens_in = parts.iter().any(Option::is_some).then(|| parts.iter().flatten().sum());
+    CallUsage {
+        tokens_in,
+        tokens_out: n("output_tokens"),
+        cost_usd: u.get("total_cost_usd").and_then(Value::as_f64),
     }
 }
 
@@ -1054,31 +1099,21 @@ fn output_limit() -> usize {
         .unwrap_or(8 * 1024 * 1024)
 }
 
-fn complete_cli(model: &str, prompt: &str, read_only: bool) -> Result<String, String> {
+/// The synthesis CLI call, `--output-format json` so the transcript keeps the
+/// usage and cost a plain `--print` drops (mdai details: tokens and cost).
+fn complete_cli(model: &str, prompt: &str) -> Result<String, String> {
     let cli = helper_cli();
     let mut cmd = std::process::Command::new(&cli);
-    // Pipe the prompt via stdin instead of passing it as a CLI argument.
-    // Avoids arg-length issues for large prompts and keeps the process's
-    // argv clean in `ps` output. `claude --print` with no prompt arg reads
-    // stdin, which is how this works.
-    cmd.arg("--print");
-    if read_only {
-        read_only_helper_options(&mut cmd);
-    }
-
+    cmd.args(["--print", "--output-format", "json"]);
     if !model.trim().is_empty() {
         cmd.arg("--model").arg(model.trim());
     }
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    run_cli_command(
-        cmd,
-        &cli,
-        prompt,
-        std::time::Duration::from_secs(MODEL_TIMEOUT_S),
-    )
+    run_cli_command(cmd, &cli, prompt, std::time::Duration::from_secs(MODEL_TIMEOUT_S))
 }
+
 
 mod codex_helper;
 mod helper_io;
@@ -1246,6 +1281,9 @@ impl ApiModel {
 
 impl ModelClient for ApiModel {
     fn complete(&self, model: &str, prompt: &str) -> Result<String, String> {
+        self.complete_measured(model, prompt).map(|c| c.text)
+    }
+    fn complete_measured(&self, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
         let model_id = Self::api_model_id(model);
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(MODEL_TIMEOUT_S))
@@ -1282,7 +1320,9 @@ impl ModelClient for ApiModel {
         if text.is_empty() {
             return Err("api returned empty content".into());
         }
-        Ok(text)
+        // Tokens only: the Messages API reports no cost, and an estimate from
+        // a price table here would read as a measurement.
+        Ok(ModelCompletion { text, usage: body.get("usage").filter(|v| v.is_object()).cloned() })
     }
 }
 
@@ -1478,7 +1518,8 @@ fn now_secs() -> i64 {
 fn latest_run(store: &Store, path: &str) -> Option<(String, String)> {
     let conn = store.read().ok()?;
     conn.query_row(
-        "SELECT inputs_hash, output FROM mdai_runs WHERE path=?1 ORDER BY id DESC LIMIT 1",
+        // A failed row has no output to reuse: the cache is successes only.
+        "SELECT inputs_hash, output FROM mdai_runs WHERE path=?1 AND status='ok' ORDER BY id DESC LIMIT 1",
         rusqlite::params![path],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     )
@@ -1497,14 +1538,18 @@ struct RunRow {
     session: Option<String>,
     /// Model-call wall time; None on cached rows (no call happened).
     dur_ms: Option<i64>,
+    usage: CallUsage,
+    /// None for a successful row; the failure message for a failed call.
+    error: Option<String>,
 }
 
 fn record_run(store: &Store, row: RunRow) -> Result<(), MdaiError> {
     store
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO mdai_runs (path, ts, inputs_hash, output, model, cached, session, dur_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO mdai_runs (path, ts, inputs_hash, output, model, cached, session, dur_ms,
+                                        tokens_in, tokens_out, cost_usd, status, error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
                     row.path,
                     row.ts,
@@ -1513,7 +1558,12 @@ fn record_run(store: &Store, row: RunRow) -> Result<(), MdaiError> {
                     row.model,
                     row.cached as i64,
                     row.session,
-                    row.dur_ms
+                    row.dur_ms,
+                    row.usage.tokens_in,
+                    row.usage.tokens_out,
+                    row.usage.cost_usd,
+                    if row.error.is_some() { "error" } else { "ok" },
+                    row.error
                 ],
             )?;
             Ok(WriteOutcome { applied: true, events: vec![] })
@@ -1874,6 +1924,8 @@ fn run_node(ctx: &mut RunCtx, abs_path: &Path) -> Result<String, MdaiError> {
                 cached: false,
                 session: ctx.session.clone(),
                 dur_ms: None,
+                usage: CallUsage::default(),
+                error: None,
             },
         )?;
         // Same bookkeeping the model path does. Without it a fetch node is
@@ -1892,8 +1944,8 @@ fn run_node(ctx: &mut RunCtx, abs_path: &Path) -> Result<String, MdaiError> {
 
     // Cache short-circuit: an unchanged node reuses its last output rather than
     // spending a model call to reproduce an identical result.
-    let (output, cached, dur_ms) = match latest_run(ctx.store, &rel) {
-        Some((prev_hash, prev_out)) if prev_hash == inputs_hash => (prev_out, true, None),
+    let (output, cached, dur_ms, usage) = match latest_run(ctx.store, &rel) {
+        Some((prev_hash, prev_out)) if prev_hash == inputs_hash => (prev_out, true, None, CallUsage::default()),
         _ => {
             let prompt = build_prompt(&doc.body, &assembled);
             ctx.calls += 1;
@@ -1906,17 +1958,32 @@ fn run_node(ctx: &mut RunCtx, abs_path: &Path) -> Result<String, MdaiError> {
             // which is exactly what prompt_bytes in this line lets a reader
             // see without re-measuring.
             let t0 = std::time::Instant::now();
-            let out = ctx
-                .model
-                .complete(&model_name, &prompt)
-                .map_err(classify_model_err)?;
+            let done = match ctx.model.complete_measured(&model_name, &prompt) {
+                Ok(done) => done,
+                Err(e) => {
+                    // A failure used to leave no row, so the history only ever
+                    // showed successes and a broken node looked merely idle.
+                    let dur = t0.elapsed().as_millis() as i64;
+                    let _ = record_run(ctx.store, RunRow {
+                        path: rel.clone(), ts: now_secs(), inputs_hash: inputs_hash.clone(),
+                        output: String::new(), model: model_name.clone(), cached: false,
+                        session: ctx.session.clone(), dur_ms: Some(dur),
+                        usage: CallUsage::default(), error: Some(e.chars().take(2000).collect()),
+                    });
+                    tracing::warn!(path = %rel, model = %model_name, dur_ms = dur, error = %e,
+                        verdict = "mdai_node_failed", "mdai node model call failed");
+                    return Err(classify_model_err(e));
+                }
+            };
+            let usage = call_usage(done.usage.as_ref());
+            let out = done.text;
             let dur = t0.elapsed().as_millis() as i64;
             tracing::info!(
                 path = %rel, model = %model_name,
                 prompt_bytes = prompt.len(), output_bytes = out.len(), dur_ms = dur,
                 "mdai node model call completed"
             );
-            (out, false, Some(dur))
+            (out, false, Some(dur), usage)
         }
     };
 
@@ -1932,6 +1999,8 @@ fn run_node(ctx: &mut RunCtx, abs_path: &Path) -> Result<String, MdaiError> {
             cached,
             session: ctx.session.clone(),
             dur_ms,
+            usage,
+            error: None,
         },
     )?;
 
@@ -2109,6 +2178,7 @@ async fn list(State(state): State<AppState>) -> Response {
         };
         let mut items: Vec<Value> = Vec::new();
         let (found, truncated) = find_mdai_files(&root_canon);
+        let used_by = used_by_index(&root_canon, &found);
         for path in found {
             let rel = rel_key(&root_canon, &path);
             let (sources, model, title) = match std::fs::read_to_string(&path) {
@@ -2134,21 +2204,29 @@ async fn list(State(state): State<AppState>) -> Response {
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64);
-            let last_run: Option<i64> = store.read().ok().and_then(|c| {
+            let last: Option<(i64, String, Option<i64>, bool)> = store.read().ok().and_then(|c| {
                 c.query_row(
-                    "SELECT ts FROM mdai_runs WHERE path=?1 ORDER BY id DESC LIMIT 1",
+                    "SELECT ts, status, dur_ms, cached FROM mdai_runs WHERE path=?1 ORDER BY id DESC LIMIT 1",
                     rusqlite::params![rel],
-                    |r| r.get::<_, i64>(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)),
                 )
                 .ok()
             });
+            let runs: i64 = store.read().ok().and_then(|c| {
+                c.query_row("SELECT COUNT(*) FROM mdai_runs WHERE path=?1", rusqlite::params![rel], |r| r.get(0)).ok()
+            }).unwrap_or(0);
             items.push(json!({
                 "path": rel,
                 "sources": sources,
                 "model": model,
                 "title": title,
                 "mtime": mtime,
-                "last_run": last_run,
+                "last_run": last.as_ref().map(|l| l.0),
+                "last_status": last.as_ref().map(|l| l.1.clone()),
+                "last_dur_ms": last.as_ref().and_then(|l| l.2),
+                "last_cached": last.as_ref().map(|l| l.3),
+                "runs": runs,
+                "used_by": used_by.get(&rel).cloned().unwrap_or_default(),
             }));
         }
         Ok((items, truncated))
@@ -2202,6 +2280,90 @@ async fn run(
     }
 }
 
+/// One edge into a node, as the graph shows it.
+fn source_edges(root_canon: &Path, file: &Path, doc: &MdaiDoc) -> Vec<Value> {
+    let dir = file.parent().unwrap_or(root_canon);
+    let mut out: Vec<Value> = doc
+        .sources
+        .iter()
+        .map(|src| {
+            let raw = src.path.trim();
+            let (kind, key) = if raw.starts_with("amux:") {
+                ("amux", raw.to_string())
+            } else {
+                match resolve_existing(root_canon, dir, raw) {
+                    Ok(p) if p.is_dir() => ("folder", rel_key(root_canon, &p)),
+                    Ok(p) if p.extension().and_then(|e| e.to_str()) == Some(MDAI_EXT.trim_start_matches('.')) => {
+                        ("mdai", rel_key(root_canon, &p))
+                    }
+                    Ok(p) => ("file", rel_key(root_canon, &p)),
+                    Err(_) => ("missing", raw.to_string()),
+                }
+            };
+            json!({ "kind": kind, "path": key, "raw": raw, "prompt": src.prompt })
+        })
+        .collect();
+    if let Some(f) = &doc.fetch {
+        out.push(json!({ "kind": "url", "path": f.url, "raw": f.url, "prompt": "" }));
+    }
+    out
+}
+
+/// Reverse edges: for each `.mdai`, the `.mdai` files that list it as a source.
+fn used_by_index(root_canon: &Path, files: &[PathBuf]) -> HashMap<String, Vec<String>> {
+    let mut idx: HashMap<String, Vec<String>> = HashMap::new();
+    for f in files {
+        let Ok(text) = std::fs::read_to_string(f) else { continue };
+        let Ok(doc) = parse_mdai(&text) else { continue };
+        let me = rel_key(root_canon, f);
+        for e in source_edges(root_canon, f, &doc) {
+            if e["kind"] == "mdai" {
+                if let Some(target) = e["path"].as_str() {
+                    let users = idx.entry(target.to_string()).or_default();
+                    if !users.contains(&me) {
+                        users.push(me.clone());
+                    }
+                }
+            }
+        }
+    }
+    idx
+}
+
+/// `GET /api/files/mdai/graph?path=...` - a node's sources and the nodes that
+/// use it. "Used by" needs every file read, so it carries the scan's
+/// `truncated` flag: a partial scan cannot read as "nothing uses this".
+async fn graph(Query(q): Query<HashMap<String, String>>) -> Response {
+    let path = q.get("path").map(|s| s.trim()).unwrap_or("").to_string();
+    if path.is_empty() {
+        return MdaiError::BadRequest("path query param required".into()).into_response();
+    }
+    let res = crate::db::interactions::spawn_blocking(move || -> Result<Value, MdaiError> {
+        let root_canon = canon_root(&mdai_root())?;
+        let file = resolve_existing(&root_canon, &root_canon, &path)?;
+        let text = std::fs::read_to_string(&file).map_err(|e| MdaiError::Io(e.to_string()))?;
+        let doc = parse_mdai(&text)?;
+        let key = rel_key(&root_canon, &file);
+        let (found, truncated) = find_mdai_files(&root_canon);
+        let used_by = used_by_index(&root_canon, &found).remove(&key).unwrap_or_default();
+        Ok(json!({
+            "path": key,
+            "model": resolve_model(doc.model.as_deref()),
+            "sources": source_edges(&root_canon, &file, &doc),
+            "used_by": used_by,
+            "measured": true,
+            "n_considered": found.len(),
+            "truncated": truncated,
+        }))
+    })
+    .await;
+    match res {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
 /// `GET /api/files/mdai/history?path=...` - newest-first run history for a node.
 async fn history(
     State(state): State<AppState>,
@@ -2211,6 +2373,13 @@ async fn history(
     if path.is_empty() {
         return MdaiError::BadRequest("path query param required".into()).into_response();
     }
+    // `limit` bounds the rows; `lite=1` drops each row's full output (the list
+    // of runs needs status, time and cost, not every past report). Unset keeps
+    // the original contract: every row, with output.
+    let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).filter(|n: &i64| *n > 0).unwrap_or(i64::MAX);
+    let lite = matches!(q.get("lite").map(String::as_str), Some("1" | "true"));
+    // `id` narrows to one run (the Runs tab opens one past output at a time).
+    let run_id: Option<i64> = q.get("id").and_then(|v| v.parse().ok());
     // Normalize to the same root-relative key the runs are stored under, so a
     // caller passing an absolute or relative path both find their history.
     let store = state.store.clone();
@@ -2226,30 +2395,44 @@ async fn history(
             Err(_) => path.clone(),
         };
         let conn = store.read().map_err(|e| e.to_string())?;
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mdai_runs WHERE path=?1", rusqlite::params![key], |r| r.get(0))
+            .unwrap_or(0);
         let mut stmt = conn
             .prepare(
-                "SELECT id, path, ts, inputs_hash, output, model, cached, session, dur_ms
-                 FROM mdai_runs WHERE path=?1 ORDER BY id DESC",
+                "SELECT id, path, ts, inputs_hash, output, model, cached, session, dur_ms,
+                        tokens_in, tokens_out, cost_usd, status, error
+                 FROM mdai_runs WHERE path=?1 AND (?3 IS NULL OR id=?3) ORDER BY id DESC LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
         let rows: Vec<Value> = stmt
-            .query_map(rusqlite::params![key], |r| {
-                Ok(json!({
+            .query_map(rusqlite::params![key, limit, run_id], |r| {
+                let output: String = r.get(4)?;
+                let mut row = json!({
                     "id": r.get::<_, i64>(0)?,
                     "path": r.get::<_, String>(1)?,
                     "ts": r.get::<_, i64>(2)?,
                     "inputs_hash": r.get::<_, String>(3)?,
-                    "output": r.get::<_, String>(4)?,
+                    "output_bytes": output.len(),
                     "model": r.get::<_, String>(5)?,
                     "cached": r.get::<_, i64>(6)? != 0,
                     "dur_ms": r.get::<_, Option<i64>>(8)?,
                     "session": r.get::<_, Option<String>>(7)?,
-                }))
+                    "tokens_in": r.get::<_, Option<i64>>(9)?,
+                    "tokens_out": r.get::<_, Option<i64>>(10)?,
+                    "cost_usd": r.get::<_, Option<f64>>(11)?,
+                    "status": r.get::<_, String>(12)?,
+                    "error": r.get::<_, Option<String>>(13)?,
+                });
+                if !lite {
+                    row["output"] = json!(output);
+                }
+                Ok(row)
             })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
-        Ok::<_, String>(json!({ "path": key, "runs": rows }))
+        Ok::<_, String>(json!({ "path": key, "runs": rows, "total": total, "lite": lite }))
     })
     .await;
     match res {
@@ -2645,6 +2828,95 @@ mod tests {
 
     fn temp_store(dir: &Path) -> Store {
         Store::open(&dir.join("mdai-test.db")).unwrap()
+    }
+
+    /// Reports usage like the claude CLI does, or fails every call.
+    struct MeteredModel {
+        fail: bool,
+    }
+    impl ModelClient for MeteredModel {
+        fn complete(&self, model: &str, prompt: &str) -> Result<String, String> {
+            self.complete_measured(model, prompt).map(|c| c.text)
+        }
+        fn complete_measured(&self, _model: &str, _prompt: &str) -> Result<ModelCompletion, String> {
+            if self.fail {
+                return Err("claude exited 1: session limit".into());
+            }
+            Ok(ModelCompletion {
+                text: "REPORT".into(),
+                usage: Some(json!({"input_tokens": 100, "cache_read_input_tokens": 900,
+                                   "output_tokens": 230, "total_cost_usd": 0.0012})),
+            })
+        }
+    }
+
+    /// (status, tokens_in, tokens_out, cost_usd, error) per run row.
+    type UsageRow = (String, Option<i64>, Option<i64>, Option<f64>, Option<String>);
+
+    fn run_rows(store: &Store, path: &str) -> Vec<UsageRow> {
+        let c = store.read().unwrap();
+        let mut st = c.prepare("SELECT status, tokens_in, tokens_out, cost_usd, error FROM mdai_runs WHERE path=?1 ORDER BY id").unwrap();
+        st.query_map([path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn usage_counts_every_input_token_and_keeps_missing_as_none() {
+        let u = call_usage(Some(&json!({"input_tokens": 5, "cache_creation_input_tokens": 7,
+            "cache_read_input_tokens": 11, "output_tokens": 3, "total_cost_usd": 0.5})));
+        assert_eq!(u, CallUsage { tokens_in: Some(23), tokens_out: Some(3), cost_usd: Some(0.5) });
+        // The raw API reports tokens and no cost: cost stays unknown, never 0.
+        let api = call_usage(Some(&json!({"input_tokens": 5, "output_tokens": 3})));
+        assert_eq!(api.cost_usd, None);
+        assert_eq!(call_usage(None), CallUsage::default());
+        let t = "{\"type\":\"system\"}\n{\"type\":\"result\",\"result\":\"x\",\"total_cost_usd\":0.0042}";
+        assert_eq!(result_cost_usd(t), Some(0.0042));
+    }
+
+    #[test]
+    fn a_run_records_what_the_call_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = temp_store(dir.path());
+        write(dir.path(), "p.mdai", "Summarize.");
+        run_dag(&store, dir.path(), "p.mdai", &MeteredModel { fail: false }, None).unwrap();
+        assert_eq!(run_rows(&store, "p.mdai"),
+            vec![("ok".to_string(), Some(1000), Some(230), Some(0.0012), None)]);
+    }
+
+    #[test]
+    fn a_failed_run_is_recorded_and_never_served_from_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = temp_store(dir.path());
+        write(dir.path(), "p.mdai", "Summarize.");
+        assert!(run_dag(&store, dir.path(), "p.mdai", &MeteredModel { fail: true }, None).is_err());
+        let rows = run_rows(&store, "p.mdai");
+        assert_eq!(rows.len(), 1, "a failure must leave a row, or history shows only successes");
+        assert_eq!(rows[0].0, "error");
+        assert!(rows[0].4.as_deref().unwrap_or("").contains("session limit"));
+        // Same inputs again: the failed row must not be reused as a cached output.
+        let fake = FakeModel::new();
+        let r = run_dag(&store, dir.path(), "p.mdai", &fake, None).unwrap();
+        assert_eq!(fake.count(), 1, "a failure is not a cache hit");
+        assert!(!r.cached);
+    }
+
+    #[test]
+    fn used_by_lists_the_nodes_that_read_a_node() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("reports")).unwrap();
+        write(dir.path(), "priorities.mdai", "---\nsources:\n  - amux:messages?days=30\n---\nRank.");
+        write(dir.path(), "reports/daily.mdai", "---\nsources:\n  - ../priorities.mdai\n---\nDaily.");
+        write(dir.path(), "weekly.mdai", "---\nsources:\n  - path: priorities.mdai\n    prompt: use it\n---\nWeekly.");
+        let root = dir.path().canonicalize().unwrap();
+        let files: Vec<PathBuf> = ["priorities.mdai", "reports/daily.mdai", "weekly.mdai"].iter().map(|f| root.join(f)).collect();
+        let idx = used_by_index(&root, &files);
+        let mut users = idx.get("priorities.mdai").cloned().unwrap_or_default();
+        users.sort();
+        assert_eq!(users, vec!["reports/daily.mdai".to_string(), "weekly.mdai".to_string()]);
+        let doc = parse_mdai(&std::fs::read_to_string(root.join("priorities.mdai")).unwrap()).unwrap();
+        let edges = source_edges(&root, &root.join("priorities.mdai"), &doc);
+        assert_eq!(edges[0]["kind"], "amux");
+        assert_eq!(edges[0]["path"], "amux:messages?days=30");
     }
 
     fn write(dir: &Path, name: &str, content: &str) {

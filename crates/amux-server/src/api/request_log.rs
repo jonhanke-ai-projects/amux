@@ -2586,6 +2586,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/files/mdai/graph",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/files/mdai/connect",
         methods: &["POST"],
     },

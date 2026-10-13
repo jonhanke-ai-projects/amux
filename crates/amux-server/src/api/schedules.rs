@@ -465,6 +465,7 @@ pub async fn list(State(state): State<AppState>, Query(p): Query<ListParams>) ->
             .iter()
             .map(|s| {
                 let mut v = s.to_json();
+                crate::runtime_jobs::schedule_failure::expose(&mut v);
                 let f = *fires.get(s.id()).unwrap_or(&0);
                 v["fires_day"] = json!(f);
                 v["fleet_share"] = json!((100.0 * f as f64 / total as f64 * 10.0).round() / 10.0);
@@ -600,6 +601,7 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
     match joined {
         Ok(Ok(Some(s))) => {
             let mut v = s.to_json();
+            crate::runtime_jobs::schedule_failure::expose(&mut v);
             // A tombstone must not read as live (AMUX-3431): the raw row
             // carries enabled:1 next to deleted:<ts>, and SCHED-349's owner
             // read exactly that as a working schedule for five days. Say it
@@ -1745,6 +1747,7 @@ pub async fn run_now(
                     .await;
                 let status = outcome.status().to_string();
                 let sid_done = sched_bg.id().to_string();
+                let for_notice = outcome.clone();
                 let update = state_bg
                     .store
                     .write_async(move |conn| {
@@ -1769,6 +1772,9 @@ pub async fn run_now(
                 if let Err(e) = update {
                     tracing::error!(schedule = %sched_bg.id(), run_id, error = %e,
                         "could not record completed manual shell run");
+                } else {
+                    crate::runtime_jobs::schedule_failure::on_run_outcome(
+                        &state_bg.store, &sched_bg, &for_notice, &source_bg).await;
                 }
             });
         }
@@ -1817,6 +1823,7 @@ pub async fn run_now(
     if let Err(e) = write {
         return internal(e);
     }
+    crate::runtime_jobs::schedule_failure::on_run_outcome(&state.store, &sched, &o_resp, &source).await;
 
     // SAY WHAT HAPPENED. The dashboard toasts `status`/`note` verbatim, so an
     // empty note here is what rendered as "Ran · no output" over a dead action.
