@@ -45,7 +45,7 @@
     "description": "The amux iOS app is the remote control for your AI engineering team. Monitor Claude Code sessions, approve actions, inspect terminal output, and steer agents — from anywhere. PWA + native iOS app.",
     "url": "https://amux.io/guides/mobile-management-pwa/",
     "datePublished": "2026-02-26",
-    "dateModified": "2026-07-25",
+    "dateModified": "2026-10-13",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -146,6 +146,22 @@
           "@type": "Answer",
           "text": "Yes, with a VPN or Tailscale. amux generates a self-signed TLS cert and runs HTTPS on port 8824. For remote access, set up Tailscale (free for personal use) on the server machine and your phone — you get a private DNS name and end-to-end encryption without port-forwarding. See the amux remote access guide for step-by-step setup."
         }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I search through what my agents did while I was away?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux ships FTS5 full-text search that indexes session messages, terminal logs, and transcripts. From any device, type a keyword in the search field to find matching lines across every session with context and a jump-to-peek link. Useful for post-overnight review: search an error message or filename to find exactly where an agent got stuck without scrolling hundreds of lines."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What new mobile features shipped in October 2026?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "October 2026 shipped: workspace isolation (each worker gets its own git worktree — you see an 'isolated' badge on its status card), @-mention routing (type @worker-name in the send composer to route directly to any session), FTS5 full-text search across all messages and logs, Read Aloud on chat replies, and collapsible sidebar sections for full-width output view on phone screens."
+        }
       }
     ]
   }
@@ -173,7 +189,13 @@
         <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="44"/>
       </a>
     </div>
-    <p class="subtitle">Keep your AI coding agents running—even when you're away from your desk. Updated July 2026 (v0.9.189 — iOS PWA state restore).</p>
+    <p class="subtitle">Keep your AI coding agents running—even when you're away from your desk. Updated October 2026 — workspace isolation, @-mentions, read aloud, full-text search.</p>
+
+    <div style="background:var(--accent-subtle,#0d3028);border:1px solid var(--accent,#6ee7b7);border-radius:8px;padding:1rem 1.25rem;margin:1.25rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;">
+      <span style="color:var(--accent,#6ee7b7);font-weight:600;">Running agents overnight?</span>
+      <span style="color:var(--text);">Monitor and steer your fleet from your phone. iOS app free.</span>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" onclick="window.posthog&&posthog.capture('exp133_mobile_guide_ios_app_cta_click')" style="background:var(--accent,#6ee7b7);color:#0d1117;font-weight:700;padding:0.5rem 1.25rem;border-radius:6px;text-decoration:none;white-space:nowrap;">Get the iOS App →</a>
+    </div>
 
     <p>Keep your AI coding agents running—even when you're away from your desk. The <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux iOS app</a> and PWA put your AI engineering team in your pocket: monitor live Claude Code sessions, approve pending actions, inspect terminal output, and steer agents from anywhere.</p>
 
@@ -185,12 +207,34 @@
       <li><strong>Live session statuses</strong> — see which agents are actively working, waiting for input, or idle, updated in real time via Server-Sent Events</li>
       <li><strong>Peek at agent output</strong> — view any agent's last N lines of terminal output, including syntax-highlighted code blocks</li>
       <li><strong>Send instructions (Steering)</strong> — queue a message to deliver to an agent at its next turn boundary, without interrupting mid-task work</li>
+      <li><strong>@-mention workers</strong> — type @worker-name to route a message directly to a specific session from any input on the dashboard</li>
+      <li><strong>Full-text search</strong> — search across all session messages, terminal logs, and transcripts with FTS5 to find exactly what an agent did or said</li>
       <li><strong>Kanban board</strong> — add tasks, move cards between to-do / doing / done, claim tasks atomically</li>
       <li><strong>Token spend</strong> — see how much each session has spent today, this week, and in total</li>
       <li><strong>Scheduler</strong> — view upcoming scheduled jobs, trigger them manually, enable or disable</li>
       <li><strong>Notes and CRM</strong> — read and edit notes, check contact records and follow-up reminders</li>
       <li><strong>Email</strong> — read recent messages and compose replies through the Gmail API integration</li>
+      <li><strong>Read aloud</strong> — tap the speaker icon on any chat reply to have the agent's response read aloud while your phone is in your pocket</li>
+      <li><strong>Collapsible sidebar</strong> — fold the sidebar sections (or the whole sidebar) on wide phone screens to maximize your view of agent output</li>
     </ul>
+
+    <h2>What's New — October 2026</h2>
+    <p>The last three months shipped several features that make phone-based fleet management significantly more powerful:</p>
+
+    <h3>Workspace isolation</h3>
+    <p>Each worker now gets its own git worktree when you set <code>AMUX_WORKSPACE_ISOLATION=1</code> in the worker's Scope settings. Isolated workers can run parallel builds, tests, and file operations without stepping on each other. From your phone, you'll see an "isolated" badge on each worker's status card — you know immediately which sessions are running in their own checkout vs. sharing the main tree.</p>
+
+    <h3>@-mention routing</h3>
+    <p>The dashboard's send composer now supports @worker-name routing. Type <code>@frontend-agent your question here</code> from the unified composer and amux delivers it directly to that session. No need to open each worker's individual pane from your phone — one input field, any destination.</p>
+
+    <h3>Full-text search across session history</h3>
+    <p>FTS5 full-text indexing now covers messages, terminal logs, and session transcripts. Search from the dashboard to find what an agent said, what error it hit, or what file it last touched — all without scrolling through individual peek panels. On mobile, the search field is accessible from the sidebar's session list.</p>
+
+    <h3>Read aloud in companion chat</h3>
+    <p>Every chat reply now has a Read Aloud button. Tap it to have the agent's response read while your hands are busy — cooking, commuting, or exercising. Playback stops automatically at the end of each reply, and you can stop mid-sentence with the Stop button beside the speaker icon.</p>
+
+    <h3>Collapsible sidebar sections</h3>
+    <p>Sidebar sections (workers, board, messages) can now be individually folded, and the entire sidebar folds away on wide phone screens. This gives you full-width view of the active session's output — useful when reading long terminal transcripts on a Plus-sized phone.</p>
 
     <h2>Install on iPhone (PWA)</h2>
     <p>The PWA approach works without an app store — install directly from Safari:</p>
@@ -323,10 +367,25 @@
           <td style="text-align:center;padding:0.75rem;">✓</td>
           <td style="text-align:center;padding:0.75rem;">✓ Best</td>
         </tr>
-        <tr>
+        <tr style="border-bottom:1px solid var(--border);">
           <td style="padding:0.75rem 1rem;">Write long prompts or large tasks</td>
           <td style="text-align:center;padding:0.75rem;">✓ Best</td>
           <td style="text-align:center;padding:0.75rem;">✓ Available</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">Search session history (FTS5)</td>
+          <td style="text-align:center;padding:0.75rem;">✓</td>
+          <td style="text-align:center;padding:0.75rem;">✓ Best</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">@-mention a specific worker</td>
+          <td style="text-align:center;padding:0.75rem;">✓</td>
+          <td style="text-align:center;padding:0.75rem;">✓ Best</td>
+        </tr>
+        <tr>
+          <td style="padding:0.75rem 1rem;">Read agent replies aloud</td>
+          <td style="text-align:center;padding:0.75rem;">–</td>
+          <td style="text-align:center;padding:0.75rem;">✓ Best</td>
         </tr>
       </tbody>
     </table>
@@ -346,7 +405,13 @@
     <p>amux itself is free and open-source (MIT license). The iOS app is a free download on the App Store. You self-host the amux server on your own machine — you pay nothing to amux. You pay only for the AI tokens your agents consume (Claude, Codex, or Gemini CLI).</p>
 
     <h3>Can I use amux without a fixed server? What about running it from a laptop?</h3>
-    <p>Yes. The amux server runs on any machine with Python 3 and tmux — a laptop, a desktop, a Raspberry Pi, or a cloud VM. The key for phone access is that the server stays on while your agents run. Many users run amux on a dedicated cloud VM (a $5–10/month small instance) for 24/7 access, but a laptop left open at home with Tailscale works fine for most use cases.</p>
+    <p>Yes. The amux server runs on any machine with tmux — a laptop, a desktop, a Raspberry Pi, or a cloud VM. The key for phone access is that the server stays on while your agents run. Many users run amux on a dedicated cloud VM (a $5–10/month small instance) for 24/7 access, but a laptop left open at home with Tailscale works fine for most use cases.</p>
+
+    <h3>Can I search through what my agents did while I was away?</h3>
+    <p>Yes. amux indexes all session messages, terminal logs, and transcripts with FTS5 full-text search. From the mobile dashboard, type a keyword (a file path, an error message, a function name) into the search field and amux returns matching lines across every session — with context and a link to jump into the peek panel at that exact moment. No more scrolling through hundreds of lines to find what happened at 3am.</p>
+
+    <h3>How do I send a message to a specific agent from my phone?</h3>
+    <p>Use @-mentions in the unified send composer. Type @worker-name followed by your message — amux routes it directly to that session's input. You can also open any session's individual peek panel and use the Steer tab to queue a message for delivery at the agent's next turn boundary. @-mentions work from the global composer at the top of the dashboard — you do not need to navigate to each session individually.</p>
 
     <h2>Get Started</h2>
     <div class="cta-box">

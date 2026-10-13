@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2902,
+  "n_considered": 2907,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1142,6 +1142,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_drawFlush": {
+      "kind": "command._drawFlush",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_drawFullscreen": {
       "kind": "command._drawFullscreen",
       "feedback_required": true,
@@ -1174,6 +1180,12 @@
     },
     "_drawLeave": {
       "kind": "command._drawLeave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawLiveKey": {
+      "kind": "command._drawLiveKey",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1262,6 +1274,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_drawPinPage": {
+      "kind": "command._drawPinPage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_drawPoll": {
       "kind": "command._drawPoll",
       "feedback_required": true,
@@ -1336,6 +1354,12 @@
     },
     "_drawSendToWorker": {
       "kind": "command._drawSendToWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawSetLive": {
+      "kind": "command._drawSetLive",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

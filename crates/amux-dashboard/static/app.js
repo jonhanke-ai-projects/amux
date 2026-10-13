@@ -14210,7 +14210,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1470';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1485';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -57790,7 +57790,7 @@ function _drawS() {
       lib: null, loading: null, api: null, root: null, mounted: false,
       path: '', dir: '', etag: null, savedVersion: null, curVersion: null,
       saving: false, saveAgain: false, saveTimer: null, status: 'idle', statusMsg: '',
-      pollTimer: null, pollTick: 0, applying: false, conflict: null, opening: false,
+      pollTimer: null, pollTick: 0, applying: false, conflict: null, opening: false, openSeq: 0, savedCount: 0,
       libItems: [], libHash: null, libEtag: null, libSaveTimer: null, libLoaded: false,
       recents: [], recentsLoaded: false, recentsTimer: null, thumbAt: 0,
       libTab: 'components', settings: { grid: false, align: true, connect: true },
@@ -57877,7 +57877,7 @@ function _drawLoadLib() {
 // and bottom padding so the canvas fills the screen.
 function _drawFit() {
   const v = document.getElementById('draw-view');
-  if (!v || v.style.display === 'none' || v.classList.contains('draw-live')) return;
+  if (!v || v.style.display === 'none') return;
   const cs = getComputedStyle(document.body);
   const phone = innerWidth <= 700;
   const pl = parseFloat(cs.paddingLeft) || 0, pr = parseFloat(cs.paddingRight) || 0, pb = parseFloat(cs.paddingBottom) || 0;
@@ -57913,6 +57913,30 @@ function _drawSyncOffsets(why) {
 }
 function _drawSyncOffsetsSoon(why) { requestAnimationFrame(() => _drawSyncOffsets(why)); }
 
+// The Draw view is sized to the space under the amux header, and the page
+// behind it must never scroll. <html> has overflow:hidden, which stops the
+// user scrolling but not a focus() or scrollIntoView inside the editor; and a
+// header that changes height after the view was measured leaves the view
+// taller than the space. Either way the toolbar and the Draw header end up
+// off screen and the editor looks frozen (Ethan, 2026-10-13: "looks like its
+// stuck"). So: put the page back at the top and re-measure, on every scroll
+// and every resize of the shell above the view.
+function _drawPinPage(why) {
+  if (activeView !== 'draw') return;
+  const se = document.scrollingElement || document.documentElement;
+  const dy = se.scrollTop, dx = se.scrollLeft;
+  if (dy || dx) { se.scrollTop = 0; se.scrollLeft = 0; }
+  _drawFit();
+  const v = document.getElementById('draw-view');
+  const over = v ? Math.round(v.getBoundingClientRect().bottom - innerHeight) : 0;
+  const d = _draw;
+  if ((dy || dx || over > 1) && d && Date.now() - (d.pinAt || 0) > 5000) {
+    d.pinAt = Date.now();
+    _drawBeacon('page-scrolled', { dy, dx, overflow_px: over, why, measured: true, n_considered: 1 });
+  }
+  _drawSyncOffsetsSoon('pin-' + why);
+}
+
 async function _drawEnter() {
   const d = _drawS();
   document.documentElement.classList.add('draw-active');
@@ -57920,6 +57944,15 @@ async function _drawEnter() {
     d.fitHooked = true;
     addEventListener('resize', () => { if (activeView === 'draw') { _drawFit(); _drawSyncOffsetsSoon('resize'); } });
     document.addEventListener('fullscreenchange', () => { if (activeView === 'draw') _drawSyncOffsetsSoon('fullscreen'); });
+    addEventListener('scroll', () => _drawPinPage('scroll'), { passive: true });
+    // Anything above the view changing height (a banner, the header wrapping)
+    // moves the space the view has to fit in.
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(() => { if (activeView === 'draw') requestAnimationFrame(() => _drawPinPage('shell-resize')); });
+      const v = document.getElementById('draw-view');
+      for (const el of [document.body, v && v.parentElement]) if (el) ro.observe(el);
+      for (const sel of ['.header-row', '.tab-bar-outer']) { const el = document.querySelector(sel); if (el) ro.observe(el); }
+    }
   }
   scrollTo(0, 0);
   _drawFit();
@@ -58035,7 +58068,10 @@ async function _drawOnApi() {
   const d = _drawS();
   // Wait out Excalidraw's own scene initialization (it runs after this
   // callback and would overwrite anything applied now).
-  for (let i = 0; i < 100 && d.api.getAppState().isLoading; i++) await new Promise(r => setTimeout(r, 20));
+  // 10s, not 2s: on a slow phone the editor could finish initializing AFTER
+  // the drawing was applied and replace it with an empty scene.
+  for (let i = 0; i < 500 && d.api.getAppState().isLoading; i++) await new Promise(r => setTimeout(r, 20));
+  if (d.api.getAppState().isLoading) _drawBeacon('editor-init-slow', { waited_ms: 10000, measured: true, n_considered: 1 });
   await new Promise(r => requestAnimationFrame(() => r()));
   const loadingEl = document.getElementById('draw-loading');
   if (loadingEl) loadingEl.hidden = true;
@@ -58092,6 +58128,9 @@ function _drawOnChange(elements, appState, files) {
   const ids = appState.selectedElementIds || {};
   let n = 0; for (const k in ids) if (ids[k]) n++;
   if (n !== d.selCount) { d.selCount = n; _drawRenderSelbar(); }
+  // Zen toggled from Excalidraw's own controls drives live mode.
+  const zen = !!appState.zenModeEnabled;
+  if (zen !== d.live && !appState.isLoading) _drawSetLive(zen, 'zen');
 }
 
 function _drawScheduleSave() {
@@ -58125,13 +58164,28 @@ function _drawSetStatus(status, msg) {
 async function _drawSave() {
   const d = _draw;
   if (!d || !d.api || !d.path || d.conflict) return false;
+  // While a drawing opens, d.path already names the file being opened but the
+  // canvas still holds the previous one. A save now would write the previous
+  // drawing into the file being opened.
+  if (d.opening) return false;
   if (d.saving) { d.saveAgain = true; return false; }
   if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = null; }
   const X = d.lib.X, api = d.api;
   const version = _drawSceneVersion();
   if (version === d.savedVersion) { _drawSetStatus('saved'); return true; }
   const path = d.path;
-  const content = X.serializeAsJSON(api.getSceneElements(), api.getAppState(), api.getFiles(), 'local');
+  // A user who erases or clears leaves deleted elements in the scene. A scene
+  // with NO elements at all, over a file that has some, means the editor lost
+  // its scene (re-initialized or unmounted): never write that over the file.
+  if (_drawSceneLost()) {
+    _drawSetStatus('error', 'the editor lost this drawing; it was not saved over the file');
+    _drawBeacon('save-refused-empty-scene', { saved_count: d.savedCount, measured: true, n_considered: 1 });
+    // The file is the drawing: put it back on the canvas.
+    setTimeout(() => { if (d.path === path && !d.opening && _drawSceneLost()) _drawOpen(path); }, 0);
+    return false;
+  }
+  const live = api.getSceneElements();
+  const content = X.serializeAsJSON(live, api.getAppState(), api.getFiles(), 'local');
   d.saving = true;
   _drawSetStatus('saving');
   let ok = false;
@@ -58155,6 +58209,7 @@ async function _drawSave() {
     } else {
       d.etag = res.etag || null;
       d.savedVersion = version;
+      d.savedCount = live.length;
       ok = true;
       _drawSetStatus(d.curVersion === version ? 'saved' : 'dirty');
       _drawRememberRecent(false);
@@ -58172,6 +58227,23 @@ async function _drawSave() {
 }
 function _drawSaveNow() { return _drawSave(); }
 
+// Write any pending change to the drawing on screen before it is replaced:
+// wait out a write already in flight (whose follow-up would otherwise be
+// dropped once the path changes), then save what is still unsaved.
+async function _drawFlush() {
+  const d = _draw;
+  if (!d || !d.api || !d.path) return true;
+  if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = null; }
+  for (let i = 0; d.saving && i < 500; i++) await new Promise(r => setTimeout(r, 50));
+  // A lost scene has nothing to save; the file still holds the drawing.
+  if (!_drawDirty() || _drawSceneLost()) return true;
+  return _drawSave();
+}
+function _drawSceneLost() {
+  const d = _draw;
+  return !!(d && d.api && d.savedCount > 0 && !d.api.getSceneElementsIncludingDeleted().length);
+}
+
 // ── Open / new / rename ──
 function _drawOpenPath(path) {
   const d = _drawS();
@@ -58183,7 +58255,18 @@ function _drawOpenPath(path) {
 async function _drawOpen(path) {
   const d = _drawS();
   if (!d.api || !path) return;
-  if (_drawDirty() && d.path && d.path !== path) await _drawSave();
+  const seq = ++d.openSeq;
+  const current = () => seq === d.openSeq && d.path === path;
+  // Save the drawing on screen first, the same file included: reopening it
+  // must not throw away strokes still inside the autosave debounce. If that
+  // write fails, stay on it rather than drop the changes.
+  if (!d.opening && !(await _drawFlush())) {
+    if (seq !== d.openSeq) return;
+    showToast('Not opened: the changes to ' + _drawBase(d.path) + ' are not saved yet.');
+    _drawBeacon('open-blocked-unsaved', { target: path, status: d.status });
+    return;
+  }
+  if (seq !== d.openSeq) return;
   d.opening = true;
   d.conflict = null; _drawHideConflict();
   d.path = path; d.dir = _drawDirOf(path);
@@ -58191,7 +58274,7 @@ async function _drawOpen(path) {
   _drawSetStatus('loading');
   try {
     const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
-    if (d.path !== path) return;
+    if (!current()) return;
     if (r.status === 404) {
       _drawResetScene();
       d.etag = null;
@@ -58201,17 +58284,19 @@ async function _drawOpen(path) {
       throw new Error(e.error || ('HTTP ' + r.status));
     } else {
       const text = await r.text();
-      await _drawApplyText(text, true);
+      // A later click owns the canvas now; this file's content must not land on it.
+      if (!(await _drawApplyText(text, true, current))) return;
       d.etag = r.headers.get('ETag');
       _drawSetStatus('saved');
     }
     _drawPrefSet('draw_last', path);
     _drawRememberRecent(true);
   } catch (e) {
+    if (!current()) return;
     _drawSetStatus('load-error', String(e && e.message || e));
-    _drawBeacon('open-failed', { error: String(e && e.message || e) });
+    _drawBeacon('open-failed', { error: String(e && e.message || e), target: path });
   } finally {
-    d.opening = false;
+    if (seq === d.openSeq) d.opening = false;
   }
 }
 
@@ -58222,12 +58307,16 @@ function _drawResetScene() {
     d.api.updateScene({ elements: [], captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
     d.api.history.clear();
     d.savedVersion = d.curVersion = _drawSceneVersion();
+    d.savedCount = 0;
   } finally { d.applying = false; }
 }
 
-async function _drawApplyText(text, initial) {
+// Returns false, applying nothing, when stillWanted() says the user moved on
+// while the file was parsing.
+async function _drawApplyText(text, initial, stillWanted) {
   const d = _draw, X = d.lib.X;
   const scene = await X.loadFromBlob(new Blob([text], { type: 'application/json' }), null, null);
+  if (stillWanted && !stillWanted()) return false;
   d.applying = true;
   try {
     const bg = scene.appState && scene.appState.viewBackgroundColor;
@@ -58237,7 +58326,9 @@ async function _drawApplyText(text, initial) {
     if (files.length) d.api.addFiles(files);
     if (initial) { d.api.history.clear(); if ((scene.elements || []).length) d.api.scrollToContent(); }
     d.savedVersion = d.curVersion = _drawSceneVersion();
+    d.savedCount = d.api.getSceneElements().length;
   } finally { d.applying = false; }
+  return true;
 }
 
 async function _drawUniquePath(dir, stem) {
@@ -58257,7 +58348,12 @@ async function _drawUniquePath(dir, stem) {
 async function _drawNew(quiet) {
   const d = _drawS();
   if (!d.api) return;
-  if (_drawDirty()) await _drawSave();
+  if (!d.opening && !(await _drawFlush())) {
+    showToast('Not started: the changes to ' + _drawBase(d.path) + ' are not saved yet.');
+    _drawBeacon('new-blocked-unsaved', { status: d.status });
+    return;
+  }
+  d.openSeq++; d.opening = false;   // an open still in flight must not land on the new drawing
   const dir = d.dir || _drawDefaultDir();
   const path = await _drawUniquePath(dir, 'Untitled');
   d.conflict = null; _drawHideConflict();
@@ -58339,7 +58435,8 @@ async function _drawPoll() {
     try { JSON.parse(text); } catch (e) { return; }   // mid-write: try again next tick
     if (path !== d.path || d.saving) return;
     if (!_drawDirty()) {
-      await _drawApplyText(text, false);
+      const seq = d.openSeq;
+      if (!(await _drawApplyText(text, false, () => seq === d.openSeq && path === d.path && !d.opening))) return;
       d.etag = etag;
       _drawSetStatus('saved');
       showToast('Reloaded ' + _drawBase(path) + ' from disk');
@@ -58486,7 +58583,14 @@ function _drawDirPopHere(anchor) {
   const d = _drawS();
   _drawDirPop(d.path ? _drawDirOf(d.path) : (d.dir || _drawDefaultDir()), anchor);
 }
-function _drawPopOpen(path) { _drawCloseMenus(); _drawOpen(path); }
+function _drawPopOpen(path) {
+  _drawCloseMenus();
+  // On a phone the library is a sheet over the canvas: close it so the
+  // drawing just opened is what the user sees.
+  const v = document.getElementById('draw-view');
+  if (v && v.classList.contains('draw-lib-sheet')) _drawToggleLib(false);
+  _drawOpen(path);
+}
 async function _drawNewInDir(dir) {
   _drawCloseMenus();
   _drawS().dir = dir;
@@ -58851,7 +58955,10 @@ async function _drawRememberRecent(force) {
   if (force || !entry.thumb || now - d.thumbAt > 10000) {
     try {
       const els = d.api.getSceneElements();
-      if (els.length) {
+      // An empty drawing gets no picture: a thumbnail kept from earlier
+      // content showed strokes on a file that had none (Ethan, 2026-10-13).
+      if (!els.length) entry.thumb = '';
+      else {
         d.thumbAt = now;
         const blob = await d.lib.X.exportToBlob({ elements: els, files: d.api.getFiles(), mimeType: 'image/png',
           appState: { exportBackground: true, viewBackgroundColor: '#ffffff', exportWithDarkMode: false },
@@ -58962,22 +59069,45 @@ async function _drawExport(kind) {
 }
 
 // ── Live mode: canvas only, compact pen ──
-function _drawToggleLive() {
+// Live mode IS Excalidraw's zen mode, shown inside the amux shell: the Draw
+// tab's own chrome (library, header, status, snap bar) hides and the canvas
+// fills the tab's area, while the amux header and tab bar stay. Zen and live
+// are one state: leaving either one (the pen bar's close, Esc, Excalidraw's
+// "Exit zen mode" or its Alt+Z) leaves both.
+function _drawToggleLive() { _drawSetLive(!_drawS().live); }
+function _drawSetLive(on, from) {
   const d = _drawS();
-  d.live = !d.live;
+  on = !!on;
+  if (d.live === on) return;
+  d.live = on;
   const v = document.getElementById('draw-view');
-  if (v) v.classList.toggle('draw-live', d.live);
+  if (v) v.classList.toggle('draw-live', on);
   const pb = document.getElementById('draw-penbar');
-  if (pb) pb.hidden = !d.live;
+  if (pb) pb.hidden = !on;
   const lb = document.getElementById('draw-live-btn');
-  if (lb) lb.setAttribute('aria-pressed', String(d.live));
-  if (d.api) {
-    d.api.updateScene({ appState: { zenModeEnabled: d.live }, captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
-    if (d.live) _drawPenTool('freedraw');
+  if (lb) lb.setAttribute('aria-pressed', String(on));
+  if (d.api && from !== 'zen') {
+    d.api.updateScene({ appState: { zenModeEnabled: on }, captureUpdate: d.lib.X.CaptureUpdateAction.NEVER });
+  }
+  if (d.api && on) _drawPenTool('freedraw');
+  if (on && !d.liveKeyHooked) {
+    d.liveKeyHooked = true;
+    document.addEventListener('keydown', _drawLiveKey);
   }
   _drawRenderSelbar();
   _drawRenderPenbar();
+  _drawFit();
   _drawSyncOffsetsSoon('live');
+}
+function _drawLiveKey(e) {
+  const d = _draw;
+  if (e.key !== 'Escape' || !d || !d.live || activeView !== 'draw') return;
+  // Esc still belongs to the editor while it is mid-text or mid-shape.
+  const t = e.target;
+  if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+  const st = d.api ? d.api.getAppState() : {};
+  if (st.editingTextElement || st.newElement || st.multiElement || st.openDialog) return;
+  _drawSetLive(false);
 }
 function _drawRenderPenbar() {
   const d = _drawS();
