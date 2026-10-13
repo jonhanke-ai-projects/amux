@@ -1308,6 +1308,43 @@ fn live_chromes_on_dir(home: &Path, target_dir: &Path) -> Vec<u32> {
     pids_on_dir(&String::from_utf8_lossy(&out.stdout), &flag)
 }
 
+/// The directory browser routing launches its CDP fallback Chromes under
+/// (`scripts/browser-route-driver.mjs`, one subdir per selected profile).
+pub fn route_chrome_root(home: &Path) -> PathBuf {
+    home.join("browser-routing").join("chrome")
+}
+
+/// SIGTERM every live Chrome on one browser-routing CDP dir. Returns how many
+/// were signalled.
+///
+/// The routing driver spawns these detached and unref'd, so the native
+/// registry never knows they exist and no reaper arm ever saw them. On macOS
+/// that is worse than a leak: the headless process still checks in with
+/// LaunchServices as `com.google.Chrome`, so while the human's own Chrome is
+/// closed every link clicked in any app opens in it. Measured 2026-10-13: one
+/// left idle for 9 hours took Ethan's link clicks into a blank window.
+///
+/// Scoped like `live_chromes_on_dir`: only a dir under the routing root,
+/// matched by the exact flag, so the user's own Chrome is never a candidate.
+/// TERM, not KILL, so the copied profile flushes its cookies.
+pub async fn stop_route_chrome(home: &Path, dir: &Path) -> usize {
+    if !dir.starts_with(route_chrome_root(home)) {
+        return 0;
+    }
+    let flag = format!("--user-data-dir={}", dir.display());
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-ax", "-o", "pid=,command="])
+        .output()
+    else {
+        return 0;
+    };
+    let pids = pids_on_dir(&String::from_utf8_lossy(&out.stdout), &flag);
+    for pid in &pids {
+        let _ = run_kill(*pid, "-TERM", "browser route chrome reap").await;
+    }
+    pids.len()
+}
+
 /// Pure half of [`live_chromes_on_dir`], so the matching rule is testable
 /// without a live `ps` and without live Chromes to kill.
 fn pids_on_dir(ps_output: &str, flag: &str) -> Vec<u32> {

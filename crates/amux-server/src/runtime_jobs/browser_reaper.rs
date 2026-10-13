@@ -413,7 +413,103 @@ async fn tick(home: &std::path::Path, store: Option<&crate::db::SharedStore>) ->
     // pages. Disabling one must not silently disable the other — they were
     // independent knobs the moment there were two of them.
     reap_stale_profiles(home).await;
+    reap_route_chromes(home, activity_reap_s(), now_f64()).await;
     tick_with_limits(home, store, reap_after_s(), activity_reap_s(), ttl_s()).await
+}
+
+/// When a browser-routing CDP Chrome was last used, or `None` when unknown.
+///
+/// The driver rewrites a session's receipt on every verb, so a receipt's mtime
+/// is that route's last activity. A dir is in use by a receipt naming it as its
+/// current CDP route or as a retained previous route. `launched_at` (the
+/// DevToolsActivePort mtime) covers a Chrome no receipt names: one whose route
+/// was replaced or whose start never finished. Unknown declines to act.
+///
+/// Pure, so the rule has cells without a Chrome.
+pub fn route_chrome_last_activity(
+    dir: &str,
+    receipts: &[(serde_json::Value, f64)],
+    launched_at: Option<f64>,
+) -> Option<f64> {
+    let names = |r: &serde_json::Value| {
+        r.get("user_data_dir").and_then(serde_json::Value::as_str) == Some(dir)
+    };
+    receipts
+        .iter()
+        .filter(|(r, _)| {
+            names(r)
+                || r.get("previous_routes")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|p| p.iter().any(names))
+        })
+        .map(|(_, mtime)| *mtime)
+        .chain(launched_at)
+        .reduce(f64::max)
+}
+
+fn mtime_secs(path: &std::path::Path) -> Option<f64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs_f64())
+}
+
+/// Release browser-routing CDP Chromes nobody has driven for the activity
+/// window (`AMUX_BROWSER_ACTIVITY_REAP_S`, the same knob as the native arm).
+///
+/// The native arms below only see `running_all()`, and the routing driver
+/// launches its fallback Chrome detached, outside that registry. So these were
+/// never reaped, and on macOS a leftover one takes every link the user clicks
+/// while their own Chrome is closed (2026-10-13, see `stop_route_chrome`).
+///
+/// A route whose Chrome is released recovers on its next verb: the driver's
+/// dead-port error is non-terminal, so it relaunches, and it refuses to replay
+/// an action across the change.
+pub async fn reap_route_chromes(home: &std::path::Path, window_s: u64, now: f64) -> Vec<String> {
+    if window_s == 0 {
+        return vec![];
+    }
+    let root = crate::integrations::browser::route_chrome_root(home);
+    let Ok(dirs) = std::fs::read_dir(&root) else {
+        return vec![];
+    };
+    let receipts: Vec<(serde_json::Value, f64)> =
+        std::fs::read_dir(home.join("browser-routing").join("sessions"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| {
+                let v = serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok()?;
+                Some((v, mtime_secs(&e.path())?))
+            })
+            .collect();
+    let mut reaped = vec![];
+    for dir in dirs.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        // No DevToolsActivePort means no Chrome ever served CDP from this dir.
+        let launched = mtime_secs(&dir.join("DevToolsActivePort"));
+        if launched.is_none() {
+            continue;
+        }
+        let last = route_chrome_last_activity(&dir.to_string_lossy(), &receipts, launched);
+        if !should_reap(last, now, window_s) {
+            continue;
+        }
+        let n = crate::integrations::browser::stop_route_chrome(home, &dir).await;
+        if n > 0 {
+            tracing::info!(
+                dir = %dir.display(), pids = n,
+                since_activity_s = last.map(|t| (now - t) as i64).unwrap_or(-1), window_s,
+                "browser: released an idle browser-routing Chrome \
+                 (AMUX_BROWSER_ACTIVITY_REAP_S). Its copied profile stays on disk."
+            );
+            reaped.push(dir.display().to_string());
+        }
+    }
+    reaped
 }
 
 async fn tick_with_limits(
@@ -709,6 +805,49 @@ mod tests {
             "the queued text is not the reap notice: {}",
             mine[0].1
         );
+    }
+
+    /// A routing Chrome's activity is its newest receipt, current or retained,
+    /// and its launch time when no receipt names it (the 2026-10-13 orphan).
+    #[test]
+    fn route_chrome_activity_reads_receipts_and_falls_back_to_launch() {
+        let d = "/h/browser-routing/chrome/abc";
+        let receipts = vec![
+            (json!({"backend":"cdp","user_data_dir":d}), 500.0),
+            (
+                json!({"backend":"amux","previous_routes":[{"user_data_dir":d}]}),
+                900.0,
+            ),
+            (
+                json!({"backend":"cdp","user_data_dir":"/h/browser-routing/chrome/other"}),
+                2000.0,
+            ),
+        ];
+        assert_eq!(
+            route_chrome_last_activity(d, &receipts, Some(100.0)),
+            Some(900.0)
+        );
+        // Orphan: nothing names it, so launch time decides, and it reaps.
+        let orphan =
+            route_chrome_last_activity("/h/browser-routing/chrome/zzz", &receipts, Some(100.0));
+        assert_eq!(orphan, Some(100.0));
+        assert!(should_reap(orphan, 400.0, 300));
+        assert!(!should_reap(orphan, 399.0, 300));
+        // Unknown activity never reaps.
+        assert_eq!(route_chrome_last_activity("/x", &[], None), None);
+        assert!(!should_reap(None, 1e12, 300));
+    }
+
+    /// The stop helper refuses any dir outside the routing root, so the
+    /// user's own Chrome can never be signalled by this arm.
+    #[tokio::test]
+    async fn stop_route_chrome_refuses_dirs_outside_the_routing_root() {
+        let n = crate::integrations::browser::stop_route_chrome(
+            std::path::Path::new("/h"),
+            std::path::Path::new("/Users/x/Library/Application Support/Google/Chrome"),
+        )
+        .await;
+        assert_eq!(n, 0);
     }
 
     /// THE CELL THIS EXISTS FOR. The reaper already knew the profile, the owner
