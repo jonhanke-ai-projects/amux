@@ -33352,6 +33352,15 @@ let _schedEditId = null;
 // Bumped on every open of the schedule form, so a save closes only the form
 // it was started from (see saveSchedModal).
 let _sxModalGen = 0;
+// Whether the schedule form is meant to be open, and the pending hide from
+// the last close. The open/close animation is split across a frame (open adds
+// `active` on the next rAF) and a 250ms timer (close hides after the fade), so
+// neither may infer intent from the `active` class: on a slow WebKit frame the
+// close timer fired between open's display:flex and its rAF, hid the reopened
+// form, and the rAF then marked it active while it stayed display:none (iOS
+// e2e, 2026-10-13: Create right after a save, every field "not visible").
+let _sxModalOpen = false;
+let _sxHideTimer = 0;
 let boardEditId = null;
 let boardEditStatus = 'todo';
 let lastBoardJSON = '';
@@ -40432,13 +40441,25 @@ function openSchedModal(editId, opts) {
   if (_box) _box.classList.remove('sched-cmd-max');
   const _eb = document.getElementById('sched-expand-btn');
   if (_eb) { _eb.innerHTML = '&#x2922;'; _eb.title = 'Expand editor (fills the modal)'; }
+  _sxModalOpen = true;
+  clearTimeout(_sxHideTimer);   // a close's pending hide must not land on this open
+  _sxHideTimer = 0;
   overlay.style.display = 'flex';
+  const gen = _sxModalGen;
   requestAnimationFrame(() => {
+    // Closed (or reopened) before this frame: this open is no longer current.
+    if (!_sxModalOpen || gen !== _sxModalGen) return;
+    if (overlay.style.display === 'none') {
+      // The open-but-hidden state this guards against. Repair it and say so,
+      // so a new path into it shows up in the client-debug log.
+      overlay.style.display = 'flex';
+      _sxModalBeacon('sched-form-open-but-hidden', { repaired: true });
+    }
     overlay.classList.add('active');
     const body = overlay.querySelector('.sx-create-body');
     if (body) body.scrollTop = 0;
   });
-  setTimeout(() => document.getElementById('sched-title').focus(), 50);
+  setTimeout(() => { if (_sxModalOpen) document.getElementById('sched-title').focus(); }, 50);
 }
 function duplicateSchedule(id) {
   const s = (schedules || []).find(x => x.id === id);
@@ -40448,10 +40469,14 @@ function duplicateSchedule(id) {
 }
 function closeSchedModal() {
   const overlay = document.getElementById('sched-overlay');
+  _sxModalOpen = false;
   overlay.classList.remove('active');
-  // Only hide if nothing reopened it in the meantime: Create right after a
-  // save reopened the form inside this 250ms and the stale timer hid it.
-  setTimeout(() => { if (!overlay.classList.contains('active')) overlay.style.display = 'none'; }, 250);
+  // Hide after the fade unless something reopened it in the meantime. Keyed
+  // on _sxModalOpen and cancelled by openSchedModal, not on the `active`
+  // class: open adds that class a frame late, so a check of the class here
+  // read a just-reopened form as closed and hid it.
+  clearTimeout(_sxHideTimer);
+  _sxHideTimer = setTimeout(() => { _sxHideTimer = 0; if (!_sxModalOpen) overlay.style.display = 'none'; }, 250);
   _schedEditId = null;
   _sxOrig = null;
 }
