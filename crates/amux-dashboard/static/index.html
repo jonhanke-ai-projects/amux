@@ -1100,21 +1100,55 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- MDAI view: global list of every .mdai computed node (global-only: a top-bar
      tab in ALL_TABS/switchView, never in the per-worker peek overlay). -->
 <div id="mdai-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
-  <div class="fe-toolbar">
-    <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">
-      <span style="font-weight:600;font-size:0.88rem;white-space:nowrap;">Computed nodes</span>
-      <span id="mdai-count" style="font-size:0.72rem;color:var(--dim);white-space:nowrap;"></span>
+  <!-- List page: the MDAI folder as a directory (same view as Files and Scratchpad) -->
+  <div id="mdai-list-page" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+    <div class="fe-toolbar">
+      <div class="fe-breadcrumb sp-dir" id="mdai-dir" title=""></div>
+      <span id="mdai-count" class="mdai-dim" style="white-space:nowrap;"></span>
+      <button class="fe-tb-btn" onclick="_mdaiCreatePage({ dir: _mdaiDirPath })" title="Create a new .mdai node in this folder">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 6.6 7 7.9 8.3 8.4 7 8.9 6.5 10.2 6 8.9 4.7 8.4 6 7.9Z" fill="currentColor"/></svg>
+        <span>New .mdai</span>
+      </button>
+      <button class="fe-tb-btn" onclick="_mdaiNewFolder()" title="Create a subfolder">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3a1 1 0 011-1h2.6l1.2 1.5h4.2a1 1 0 011 1V10a1 1 0 01-1 1h-8a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/></svg>
+        <span>New Folder</span>
+      </button>
+      <button class="fe-tb-btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Refresh">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        <span>Refresh</span>
+      </button>
     </div>
-    <button class="fe-tb-btn" onclick="_mdaiNewFile()" title="Create a new .mdai computed node">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 6.6 7 7.9 8.3 8.4 7 8.9 6.5 10.2 6 8.9 4.7 8.4 6 7.9Z" fill="currentColor"/></svg>
-      <span>New .mdai</span>
-    </button>
-    <button class="fe-tb-btn" onclick="_mdaiTabLoad()" title="Reload the node list">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-      <span>Refresh</span>
-    </button>
+    <div class="fe-col-headers" id="mdai-col-headers" style="display:none;">
+      <div class="fe-cell-name fe-col-hdr" onclick="_mdaiDirSortBy('name')">Name <span id="mdai-sort-name"></span></div>
+      <div class="fe-cell-size fe-col-hdr" onclick="_mdaiDirSortBy('size')">Size <span id="mdai-sort-size"></span></div>
+      <div class="fe-cell-date fe-col-hdr" onclick="_mdaiDirSortBy('modified')">Modified <span id="mdai-sort-modified"></span></div>
+      <div class="fe-cell-actions"></div>
+    </div>
+    <div id="mdai-breadcrumb" class="fe-breadcrumb" style="padding:0 12px;font-size:0.78rem;display:none;"></div>
+    <div id="mdai-list" class="fe-body" style="flex:1;overflow-y:auto;min-height:0;"></div>
   </div>
-  <div id="mdai-list" style="overflow-y:auto;flex:1;min-height:0;"></div>
+  <!-- Create page -->
+  <div id="mdai-create-page" class="mdai-page-wrap" style="display:none">
+    <div class="mdai-create">
+      <div class="mdai-list-head"><button class="btn" onclick="_mdaiCreateCancel()">&#8249; All nodes</button><h2 class="mdai-h">New .mdai</h2></div>
+      <label class="mdai-lbl">Name<input class="input" id="mdai-new-name" placeholder="Workstreams" autocomplete="off"
+        onkeydown="if(event.key==='Enter')_mdaiCreateSubmit(false)"><span class="mdai-hint">Saved as <b>&lt;name&gt;.mdai</b></span></label>
+      <label class="mdai-lbl">Folder<span class="mdai-folder"><span id="mdai-new-root" class="mdai-dim"></span><input class="input" id="mdai-new-folder" placeholder="(top level)"></span></label>
+      <fieldset class="mdai-fs"><legend>Sources</legend>
+        <label class="mdai-check"><input type="checkbox" id="mdai-new-msgs" checked> Amux messages
+          <select class="input" id="mdai-new-days" aria-label="How far back"><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="all">All time</option></select></label>
+        <label class="mdai-lbl">Files or folders <span class="mdai-dim">(one per line, relative to the node's folder)</span><textarea class="input" id="mdai-new-paths" rows="2" placeholder="notes/&#10;docs/plan.md"></textarea></label>
+        <label class="mdai-lbl" id="mdai-new-upstream-row">Other .mdai nodes <span class="mdai-dim">(their output becomes a source)</span><select class="input" id="mdai-new-upstream" multiple></select></label>
+      </fieldset>
+      <label class="mdai-lbl">Model<select class="input" id="mdai-new-model"><option value="">Default</option><option value="haiku">haiku</option><option value="sonnet">sonnet</option><option value="opus">opus</option></select></label>
+      <label class="mdai-lbl">Instruction<span class="mdai-hint">What the model should write from the sources. Markdown.</span>
+        <textarea class="input mdai-code" id="mdai-new-body" rows="14" spellcheck="false" placeholder="# Weekly brief&#10;&#10;Summarize what changed this week and what needs attention next."></textarea></label>
+      <div id="mdai-new-error" class="mdai-bad" role="alert"></div>
+      <div class="mdai-row-end"><button class="btn" onclick="_mdaiCreateCancel()">Cancel</button>
+        <button class="btn mdai-create-go" onclick="_mdaiCreateSubmit(false)">Create</button>
+        <button class="btn primary mdai-create-go" onclick="_mdaiCreateSubmit(true)">Create and run</button></div>
+    </div>
+  </div>
 </div>
 
 <div id="proxies-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
@@ -3638,21 +3672,32 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <!-- MDAI node overlay: open a .mdai node, run its chain, browse run history, and
      edit its edge prompts + body. Reuses .file-overlay layout (mobile-tested). -->
-<div id="mdai-overlay" class="file-overlay" style="z-index:300;">
-  <div class="file-overlay-header">
-    <div class="file-title-wrap">
+<div id="mdai-overlay" class="file-overlay mdai-detail" style="z-index:300;" role="dialog" aria-labelledby="mdai-title">
+  <header class="mdai-dhead">
+    <button class="btn mdai-back" onclick="closeMdaiNode()" aria-label="Back to all nodes">&#8249;</button>
+    <span class="mdai-dicon" aria-hidden="true">&#9672;</span>
+    <div class="mdai-dtitles">
       <h2 id="mdai-title">node</h2>
       <div id="mdai-subpath" class="file-subpath"></div>
+      <div id="mdai-badges" class="mdai-badges"></div>
     </div>
-    <!-- NOT .file-actions: that container is display:none until the file
-         viewer's own toggle opens it, so Run, Raw and the menu were never shown. -->
     <div class="mdai-actions">
-      <button id="mdai-run-btn" class="file-view-tab" onclick="_mdaiRun()" title="Run the DAG chain">Run</button>
-      <button id="mdai-menu-btn" class="file-menu-btn" onclick="event.stopPropagation();_mdaiMenu(this)" title="Copy, export, raw file, read aloud" aria-label="More actions">&#x22EF;</button>
+      <span class="mdai-split"><button id="mdai-run-btn" class="btn" onclick="_mdaiRun({show:true})" title="Run this node and everything it reads">&#9655; Run</button><button class="btn mdai-split-more" onclick="event.stopPropagation();_mdaiRunMenu(this)" aria-label="Run options">&#9662;</button></span>
+      <button id="mdai-menu-btn" class="btn" onclick="event.stopPropagation();_mdaiMenu(this)" title="Copy, export, raw file, read aloud" aria-label="More actions">&#x22EF;</button>
+      <button id="mdai-save-btn" class="btn" onclick="_mdaiSave()">Saved</button>
     </div>
-    <button class="btn" onclick="closeMdaiNode()" style="flex-shrink:0;">&#x2715;</button>
+  </header>
+  <nav class="mdai-tabs" role="tablist">
+    <button class="mdai-tab" role="tab" data-tab="edit" onclick="_mdaiSetTab('edit')">&#9998; Edit</button>
+    <button class="mdai-tab" role="tab" data-tab="preview" onclick="_mdaiSetTab('preview')">&#128065; Preview</button>
+    <button class="mdai-tab" role="tab" data-tab="sources" onclick="_mdaiSetTab('sources')">&#9636; Sources <span class="mdai-tab-n"></span></button>
+    <button class="mdai-tab" role="tab" data-tab="runs" onclick="_mdaiSetTab('runs')">&#9719; Runs <span class="mdai-tab-n"></span></button>
+    <button class="mdai-tab" role="tab" data-tab="settings" onclick="_mdaiSetTab('settings')">&#9881; Settings</button>
+  </nav>
+  <div class="mdai-cols">
+    <div id="mdai-body" class="mdai-node-body mdai-main" role="tabpanel"></div>
+    <aside id="mdai-side" class="mdai-side" aria-label="Graph and runs"></aside>
   </div>
-  <div id="mdai-body" class="mdai-node-body"></div>
 </div>
 
 <!-- File explorer overlay -->

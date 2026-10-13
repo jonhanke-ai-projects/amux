@@ -14210,7 +14210,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1485';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1486';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -29464,209 +29464,703 @@ async function _connectorTest(id, btn) {
   }
 }
 
-async function _mdaiTabLoad() {
-  const list = document.getElementById('mdai-list');
-  const cnt = document.getElementById('mdai-count');
-  if (!list) return;
-  // The MDAI tab is a file-DIRECTORY view of the local.amux folder (Ethan,
-  // AMUX-3326): render that folder with the same Files-explorer component the
-  // rest of the app uses, so a .mdai opens in-place (routed to the MDAI viewer)
-  // like any other file. Falls back to the flat computed-node list when no
-  // mdai_root is configured.
-  if (_mdaiRootPath === undefined) {
-    try { const rr = await fetch(API + '/api/prefs?key=mdai_root'); _mdaiRootPath = ((await rr.json()).value || '').trim(); }
-    catch (e) { _mdaiRootPath = ''; }
-  }
-  if (_mdaiRootPath) {
-    list.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.85rem;">Loading…</div>';
-    try {
-      const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_mdaiRootPath));
-      const data = await r.json();
-      if (!data.error && typeof _renderFilesEntries === 'function') {
-        const n = (data.entries || []).length;
-        if (cnt) cnt.textContent = n ? (n + (n === 1 ? ' item' : ' items')) : '';
-        _renderFilesEntries(list, _mdaiRootPath, data, false);
-        return;
-      }
-    } catch (e) { /* fall through to the flat node list */ }
-  }
-  list.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.85rem;">Loading computed nodes…</div>';
-  try {
-    const r = await fetch(API + '/api/files/mdai');
-    const d = await r.json();
-    const files = (d && d.files) || [];
-    if (cnt) cnt.textContent = files.length ? (files.length + (files.length === 1 ? ' node' : ' nodes')) : '';
-    if (!files.length) {
-      list.innerHTML = '<div style="padding:28px 16px;text-align:center;color:var(--dim);font-size:0.85rem;">'
-        + 'No .mdai computed nodes yet.<br><br>'
-        + '<button class="fe-tb-btn" onclick="_mdaiNewFile()" style="display:inline-flex;">Create your first .mdai</button>'
-        + '<div style="margin-top:14px;font-size:0.75rem;line-height:1.5;max-width:340px;margin-left:auto;margin-right:auto;">'
-        + 'A .mdai file is a computed markdown node: connect sources, write a synthesis instruction, and opening it runs the chain.</div></div>';
-      return;
-    }
-    list.innerHTML = files.map(f => {
-      const name = (f.path || '').split('/').pop();
-      const dir = (f.path || '').slice(0, (f.path || '').lastIndexOf('/'));
-      const icon = _fileTypeIcon(name, 'file');
-      const title = f.title && f.title.trim() ? f.title.trim() : name;
-      const meta = [];
-      meta.push((f.sources || 0) + (f.sources === 1 ? ' source' : ' sources'));
-      if (f.model) meta.push(esc(f.model));
-      meta.push(f.last_run ? ('ran ' + timeAgo(f.last_run)) : 'not run yet');
-      return '<div class="mdai-row" onclick="openMdaiNode(' + JSON.stringify(f.path).replace(/"/g, '&quot;') + ')">'
-        + '<span class="mdai-row-icon">' + icon + '</span>'
-        + '<div class="mdai-row-main">'
-        + '<div class="mdai-row-title">' + esc(title) + '</div>'
-        + '<div class="mdai-row-path">' + esc(dir ? dir + '/' : '') + esc(name) + '</div>'
-        + '<div class="mdai-row-meta">' + meta.join(' &middot; ') + '</div>'
-        + '</div><span class="mdai-row-go">&#8250;</span></div>';
-    }).join('');
-  } catch (e) {
-    list.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.85rem;">Could not load computed nodes.</div>';
-  }
+// ── MDAI pages: list, create, details (edit / preview / sources / runs / settings) ──
+// A .mdai is a computed markdown node: YAML frontmatter (`model`, `sources`,
+// `fetch`) plus a synthesis instruction. The server runs it (POST /run) and
+// keeps every run, including failures, with tokens and cost when the provider
+// reported them (mdai_runs). GET /graph says what a node reads and which nodes
+// read it.
+let _mdaiListData = null;      // last GET /api/files/mdai payload
+let _mdaiTab = 'preview';      // details tab: edit | preview | sources | runs | settings
+let _mdaiGraph = null;         // GET /graph for the open node
+let _mdaiShown = null;         // the run whose output Preview shows {id, ts, output, model, cached, status, error}
+let _mdaiDraft = null;         // unsaved Edit-tab text, or null when clean
+let _mdaiRunning = false;
+
+function _mdaiQ(s) { return JSON.stringify(String(s)).replace(/"/g, '&quot;'); }
+function _mdaiDur(ms) { return ms == null ? '' : (ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'); }
+function _mdaiTok(n) { return n == null ? '—' : (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n)); }
+function _mdaiCost(c) { return c == null ? '—' : (c < 0.01 ? '$' + c.toFixed(4) : '$' + c.toFixed(2)); }
+function _mdaiAmuxLabel(p) {
+  const m = String(p).match(/^amux:([a-z_]+)(?:\?(.*))?$/);
+  if (!m) return p;
+  const q = new URLSearchParams(m[2] || '');
+  const days = q.get('days');
+  return days ? (/^(all|none|0)$/.test(days) ? 'All time' : 'Last ' + days + ' days') : 'Last 14 days';
+}
+// Run ids are global across nodes; people count a node's own runs.
+function _mdaiRunNo(run) {
+  const i = _mdaiHist.indexOf(run);
+  return i < 0 ? '' : String(Math.max(1, (_mdaiCur && _mdaiCur.runsTotal || _mdaiHist.length) - i));
+}
+function _mdaiStatusOf(run) {
+  if (!run) return { cls: 'none', label: 'Not run yet' };
+  if (run.status === 'error') return { cls: 'bad', label: 'Failed' };
+  if (run.cached) return { cls: 'ok', label: 'Completed (cached)' };
+  return { cls: 'ok', label: 'Completed' };
 }
 
-// ── The node overlay: open, run, history, edit ──
+// ---- List page: the MDAI folder as a directory, like Files and Scratchpad ----
+let _mdaiDirPath = null;       // folder shown; null = the MDAI root
+let _mdaiDirData = null;       // last /api/ls payload for it
+let _mdaiDirGen = 0;
+let _mdaiDirSort = { col: 'modified', dir: -1 };
+function _mdaiRoot() { return (window._AMUX_MDAI_ROOT || window._AMUX_HOME || '/').replace(/\/+$/, '') || '/'; }
+async function _mdaiTabLoad() {
+  const body = document.getElementById('mdai-list');
+  if (!body) return;
+  _mdaiShowPage('list');
+  const root = _mdaiRoot();
+  if (!_mdaiDirPath || (_mdaiDirPath !== root && _mdaiDirPath.indexOf(root + '/') !== 0)) _mdaiDirPath = root;
+  const path = _mdaiDirPath, gen = ++_mdaiDirGen;
+  const dirEl = document.getElementById('mdai-dir');
+  if (dirEl) { dirEl.textContent = path; dirEl.title = path; }
+  const bc = document.getElementById('mdai-breadcrumb');
+  if (bc) {
+    if (path === root) { bc.style.display = 'none'; }
+    else {
+      let html = '<span class="fe-crumb" onclick="_mdaiNav(' + _mdaiQ(root) + ')">' + esc(root.split('/').pop() || '/') + '</span>', cum = root;
+      for (const part of path.slice(root.length + 1).split('/').filter(Boolean)) {
+        cum += '/' + part;
+        html += '<span class="fe-crumb-sep">\u203a</span><span class="fe-crumb" onclick="_mdaiNav(' + _mdaiQ(cum) + ')">' + esc(part) + '</span>';
+      }
+      bc.innerHTML = html; bc.style.display = '';
+    }
+  }
+  if (!_mdaiDirData || _mdaiDirData.path !== path) body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
+  // Node metadata (last run) rides beside the listing; the listing never waits for it.
+  fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { if (d && d.files) { _mdaiListData = d; if (gen === _mdaiDirGen && _mdaiDirData) _mdaiRenderDir(); } }).catch(() => {});
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(path), { signal: AbortSignal.timeout(8000) });
+    const data = await r.json();
+    if (gen !== _mdaiDirGen) return;
+    if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
+    _mdaiDirData = { path, data };
+    _mdaiRenderDir();
+  } catch (e) {
+    if (gen === _mdaiDirGen) body.innerHTML = '<div style="padding:16px;color:var(--dim)">Could not load ' + esc(path) + '.</div>';
+  }
+}
+function _mdaiNav(path) { _mdaiDirPath = path; _mdaiTabLoad(); }
+function _mdaiShowPage(which) {
+  const L = document.getElementById('mdai-list-page'), C = document.getElementById('mdai-create-page');
+  if (L) L.style.display = which === 'list' ? 'flex' : 'none';
+  if (C) C.style.display = which === 'create' ? '' : 'none';
+}
+function _mdaiDirSortBy(col) {
+  if (_mdaiDirSort.col === col) _mdaiDirSort.dir *= -1;
+  else { _mdaiDirSort.col = col; _mdaiDirSort.dir = col === 'name' ? 1 : -1; }
+  _mdaiRenderDir();
+}
+function _mdaiRenderDir() {
+  const body = document.getElementById('mdai-list');
+  if (!body || !_mdaiDirData) return;
+  const { path, data } = _mdaiDirData;
+  const root = _mdaiRoot();
+  ['name', 'size', 'modified'].forEach(c => { const el = document.getElementById('mdai-sort-' + c); if (el) el.textContent = _mdaiDirSort.col === c ? (_mdaiDirSort.dir > 0 ? '\u25b2' : '\u25bc') : ''; });
+  const hdrs = document.getElementById('mdai-col-headers');
+  if (hdrs) hdrs.style.display = 'grid';
+  const { col, dir } = _mdaiDirSort;
+  const entries = [...(data.entries || [])].sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
+    return dir * ((a.modified || 0) - (b.modified || 0));
+  });
+  const nodes = {};
+  ((_mdaiListData && _mdaiListData.files) || []).forEach(f => { nodes[_mdaiAbs(f.path)] = f; });
+  const cnt = document.getElementById('mdai-count');
+  if (cnt) { const n = entries.filter(e => /\.mdai$/i.test(e.name)).length; cnt.textContent = n + (n === 1 ? ' node here' : ' nodes here'); }
+  body.innerHTML = '';
+  if (path !== root) {
+    const back = document.createElement('div');
+    back.className = 'fe-back-row';
+    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div>';
+    back.onclick = () => _mdaiNav(path.slice(0, path.lastIndexOf('/')) || root);
+    body.appendChild(back);
+  }
+  if (!entries.length) {
+    const msg = document.createElement('div');
+    msg.className = 'mdai-empty';
+    msg.innerHTML = '<div class="mdai-empty-title">No .mdai nodes here yet</div><div>A .mdai node reads sources (your amux messages, files, other nodes) and a model writes the report your instruction asks for.</div>'
+      + '<button class="btn primary" onclick="_mdaiCreatePage({ dir: _mdaiDirPath })">New .mdai</button>';
+    body.appendChild(msg);
+    return;
+  }
+  for (const entry of entries) {
+    const ep = path.replace(/\/$/, '') + '/' + entry.name;
+    const isNode = entry.type !== 'dir' && /\.mdai$/i.test(entry.name);
+    const node = isNode ? nodes[ep] : null;
+    const row = document.createElement('div');
+    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '') + (isNode ? ' mdai-node-row' : '');
+    row.dataset.path = ep;
+    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
+    let meta = '';
+    if (node) {
+      const st = node.last_run ? (node.last_status === 'error' ? 'bad' : 'ok') : 'none';
+      meta = '<span class="mdai-row-run" title="' + (node.last_run ? 'Last run ' + timeAgo(node.last_run) + (node.last_status === 'error' ? ', failed' : '') : 'Not run yet') + '"><span class="mdai-dot ' + st + '"></span>'
+        + (node.last_run ? timeAgo(node.last_run) : 'not run') + (node.model ? ' \u00b7 ' + esc(node.model) : '') + '</span>';
+    }
+    row.innerHTML = '<div class="fe-cell-name">' + _fileTypeIcon(entry.name, entry.type) + '<span>' + esc(entry.name) + slash + '</span>' + meta + '</div>'
+      + '<div class="fe-cell-size">' + (entry.type === 'dir' ? '' : _fmtSize(entry.size)) + '</div>'
+      + '<div class="fe-cell-date">' + (entry.modified ? timeAgo(entry.modified) : '') + '</div>'
+      + '<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(' + _mdaiQ(ep) + ',this,' + _mdaiQ(entry.type) + ')">\u22ef</button></div>';
+    row.onclick = entry.type === 'dir' ? () => _mdaiNav(ep) : isNode ? () => openMdaiNode(ep) : () => openFilePreview(ep);
+    body.appendChild(row);
+  }
+}
+async function _mdaiNewFolder() {
+  const name = (prompt('New folder name:', '') || '').trim();
+  if (!name) return;
+  if (/[\/\0]/.test(name) || name === '.' || name === '..') { showToast('Invalid folder name'); return; }
+  try {
+    const r = await fetch(API + '/api/fs/mkdir', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: _mdaiDirPath.replace(/\/$/, '') + '/' + name }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) { showToast('Could not create folder: ' + (d.error || r.status)); return; }
+    _mdaiTabLoad();
+  } catch (e) { showToast('Could not create folder'); }
+}
+
+// ---- Create page --------------------------------------------------------------
+function _mdaiCreatePage(opts) {
+  opts = opts || {};
+  if (typeof activeView !== 'undefined' && activeView !== 'mdai') switchView('mdai');
+  _mdaiShowPage('create');
+  const root = (window._AMUX_MDAI_ROOT || window._AMUX_HOME || '').replace(/\/+$/, '');
+  const f = id => document.getElementById(id);
+  f('mdai-new-name').value = opts.name || '';
+  const dir = opts.dir || _mdaiDirPath || '';
+  f('mdai-new-folder').value = dir && (dir === root || dir.indexOf(root + '/') === 0) ? dir.slice(root.length).replace(/^\/+/, '') : '';
+  f('mdai-new-root').textContent = (root || '~') + '/';
+  f('mdai-new-model').value = '';
+  f('mdai-new-msgs').checked = true;
+  f('mdai-new-days').value = '30';
+  f('mdai-new-paths').value = '';
+  f('mdai-new-body').value = opts.body || '';
+  f('mdai-new-error').textContent = '';
+  const sel = f('mdai-new-upstream');
+  const files = (_mdaiListData && _mdaiListData.files) || [];
+  sel.innerHTML = files.map(x => '<option value="' + esc(x.path) + '">' + esc(x.path) + '</option>').join('');
+  sel.size = Math.min(5, Math.max(2, files.length));
+  f('mdai-new-upstream-row').style.display = files.length ? '' : 'none';
+  setTimeout(() => f('mdai-new-name').focus(), 30);
+  if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; if (d.files && d.files.length) _mdaiCreatePage(Object.assign({}, opts, { name: f('mdai-new-name').value, body: f('mdai-new-body').value })); }).catch(() => {});
+}
+function _mdaiCreateCancel() { _mdaiShowPage('list'); }
+function _mdaiCreateDoc() {
+  const f = id => document.getElementById(id);
+  const sources = [];
+  if (f('mdai-new-msgs').checked) sources.push({ path: 'amux:messages?days=' + f('mdai-new-days').value, prompt: '' });
+  f('mdai-new-paths').value.split('\n').map(s => s.trim()).filter(Boolean).forEach(p => sources.push({ path: p, prompt: '' }));
+  return { model: f('mdai-new-model').value || null, sources, body: f('mdai-new-body').value };
+}
+async function _mdaiCreateSubmit(run) {
+  const f = id => document.getElementById(id), errEl = f('mdai-new-error'), btns = document.querySelectorAll('#mdai-create-page .mdai-create-go');
+  errEl.textContent = '';
+  let name = f('mdai-new-name').value.trim();
+  if (!name) { errEl.textContent = 'Give the node a name.'; f('mdai-new-name').focus(); return; }
+  if (!/\.mdai$/i.test(name)) name += '.mdai';
+  if (/[\/\0]/.test(name) || /^\.+mdai$/i.test(name)) { errEl.textContent = 'A name cannot contain "/".'; return; }
+  const folder = f('mdai-new-folder').value.trim().replace(/^\/+|\/+$/g, '');
+  if (folder.split('/').some(s => s === '..')) { errEl.textContent = 'The folder must stay inside ' + f('mdai-new-root').textContent; return; }
+  const doc = _mdaiCreateDoc();
+  if (!doc.body.trim()) { errEl.textContent = 'Write the instruction: what should the model produce from the sources?'; f('mdai-new-body').focus(); return; }
+  // Upstream nodes are written relative to the new file's folder, which is how
+  // the engine resolves them.
+  const root = (window._AMUX_MDAI_ROOT || window._AMUX_HOME || '').replace(/\/+$/, '');
+  const abs = root + '/' + (folder ? folder + '/' : '') + name;
+  const dirAbs = abs.slice(0, abs.lastIndexOf('/'));
+  Array.from(f('mdai-new-upstream').selectedOptions || []).forEach(o => doc.sources.push({ path: _mdaiRelPath(_mdaiAbs(o.value), dirAbs), prompt: '' }));
+  const rel = _mdaiRootRel(abs);
+  if (rel === null) { errEl.textContent = 'Nodes live under your home folder; this location is outside it.'; return; }
+  btns.forEach(b => b.disabled = true);
+  try {
+    // Never overwrite: an existing file of that name is somebody's node.
+    const ex = await fetch(API + '/api/file?path=' + encodeURIComponent(abs));
+    const exd = await ex.json().catch(() => ({}));
+    if (ex.ok && !exd.error && typeof exd.content === 'string') { errEl.textContent = name + ' already exists in that folder. Pick another name.'; return; }
+    const content = _mdaiSerialize(doc);
+    const r = await fetch(API + '/api/files/upload?path=' + encodeURIComponent(rel), {
+      method: 'POST', headers: _authHeaders({ 'Content-Type': 'text/plain' }), body: content });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) { errEl.textContent = (d && d.error) || ('Could not create the node (HTTP ' + r.status + ').'); return; }
+    showToast('Created ' + name);
+    _mdaiListData = null;
+    _mdaiDirPath = dirAbs;
+    _mdaiShowPage('list');
+    _mdaiTabLoad();
+    await openMdaiNode(abs, { autorun: false, tab: run ? 'preview' : 'edit' });
+    if (run) _mdaiRun({ show: true });
+  } catch (e) {
+    errEl.textContent = online ? ('Could not create the node: ' + (e.message || e)) : 'Offline: the node was not created.';
+  } finally { btns.forEach(b => b.disabled = false); }
+}
+// Kept for the Files toolbar, menu and connect picker: the create page when it
+// can be shown, a quick prompt when a caller needs the path back.
+async function _mdaiNewFile(dirOrOpts) {
+  let dir = null, silent = false, noOpen = false;
+  if (typeof dirOrOpts === 'string') dir = dirOrOpts;
+  else if (dirOrOpts) { dir = dirOrOpts.dir || null; silent = !!dirOrOpts.silent; noOpen = !!dirOrOpts.noOpen; }
+  if (!noOpen) { _mdaiCreatePage({ dir: dir || ((activeView === 'files' && _filesPath && !_exploreSession) ? _filesPath : null) }); return null; }
+  if (!dir) dir = (window._AMUX_MDAI_ROOT || window._AMUX_HOME || '/');
+  const raw = prompt('New .mdai node name (e.g. weekly-brief.mdai):', 'node.mdai');
+  if (!raw || !raw.trim()) return null;
+  let fname = raw.trim();
+  if (!/\.mdai$/i.test(fname)) fname += '.mdai';
+  if (/[\/\0]/.test(fname)) { showToast('Invalid file name'); return null; }
+  const rel = _mdaiRootRel(dir.replace(/\/+$/, '') + '/' + fname);
+  if (rel === null) { showToast('Could not place the node under your home folder'); return null; }
+  const base = fname.replace(/\.mdai$/i, '');
+  const r = await fetch(API + '/api/files/upload?path=' + encodeURIComponent(rel), { method: 'POST',
+    headers: _authHeaders({ 'Content-Type': 'text/plain' }), body: '---\nsources: []\n---\n# ' + base + '\n\nDescribe what this node should synthesize from its connected sources.\n' }).catch(() => null);
+  const d = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !d.ok) { showToast((d && d.error) || 'Could not create node'); return null; }
+  if (!silent) showToast('Created ' + fname);
+  return rel;
+}
+
+// ---- Details ----------------------------------------------------------------
 async function openMdaiNode(path, opts) {
   opts = opts || {};
   const abs = _mdaiAbs(path);
   _mdaiCur = { abs, rel: (path && path.charAt(0) !== '/') ? path : null, model: null, sources: [], body: '', content: '', parseOk: true };
   _mdaiHist = []; _mdaiHistIdx = 0; _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = null;
-  const nm = abs.split('/').pop();
-  document.getElementById('mdai-title').textContent = nm;
+  _mdaiShown = null; _mdaiGraph = null; _mdaiDraft = null;
+  _mdaiTab = opts.tab || 'preview';
+  document.getElementById('mdai-title').textContent = abs.split('/').pop();
   const sub = document.getElementById('mdai-subpath');
   if (sub) { sub.textContent = abs.slice(0, abs.lastIndexOf('/')) || '/'; sub.title = abs; }
-  document.getElementById('mdai-body').innerHTML = '<div style="padding:18px;color:var(--dim);">Loading node…</div>';
+  document.getElementById('mdai-body').innerHTML = '<div class="mdai-empty">Loading node…</div>';
+  document.getElementById('mdai-side').innerHTML = '';
   document.getElementById('mdai-overlay').classList.add('active');
-  // Read the file so we can show + edit sources and the body.
   try {
     const r = await fetch(API + '/api/file?path=' + encodeURIComponent(abs));
     const d = await r.json();
-    if (!d.error && typeof d.content === 'string') {
-      const p = _mdaiParse(d.content);
-      _mdaiCur.model = p.model; _mdaiCur.sources = p.sources; _mdaiCur.body = p.body;
-      _mdaiCur.parseOk = p.ok; _mdaiCur.content = d.content;
-    }
-  } catch (e) {}
-  await _mdaiLoadHistory();
-  if (opts.autorun === false) { _mdaiRender(); }
-  else {
-    // SHOW THE LAST RESULT FIRST, then refresh behind it (Ethan, 2026-08-22:
-    // "Running the chain… takes forever").
-    //
-    // Measured on Priorities.mdai: 53 runs, `cached:false` on EVERY one, each
-    // 102-115s server-side. The cache cannot help here and it is not broken —
-    // the only source is `amux:messages?days=7`, whose content moves whenever
-    // any lane sends a message, so `inputs_hash` changes between any two runs
-    // on a live fleet. A time-windowed source is uncacheable by construction.
-    //
-    // So every open paid a full model call while the body showed a spinner and
-    // nothing else, for roughly two minutes. The previous output was already
-    // in hand — `_mdaiLoadHistory()` above just fetched it — and was being
-    // thrown away in favour of an empty box. Render it, then let the refresh
-    // land on top: the run is unchanged, only the waiting is.
-    if (_mdaiHist.length) { _mdaiRender(); _mdaiRun({ fromOpen: false }); }
-    else { await _mdaiRun({ fromOpen: true }); }
-  }
+    if (!d.error && typeof d.content === 'string') _mdaiApplyContent(d.content);
+    else _mdaiRunError = d.error || 'Could not read the file';
+  } catch (e) { _mdaiRunError = 'Could not read the file'; }
+  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph()]);
+  if (_mdaiHist.length && !_mdaiShown) await _mdaiShowRun(_mdaiHist.find(h => h.status !== 'error') || _mdaiHist[0], true);
+  _mdaiRender();
+  // Opening shows the last result, then refreshes behind it (Ethan, 2026-08-22).
+  if (opts.autorun !== false && _mdaiCur && !_mdaiRunError) _mdaiRun();
+}
+function _mdaiApplyContent(text) {
+  const p = _mdaiParse(text);
+  _mdaiCur.model = p.model; _mdaiCur.sources = p.sources; _mdaiCur.body = p.body;
+  _mdaiCur.parseOk = p.ok; _mdaiCur.content = text;
 }
 function closeMdaiNode() {
+  if (_mdaiDraft !== null && _mdaiDraft !== (_mdaiCur && _mdaiCur.content) && !confirm('Discard unsaved changes to this node?')) return;
   document.getElementById('mdai-overlay').classList.remove('active');
-  _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null;
+  _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null;
+  if (activeView === 'mdai') _mdaiTabLoad();
 }
 async function _mdaiLoadHistory() {
   if (!_mdaiCur) return;
   try {
-    const r = await fetch(API + '/api/files/mdai/history?path=' + encodeURIComponent(_mdaiCur.abs));
+    const r = await fetch(API + '/api/files/mdai/history?lite=1&limit=50&path=' + encodeURIComponent(_mdaiCur.abs));
     const d = await r.json();
     _mdaiHist = (d && d.runs) || [];
+    _mdaiCur.runsTotal = (d && d.total) || _mdaiHist.length;
     if (d && d.path) _mdaiCur.rel = d.path;
   } catch (e) { _mdaiHist = []; }
   _mdaiHistIdx = 0;
 }
-// Run (or re-run) the node. The engine caches unchanged inputs, so this is cheap
-// on an open of an unchanged node. Every run records a history row (cached flagged),
-// so we reload history and show the newest.
+async function _mdaiLoadGraph() {
+  if (!_mdaiCur) return;
+  try {
+    const r = await fetch(API + '/api/files/mdai/graph?path=' + encodeURIComponent(_mdaiCur.abs));
+    const d = await r.json();
+    _mdaiGraph = r.ok && !d.error ? d : { error: d.error || ('HTTP ' + r.status) };
+  } catch (e) { _mdaiGraph = { error: 'unreachable' }; }
+}
+// Load one run's output (history rows are listed without it).
+async function _mdaiShowRun(run, quiet) {
+  if (!_mdaiCur || !run) return;
+  if (run.output == null) {
+    try {
+      const r = await fetch(API + '/api/files/mdai/history?limit=1&id=' + run.id + '&path=' + encodeURIComponent(_mdaiCur.abs));
+      const d = await r.json();
+      const full = (d.runs || [])[0];
+      if (full) run.output = full.output;
+    } catch (e) {}
+  }
+  _mdaiShown = run;
+  _mdaiHistIdx = Math.max(0, _mdaiHist.indexOf(run));
+  if (!quiet) { _mdaiTab = 'preview'; _mdaiRender(); }
+}
 async function _mdaiRun(opts) {
   opts = opts || {};
-  const btn = document.getElementById('mdai-run-btn');
-  if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = 'Running…'; }
-  // The button label IS the refresh indicator, and it is deliberately the only
-  // one: a background refresh over a rendered result must be visible, or stale
-  // content reads as current. I nearly added a separate #mdai-stale element
-  // here — there is no such element, so the line would have been a silent
-  // no-op under a comment claiming it said something. The button exists and is
-  // already on screen.
-  const bodyEl = document.getElementById('mdai-body');
-  if (opts.fromOpen && bodyEl) bodyEl.innerHTML = '<div style="padding:18px;color:var(--dim);">Running the chain…</div>';
+  if (!_mdaiCur || _mdaiRunning) return;
+  if (_mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content && !(await _mdaiSave())) return;
+  // The node this run belongs to. A run that finishes after you opened a
+  // different node must not reload that node's history or switch its tab.
+  const node = _mdaiCur;
+  _mdaiRunning = true;
+  // Only a Run you asked for moves you to Preview, and it does so now, not when
+  // the run lands (which would pull you out of the editor mid-sentence).
+  if (opts.show) _mdaiTab = 'preview';
+  _mdaiRender();
+  const t0 = Date.now();
   try {
-    // Bound the run so it cannot hang the UI forever (AMUX-3371: Priorities.mdai
-    // sat on "Running the chain…" with no error and no way out). A real chain —
-    // even a self-fetch + a synthesis model call over weeks of messages —
-    // finishes well inside 3 min; past that it is a stuck source or a wedged
-    // model call, and a timeout that surfaces an error beats an infinite spinner.
+    // AF-141: this bounds the WHOLE RUN as a backstop against a hung server;
+    // the server bounds each node (MODEL_TIMEOUT_S) and answers first.
     const _ctrl = new AbortController();
-    // AF-141: this bounds the WHOLE RUN; the server bounds each NODE
-    // (MODEL_TIMEOUT_S, 150s). Both were 180 — two different quantities wearing
-    // the same number — so this abort always won the race and the server's
-    // specific error, which names the CLI and the budget, could never reach the
-    // user. They got the guess below instead. And a legitimate two-node chain of
-    // 100s each was killed here having exceeded no server limit at all.
-    //
-    // 600s is deliberately generous because this is a BACKSTOP against a hung
-    // server, not a quality bar: the server now fails each node at 150s and
-    // answers, so a run reaching 600s means the server itself stopped talking.
-    // A long wait is affordable now that it is not a blank one — the previous
-    // result renders immediately and this refresh lands behind it.
     const _to = setTimeout(() => _ctrl.abort(), 600000);
     let r;
     try {
       r = await fetch(API + '/api/files/mdai/run', {
         method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ path: _mdaiCur.abs }),
-        signal: _ctrl.signal
-      });
+        body: JSON.stringify({ path: _mdaiCur.abs }), signal: _ctrl.signal });
     } finally { clearTimeout(_to); }
     const d = await r.json().catch(() => ({}));
-    // A LOCALLY-QUEUED RESPONSE IS NOT A RUN (AF-371).
-    //
-    // The outbox interceptor manufactures a 202 `{ok:true,queued:true}` when a
-    // fetch fails, and `r.ok` is TRUE for it with no `d.error`, so the success
-    // branch below took it and reported a completed run that never left the
-    // browser. `_isLocallyQueued` exists for exactly this and was called at one
-    // site out of every place it applies (ethos rule 1: the capability existed
-    // and did not reach the caller that needed it).
-    //
-    // Belt and braces alongside the _OUTBOX_SKIP entry above: that entry stops
-    // THIS url being queued, and this guard means any future path that hands the
-    // panel a synthetic 202 fails loudly instead of silently.
+    // A locally queued 202 is not a run (AF-371): say so instead of "done".
     if (_isLocallyQueued(r)) {
-      _mdaiRunError = 'The server could not be reached, so this run was never sent. '
-        + 'Nothing was queued for later: an mdai run is a chain of model calls and '
-        + 'replaying it hours later would spend them on a question you are no longer '
-        + 'asking. Retry when amux is back.';
+      _mdaiRunError = 'The server could not be reached, so this run was never sent. Nothing was queued: replaying a model chain later would spend it on a question you may no longer be asking. Retry when amux is back.';
       _mdaiRunCycle = null;
     } else if (!r.ok || d.error) {
-      _mdaiRunError = d.error || ('HTTP ' + r.status);
-      _mdaiRunCycle = d.cycle || null;
+      _mdaiRunError = d.error || ('HTTP ' + r.status); _mdaiRunCycle = d.cycle || null;
     } else {
       _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = d;
-      await _mdaiLoadHistory();
     }
   } catch (e) {
     _mdaiRunError = (e && e.name === 'AbortError')
-      ? 'No answer from the server for 10 minutes, so the run was stopped. Each step is capped at 150s server-side and reports its own error, so reaching this means the server stopped responding rather than one step being slow — check that amux is up, then retry.'
+      ? 'No answer from the server for 10 minutes, so the run was stopped. Each step is bounded server-side and reports its own error, so this means the server stopped responding. Check that amux is up, then retry.'
       : ((e && e.message) || 'run failed');
     _mdaiRunCycle = null;
   }
-  if (btn) btn.disabled = false;
+  _mdaiRunning = false;
+  if (_mdaiCur !== node) { if (activeView === 'mdai') _mdaiTabLoad(); return; }
+  await _mdaiLoadHistory();
+  if (_mdaiCur !== node) return;
+  if (!_mdaiRunError && _mdaiHist[0]) await _mdaiShowRun(_mdaiHist[0], true);
   _mdaiRender();
+  if (activeView === 'mdai') _mdaiTabLoad();
+  try { window._clientDebug && window._clientDebug('mdai-run', { ms: Date.now() - t0, ok: !_mdaiRunError, measured: true }); } catch (e) {}
 }
 function _mdaiHistNav(delta) {
   if (!_mdaiHist.length) return;
   const n = Math.max(0, Math.min(_mdaiHist.length - 1, _mdaiHistIdx + delta));
-  if (n === _mdaiHistIdx) return;
-  _mdaiHistIdx = n; _mdaiRender();
+  if (n !== _mdaiHistIdx) _mdaiShowRun(_mdaiHist[n]);
 }
+async function _mdaiWriteText(content) {
+  const rel = _mdaiRootRel(_mdaiCur.abs);
+  if (rel === null) { showToast('This node is outside your home folder and cannot be edited here'); return false; }
+  try {
+    const r = await fetch(API + '/api/files/upload?path=' + encodeURIComponent(rel), {
+      method: 'POST', headers: _authHeaders({ 'Content-Type': 'text/plain' }), body: content });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d && d.ok) { _mdaiApplyContent(content); _mdaiDraft = null; _mdaiLoadGraph().then(() => _mdaiRenderSide()); return true; }
+    showToast((d && d.error) || 'Could not save node');
+  } catch (e) { showToast('Could not save node'); }
+  return false;
+}
+// Structured edits (Sources, Settings) rewrite the frontmatter from parsed state.
+async function _mdaiWriteFile() { return _mdaiWriteText(_mdaiSerialize(_mdaiCur)); }
+async function _mdaiSave() {
+  if (!_mdaiCur) return false;
+  const text = _mdaiDraft !== null ? _mdaiDraft : _mdaiCur.content;
+  const btn = document.getElementById('mdai-save-btn');
+  if (btn) btn.disabled = true;
+  const ok = await _mdaiWriteText(text);
+  if (btn) btn.disabled = false;
+  if (ok) showToast('Saved');
+  _mdaiRender();
+  return ok;
+}
+// Edit tab: the whole file, with line numbers. Kept as #mdai-body-ta (the e2e
+// raw-view test and the old body editor both address it by that id).
+function _mdaiEditInput(ta) {
+  _mdaiDraft = ta.value;
+  _mdaiGutter(ta);
+  _mdaiSyncDirty();
+}
+// The editor wraps long lines (the instruction is prose), so a line number has
+// to sit beside the first row of its line and leave the wrapped rows blank. A
+// hidden mirror with the textarea's exact width and font measures each line.
+function _mdaiGutter(ta) {
+  const g = document.getElementById('mdai-gutter');
+  if (!g) return;
+  const lines = ta.value.split('\n');
+  const width = ta.clientWidth;
+  const key = width + ':' + ta.value.length + ':' + lines.length;
+  if (g.dataset.key !== key) {
+    g.dataset.key = key;
+    let mirror = document.getElementById('mdai-gutter-mirror');
+    if (!mirror) { mirror = document.createElement('div'); mirror.id = 'mdai-gutter-mirror'; mirror.className = 'mdai-code mdai-mirror'; document.body.appendChild(mirror); }
+    const cs = getComputedStyle(ta);
+    mirror.style.width = (width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) + 'px';
+    mirror.style.font = cs.font; mirror.style.lineHeight = cs.lineHeight; mirror.style.tabSize = cs.tabSize;
+    mirror.innerHTML = lines.map(l => '<div>' + (l ? esc(l) : '&#8203;') + '</div>').join('');
+    const hs = Array.from(mirror.children, d => d.getBoundingClientRect().height);
+    g.innerHTML = hs.map((h, i) => '<div style="height:' + h + 'px">' + (i + 1) + '</div>').join('');
+  }
+  g.scrollTop = ta.scrollTop;
+}
+function _mdaiSyncDirty() {
+  const dirty = _mdaiDraft !== null && _mdaiCur && _mdaiDraft !== _mdaiCur.content;
+  const btn = document.getElementById('mdai-save-btn');
+  if (btn) { btn.textContent = dirty ? 'Save' : 'Saved'; btn.classList.toggle('primary', !!dirty); }
+  const b = document.getElementById('mdai-dirty');
+  if (b) b.style.display = dirty ? '' : 'none';
+}
+function _mdaiEditKey(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); _mdaiSave(); }
+  if (e.key === 'Tab' && !e.shiftKey) {
+    e.preventDefault();
+    const ta = e.target, s = ta.selectionStart;
+    ta.setRangeText('  ', s, ta.selectionEnd, 'end'); _mdaiEditInput(ta);
+  }
+}
+// Sources tab
+async function _mdaiSavePrompt(idx) {
+  const ta = document.getElementById('mdai-prompt-' + idx);
+  if (!ta || !_mdaiCur || !_mdaiCur.sources[idx]) return;
+  const pathInp = document.getElementById('mdai-path-' + idx);
+  if (pathInp) _mdaiCur.sources[idx].path = pathInp.value.trim();
+  _mdaiCur.sources[idx].prompt = ta.value;
+  if (await _mdaiWriteFile()) { showToast('Source saved'); _mdaiRender(); }
+}
+async function _mdaiRemoveSource(idx) {
+  if (!_mdaiCur || !_mdaiCur.sources[idx]) return;
+  if (!confirm('Disconnect "' + (_mdaiCur.sources[idx].path || 'source') + '" from this node?')) return;
+  _mdaiCur.sources.splice(idx, 1);
+  if (await _mdaiWriteFile()) { showToast('Source disconnected'); _mdaiRender(); }
+}
+async function _mdaiAddSource() {
+  if (!_mdaiCur) return;
+  const kind = document.getElementById('mdai-add-kind').value;
+  let p = '';
+  if (kind === 'messages') p = 'amux:messages?days=' + document.getElementById('mdai-add-days').value;
+  else p = document.getElementById('mdai-add-path').value.trim();
+  if (!p) { showToast('Enter a path to add'); return; }
+  if (kind === 'mdai') p = _mdaiRelPath(_mdaiAbs(p), _mdaiCur.abs.slice(0, _mdaiCur.abs.lastIndexOf('/')));
+  _mdaiCur.sources.push({ path: p, prompt: '' });
+  if (await _mdaiWriteFile()) { showToast('Source added'); _mdaiRender(); }
+}
+// Settings tab
+async function _mdaiSetModel(v) {
+  if (!_mdaiCur) return;
+  _mdaiCur.model = v || null;
+  if (await _mdaiWriteFile()) { showToast(v ? 'Model set to ' + v : 'Using the default model'); _mdaiRender(); }
+}
+async function _mdaiDelete() {
+  if (!_mdaiCur) return;
+  const name = _mdaiCur.abs.split('/').pop();
+  const users = (_mdaiGraph && _mdaiGraph.used_by) || [];
+  if (!confirm('Delete ' + name + '?' + (users.length ? ' ' + users.length + ' node(s) read it and will fail until you reconnect them.' : '') + ' Its run history stays in the database.')) return;
+  try {
+    const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: _mdaiCur.abs }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast('Delete failed: ' + (d.error || r.status)); return; }
+    showToast('Deleted ' + name);
+    _mdaiDraft = null; _mdaiListData = null;
+    closeMdaiNode();
+  } catch (e) { showToast('Delete failed: ' + e.message); }
+}
+function _mdaiSetTab(t) {
+  if (_mdaiTab === 'edit' && t !== 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiDraft = ta.value; }
+  _mdaiTab = t; _mdaiRender();
+}
+// The old bottom tabs were Diagram and List (the editor); callers and the
+// raw-view e2e still name them. 'list' is the editor, 'diagram' the preview.
+function _mdaiSetBottomTab(t) { _mdaiSetTab(t === 'list' ? 'edit' : 'preview'); }
+function _mdaiRunMenu(btn) {
+  document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
+  const popup = document.createElement('div');
+  popup.className = 'explore-menu-popup';
+  const item = (label, fn) => { const b = document.createElement('button'); b.className = 'explore-menu-item'; b.textContent = label; b.onclick = () => { popup.remove(); fn(); }; popup.appendChild(b); };
+  item('Run now', () => _mdaiRun({ show: true }));
+  item('Show latest output', () => { if (_mdaiHist[0]) _mdaiShowRun(_mdaiHist[0]); else showToast('Not run yet'); });
+  item('All runs', () => _mdaiSetTab('runs'));
+  document.body.appendChild(popup);
+  const r = _cssRect(btn);
+  popup.style.position = 'fixed'; popup.style.zIndex = '400';
+  popup.style.top = (r.bottom + 4) + 'px'; popup.style.right = Math.max(8, innerWidth / _uiZoomFactor() - r.right) + 'px';
+  setTimeout(() => { const close = e => { if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('click', close); } }; document.addEventListener('click', close); }, 0);
+}
+
+function _mdaiRender() {
+  if (!_mdaiCur) return;
+  const el = document.getElementById('mdai-body');
+  if (!el) return;
+  const latest = _mdaiHist[0] || null;
+  // Header badges: last run state, model, and when.
+  const badges = document.getElementById('mdai-badges');
+  if (badges) {
+    const model = (_mdaiGraph && _mdaiGraph.model) || _mdaiCur.model || '';
+    let h = '';
+    if (_mdaiRunning) h += '<span class="mdai-pill run">running…</span>';
+    else if (latest) h += latest.status === 'error' ? '<span class="mdai-pill bad">failed</span>' : (latest.cached ? '<span class="mdai-pill">cached</span>' : '<span class="mdai-pill ok">fresh</span>');
+    if (model) h += '<span class="mdai-pill model">' + esc(model) + '</span>';
+    if (latest) h += '<span class="mdai-dim">' + timeAgo(latest.ts) + '</span>';
+    h += '<span class="mdai-pill warn" id="mdai-dirty" style="display:none">unsaved</span>';
+    badges.innerHTML = h;
+  }
+  const runBtn = document.getElementById('mdai-run-btn');
+  if (runBtn) { runBtn.disabled = _mdaiRunning; runBtn.innerHTML = _mdaiRunning ? '<span class="mdai-spin"></span>Running…' : '&#9655; Run'; }
+  document.querySelectorAll('#mdai-overlay .mdai-tab').forEach(b => {
+    const on = b.dataset.tab === _mdaiTab; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
+    if (b.dataset.tab === 'runs') b.querySelector('.mdai-tab-n').textContent = _mdaiCur.runsTotal ? String(_mdaiCur.runsTotal) : '';
+    if (b.dataset.tab === 'sources') b.querySelector('.mdai-tab-n').textContent = _mdaiCur.sources.length ? String(_mdaiCur.sources.length) : '';
+  });
+  let html = '';
+  if (_mdaiRunError) {
+    html += '<div class="mdai-err"><b>Run failed.</b> ' + esc(_mdaiRunError)
+      + (_mdaiRunCycle && _mdaiRunCycle.length ? '<div class="mdai-err-cycle">Cycle: ' + _mdaiRunCycle.map(esc).join(' → ') + '</div>' : '') + '</div>';
+  }
+  if (_mdaiTab === 'edit') html += _mdaiEditHtml();
+  else if (_mdaiTab === 'sources') html += _mdaiSourcesHtml();
+  else if (_mdaiTab === 'runs') html += _mdaiRunsHtml();
+  else if (_mdaiTab === 'settings') html += _mdaiSettingsHtml();
+  else html += _mdaiPreviewHtml();
+  el.innerHTML = html;
+  el.dataset.tab = _mdaiTab;
+  if (_mdaiTab === 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiGutter(ta); }
+  _mdaiSyncDirty();
+  _mdaiRenderSide();
+}
+function _mdaiEditHtml() {
+  const text = _mdaiDraft !== null ? _mdaiDraft : _mdaiCur.content;
+  return '<div class="mdai-editor"><div class="mdai-gutter" id="mdai-gutter" aria-hidden="true"></div>'
+    + '<textarea id="mdai-body-ta" class="mdai-code" spellcheck="false" aria-label="' + esc(_mdaiCur.abs.split('/').pop()) + ' source"'
+    + ' oninput="_mdaiEditInput(this)" onscroll="_mdaiGutter(this)" onkeydown="_mdaiEditKey(event)">' + esc(text) + '</textarea></div>'
+    + '<div class="mdai-hint">Frontmatter between <code>---</code> lines sets <code>model</code> and <code>sources</code>; everything below is the instruction. '
+    + (navigator.platform && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl') + '+S saves.</div>';
+}
+function _mdaiPreviewHtml() {
+  const run = _mdaiShown;
+  if (_mdaiRunning && !run) return '<div class="mdai-empty"><span class="mdai-spin"></span>Running the chain…</div>';
+  if (!run) return '<div class="mdai-empty"><div class="mdai-empty-title">Not run yet</div><div>Run it to see what the model writes from these sources.</div>'
+    + '<button class="btn primary" onclick="_mdaiRun({show:true})">&#9655; Run</button></div>';
+  const i = _mdaiHist.indexOf(run);
+  const st = _mdaiStatusOf(run);
+  let h = '<div class="mdai-prev-head"><span class="mdai-dot ' + st.cls + '"></span><span>Run ' + _mdaiRunNo(run) + ' · ' + timeAgo(run.ts)
+    + (run.model ? ' · ' + esc(run.model) : '') + (run.dur_ms ? ' · ' + _mdaiDur(run.dur_ms) : '') + (run.cached ? ' · cached' : '') + '</span>'
+    + '<span class="mdai-prev-nav"><button class="btn" ' + (i >= _mdaiHist.length - 1 || i < 0 ? 'disabled' : '') + ' onclick="_mdaiHistNav(1)" aria-label="Older run">‹ Older</button>'
+    + '<button class="btn" ' + (i <= 0 ? 'disabled' : '') + ' onclick="_mdaiHistNav(-1)" aria-label="Newer run">Newer ›</button></span></div>';
+  if (run.status === 'error') h += '<div class="mdai-err"><b>This run failed.</b> ' + esc(run.error || '') + '</div>';
+  else h += '<div class="mdai-output md-content">' + renderMarkdown(run.output || '', _mdaiCur.abs) + '</div>';
+  return h;
+}
+function _mdaiSrcIcon(kind) { return { amux: '&#128488;', mdai: '&#9672;', folder: '&#128193;', file: '&#128196;', url: '&#127760;', missing: '&#9888;' }[kind] || '&#128196;'; }
+function _mdaiSourcesHtml() {
+  const edges = (_mdaiGraph && _mdaiGraph.sources) || [];
+  const editable = _mdaiCur.parseOk;
+  let h = '<div class="mdai-sec-intro">Each source is read and handed to the model with its edge prompt. '
+    + (editable ? '' : '<b>This frontmatter has a shape the form cannot rewrite safely (e.g. a <code>fetch:</code> block); edit it in the Edit tab.</b>') + '</div>';
+  if (!_mdaiCur.sources.length) h += '<div class="mdai-empty">No sources. The model only sees the instruction.</div>';
+  h += _mdaiCur.sources.map((s, i) => {
+    const e = edges[i] || {};
+    const lbl = e.kind === 'amux' ? 'Amux messages · ' + _mdaiAmuxLabel(s.path) : e.kind === 'missing' ? 'Not found' : (e.kind || 'source');
+    return '<div class="mdai-src"><div class="mdai-src-h"><span class="mdai-src-ico">' + _mdaiSrcIcon(e.kind) + '</span><span class="mdai-src-kind">' + esc(lbl) + '</span>'
+      + (e.kind === 'mdai' ? '<button class="btn" onclick="openMdaiNode(' + _mdaiQ(e.path) + ')">Open</button>' : '')
+      + (editable ? '<button class="btn" onclick="_mdaiRemoveSource(' + i + ')" aria-label="Remove source">Remove</button>' : '') + '</div>'
+      + '<label class="mdai-lbl">Path<input class="input" id="mdai-path-' + i + '" value="' + esc(s.path) + '"' + (editable ? '' : ' disabled') + '></label>'
+      + '<label class="mdai-lbl">Edge prompt<textarea class="input" rows="2" id="mdai-prompt-' + i + '" placeholder="How the model should use this source"' + (editable ? '' : ' disabled') + '>' + esc(s.prompt || '') + '</textarea></label>'
+      + (editable ? '<div class="mdai-row-end"><button class="btn" onclick="_mdaiSavePrompt(' + i + ')">Save source</button></div>' : '') + '</div>';
+  }).join('');
+  if (editable) {
+    const others = ((_mdaiListData && _mdaiListData.files) || []).filter(f => _mdaiAbs(f.path) !== _mdaiCur.abs);
+    h += '<div class="mdai-src mdai-src-add"><div class="mdai-src-h"><span class="mdai-src-kind">Add a source</span></div>'
+      + '<div class="mdai-add-row"><select class="input" id="mdai-add-kind" onchange="document.getElementById(\'mdai-add-msg\').style.display=this.value===\'messages\'?\'\':\'none\';document.getElementById(\'mdai-add-path\').style.display=this.value===\'messages\'?\'none\':\'\';document.getElementById(\'mdai-add-path\').setAttribute(\'list\',this.value===\'mdai\'?\'mdai-add-list\':\'\')">'
+      + '<option value="messages">Amux messages</option><option value="path">File or folder</option><option value="mdai">Another .mdai</option></select>'
+      + '<span id="mdai-add-msg"><select class="input" id="mdai-add-days"><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="all">All time</option></select></span>'
+      + '<input class="input" id="mdai-add-path" style="display:none" placeholder="notes/ or report.md or other.mdai">'
+      + '<datalist id="mdai-add-list">' + others.map(f => '<option value="' + esc(f.path) + '">').join('') + '</datalist>'
+      + '<button class="btn primary" id="mdai-add-btn" onclick="_mdaiAddSource()">Add</button></div></div>';
+  }
+  return h;
+}
+function _mdaiRunsHtml() {
+  if (!_mdaiHist.length) return '<div class="mdai-empty">No runs yet.</div>';
+  const more = (_mdaiCur.runsTotal || 0) > _mdaiHist.length ? '<div class="mdai-hint">Showing the latest ' + _mdaiHist.length + ' of ' + _mdaiCur.runsTotal + ' runs.</div>' : '';
+  return '<div class="mdai-runs" role="table"><div class="mdai-run mdai-run-h" role="row"><span>Run</span><span>When</span><span>Status</span><span>Model</span><span>Time</span><span>In</span><span>Out</span><span>Cost</span></div>'
+    + _mdaiHist.map((r, i) => {
+      const st = _mdaiStatusOf(r);
+      return '<div class="mdai-run' + (_mdaiShown === r ? ' sel' : '') + '" role="row" tabindex="0" onclick="_mdaiShowRun(_mdaiHist[' + i + '])" onkeydown="if(event.key===\'Enter\')_mdaiShowRun(_mdaiHist[' + i + '])">'
+        + '<span>' + _mdaiRunNo(r) + '</span><span data-l="When">' + timeAgo(r.ts) + '</span><span data-l="Status"><span class="mdai-dot ' + st.cls + '"></span>' + st.label + '</span>'
+        + '<span data-l="Model">' + esc(r.model || '') + '</span><span data-l="Time">' + (_mdaiDur(r.dur_ms) || '—') + '</span>'
+        + '<span data-l="In">' + _mdaiTok(r.tokens_in) + '</span><span data-l="Out">' + _mdaiTok(r.tokens_out) + '</span><span data-l="Cost">' + _mdaiCost(r.cost_usd) + '</span></div>';
+    }).join('') + '</div>' + more
+    + '<div class="mdai-hint">Tokens and cost are what the provider reported. The claude CLI reports both; the raw API reports tokens only, so cost shows —.</div>';
+}
+function _mdaiSettingsHtml() {
+  const m = _mdaiCur.model || '';
+  const known = ['', 'haiku', 'sonnet', 'opus'];
+  const resolved = (_mdaiGraph && _mdaiGraph.model) || '';
+  return '<div class="mdai-settings">'
+    + '<label class="mdai-lbl">Model<select class="input" id="mdai-set-model" onchange="_mdaiSetModel(this.value)"' + (_mdaiCur.parseOk ? '' : ' disabled') + '>'
+    + '<option value=""' + (m ? '' : ' selected') + '>Default' + (resolved && !m ? ' (' + esc(resolved) + ')' : '') + '</option>'
+    + known.slice(1).map(k => '<option value="' + k + '"' + (m === k ? ' selected' : '') + '>' + k + '</option>').join('')
+    + (m && !known.includes(m) ? '<option value="' + esc(m) + '" selected>' + esc(m) + '</option>' : '') + '</select></label>'
+    + '<div class="mdai-kv"><span>Location</span><code>' + esc(_mdaiCur.abs) + '</code></div>'
+    + '<div class="mdai-kv"><span>Runs</span><span>' + (_mdaiCur.runsTotal || 0) + '</span></div>'
+    + '<div class="mdai-row-end"><button class="btn" onclick="_mdaiOpenRaw()">Open raw .mdai file</button>'
+    + '<button class="btn danger" onclick="_mdaiDelete()">Delete node</button></div></div>';
+}
+// Below 900px there is no room for a second column: the graph and run cards go
+// at the end of the Preview tab, inside #mdai-body, so that stays the one
+// scroll container (a separate scroller below it pushed the editor off a short
+// screen; e2e file-view-bottom at 1280x350 and 667x375).
+const _mdaiNarrowMq = window.matchMedia ? window.matchMedia('(max-width: 900px)') : null;
+function _mdaiNarrow() { return !!(_mdaiNarrowMq && _mdaiNarrowMq.matches); }
+if (_mdaiNarrowMq && _mdaiNarrowMq.addEventListener) _mdaiNarrowMq.addEventListener('change', () => { if (_mdaiCur) _mdaiRender(); });
+function _mdaiRenderSide() {
+  const col = document.getElementById('mdai-side');
+  if (!col || !_mdaiCur) return;
+  const narrow = _mdaiNarrow();
+  col.style.display = narrow ? 'none' : '';
+  let side = col;
+  if (narrow) {
+    col.innerHTML = '';
+    const body = document.getElementById('mdai-body');
+    side = body && _mdaiTab === 'preview' ? (body.querySelector('.mdai-side-inline') || body.appendChild(Object.assign(document.createElement('div'), { className: 'mdai-side-inline' }))) : null;
+    if (!side) return;
+  }
+  const g = _mdaiGraph || {};
+  const name = _mdaiCur.abs.split('/').pop();
+  const model = g.model || _mdaiCur.model || 'default';
+  const srcs = g.sources || [];
+  const users = g.used_by || [];
+  const card = (ico, title, sub, path) => '<div class="mdai-gnode' + (path ? ' link' : '') + '" title="' + esc(path || title) + '"' + (path ? ' role="button" tabindex="0" data-path="' + esc(path) + '" onclick="openMdaiNode(this.dataset.path)"' : '') + '>'
+    + '<span class="mdai-gico">' + ico + '</span><span><span class="mdai-gtitle">' + esc(title) + '</span><span class="mdai-gsub">' + esc(sub) + '</span></span></div>';
+  let h = '<section class="mdai-card"><div class="mdai-card-h">Node graph</div>';
+  if (g.error) h += '<div class="mdai-dim">Graph unavailable: ' + esc(g.error) + '</div>';
+  else {
+    h += '<div class="mdai-graph">';
+    if (srcs.length) h += '<div class="mdai-grow">' + srcs.map(s => card(_mdaiSrcIcon(s.kind), s.kind === 'amux' ? s.path.split('?')[0] : s.path.split('/').pop(),
+      s.kind === 'amux' ? _mdaiAmuxLabel(s.path) : s.kind === 'missing' ? 'not found' : s.kind, s.kind === 'mdai' ? s.path : null)).join('') + '</div><div class="mdai-arrow">↓</div>';
+    h += '<div class="mdai-grow">' + card('&#9672;', name, 'Synthesis (' + model + ')', null).replace('mdai-gnode', 'mdai-gnode self') + '</div>';
+    if (users.length) h += '<div class="mdai-arrow">↓</div><div class="mdai-grow">' + users.map(u => card('&#9672;', u.split('/').pop(), 'uses this', u)).join('') + '</div>';
+    if (g.truncated) h += '<div class="mdai-dim">Scan cut short: "uses this" may be incomplete.</div>';
+    h += '</div>';
+  }
+  h += '</section>';
+  const last = _mdaiHist[0];
+  h += '<section class="mdai-card"><div class="mdai-card-h">Last run<button class="mdai-link" onclick="_mdaiSetTab(\'runs\')">View all runs →</button></div>';
+  if (!last) h += '<div class="mdai-dim">Not run yet.</div>';
+  else {
+    const st = _mdaiStatusOf(last);
+    h += '<div class="mdai-last ' + st.cls + '"><b>' + (last.status === 'error' ? 'Failed' : 'Completed successfully') + '</b>'
+      + '<span>' + timeAgo(last.ts) + (last.dur_ms ? ' · ' + _mdaiDur(last.dur_ms) : '') + ' · ' + esc(last.model || '') + (last.cached ? ' · cached' : '') + '</span></div>'
+      + '<div class="mdai-stats"><div><span>Input</span><b>' + _mdaiTok(last.tokens_in) + (last.tokens_in != null ? ' tokens' : '') + '</b></div>'
+      + '<div><span>Output</span><b>' + _mdaiTok(last.tokens_out) + (last.tokens_out != null ? ' tokens' : '') + '</b></div>'
+      + '<div><span>Cost</span><b>' + _mdaiCost(last.cost_usd) + '</b></div></div>'
+      + '<div class="mdai-row-end"><button class="btn" onclick="_mdaiShowRun(_mdaiHist[0])">View output</button>'
+      + '<button class="btn" ' + (_mdaiRunning ? 'disabled' : '') + ' onclick="_mdaiRun({show:true})">&#9655; Run again</button></div>';
+  }
+  h += '</section>';
+  if (_mdaiHist.length) {
+    h += '<section class="mdai-card"><div class="mdai-card-h">Recent runs<button class="mdai-link" onclick="_mdaiSetTab(\'runs\')">View all →</button></div>'
+      + _mdaiHist.slice(0, 5).map((r, i) => { const st = _mdaiStatusOf(r); return '<div class="mdai-rrow" role="button" tabindex="0" onclick="_mdaiShowRun(_mdaiHist[' + i + '])"><span class="mdai-dot ' + st.cls + '"></span><span>' + timeAgo(r.ts) + '</span><span class="' + (r.status === 'error' ? 'mdai-bad' : '') + '">' + (r.status === 'error' ? 'Failed' : (r.cached ? 'Cached' : 'Completed')) + '</span><span>' + (_mdaiDur(r.dur_ms) || '') + '</span></div>'; }).join('')
+      + '</section>';
+  }
+  side.innerHTML = h;
+}
+
+
 
 // Ellipsis menu on the MDAI viewer: copy / export / read aloud the currently
 // shown version (Ethan, AMUX-3320). Read-aloud reuses _ttsSpeak.
@@ -29677,8 +30171,8 @@ function _mdaiHistNav(delta) {
 // the same rendered HTML as a standalone page (Ethan, 2026-09-26: "copy/export
 // the rendered mdai contents").
 function _mdaiCurrentText() {
-  const cur = _mdaiHist[_mdaiHistIdx] || null;
-  return (cur && cur.output) ? cur.output : '';
+  const cur = _mdaiShown;
+  return (cur && cur.status !== 'error' && cur.output) ? cur.output : '';
 }
 // The rendered HTML of the shown version: the on-screen output when it is there,
 // else the same renderMarkdown call _mdaiRender makes.
@@ -29695,7 +30189,7 @@ function _mdaiBaseName() {
 }
 // A self-contained page: print-friendly light styles, no dashboard CSS needed.
 function _mdaiStandaloneHtml() {
-  const cur = _mdaiHist[_mdaiHistIdx] || null;
+  const cur = _mdaiShown;
   const when = (cur && cur.ts) ? new Date(cur.ts * (cur.ts < 1e12 ? 1000 : 1)).toLocaleString() : '';
   const name = _mdaiBaseName();
   return '<!doctype html><html><head><meta charset="utf-8">'
@@ -29819,49 +30313,6 @@ function _mdaiDownload(text) {
   if (!text) { showToast('Nothing to download — run the node first'); return; }
   _mdaiSaveBlob(text, 'text/markdown', _mdaiBaseName() + '.md');
 }
-// Write the current parsed state back to disk (used by every structured edit).
-// Uses the upload endpoint (see _mdaiRootRel) because PUT /api/file rejects .mdai.
-async function _mdaiWriteFile() {
-  const content = _mdaiSerialize(_mdaiCur);
-  const rel = _mdaiRootRel(_mdaiCur.abs);
-  if (rel === null) { showToast('This node is outside your home folder and cannot be edited here'); return false; }
-  try {
-    const r = await fetch(API + '/api/files/upload?path=' + encodeURIComponent(rel), {
-      method: 'POST', headers: _authHeaders({ 'Content-Type': 'text/plain' }), body: content
-    });
-    const d = await r.json().catch(() => ({}));
-    if (r.ok && d && d.ok) { _mdaiCur.content = content; return true; }
-    showToast((d && d.error) || 'Could not save node');
-  } catch (e) { showToast('Could not save node'); }
-  return false;
-}
-// Edit one edge's prompt, save, then re-run so the change takes effect.
-async function _mdaiSavePrompt(idx) {
-  const ta = document.getElementById('mdai-prompt-' + idx);
-  if (!ta || !_mdaiCur || !_mdaiCur.sources[idx]) return;
-  // The source PATH is editable too now (Ethan 2026-08-19: "make it so i can edit
-  // this" pointing at `amux:messages?days=14`). The same "Save & re-run" persists
-  // a changed path — e.g. days=14 -> days=28, or swapping a file for an amux: ref —
-  // alongside the edge prompt, then re-runs so the new source takes effect. Round-
-  // trips through the same _mdaiYq quoting the prompt save has always used.
-  const pathInp = document.getElementById('mdai-path-' + idx);
-  if (pathInp) _mdaiCur.sources[idx].path = pathInp.value.trim();
-  _mdaiCur.sources[idx].prompt = ta.value;
-  if (await _mdaiWriteFile()) { showToast('Source saved'); await _mdaiRun(); }
-}
-async function _mdaiRemoveSource(idx) {
-  if (!_mdaiCur || !_mdaiCur.sources[idx]) return;
-  if (!confirm('Disconnect "' + (_mdaiCur.sources[idx].path || 'source') + '" from this node?')) return;
-  _mdaiCur.sources.splice(idx, 1);
-  if (await _mdaiWriteFile()) { showToast('Source disconnected'); await _mdaiRun(); }
-}
-// Edit the node body (synthesis instruction), save, then re-run.
-async function _mdaiSaveBody() {
-  const ta = document.getElementById('mdai-body-ta');
-  if (!ta || !_mdaiCur) return;
-  _mdaiCur.body = ta.value;
-  if (await _mdaiWriteFile()) { showToast('Instruction saved'); await _mdaiRun(); }
-}
 function _mdaiOpenRaw() {
   if (!_mdaiCur) return;
   const abs = _mdaiCur.abs;
@@ -29871,143 +30322,9 @@ function _mdaiOpenRaw() {
       body:JSON.stringify({kind:'mdai-raw-view',verdict:_fileData?.content != null && _fileViewMode === 'raw' ? 'opened' : 'unavailable',measured:true,n:1,ver:APP_VER})}).catch(() => {});
   });
 }
-function _mdaiRender() {
-  const el = document.getElementById('mdai-body');
-  if (!el || !_mdaiCur) return;
-  el.className = 'mdai-node-body';
-  const runBtn = document.getElementById('mdai-run-btn');
-  if (runBtn) runBtn.textContent = _mdaiHist.length ? 'Re-run' : 'Run';
-  const cur = _mdaiHist[_mdaiHistIdx] || null;
-  let html = '';
 
-  // Error banner (still show the editor below so the user can fix it).
-  if (_mdaiRunError) {
-    html += '<div class="mdai-err">' + esc(_mdaiRunError);
-    if (_mdaiRunCycle && _mdaiRunCycle.length) html += '<div class="mdai-err-cycle">cycle: ' + esc(_mdaiRunCycle.join(' \u2192 ')) + '</div>';
-    html += '</div>';
-  }
 
-  // Output section (the star): meta row + history nav + rendered markdown.
-  html += '<div class="mdai-section">';
-  html += '<div class="mdai-meta">';
-  if (cur) {
-    html += '<span class="mdai-badge ' + (cur.cached ? 'mdai-badge-cached' : 'mdai-badge-fresh') + '">' + (cur.cached ? 'cached' : 'fresh') + '</span>';
-    if (cur.model) html += '<span class="mdai-badge mdai-badge-model">' + esc(cur.model) + '</span>';
-    html += '<span class="mdai-meta-time">' + (cur.ts ? timeAgo(cur.ts) : '') + '</span>';
-  } else {
-    html += '<span class="mdai-meta-time">Not run yet</span>';
-  }
-  html += '</div>';
-  if (_mdaiHist.length > 1) {
-    const pos = (_mdaiHist.length - _mdaiHistIdx);
-    html += '<div class="mdai-histnav">'
-      + '<button class="mdai-hbtn" onclick="_mdaiHistNav(1)"' + (_mdaiHistIdx >= _mdaiHist.length - 1 ? ' disabled' : '') + ' title="Older run">&#8249; Older</button>'
-      + '<span class="mdai-hpos">run ' + pos + ' of ' + _mdaiHist.length + '</span>'
-      + '<button class="mdai-hbtn" onclick="_mdaiHistNav(-1)"' + (_mdaiHistIdx <= 0 ? ' disabled' : '') + ' title="Newer run">Newer &#8250;</button>'
-      + '</div>';
-  }
-  html += '<div class="mdai-output md-content">';
-  if (cur && cur.output) html += renderMarkdown(cur.output, _mdaiCur.abs);
-  else if (!_mdaiRunError) html += '<div style="color:var(--dim);font-size:0.85rem;">This node has no output yet. Press Run to compute it.</div>';
-  html += '</div></div>';
 
-  // Bottom tabs (Ethan, AMUX-3322): (1) Diagram — the node's DAG of sources,
-  // the synthesis prompt and the output; (2) List — the same graph as an
-  // editable list. View lives in Diagram, edit in List; both always reachable.
-  html += '<div class="mdai-btabs">'
-    + '<button class="mdai-btab' + (_mdaiBottomTab === 'diagram' ? ' active' : '') + '" onclick="_mdaiSetBottomTab(\'diagram\')">&#9672; Diagram</button>'
-    + '<button class="mdai-btab' + (_mdaiBottomTab === 'list' ? ' active' : '') + '" onclick="_mdaiSetBottomTab(\'list\')">&#8801; List</button>'
-    + '</div>';
-  html += '<div class="mdai-btab-content">'
-    + (_mdaiBottomTab === 'diagram' ? _mdaiDiagramHtml(cur) : _mdaiListHtml())
-    + '</div>';
-
-  el.innerHTML = html;
-  _bindMdFileLinks(el);
-}
-
-let _mdaiBottomTab = 'diagram';   // 'diagram' | 'list' (Ethan, AMUX-3322)
-function _mdaiSetBottomTab(t) { _mdaiBottomTab = t; _mdaiRender(); }
-
-// The List tab: the editable sources + instruction (the old inline editor).
-function _mdaiListHtml() {
-  const c = _mdaiCur;
-  if (!c) return '';
-  let html = '<div class="mdai-section mdai-edit">';
-  html += '<div class="mdai-edit-h">Sources</div>';
-  if (!c.parseOk) {
-    html += '<div class="mdai-note">This node\'s frontmatter uses a form the inline editor will not rewrite safely. '
-      + '<a href="#" onclick="event.preventDefault();_mdaiOpenRaw()">Open the raw file</a> to edit its sources.</div>';
-  }
-  if (!c.sources.length) {
-    html += '<div class="mdai-note">No source files connected — this node is <b>prompt-only</b>. Its instruction fetches its own data at run time '
-      + '(e.g. Priorities pulls the last two weeks of amux messages). Add a file source via a file\'s &#8942; menu (Connect to .mdai) if you want one.</div>';
-  } else {
-    c.sources.forEach((s, idx) => {
-      html += '<div class="mdai-edge">'
-        + (c.parseOk
-            ? '<input class="mdai-edge-path mdai-edge-path-input" id="mdai-path-' + idx + '" value="' + esc(s.path || '') + '" placeholder="source — a file path or an amux: ref (e.g. amux:messages?days=14)" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">'
-            : '<div class="mdai-edge-path" title="' + esc(s.path) + '">' + esc(s.path || '(unnamed source)') + '</div>');
-      if (c.parseOk) {
-        html += '<textarea class="mdai-prompt" id="mdai-prompt-' + idx + '" rows="2" placeholder="Edge prompt">' + esc(s.prompt || '') + '</textarea>'
-          + '<div class="mdai-edge-actions">'
-          + '<button class="mdai-sbtn" onclick="_mdaiSavePrompt(' + idx + ')">Save &amp; re-run</button>'
-          + '<button class="mdai-sbtn mdai-sbtn-danger" onclick="_mdaiRemoveSource(' + idx + ')">Disconnect</button>'
-          + '</div>';
-      } else {
-        html += '<div class="mdai-edge-prompt-ro">' + esc(s.prompt || '') + '</div>';
-      }
-      html += '</div>';
-    });
-  }
-  html += '<div class="mdai-edit-h" style="margin-top:12px;">Instruction (node body)</div>';
-  if (c.parseOk) {
-    html += '<textarea class="mdai-body-ta" id="mdai-body-ta" rows="5" placeholder="What should this node synthesize from its sources?">' + esc(c.body || '') + '</textarea>'
-      + '<div class="mdai-edge-actions"><button class="mdai-sbtn" onclick="_mdaiSaveBody()">Save &amp; re-run</button></div>';
-  } else {
-    html += '<div class="mdai-edge-prompt-ro">' + esc(c.body || '') + '</div>';
-  }
-  html += '</div>';
-  return html;
-}
-
-// The Diagram tab: the node's DAG as a vertical flow — source(s) -> synthesis
-// (model + instruction) -> output. Clicking a node jumps to the List tab to edit
-// it. A prompt-only node shows a self-fetch source instead of a file.
-function _mdaiDiagramHtml(cur) {
-  const c = _mdaiCur;
-  if (!c) return '';
-  let h = '<div class="mdai-diagram">';
-  if (c.sources.length) {
-    h += '<div class="mdai-dg-row">';
-    c.sources.forEach((s) => {
-      h += '<div class="mdai-dg-node mdai-dg-src" onclick="_mdaiSetBottomTab(\'list\')" title="Edit in List">'
-        + '<div class="mdai-dg-kind">source</div>'
-        + '<div class="mdai-dg-title">' + esc(s.path || '(unnamed)') + '</div>'
-        + (s.prompt ? '<div class="mdai-dg-sub">' + esc(s.prompt.slice(0, 90)) + '</div>' : '')
-        + '</div>';
-    });
-    h += '</div>';
-  } else {
-    h += '<div class="mdai-dg-node mdai-dg-src mdai-dg-selffetch" title="Prompt-only: fetches its own data at run time">'
-      + '<div class="mdai-dg-kind">prompt-only source</div>'
-      + '<div class="mdai-dg-sub">no source file — the instruction fetches its own data at run time</div>'
-      + '</div>';
-  }
-  h += '<div class="mdai-dg-arrow">&#8595;</div>';
-  const model = (cur && cur.model) || c.model || 'model';
-  h += '<div class="mdai-dg-node mdai-dg-synth" onclick="_mdaiSetBottomTab(\'list\')" title="Edit the instruction in List">'
-    + '<div class="mdai-dg-kind">synthesis &middot; ' + esc(model) + '</div>'
-    + '<div class="mdai-dg-sub">' + (esc((c.body || '').slice(0, 160)) || '(no instruction)') + '</div>'
-    + '</div>';
-  h += '<div class="mdai-dg-arrow">&#8595;</div>';
-  h += '<div class="mdai-dg-node mdai-dg-out">'
-    + '<div class="mdai-dg-kind">output' + (cur ? (cur.cached ? ' &middot; cached' : ' &middot; fresh') : '') + '</div>'
-    + '<div class="mdai-dg-sub">' + (cur && cur.output ? esc(cur.output.slice(0, 120)) + '&hellip;' : 'not run yet') + '</div>'
-    + '</div>';
-  h += '</div>';
-  return h;
-}
 
 // ── Connect picker: make a file/folder a source of a chosen .mdai node ──
 async function _mdaiConnectPicker(sourceAbs) {
@@ -30069,44 +30386,6 @@ async function _mdaiDoConnect(sourceAbs, targetRel) {
   } catch (e) { showToast('Connect failed'); }
 }
 
-// ── New .mdai scaffold (from the Files toolbar and the MDAI tab) ──
-// dirOrOpts: a directory string, or an options object {dir, silent, noOpen}.
-// Returns the created root-relative path (or null) so the connect picker can chain.
-async function _mdaiNewFile(dirOrOpts) {
-  let dir = null, silent = false, noOpen = false;
-  if (typeof dirOrOpts === 'string') dir = dirOrOpts;
-  else if (dirOrOpts) { dir = dirOrOpts.dir || null; silent = !!dirOrOpts.silent; noOpen = !!dirOrOpts.noOpen; }
-  if (!dir) dir = (activeView === 'files' && _filesPath && !_exploreSession) ? _filesPath : (window._AMUX_HOME || '/');
-  const home = (window._AMUX_HOME || '').replace(/\/+$/, '');
-  // Computed nodes only live under the files root ($HOME). That is the only tree
-  // the engine walks and the only one the writer can reach. If the current folder
-  // is elsewhere (the browser can roam the whole disk), fall back to the root.
-  if (home && dir !== home && dir.indexOf(home + '/') !== 0) dir = home;
-  const raw = prompt('New .mdai node name (e.g. weekly-brief.mdai):', 'node.mdai');
-  if (!raw || !raw.trim()) return null;
-  let fname = raw.trim();
-  if (!/\.mdai$/i.test(fname)) fname += '.mdai';
-  if (/[\/\0]/.test(fname) || fname === '.' || fname === '..') { showToast('Invalid file name'); return null; }
-  const fpath = dir.replace(/\/+$/, '') + '/' + fname;
-  const rel = _mdaiRootRel(fpath);
-  if (rel === null) { showToast('Could not place the node under your home folder'); return null; }
-  const base = fname.replace(/\.mdai$/i, '');
-  const template = '---\nsources: []\n---\n# ' + base + '\n\nDescribe what this node should synthesize from its connected sources.\n';
-  let d = null;
-  try {
-    const r = await fetch(API + '/api/files/upload?path=' + encodeURIComponent(rel), {
-      method: 'POST', headers: _authHeaders({ 'Content-Type': 'text/plain' }), body: template
-    });
-    d = await r.json().catch(() => ({}));
-    if (!r.ok) d = d || { error: 'HTTP ' + r.status };
-  } catch (e) { showToast(online ? 'Could not create node' : 'Offline: cannot create node'); return null; }
-  if (!d || !d.ok) { showToast((d && d.error) || 'Could not create node'); return null; }
-  if (!silent) showToast('Created ' + fname);
-  if (activeView === 'files') loadFiles(_filesPath);
-  if (activeView === 'mdai') _mdaiTabLoad();
-  if (!noOpen) openMdaiNode(fpath, { autorun: false });
-  return rel;
-}
 
 function triggerFilesUpload() {
   const inp = document.getElementById('files-upload-input');
@@ -30374,6 +30653,14 @@ function _showExploreMenu(path, btn, type) {
     document.addEventListener('pointerdown', dismiss, true);
   }, 0);
 }
+// The row menu is shared by every directory view (Files, Scratchpad, MDAI);
+// after a rename or delete, reload the one the row came from. It used to
+// reload Files only, so the other two kept showing the old name.
+function _fileViewRefresh() {
+  if (activeView === 'scratchpad' && typeof _scratchpadLoad === 'function') _scratchpadLoad();
+  else if (activeView === 'mdai') { _mdaiListData = null; _mdaiTabLoad(); }
+  else loadFiles(_filesPath);
+}
 function _showFilesMenu(path, btn, type) {
   document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
   const popup = document.createElement('div');
@@ -30433,7 +30720,7 @@ function _showFilesMenu(path, btn, type) {
   const renItem = document.createElement('button');
   renItem.className = 'explore-menu-item';
   renItem.textContent = 'Rename';
-  renItem.onclick = () => { popup.remove(); _fsRename(path, () => loadFiles(_filesPath)); };
+  renItem.onclick = () => { popup.remove(); _fsRename(path, _fileViewRefresh); };
   popup.appendChild(renItem);
   // Download (files only)
   if (type !== 'dir' && type !== 'directory') {
@@ -30462,7 +30749,7 @@ function _showFilesMenu(path, btn, type) {
     try {
       const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ path }) });
       const d = await r.json();
-      if (r.ok) { showToast('Deleted ' + name); loadFiles(_filesPath); }
+      if (r.ok) { showToast('Deleted ' + name); _fileViewRefresh(); }
       else showToast('Delete failed: ' + (d.error || r.status));
     } catch(e) { showToast('Delete error: ' + e.message); }
   };
