@@ -19,7 +19,7 @@ const MSGS=[
  {role:'assistant',text:'Second reply, plain.',turn_id:'t2',ts:1760000002},
 ];
 
-for(const variant of [{name:'embedded chat',q:''},{name:'split-pane chat',q:'&peekSplitChild=1'}]){
+for(const variant of [{name:'dashboard Chat tab',q:null},{name:'embedded chat',q:''},{name:'split-pane chat',q:'&peekSplitChild=1'}]){
 test(`Read aloud sits beside Copy and speaks one reply at a time (${variant.name})`,async({page},info)=>{
  const tts:{text:string}[]=[];let mode:'ok'|'short'|'slow'|'fail'='ok';
  const beacons:any[]=[];
@@ -32,11 +32,15 @@ test(`Read aloud sits beside Copy and speaks one reply at a time (${variant.name
   return r.fulfill({json:{url:mode==='short'?SHORT:LONG,engine:'say'}}).catch(()=>{});
  });
  try{
-  await page.goto('/?peekEmbed=chat-ra-fixture&peekTab=chat'+variant.q);
+  if(variant.q===null){
+   await page.goto('/');
+   await expect.poll(()=>page.evaluate(()=>typeof (window as any)._chatReadAloud)).toBe('function');
+   await page.evaluate(()=>{const w=window as any;w.openPeek('chat-ra-fixture');w.setPeekTab('chat');});
+  }else await page.goto('/?peekEmbed=chat-ra-fixture&peekTab=chat'+variant.q);
   await expect(page.locator('#peek-overlay')).toBeVisible();
   await expect.poll(()=>page.evaluate(()=>typeof (window as any)._chatReadAloud)).toBe('function');
   const render=(extra:any[]=[])=>page.evaluate(({msgs})=>{
-   const w=window as any;w._chatUnmount();_chat.name='chat-ra-fixture@chat';_chat.messages=msgs;_chat.streaming=null;
+   const w=window as any;w._chatUnmount();_chat.name=(typeof w._peekChatTarget==='function'&&w._peekChatTarget())||'chat-ra-fixture@chat';_chat.messages=msgs;_chat.streaming=null;
    document.getElementById('peek-body')!.classList.add('peek-chat');w._chatRender();
   },{msgs:[...MSGS,...extra]});
   await render();
@@ -108,10 +112,14 @@ test(`Read aloud sits beside Copy and speaks one reply at a time (${variant.name
 
   // Mobile: touch targets and no horizontal overflow.
   const vw=page.viewportSize()!.width;
+  // Touch targets: 44 CSS px. Measured on the element, not the viewport box,
+  // because the embedded peek (body.peek-embed) scales its whole page by 0.8
+  // on purpose; that zoom is the host layout's, not this button's.
   if(vw<=600){
-   const box=await read.nth(0).boundingBox();
-   expect(box!.height).toBeGreaterThanOrEqual(44);
-   expect(box!.width).toBeGreaterThanOrEqual(44);
+   for(const b of [read.nth(0),page.locator('.chat-copy-btn:not(.chat-read-btn)').first()]){
+    const sz=await b.evaluate(el=>({h:(el as HTMLElement).offsetHeight,w:(el as HTMLElement).offsetWidth}));
+    expect(sz.h).toBeGreaterThanOrEqual(44);expect(sz.w).toBeGreaterThanOrEqual(44);
+   }
   }
   expect(await page.locator('#peek-body').evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
   for(let i=0;i<3;i++){const b=await read.nth(i).boundingBox();expect(b!.x+b!.width).toBeLessThanOrEqual(vw+1);}

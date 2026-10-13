@@ -14176,7 +14176,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1441';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1451';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14842,10 +14842,7 @@ function _chatReadLabel(ph) { return ph === 'loading' ? 'Loading…' : ph === 'p
 function _chatReadBtnHtml(m) {
   const key = _chatReadKey(m);
   const ph = _chatReadPhase(key);
-  // data-repeatable: a toggle. Without it the shared press lock holds the
-  // button disabled for the whole /api/tts request, so Stop during Loading
-  // was swallowed.
-  return ' <button type="button" class="chat-copy-btn chat-read-btn" data-repeatable data-ra-key="' + esc(key) + '" data-ra-phase="' + ph
+  return ' <button type="button" class="chat-copy-btn chat-read-btn" data-ra-key="' + esc(key) + '" data-ra-phase="' + ph
     + '" data-read="' + encodeURIComponent(m.text) + '" onclick="_chatReadAloud(this)" title="Read reply aloud"'
     + ' aria-pressed="' + (ph !== 'idle') + '" aria-label="' + (ph === 'idle' ? 'Read reply aloud' : 'Stop reading') + '">'
     + _chatReadLabel(ph) + '</button>';
