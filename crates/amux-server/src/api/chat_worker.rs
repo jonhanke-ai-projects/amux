@@ -1169,9 +1169,10 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
         out.push_str(&fleet);
     }
     out.push_str(
-        "- an idle prompt is not an idle worker: when the background line shows a shell or agents, or its last \
-         reply announced a pending wait, the worker is still working on that. Asked what it is working on, name \
-         the background work, the wait and the card it is for (the recently touched line), not \"no active task\".\n",
+        "- an idle prompt is not an idle worker: when the background line shows a running shell or live agents, or its \
+         last reply announced a pending wait, the worker is still working on that. Asked what it is working on, \
+         name the background work, the wait and the card it is for (the recently touched line), not \"no active \
+         task\". Agents the status bar merely lists may be finished; call them live only when the line says so.\n",
     );
     // THE ESCALATION LADDER (AMUX-5432, Ethan 2026-10-01). Sent every turn,
     // not only on a fresh conversation, so existing Chats learn it too.
@@ -1236,6 +1237,7 @@ async fn background_context(
     .unwrap_or_default();
     let summary = cc::background_section(&cc::BackgroundInputs {
         footer: if pane.is_empty() { None } else { cc::claude_footer_counts(&pane) },
+        waiting_agents: if pane.is_empty() { None } else { cc::claude_waiting_agents(&pane) },
         reported_agents: report.as_ref().and_then(|r| r.subagents_live),
         agent_descriptions: descriptions,
         last_reply: last.to_string(),
