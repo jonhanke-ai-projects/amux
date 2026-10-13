@@ -8330,6 +8330,24 @@ body.light #fc-container { color-scheme: light; }
 .cv-nav { display:flex; flex-direction:column; gap:1px; }
 .cv-sec { font-size:0.68rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase;
   color:var(--dim); padding:12px 10px 4px; }
+/* Section headers fold their list; a folded list keeps the open and unread items. */
+button.cv-sec { display:flex; align-items:center; gap:4px; width:100%; min-height:32px; border:none;
+  background:none; text-align:left; cursor:pointer; border-radius:6px; font-family:inherit; }
+button.cv-sec:hover { color:var(--text); }
+.cv-sec-caret { display:inline-block; width:12px; transition:transform .15s; }
+.cv-sec[aria-expanded="false"] .cv-sec-caret { transform:rotate(-90deg); }
+.cv-nav.cv-folded > :not(.cv-item.active):not(.cv-item.unread) { display:none; }
+.cv-side-toggle { margin-left:auto; min-width:32px; min-height:32px; border:none; background:none;
+  color:var(--dim); font-size:1.1rem; border-radius:6px; cursor:pointer; }
+.cv-side-toggle:hover { color:var(--text); background:var(--hover, rgba(127,127,127,.12)); }
+/* Folded sidebar: a rail holding only the button that opens it again. */
+@media (min-width: 601px) {
+  #messages-view.cv-side-folded #cv-side { width:44px; flex-basis:44px; padding-left:4px; padding-right:4px; overflow:hidden; }
+  #messages-view.cv-side-folded #cv-side > :not(.cv-side-head) { display:none; }
+  #messages-view.cv-side-folded .cv-side-title { display:none; }
+  #messages-view.cv-side-folded .cv-side-head { padding:2px 0 8px; justify-content:center; }
+  #messages-view.cv-side-folded .cv-side-toggle { margin:0; }
+}
 .cv-item { display:flex; align-items:center; gap:8px; width:100%; min-height:36px; padding:6px 10px;
   border:none; background:none; color:var(--text); font-size:0.86rem; text-align:left;
   border-radius:6px; cursor:pointer; }
@@ -8416,6 +8434,9 @@ body.light #fc-container { color-scheme: light; }
 #msgs-log-pane { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; padding:12px 16px; overflow-y:auto; }
 @media (max-width: 600px) {
   #cv-side { width:100%; flex:1 1 auto; border-right:none; }
+  /* Phones already show the list and a conversation one at a time. */
+  .cv-side-toggle { display:none; }
+  button.cv-sec { min-height:44px; }
   #messages-view.cv-open #cv-side { display:none; }
   #messages-view:not(.cv-open) #cv-pane, #messages-view:not(.cv-open) #msgs-log-pane { display:none !important; }
   .cv-back { display:inline-flex; align-items:center; justify-content:center; }

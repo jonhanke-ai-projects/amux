@@ -1677,6 +1677,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <aside id="cv-side" aria-label="Conversations">
     <div class="cv-side-head">
       <span class="cv-side-title">Messages</span>
+      <button type="button" class="cv-side-toggle" id="cv-side-toggle" onclick="_cvToggleSide()" aria-expanded="true" aria-controls="cv-side" title="Collapse the sidebar">&#xAB;</button>
     </div>
     <div class="cv-search"><input class="input" id="cv-search" type="search" placeholder="Search messages…" autocomplete="off"
       onkeydown="if(event.key==='Enter')_cvSearch(this.value)"></div>
@@ -1685,9 +1686,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="cv-item" data-cv="@unread" onclick="_cvSelect('@unread')"><span class="cv-ico">&#x25CB;</span><span class="cv-lbl">Unread</span><span class="cv-badge" id="cv-unread-n"></span></button>
       <button class="cv-item" data-cv="@all" id="cv-all-item" onclick="_cvSelect('@all')"><span class="cv-ico">&#x2709;</span><span class="cv-lbl">All messages</span></button>
     </nav>
-    <div class="cv-sec">Channels</div><div id="cv-channels" class="cv-nav"></div>
-    <div class="cv-sec" id="cv-people-sec">People</div><div id="cv-people" class="cv-nav"></div>
-    <div class="cv-sec">Workers</div><div id="cv-workers" class="cv-nav"></div>
+    <button type="button" class="cv-sec" data-sec="channels" onclick="_cvToggleSec('channels')" aria-expanded="true" aria-controls="cv-channels"><span class="cv-sec-caret" aria-hidden="true">&#x25BE;</span>Channels</button><div id="cv-channels" class="cv-nav"></div>
+    <button type="button" class="cv-sec" data-sec="people" id="cv-people-sec" onclick="_cvToggleSec('people')" aria-expanded="true" aria-controls="cv-people"><span class="cv-sec-caret" aria-hidden="true">&#x25BE;</span>People</button><div id="cv-people" class="cv-nav"></div>
+    <button type="button" class="cv-sec" data-sec="workers" onclick="_cvToggleSec('workers')" aria-expanded="true" aria-controls="cv-workers"><span class="cv-sec-caret" aria-hidden="true">&#x25BE;</span>Workers</button><div id="cv-workers" class="cv-nav"></div>
   </aside>
   <section id="cv-pane" style="display:none;" ondragover="cardDragOver(event)" ondragleave="cardDragLeave(event)" ondrop="cardDrop(_CV_FILES, event)">
     <header class="cv-head">

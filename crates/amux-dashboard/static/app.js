@@ -14179,7 +14179,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1452';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1453';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -55924,7 +55924,40 @@ function _cvRenderSide() {
     const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
     return _cvItem(w.conv, _cvAvatar(w.name, true), w.name, w.unread, w.mentions, '<span class="cv-dot' + (act ? ' on' : '') + '" title="' + (act ? 'working' : 'idle') + '"></span>');
   }).join('') || '<div class="cv-empty">No workers you can reach</div>';
+  _cvApplyFolds();
 }
+// Collapsible sidebar (Ethan, 2026-10-13: "this in messages tab contents
+// should be collapsible?"). A folded section still lists the open
+// conversation and unread ones, so nothing that needs you is hidden. On wider
+// screens the whole sidebar folds to a rail. Both are remembered.
+function _cvFolds() {
+  try { return JSON.parse(localStorage.getItem('amux_cv_folds') || '{}') || {}; } catch (e) { return {}; }
+}
+function _cvApplyFolds() {
+  const f = _cvFolds();
+  document.querySelectorAll('#cv-side .cv-sec[data-sec]').forEach(h => {
+    const shut = !!f[h.dataset.sec];
+    h.setAttribute('aria-expanded', shut ? 'false' : 'true');
+    const nav = document.getElementById('cv-' + h.dataset.sec);
+    if (nav) nav.classList.toggle('cv-folded', shut);
+  });
+  const mv = document.getElementById('messages-view');
+  if (mv) mv.classList.toggle('cv-side-folded', !!f._side);
+  const t = document.getElementById('cv-side-toggle');
+  if (t) {
+    t.setAttribute('aria-expanded', f._side ? 'false' : 'true');
+    t.innerHTML = f._side ? '&#xBB;' : '&#xAB;';
+    t.title = f._side ? 'Show the sidebar' : 'Collapse the sidebar';
+  }
+}
+function _cvSetFold(key, shut) {
+  const f = _cvFolds();
+  if (shut) f[key] = 1; else delete f[key];
+  try { localStorage.setItem('amux_cv_folds', JSON.stringify(f)); } catch (e) {}
+  _cvApplyFolds();
+}
+function _cvToggleSec(sec) { _cvSetFold(sec, !_cvFolds()[sec]); }
+function _cvToggleSide() { _cvSetFold('_side', !_cvFolds()._side); }
 function _cvShowPane(which) {
   document.getElementById('cv-pane').style.display = which === 'conv' ? 'flex' : 'none';
   document.getElementById('msgs-log-pane').style.display = which === 'log' ? 'flex' : 'none';
