@@ -933,12 +933,31 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                     where_cl.push("id=?".into());
                     params.push(rusqlite::types::Value::Integer(message_id));
                 } else {
-                    where_cl.push("text LIKE ? ESCAPE '\\'".into());
-                    let escaped = q
-                        .replace('\\', "\\\\")
-                        .replace('%', "\\%")
-                        .replace('_', "\\_");
-                    params.push(rusqlite::types::Value::Text(format!("%{escaped}%")));
+                    // Words through the FTS5 index (migration 0119): all of them,
+                    // any order, last one a prefix. Terms with punctuation are
+                    // also required literally (`search::history_query`).
+                    let like = |t: &str| {
+                        let escaped = t
+                            .replace('\\', "\\\\")
+                            .replace('%', "\\%")
+                            .replace('_', "\\_");
+                        rusqlite::types::Value::Text(format!("%{escaped}%"))
+                    };
+                    let (fts, literals) = super::search::history_query(&q);
+                    if fts.is_none() && literals.is_empty() {
+                        where_cl.push("text LIKE ? ESCAPE '\\'".into());
+                        params.push(like(&q));
+                    }
+                    if let Some(m) = fts {
+                        where_cl.push(
+                            "id IN (SELECT rowid FROM history_fts WHERE history_fts MATCH ?)".into(),
+                        );
+                        params.push(rusqlite::types::Value::Text(m));
+                    }
+                    for lit in literals {
+                        where_cl.push("text LIKE ? ESCAPE '\\'".into());
+                        params.push(like(&lit));
+                    }
                 }
             }
             // CONTEXT FILTERS (AMUX-4695). `client_meta` is JSON text, so the
@@ -2548,6 +2567,53 @@ mod tests {
             sess,
             json!([{ "session": "alpha", "count": 3 }, { "session": "beta", "count": 2 }])
         );
+    }
+
+    /// Words, not a phrase (migration 0119). `browser routing` used to need
+    /// those two words adjacent and in that order, so it found nothing on a
+    /// store full of messages about the browser routing driver.
+    #[tokio::test]
+    async fn q_matches_every_word_in_any_order_through_the_index() {
+        let (app, _dir) = app();
+        for text in [
+            "the routing driver for the browser",
+            "browser only",
+            "routing only",
+            "fix browser-routing now",
+        ] {
+            send(&app, "POST", "/api/history", Some(json!({ "text": text }))).await;
+        }
+        let (_, hits) = send(&app, "GET", "/api/history?q=browser%20routing", None).await;
+        let mut texts: Vec<&str> = hits
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect();
+        texts.sort();
+        assert_eq!(
+            texts,
+            vec![
+                "fix browser-routing now",
+                "the routing driver for the browser"
+            ]
+        );
+        // The last word is a prefix, so typing is incremental.
+        let (_, hits) = send(&app, "GET", "/api/history?q=rout", None).await;
+        assert_eq!(hits.as_array().unwrap().len(), 3);
+        // A term with punctuation is ALSO required literally.
+        let (_, hits) = send(&app, "GET", "/api/history?q=browser-routing", None).await;
+        assert_eq!(hits.as_array().unwrap().len(), 1);
+        assert_eq!(hits[0]["text"], json!("fix browser-routing now"));
+        // The count header agrees with the rows (same WHERE, AMUX-4666).
+        let (_, counted) = send(
+            &app,
+            "GET",
+            "/api/history?q=browser%20routing&limit=1",
+            None,
+        )
+        .await;
+        assert_eq!(counted.as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

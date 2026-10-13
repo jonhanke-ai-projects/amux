@@ -14198,7 +14198,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1455';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1456';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -18571,7 +18571,50 @@ function applyPeekSearch(keepIndex, doScroll) {
   // is not proof that the requested text is absent from the arriving history.
   if (!keepIndex && doScroll !== false) _peekPendingFindScroll = !_peekMatches.length;
   _peekScrollTo(peekSearchIndex, doScroll);
-  if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'no matches';
+  if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'none here · \u21b5 all logs';
+}
+
+// The find bar searches the scrollback that is LOADED. Enter with no match
+// there asks the server instead: this session's whole terminal log, its
+// transcripts and every message sent to it, ranked (/api/search opt-in types).
+let _peekDeepAbort = null;
+async function _peekDeepSearch() {
+  const box = document.getElementById('peek-deep-results');
+  const q = (peekSearchQuery || '').trim();
+  if (!box || !q || !peekSession) return;
+  if (_peekDeepAbort) _peekDeepAbort.abort();
+  _peekDeepAbort = new AbortController();
+  box.hidden = false;
+  box.innerHTML = '<div class="peek-deep-head">Searching all logs for ' + esc(peekSession) + '\u2026</div>';
+  try {
+    const u = API + '/api/search?types=log,transcript,history&limit=30&session=' + encodeURIComponent(peekSession)
+      + '&q=' + encodeURIComponent(q);
+    const r = await fetch(u, { headers: _authHeaders(), signal: _peekDeepAbort.signal });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('search ' + r.status));
+    const hits = d.hits || [];
+    const label = { log: 'terminal log', transcript: 'transcript', history: 'message' };
+    box.innerHTML = '<div class="peek-deep-head"><span>' + (d.total || 0).toLocaleString() + (d.total_capped ? '+' : '')
+      + ' match' + (d.total === 1 ? '' : 'es') + ' in all logs \u00b7 ' + (d.took_ms || 0) + ' ms'
+      // The index can lag the files (first build, or just after a reindex).
+      + (d.index_lag_bytes > 0 ? ' \u00b7 <span title="The search index has not reached this many bytes of logs yet; matches in them are not shown.">'
+          + Math.max(1, Math.round(d.index_lag_bytes / 1048576)).toLocaleString() + ' MB not indexed yet</span>' : '')
+      + '</span>'
+      + '<a href="#" onclick="event.preventDefault();_peekDeepClose()">close</a></div>'
+      + (hits.length ? hits.map(h => '<div class="peek-deep-hit"><div class="peek-deep-meta">'
+          + esc(label[h.type] || h.type) + ' \u00b7 ' + esc(h.id || '') + '</div>'
+          // The server HTML-escapes the snippet and adds only <mark> (search.rs render_snippet).
+          + '<div class="peek-deep-snip">' + (h.snippet || '') + '</div></div>').join('')
+        : '<div class="peek-deep-hit">No matches in this session\u2019s logs, transcripts or messages.</div>');
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    box.innerHTML = '<div class="peek-deep-head">Search failed: ' + esc(String(e.message || e)) + '</div>';
+  }
+}
+function _peekDeepClose() {
+  if (_peekDeepAbort) _peekDeepAbort.abort();
+  const box = document.getElementById('peek-deep-results');
+  if (box) { box.hidden = true; box.innerHTML = ''; }
 }
 function _peekScrollTo(i, doScroll, instant) {
   document.querySelectorAll('#peek-body .peek-highlight').forEach(m => m.classList.toggle('current', Number(m.dataset.idx) === i));
@@ -25150,6 +25193,7 @@ function clearPeekSearch() {
   _peekMatches = [];
   document.getElementById('peek-search-wrap').classList.remove('has-value');
   document.getElementById('peek-search-count').textContent = '';
+  _peekDeepClose();
   applyPeekSearch();
 }
 
@@ -50213,7 +50257,10 @@ function _messagesRender() {
   // is 500 rows OF THAT KIND rather than 500 mixed rows filtered down to a
   // handful — the same crowding that showed 48 human messages out of 6547.
   if (_msgsKind !== 'all') rows = rows.filter(m => _msgKind(m) === _msgsKind);
-  if (q) rows = rows.filter(m => (m.text || '').toLowerCase().includes(q)
+  // After a deep search the SERVER already matched these rows by word (all
+  // words, any order: /api/history?q= over history_fts). Re-filtering them by
+  // whole-phrase substring here would hide exactly the rows it found.
+  if (q && (_msgsDeepQ || '').trim().toLowerCase() !== q) rows = rows.filter(m => (m.text || '').toLowerCase().includes(q)
     || (m.session || '').toLowerCase().includes(q)
     || (m.sender || '').toLowerCase().includes(q)
     || ('msg-' + String(m.id || '')).toLowerCase() === q);
@@ -50251,7 +50298,7 @@ function _messagesRender() {
   if (!rows.length) {
     const kl = (_MSG_KIND[_msgsKind] || {}).label;
     list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">'
-      + (q ? (_msgsDeepQ === q
+      + (q ? ((_msgsDeepQ || "").trim().toLowerCase() === q
                ? 'No matches anywhere in history.'
                // The instant filter searches ONLY the loaded page. A bare "No
                // matches." here is how a message that provably exists reads as

@@ -2480,6 +2480,17 @@
   .peek-find-wrap .search-input { padding-right: 110px; min-width: 0; width: 100%; height: 44px; box-sizing: border-box; }
   .peek-find-wrap .search-input::-webkit-search-cancel-button { display: none; }
   .peek-find-count { position: absolute; right: 60px; font-size: 0.65rem; color: var(--dim); white-space: nowrap; pointer-events: none; }
+  /* Server search over this session's whole log, transcript and message history
+     (search_firehose + history_fts), opened by Enter when the loaded scrollback
+     has no match. */
+  .peek-deep-results { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; max-height: min(420px, calc(100dvh - 160px)); overflow-y: auto; z-index: 60; box-shadow: 0 6px 20px rgba(0,0,0,0.3); font-size: 0.8rem; }
+  .peek-deep-results[hidden] { display: none; }
+  .peek-deep-head { padding: 8px 12px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
+  .peek-deep-hit { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .peek-deep-hit:last-child { border-bottom: none; }
+  .peek-deep-meta { color: var(--dim); font-size: 0.7rem; margin-bottom: 2px; }
+  .peek-deep-snip { white-space: pre-wrap; word-break: break-word; font-family: var(--mono, ui-monospace, monospace); }
+  .peek-deep-snip mark { background: var(--accent); color: var(--bg, #000); border-radius: 2px; }
   .peek-nav-btn { width: 22px; height: 22px; border: none; background: transparent; color: var(--dim); cursor: pointer; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; position: absolute; }
   .peek-nav-btn:hover { color: var(--text); }
   .peek-find-wrap .search-clear { position: absolute; right: 0; width: 44px; height: 44px; }

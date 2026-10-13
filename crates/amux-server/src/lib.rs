@@ -121,6 +121,7 @@ pub mod provider;
 pub mod push;
 pub mod reconciliation;
 pub mod runtime_jobs;
+pub mod search_firehose;
 pub mod tls;
 
 use std::sync::Arc;
@@ -1076,6 +1077,10 @@ async fn async_main() {
     // STOP IDLE COMPUTER-USE SANDBOXES (AMUX-5300). Each is a 4 GB Docker
     // desktop; idle, exited, duplicate and unowned ones are removed by label.
     runtime_jobs::computer_reaper::spawn();
+
+    // SEARCH INDEX FOR LOGS AND TRANSCRIPTS. Incremental FTS5 ingest into
+    // ~/.amux/search-firehose.db; /api/log-search and /api/search read it.
+    runtime_jobs::search_ingest::spawn();
 
     // MAC PROCESS HEALTH (2026-08-30). Reaps orphaned Ray workers and logs
     // when the claude-process count exceeds the ceiling. Neither the browser

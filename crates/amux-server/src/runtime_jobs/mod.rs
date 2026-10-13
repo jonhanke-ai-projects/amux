@@ -54,6 +54,7 @@ pub mod board_hygiene;
 pub mod browser_login_sync;
 pub mod connector_maintenance;
 pub mod browser_reaper;
+pub mod search_ingest;
 pub mod computer_reaper;
 pub mod capture_reconcile;
 pub mod cdc_poller;

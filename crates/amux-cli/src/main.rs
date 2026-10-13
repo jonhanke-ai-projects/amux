@@ -61,9 +61,14 @@ enum Cmd {
         /// stay phrases, punctuation is literal.
         query: Option<String>,
         /// Restrict to entity types, comma-separated
-        /// (task,message,memory,worker,journal,schedule).
+        /// (task,message,memory,worker,journal,schedule,prompt). The log
+        /// families are searched only when named: history (every message
+        /// sent to a worker), log (terminal scrollback), transcript.
         #[arg(long)]
         types: Option<String>,
+        /// Only hits from this session.
+        #[arg(long)]
+        session: Option<String>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Index health: per-type index counts vs the live tables.
@@ -325,6 +330,7 @@ fn run(cmd: &Cmd, c: &Client) -> anyhow::Result<i32> {
         Cmd::Search {
             query,
             types,
+            session,
             limit,
             status,
             reindex,
@@ -332,6 +338,7 @@ fn run(cmd: &Cmd, c: &Client) -> anyhow::Result<i32> {
         } => search(
             query.as_deref(),
             types.as_deref(),
+            session.as_deref(),
             *limit,
             *status,
             *reindex,
@@ -671,6 +678,7 @@ fn urlencode(s: &str) -> String {
 fn search(
     query: Option<&str>,
     types: Option<&str>,
+    session: Option<&str>,
     limit: usize,
     status: bool,
     reindex: bool,
@@ -719,13 +727,16 @@ fn search(
 
     let Some(q) = query else {
         eprintln!(
-            "usage: amux-rs search <query> [--types t1,t2] [--limit N] | --status | --reindex"
+            "usage: amux-rs search <query> [--types t1,t2] [--session S] [--limit N] | --status | --reindex"
         );
         return Ok(2);
     };
     let mut path = format!("/api/search?q={}&limit={limit}", urlencode(q));
     if let Some(t) = types {
         path.push_str(&format!("&types={}", urlencode(t)));
+    }
+    if let Some(s) = session {
+        path.push_str(&format!("&session={}", urlencode(s)));
     }
     let v = c.get(&path)?;
     if as_json {

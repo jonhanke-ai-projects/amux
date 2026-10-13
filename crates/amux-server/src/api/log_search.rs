@@ -36,6 +36,41 @@ pub async fn search(Query(q): Query<SearchQuery>) -> Response {
     }
     let max_per = q.max.clamp(1, 500);
 
+    // The index first (`search_firehose`): every query word must appear in a
+    // chunk, in any order, and the lines carrying them come back. The bytes the
+    // ingest job has not reached are scanned directly, so the answer is never
+    // staler than the files. Only a query with no words (pure punctuation) or
+    // an index that cannot be opened falls through to the full grep below.
+    if let Some(match_expr) =
+        super::search::build_match(&query).filter(|_| query.chars().any(char::is_alphanumeric))
+    {
+        let started = std::time::Instant::now();
+        let home = crate::config::amux_home();
+        let q2 = query.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::search_firehose::log_search(&home, &match_expr, &q2, max_per)
+        })
+        .await
+        {
+            Ok(Ok((matches, tail_bytes))) => {
+                return Json(json!({
+                    "matches": matches,
+                    "q": query,
+                    "source": "index",
+                    "unindexed_bytes_scanned": tail_bytes,
+                    "took_ms": started.elapsed().as_millis() as u64,
+                }))
+                .into_response();
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(target: "amux::search", error = %e, "log index unavailable; grepping")
+            }
+            Err(e) => {
+                tracing::warn!(target: "amux::search", error = %e, "log index query panicked; grepping")
+            }
+        }
+    }
+
     let result = tokio::task::spawn_blocking(move || {
         let ql = query.to_lowercase();
         let ansi_re = regex::Regex::new(r"\x1b\[[0-9;?]*[a-zA-Z]").unwrap();
@@ -98,7 +133,9 @@ pub async fn search(Query(q): Query<SearchQuery>) -> Response {
     .await;
 
     match result {
-        Ok((matches, query)) => Json(json!({"matches": matches, "q": query})).into_response(),
+        Ok((matches, query)) => {
+            Json(json!({"matches": matches, "q": query, "source": "grep"})).into_response()
+        }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             json!({"error": e.to_string()}).to_string(),

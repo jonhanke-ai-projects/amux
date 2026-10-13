@@ -107,6 +107,7 @@ pub mod ids {
     pub const TUNNEL: &str = "tunnel-relay";
     pub const BROWSER_REAPER: &str = "browser-idle-reaper";
     pub const COMPUTER_REAPER: &str = "computer-sandbox-reaper";
+    pub const SEARCH_INGEST: &str = "search-ingest";
     // The PeriodicTask ids below are NOT referenced by any spawn site — they
     // register themselves through `spawn_periodic_every` under the name their
     // own module passes. They are listed here only so CATALOG rows and tests
@@ -165,6 +166,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::TUNNEL,
     ids::BROWSER_REAPER,
     ids::COMPUTER_REAPER,
+    ids::SEARCH_INGEST,
     ids::AUTOFIX,
     ids::BOARD_DRIVE,
     ids::CDC_POLLER,
@@ -469,6 +471,30 @@ pub const CATALOG: &[Doc] = &[
         env: &[EnvControl { var: "AMUX_RS_BOOTSTRAP_SECS", effect: "pass seconds (default 2)", off: None }],
         pref: None,
         detail: None,
+    },
+    Doc {
+        id: ids::SEARCH_INGEST,
+        name: "Search ingest",
+        purpose: "Indexes new session-log and transcript bytes into ~/.amux/search-firehose.db (FTS5) for /api/search types log/transcript, /api/log-search and peek search. Incremental by byte offset; a rotated or rewritten file is re-read.",
+        env: &[
+            EnvControl {
+                var: "AMUX_SEARCH_INGEST",
+                effect: "0 stops the job; searches then scan the files directly",
+                off: Some("0"),
+            },
+            EnvControl {
+                var: "AMUX_SEARCH_INGEST_TICK_S",
+                effect: "seconds between ingest passes (default 10)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_SEARCH_INGEST_BUDGET_MB",
+                effect: "most new bytes indexed per pass (default 64)",
+                off: None,
+            },
+        ],
+        pref: None,
+        detail: Some("/api/search/status"),
     },
     Doc {
         id: ids::COMPUTER_REAPER,
