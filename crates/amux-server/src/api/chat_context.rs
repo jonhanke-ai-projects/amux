@@ -388,6 +388,20 @@ mod tests {
         assert!(s.lines.contains("- background: 0 shells running, 3 live agents (shells from the pane status bar; agents: hook report 0, pane waiting row 3)"), "{}", s.lines);
     }
 
+    /// A hookless lane (no reported count) still gets live agents from
+    /// Claude Code's waiting row rather than "not measured".
+    #[test]
+    fn without_a_hook_count_the_waiting_row_counts_live_agents() {
+        let s = background_section(&BackgroundInputs {
+            footer: Some(FooterCounts { shells: 0, listed_agents: 5 }),
+            waiting_agents: Some(2),
+            reported_agents: None,
+            ..Default::default()
+        });
+        assert!(s.present());
+        assert!(s.lines.contains("- background: 0 shells running, 2 live agents (shells from the pane status bar; agents from the pane's waiting row;"), "{}", s.lines);
+    }
+
     #[test]
     fn card_ids_are_collected_once_in_order() {
         let ids = referenced_card_ids(["Waiting on MF-4026 and MF-4026.", "see AMUX-12 and UTF-8"]);
