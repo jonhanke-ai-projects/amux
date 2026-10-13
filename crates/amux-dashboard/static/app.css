@@ -8665,6 +8665,8 @@ button.cv-sec:hover { color:var(--text); }
 .sx-dots { display:flex; gap:2px; }
 .sx-fail { font-variant-numeric:tabular-nums; color:var(--dim); }
 .sx-fail.bad { color:var(--red); font-weight:700; }
+.sx-told { color:var(--dim); max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sx-told[data-route="owner"] { color:var(--red); }
 .sx-pill { display:inline-flex; align-items:center; gap:5px; padding:2px 9px; border-radius:999px; font-size:0.74rem; font-weight:600; white-space:nowrap;
   border:1px solid transparent; }
 .sx-pill::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
