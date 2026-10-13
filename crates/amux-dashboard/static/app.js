@@ -14196,7 +14196,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1458';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1483';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -36075,6 +36075,28 @@ function _sxFailCell(s) {
               : 'No failed runs in 24h (' + (rs.runs || 0) + ' run(s) considered for this schedule)';
   return `<span class="sx-fail${f ? ' bad' : ''}" title="${esc(t)}">${f}</span>`;
 }
+// Who was told about this schedule's current failure streak, from the
+// server's failure_notice (runtime_jobs/schedule_failure.rs). Empty when the
+// schedule is not failing or nobody has been told yet.
+function _sxToldText(s) {
+  const n = s && s.failure_notice;
+  if (!n || !(s.failure_streak > 0)) return '';
+  const ago = n.at ? ' ' + timeAgo(n.at) : '';
+  if (n.route === 'worker') return 'told ' + (n.worker || 'its worker') + ago;
+  const why = { isolated: 'worker isolated', archived: 'worker archived', paused: 'worker paused',
+    stopped: 'worker stopped', unregistered: 'worker not registered', no_target: 'no worker set' }[n.reason] || (n.reason || 'worker unreachable');
+  return 'routed to you: ' + why + ago;
+}
+function _sxToldHTML(s) {
+  const t = _sxToldText(s);
+  if (!t) return '';
+  const n = s.failure_notice;
+  const tip = 'Failure notice (' + (n.kind || 'first') + ') at streak ' + n.streak + '; '
+    + s.failure_streak + ' failure(s) in a row now'
+    + (n.suppressed ? '; ' + n.suppressed + ' repeat(s) of the same error not re-sent' : '')
+    + (n.delivery ? '; ' + n.delivery : '');
+  return `<span class="sx-told sx-sub" data-route="${esc(n.route || '')}" title="${esc(tip)}">${esc(t)}</span>`;
+}
 function _sxSearchHay(s) {
   return [s.title, s.session, s.command, s.schedule_expr, s.recurrence, s.id, _sxFreq(s), s.kind === 'shell' ? 'shell command' : 'worker prompt']
     .filter(Boolean).join(' ').toLowerCase();
@@ -36089,7 +36111,7 @@ function _sxRowHTML(s, runMap, sessMap, scoped) {
   return `<div class="sx-row sched-item${sel ? ' selected' : ''}" data-sched-id="${id}" data-status="${st.key}" role="button" tabindex="0"
       onclick="openSchedDetail('${idJs}')" onkeydown="if(event.key==='Enter'&&event.target===this)openSchedDetail('${idJs}')">
     ${scoped ? '' : `<label class="sx-cell sx-sel" onclick="event.stopPropagation()"><input type="checkbox" ${sel ? 'checked' : ''} onchange="_sxToggleSel('${idJs}',this.checked)" aria-label="Select ${esc(s.title)}"></label>`}
-    <div class="sx-cell sx-name">${_sxTypeIcon(s)}<div class="sx-name-text"><span class="sx-title">${esc(s.title)}</span><code class="sched-id-badge" title="Schedule id: click to copy" onclick="event.stopPropagation();_copySchedId('${idJs}')">${id}</code></div></div>
+    <div class="sx-cell sx-name">${_sxTypeIcon(s)}<div class="sx-name-text"><span class="sx-title">${esc(s.title)}</span><code class="sched-id-badge" title="Schedule id: click to copy" onclick="event.stopPropagation();_copySchedId('${idJs}')">${id}</code>${_sxToldHTML(s)}</div></div>
     ${scoped ? '' : `<div class="sx-cell sx-worker">${_sxWorkerChip(s, sessMap)}</div>`}
     <div class="sx-cell sx-freq"><span title="${esc(freqTitle)}">${esc(_sxFreq(s))}</span>${_schedLastRunHTML(s)}</div>
     <div class="sx-cell sx-nextc">${_sxNextCell(s, st)}</div>
@@ -36514,6 +36536,7 @@ function _sxRenderDetail() {
       ['Last run', _sxFmtWhen(s.last_run)],
       ['Total runs', esc(String(s.run_count || 0))],
     ];
+    if (_sxToldText(s)) rows.push(['Failure notice', _sxToldHTML(s)]);
     if (s.last_delivery) rows.push(['Last delivery', esc(s.last_delivery)]);
     if (s.last_refusal_reason) rows.push(['Last refusal', `<span class="sx-bad">${esc(s.last_refusal_reason)}</span>`]);
     if (s.worktree) rows.push(['Isolation', 'Ephemeral worktree per run']);

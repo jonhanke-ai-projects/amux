@@ -1,0 +1,18 @@
+-- 0120: failure streak and the last failure notice on a schedule.
+--
+-- ADDITIVE ONLY (shared live DB).
+--
+-- WHY: a failing schedule told nobody. SCHED-108 exited 1 and an earlier run
+-- was refused because its worker was archived; the owning worker never heard
+-- about either. runtime_jobs::schedule_failure now tells the owning worker
+-- (or routes to the owner when the worker cannot be told) once per failure
+-- streak, again when the error changes, and again every few failures.
+--
+-- `failure_streak` is the count of consecutive failed runs (0 = last run
+-- passed or no run yet). `failure_notice` is JSON describing the last notice
+-- sent for this streak: who was told, how, when, at which streak, and the
+-- error signature it was about. Persisted here so a server restart does not
+-- notify again for a failure that was already reported.
+
+-- ADDCOL: schedules failure_streak INTEGER NOT NULL DEFAULT 0
+-- ADDCOL: schedules failure_notice TEXT
