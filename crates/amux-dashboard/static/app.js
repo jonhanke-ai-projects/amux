@@ -1032,14 +1032,21 @@ function _applyZoom() {
   // strip under the command bar). So on touch devices scale the root
   // font-size instead: the UI is rem-based, so text tracks the zoom level,
   // and font-size never disturbs fixed/safe-area geometry.
-  if (matchMedia('(pointer: coarse)').matches) {
+  //
+  // The Draw tab takes the same font-size path on every device. Excalidraw maps
+  // pointer coordinates for an unzoomed page, so under CSS zoom a stroke landed
+  // 100-200px from the cursor (Ethan, 2026-10-13, at 130%). Un-zooming only the
+  // canvas fixed Chromium but not WebKit (the macOS app), measured from
+  // screenshot pixels, so the root carries no CSS zoom while Draw is open.
+  if (matchMedia('(pointer: coarse)').matches || window._zoomFontMode) {
     document.documentElement.style.zoom = '';
     document.documentElement.style.fontSize = _zoomLevel === 100 ? '' : (16 * _zoomLevel / 100) + 'px';
   } else {
     document.documentElement.style.fontSize = '';
     document.documentElement.style.zoom = (_zoomLevel / 100);
   }
-  document.documentElement.style.setProperty('--root-zoom', _zoomLevel / 100);
+  // Elements that counter the root's CSS zoom read 1 when there is none to counter.
+  document.documentElement.style.setProperty('--root-zoom', window._zoomFontMode ? 1 : _zoomLevel / 100);
   localStorage.setItem('amux_zoom', _zoomLevel);
   const el = document.getElementById('zoom-level-display');
   if (el) el.textContent = _zoomLevel + '%';
@@ -33383,6 +33390,7 @@ function switchView(view) {
   if (typeof _peekOpenGeneration !== 'undefined' && !peekSession) _peekOpenGeneration++;
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
+  { const fm = view === 'draw'; if (fm !== !!window._zoomFontMode) { window._zoomFontMode = fm; _applyZoom(); } }
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
@@ -57879,6 +57887,14 @@ function _drawSyncOffsets(why) {
   if (!r.width || !r.height) return false;
   const st = d.api.getAppState();
   const dx = Math.round(r.left - st.offsetLeft), dy = Math.round(r.top - st.offsetTop);
+  // A box wider or narrower than Excalidraw's own width means the canvas is
+  // being scaled under it (a CSS zoom on an ancestor): strokes land off the
+  // cursor even though the offsets agree, so the position check alone missed it.
+  const scale = st.width ? r.width / st.width : 1;
+  if (Math.abs(scale - 1) > 0.02 && Date.now() - (d.scaleAt || 0) > 60000) {
+    d.scaleAt = Date.now();
+    _drawBeacon('canvas-scale-mismatch', { scale: Math.round(scale * 1000) / 1000, why, zoom: _zoomLevel, n_considered: 1 });
+  }
   if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return false;
   d.api.refresh();
   if (Date.now() - (d.driftAt || 0) > 5000) {
