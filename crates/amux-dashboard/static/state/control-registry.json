@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2944,
+  "n_considered": 2972,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1312,6 +1312,24 @@
     },
     "_drawResolveConflict": {
       "kind": "command._drawResolveConflict",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawRtApply": {
+      "kind": "command._drawRtApply",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawRtFrame": {
+      "kind": "command._drawRtFrame",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawRtJoin": {
+      "kind": "command._drawRtJoin",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3440,6 +3458,48 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_rtBeacon": {
+      "kind": "command._rtBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_rtConnect": {
+      "kind": "command._rtConnect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_rtConnectSse": {
+      "kind": "command._rtConnectSse",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_rtDispatch": {
+      "kind": "command._rtDispatch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_rtFlushUp": {
+      "kind": "command._rtFlushUp",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_rtGap": {
+      "kind": "command._rtGap",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_rtSchedule": {
+      "kind": "command._rtSchedule",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_runDeltaSync": {
       "kind": "command._runDeltaSync",
       "feedback_required": true,
@@ -5212,6 +5272,12 @@
     },
     "retryPeekFile": {
       "kind": "command.retryPeekFile",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "rtJoin": {
+      "kind": "command.rtJoin",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -288,6 +288,12 @@ pub(crate) fn authorize_local_member_request(
     if path == "/api/identity" || path == "/api/events" {
         return None;
     }
+    // Realtime rooms (api/rt.rs) check every join against the file rules and
+    // this member's grant, and refuse a scoped member's ops (read-only), so
+    // the transport itself is admitted here. /api/debug/rt is not.
+    if path == "/api/rt" || path == "/api/rt/events" || path == "/api/rt/send" {
+        return None;
+    }
     // Messages (conversations.rs): every handler checks the conversation
     // against this member's scope before reading or writing.
     if path == "/api/conversations" || path.starts_with("/api/conversations/") {

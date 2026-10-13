@@ -2750,6 +2750,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/sessions/{name}/chat/interrupt",
         methods: &["POST"],
     },
+    // -- realtime rooms (api/rt.rs): WebSocket + SSE/POST fallback + debug
+    RouteEntry { path: "/api/rt", methods: &["GET"] },
+    RouteEntry { path: "/api/rt/events", methods: &["GET"] },
+    RouteEntry { path: "/api/rt/send", methods: &["POST"] },
+    RouteEntry { path: "/api/debug/rt", methods: &["GET"] },
     // -- composer typing presence (api/typing.rs, AC-474)
     RouteEntry {
         path: "/api/sessions/{name}/typing",

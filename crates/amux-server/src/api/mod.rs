@@ -125,6 +125,7 @@ pub mod speedtest;
 pub mod sql;
 pub mod sse;
 pub mod typing;
+pub mod rt;
 pub mod conversations;
 pub mod converse;
 pub mod static_files;
@@ -275,6 +276,9 @@ pub fn router_with_connector_transport(
         // guard moved into the module's dispatch.
         .merge(session_verbs::routes())
         .merge(typing::routes())
+        // Realtime rooms (api/rt.rs): one WebSocket per tab multiplexing
+        // ephemeral per-resource rooms, with an SSE + POST fallback.
+        .merge(rt::routes())
         .merge(conversations::routes())
         // Identity is config-introspection over server.env + ~/.claude.json
         // this server already reads — NATIVE, not a fleet capability
@@ -984,6 +988,20 @@ async fn debug_sse(
 static CLIENT_DEBUG_RING: std::sync::Mutex<Vec<serde_json::Value>> =
     std::sync::Mutex::new(Vec::new());
 const CLIENT_DEBUG_RING_MAX: usize = 500;
+
+/// The client beacons of one `kind` still in the ring, oldest first, or None
+/// when the ring could not be read (so a caller can say "unmeasured" rather
+/// than report zero). Used by `/api/debug/rt` to join the client half
+/// (socket failed, fell back, resynced) with the server's counters.
+pub(crate) fn client_debug_of_kind(kind: &str) -> Option<Vec<serde_json::Value>> {
+    let ring = CLIENT_DEBUG_RING.lock().ok()?;
+    Some(
+        ring.iter()
+            .filter(|v| v.get("kind").and_then(|k| k.as_str()) == Some(kind))
+            .cloned()
+            .collect(),
+    )
+}
 
 async fn client_debug_post(
     headers: axum::http::HeaderMap,
