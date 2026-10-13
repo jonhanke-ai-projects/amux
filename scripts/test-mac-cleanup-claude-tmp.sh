@@ -156,7 +156,11 @@ rm -rf -- "${R:?}/proj/dead" "${R:?}/proj/dirty" "${R:?}/proj/livef" "${R:?}/pro
 S="$R/proj/livet/scratchpad"; mb "$S/old-big/a.tar" 4; age "$S/old-big"; touch "$P/proj/livet.jsonl"
 CLAUDE_TMP_QUOTA_KB=$(( 2 * 1024 )); CLAUDE_TMP_ENTRY_IDLE_H=6
 saved_b=$CLAUDE_TMP_BUDGET_S saved_q=$CLAUDE_TMP_QUOTA_BUDGET_S
-CLAUDE_TMP_BUDGET_S=2; CLAUDE_TMP_QUOTA_BUDGET_S=1
+# Budgets are compared with whole-second `date +%s`, so a 1s budget expires at the
+# next second boundary, after anywhere from 0 to 1s (flaky in CI, 2 of 5 local runs).
+# 3s leaves the quota pass at least 2 real seconds; the session share stays 1s, so
+# the 2s sleep below still exhausts it.
+CLAUDE_TMP_BUDGET_S=4; CLAUDE_TMP_QUOTA_BUDGET_S=3
 eval "real_$(declare -f any_recent)"
 any_recent() { if [ "$1" = 48 ]; then sleep 2; fi; real_any_recent "$@"; }   # the session pass uses up the whole shared clock
 out=$(reap_claude_tmp "$R" 48 0)
