@@ -148,7 +148,11 @@ test('details: tabs, pause/resume, run now, edit keeps the stored expression, du
   // Every Related action has real height (they once shrank to 2px in the
   // scrolling flex column and could not be tapped).
   for (const label of ['Edit schedule', 'Duplicate', 'Delete schedule']) {
-    const bb = await page.locator('#sched-detail .sx-rel', { hasText: label }).boundingBox();
+    // Wait for the row before measuring it: boundingBox() reads null while the
+    // details sheet is still rendering (CI, 2026-10-13: "reading 'height' of null").
+    const row = page.locator('#sched-detail .sx-rel', { hasText: label });
+    await expect(row).toBeVisible();
+    const bb = await row.boundingBox();
     expect(bb!.height, label + ' height').toBeGreaterThanOrEqual(40);
   }
   await page.waitForTimeout(400);   // let the sheet finish sliding in
