@@ -44,10 +44,12 @@ async function nesting(page: Page) {
 }
 
 async function frameState(frame: FrameLocator) {
-  const body = frame.locator('body');
-  await expect(body).toHaveClass(/peek-embed-panel/);
   await expect(frame.locator('#peek-overlay')).toHaveClass(/active/);
+  // Give a nested split the time it took to mount on the old code (its
+  // restore ran 500ms after boot) before counting.
+  await frame.locator('body').evaluate(() => new Promise((r) => setTimeout(r, 1200)));
   return {
+    panelMode: /peek-embed-panel/.test(await frame.locator('body').getAttribute('class') || ''),
     visibleTabBars: await frame.locator('.peek-tabs:visible').count(),
     splitPanes: await frame.locator('#peek-split-files').count(),
     splitHandles: await frame.locator('#peek-split-handle').count(),
@@ -57,7 +59,7 @@ async function frameState(frame: FrameLocator) {
   };
 }
 
-const NO_NESTING = { visibleTabBars: 0, splitPanes: 0, splitHandles: 0, splitToggles: 0, activeSplits: 0, iframes: 0 };
+const NO_NESTING = { panelMode: true, visibleTabBars: 0, splitPanes: 0, splitHandles: 0, splitToggles: 0, activeSplits: 0, iframes: 0 };
 
 test.describe('desktop split', () => {
   test.skip(({ viewport }) => !!viewport && viewport.width <= 600, 'a phone has no split: the button opens Files');
