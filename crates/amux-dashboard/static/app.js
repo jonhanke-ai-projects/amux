@@ -10776,7 +10776,9 @@ function _typingPing(session, active) {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   _typingSent.set(session, {active, at: now});
   fetch('/api/sessions/' + encodeURIComponent(session) + '/typing', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({active}), _skipOutbox: true,
+    // _background: presence is the page's own write, never a press, so a refusal
+    // must not borrow the composer's label and toast "Message the worker: ...".
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({active}), _skipOutbox: true, _background: true,
   }).then(r => r.ok ? r.json() : null).then(d => { if (d && d.actor) _typingSelf = d.actor; }).catch(() => {});
 }
 function _typingOnEvent(msg) {
@@ -14137,7 +14139,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1419';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1420';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}

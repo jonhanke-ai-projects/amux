@@ -112,10 +112,25 @@ fn yes() -> bool {
     true
 }
 
-fn valid_session(name: &str) -> bool {
+fn plain_session(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// A worker, or a worker's Chat companion (`<worker>@chat`). The Chat tab's
+/// composer pings typing for the companion, and refusing that name answered 400
+/// to every keystroke, which the dashboard showed as "Message the worker:
+/// invalid session name" (Ethan, 2026-10-12).
+fn valid_session(name: &str) -> bool {
+    plain_session(name)
+        || super::chat_worker::companion_parent(name).is_some_and(|w| w.len() + super::chat_worker::COMPANION_SUFFIX.len() <= 128)
+}
+
+fn refuse(name: &str) -> Response {
+    tracing::warn!(session = %name, measured = true, n_considered = 1, verdict = "typing_session_name_refused",
+        "typing presence refused a session name that is neither a worker nor a Chat companion");
+    (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid session name"}))).into_response()
 }
 
 async fn post_typing(
@@ -124,7 +139,7 @@ async fn post_typing(
     body: Option<Json<TypingBody>>,
 ) -> Response {
     if !valid_session(&name) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid session name"}))).into_response();
+        return refuse(&name);
     }
     let active = body.map(|b| b.active).unwrap_or(true);
     let who_acts = actor(&headers);
@@ -158,7 +173,7 @@ async fn post_typing(
 
 async fn get_typing(Path(name): Path<String>) -> Response {
     if !valid_session(&name) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid session name"}))).into_response();
+        return refuse(&name);
     }
     let who = live(&name, Instant::now());
     Json(json!({
@@ -225,5 +240,14 @@ mod tests {
         assert!(valid_session("ed-payment-matcher"));
         assert!(!valid_session("../x"));
         assert!(!valid_session(""));
+    }
+
+    #[test]
+    fn accepts_a_chat_companion_and_nothing_else_with_an_at() {
+        assert!(valid_session("mxp-gs12@chat"), "the Chat tab pings typing for the companion");
+        assert!(!valid_session("@chat"));
+        assert!(!valid_session("../x@chat"));
+        assert!(!valid_session("w@other"));
+        assert!(!valid_session(&format!("{}@chat", "a".repeat(124))));
     }
 }
