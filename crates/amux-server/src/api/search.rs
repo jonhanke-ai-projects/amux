@@ -599,7 +599,7 @@ fn search_merged(
     // can miss hits, and a zero from it must not read as "not there"
     // (TG-3303). Name the bytes the index has not reached yet.
     let firehose_lag = (!firehose_kinds.is_empty())
-        .then(|| crate::search_firehose::status(&home)["lag_bytes"].clone());
+        .then(|| crate::search_firehose::pending_bytes(&home, &firehose_kinds, session));
     Json(json!({
         "index_lag_bytes": firehose_lag,
         "q": q,

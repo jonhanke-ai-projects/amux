@@ -14198,7 +14198,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1456';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1457';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -18597,8 +18597,9 @@ async function _peekDeepSearch() {
     box.innerHTML = '<div class="peek-deep-head"><span>' + (d.total || 0).toLocaleString() + (d.total_capped ? '+' : '')
       + ' match' + (d.total === 1 ? '' : 'es') + ' in all logs \u00b7 ' + (d.took_ms || 0) + ' ms'
       // The index can lag the files (first build, or just after a reindex).
-      + (d.index_lag_bytes > 0 ? ' \u00b7 <span title="The search index has not reached this many bytes of logs yet; matches in them are not shown.">'
-          + Math.max(1, Math.round(d.index_lag_bytes / 1048576)).toLocaleString() + ' MB not indexed yet</span>' : '')
+      // Under 1 MB is a busy worker's last few seconds of output, not a gap.
+      + (d.index_lag_bytes >= 1048576 ? ' \u00b7 <span title="The search index has not reached this many bytes of logs yet; matches in them are not shown.">'
+          + Math.round(d.index_lag_bytes / 1048576).toLocaleString() + ' MB not indexed yet</span>' : '')
       + '</span>'
       + '<a href="#" onclick="event.preventDefault();_peekDeepClose()">close</a></div>'
       + (hits.length ? hits.map(h => '<div class="peek-deep-hit"><div class="peek-deep-meta">'

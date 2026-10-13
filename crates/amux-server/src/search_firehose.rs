@@ -894,6 +894,34 @@ fn indexable_lag(path: &Path, offset: u64, len: u64) -> u64 {
     }
 }
 
+/// Bytes the index has not reached yet in the sources a search covered: the
+/// given kinds, and only `session`'s files when it is scoped. From file sizes
+/// and cursors alone, so it costs one stat per file and is cheap enough to
+/// return beside every log/transcript search.
+pub fn pending_bytes(home: &Path, kinds: &[&str], session: Option<&str>) -> u64 {
+    let Ok(conn) = open(home) else {
+        return 0;
+    };
+    sources(home)
+        .into_iter()
+        .filter(|s| kinds.contains(&s.kind) && session.is_none_or(|x| x == s.session))
+        .map(|s| {
+            let Ok(meta) = std::fs::metadata(&s.path) else {
+                return 0;
+            };
+            let off: u64 = conn
+                .query_row(
+                    "SELECT offset FROM cursors WHERE source = ?1 AND ino = ?2",
+                    params![s.path.to_string_lossy(), meta.ino() as i64],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|o| o as u64)
+                .unwrap_or(0);
+            meta.len().saturating_sub(off)
+        })
+        .sum()
+}
+
 /// Coverage for `/api/search/status`: per kind, documents and sources, and how
 /// many bytes are still waiting to be indexed.
 pub fn status(home: &Path) -> Value {
@@ -1144,5 +1172,15 @@ mod tests {
             "a partial line is not lag"
         );
         assert_eq!(status(home.path())["caught_up"], json!(true));
+        assert_eq!(
+            pending_bytes(home.path(), &["log"], Some("a")),
+            7,
+            "raw bytes past the cursor"
+        );
+        assert_eq!(
+            pending_bytes(home.path(), &["log"], Some("other")),
+            0,
+            "scoped to the session"
+        );
     }
 }
