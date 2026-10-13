@@ -14179,7 +14179,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1453';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1454';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -21286,7 +21286,8 @@ function _chipChatAction(chip, target) {
   if (k === 'down' && inp) return cmdHistoryDown(inp, target);
 }
 function _chipAction(chip, sessionName, isPeek) {
-  const chatTarget = isPeek && (chip.action === 'send' || chip.action === 'keys') && _peekChatTarget();
+  const chatTarget = isPeek && (chip.action === 'send' || chip.action === 'keys')
+    && typeof _peekChatTarget === 'function' && _peekChatTarget();
   if (chatTarget) return _chipChatAction(chip, chatTarget);
   if (chip.action === 'send') {
     if (isPeek) peekQuickSend(chip.value);
@@ -21326,7 +21327,7 @@ function renderChips(container, sessionName, isPeek) {
   // terminal (chat) has nothing for them to press. Indexes stay the originals.
   const who = sessionName || (isPeek ? peekSession : '');
   const noKeys = !!who && _workerRenderer(who) !== 'terminal';
-  const chatTab = isPeek && !sessionName && !!_peekChatTarget();
+  const chatTab = isPeek && !sessionName && typeof _peekChatTarget === 'function' && !!_peekChatTarget();
   let html = '';
   chips.forEach((chip, i) => {
     if (chatTab ? (chip.action === 'keys' && !_CHAT_CHIP_KEYS[chip.value]) : (noKeys && chip.action === 'keys')) return;
