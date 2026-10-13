@@ -1087,12 +1087,24 @@ reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
     echo "mac-cleanup: claude tmp: open handles UNMEASURED (lsof produced nothing): reaped 0, nothing is deleted without it"
     rm -f -- "${lsofsnap:?}" "${live:?}"; return 0
   fi
-  for sess in "$root"/*/*/; do
-    sess=${sess%/}
+  # The pass resumes where the last one ran out of time (2026-10-13: 38 of 136 session
+  # dirs reached inside the share, the same alphabetical 98 skipped every tick, so an
+  # idle session late in the list was never judged). The cursor is the first dir the
+  # last pass did not reach; a dir that has since gone is replaced by the next one
+  # after it in order, and a pass that reaches every dir clears the cursor.
+  local -a sessions=(); local cursor_file="$STATE_DIR/claude-tmp.cursor" cursor="" start=0 nall k stopped=""
+  for sess in "$root"/*/*/; do sess=${sess%/}; [ -d "$sess" ] && sessions+=("$sess"); done
+  nall=${#sessions[@]}
+  if [ "$nall" -gt 0 ] && [ -s "$cursor_file" ]; then
+    cursor=$(cat "$cursor_file")
+    for ((k=0; k<nall; k++)); do if ! [[ "${sessions[$k]}" < "$cursor" ]]; then start=$k; break; fi; done
+  fi
+  for ((k=0; k<nall; k++)); do
+    sess=${sessions[$(( (start + k) % nall ))]}
     [ -d "$sess" ] || continue
     n_sess=$((n_sess+1))
     uuid=${sess##*/}; proj=${sess%/*}; proj=${proj##*/}
-    if [ $(( $(date +%s) - t0 )) -ge "$sess_budget" ]; then n_over=$((n_over+1)); continue; fi
+    if [ $(( $(date +%s) - t0 )) -ge "$sess_budget" ]; then n_over=$((n_over+1)); [ -n "$stopped" ] || stopped=$sess; continue; fi
     if [ "$idle_h" -le 0 ]; then printf '%s\n' "$sess" >> "$live"; n_live=$((n_live+1)); continue; fi
     rc=0; any_recent "$idle_h" "$CLAUDE_TMP_WALK_S" "$CLAUDE_PROJECTS/$proj/$uuid.jsonl" "$CLAUDE_PROJECTS/$proj/$uuid" "$sess" || rc=$?
     if [ "$rc" = 0 ]; then printf '%s\n' "$sess" >> "$live"; n_live=$((n_live+1)); continue; fi
@@ -1107,6 +1119,11 @@ reap_claude_tmp() { # <root> <idle_hours> <dry:0|1>
     claude_tmp_ledger "session idle >= ${idle_h}h" "$kb" "$sess"
     echo "mac-cleanup:   removed $(fmt_kb "${kb:-0}") $sess (session idle >= ${idle_h}h)"
   done
+  if [ "$dry" != 1 ]; then
+    if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"
+      echo "mac-cleanup:   claude tmp: session pass ran out of its ${sess_budget}s share; the next tick starts at $stopped"
+    else rm -f -- "$cursor_file"; fi
+  fi
   # Rule 2: the quota on live sessions, biggest idle entries first.
   if [ "$quota_kb" -gt 0 ]; then
     qt0=$(date +%s)

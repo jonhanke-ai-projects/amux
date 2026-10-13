@@ -168,6 +168,31 @@ eval "$(declare -f real_any_recent | sed 's/^real_any_recent/any_recent/')"
 CLAUDE_TMP_BUDGET_S=$saved_b; CLAUDE_TMP_QUOTA_BUDGET_S=$saved_q
 check "an idle entry is still removed by the quota pass" gone "$(has "$S/old-big")"
 
+echo "11. a session pass that runs out of time resumes there next tick, so every dir is reached"
+build
+rm -rf -- "${R:?}/proj"
+for n in a b c d e f; do mb "$R/rot/$n/scratchpad/x" 1; touch "$P/rot.$n.jsonl"; done
+mkdir -p "$P/rot"; for n in a b c d e f; do mv "$P/rot.$n.jsonl" "$P/rot/$n.jsonl"; done
+age "$R/rot" "$P/rot"
+touch "$P/rot/a.jsonl" "$P/rot/b.jsonl" "$P/rot/c.jsonl" "$P/rot/d.jsonl"   # a-d are live and always kept: they are the time sink at the front
+CLAUDE_TMP_QUOTA_KB=0
+saved_b=$CLAUDE_TMP_BUDGET_S saved_q=$CLAUDE_TMP_QUOTA_BUDGET_S
+CLAUDE_TMP_BUDGET_S=3; CLAUDE_TMP_QUOTA_BUDGET_S=0
+eval "real_$(declare -f any_recent)"
+any_recent() { if [ "$1" = 48 ]; then sleep 1; fi; real_any_recent "$@"; }   # each judged session costs a second
+reached=""
+for tick in 1 2 3 4 5 6; do
+  reap_claude_tmp "$R" 48 0 > "$FIX/rot.out"
+  reached="$reached$(grep -o 'removed [^ ]* [^ ]*/rot/[a-f] ' "$FIX/rot.out" | sed 's#.*/rot/##' | tr -d ' ' || true)"
+  [ "$(ls "$R/rot" 2>/dev/null | tr -d '\n')" = abcd ] && break
+done
+eval "$(declare -f real_any_recent | sed 's/^real_any_recent/any_recent/')"
+CLAUDE_TMP_BUDGET_S=$saved_b; CLAUDE_TMP_QUOTA_BUDGET_S=$saved_q
+check "both idle dirs behind the live ones are removed within six short ticks" abcd "$(ls "$R/rot" 2>/dev/null | tr -d '\n')"
+check "the last dir in order is reached, not starved" yes "$(printf '%s' "$reached" | grep -q f && echo yes || echo no)"
+check "the live dirs are kept" abcd "$(ls "$R/rot" 2>/dev/null | tr -d '\n')"
+check "a pass that stops early says where the next one starts" yes "$(grep -q 'the next tick starts at' "$FIX/rot.out" && echo yes || echo no)"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-claude-tmp — all checks passed"; exit 0; fi
 echo "mac-cleanup-claude-tmp: $fails check(s) FAILED"; exit 1
