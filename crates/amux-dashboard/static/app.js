@@ -8998,9 +8998,10 @@ let _peekEmbedOpened = false;
   const name = new URLSearchParams(location.search).get('peekEmbed');
   if (!name) return;
   window._peekEmbed = name;
-  // ?peekTab=<tab> is the peek SIDE PANEL (Split > Messages / Chat): it shows
-  // that one panel for this worker, never the worker view around it.
-  if (new URLSearchParams(location.search).get('peekTab')) window._peekEmbedPanel = true;
+  // &peekSplitChild=1 marks the iframe the split pane itself built (Split >
+  // Messages / Chat). Only that page is a side panel: Workspace tiles and
+  // other ?peekEmbed= pages keep their own split and storage as before.
+  if (new URLSearchParams(location.search).get('peekSplitChild') === '1') window._peekSplitChild = true;
   const apply = () => {
     if (!document.body) return;
     document.body.classList.add('peek-embed');
@@ -9009,34 +9010,29 @@ let _peekEmbedOpened = false;
   if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
 })();
 // SPLIT NEVER NESTS (Ethan, 2026-10-12: Split > Chat showed a whole second
-// worker view, with its own tab bar and its own split, recursively). An
-// embedded peek is one panel: its side pane and divider are removed from the
-// DOM, so there is no split to restore or toggle, and as the side panel it
-// also drops the tab strip. Called at boot, before openPeek can run.
+// worker view, with its own tab bar and its own split, recursively). The split
+// side panel is one panel: its side pane, divider and Split button are removed
+// from the DOM, so there is no split to restore or toggle, and its tab strip
+// is hidden. Called at boot, before openPeek can run.
 function _peekEmbedStripSplit() {
-  if (!window._peekEmbed) return;
+  if (!window._peekSplitChild) return;
   for (const id of ['peek-split-handle', 'peek-split-files', 'peek-split-toggle']) {
     document.getElementById(id)?.remove();
   }
-  if (window._peekEmbedPanel) {
-    document.body.classList.add('peek-embed-panel');
-    const bar = document.querySelector('#peek-overlay .peek-tabs');
-    if (bar) { bar.hidden = true; bar.inert = true; }
-  }
+  document.body.classList.add('peek-embed-panel');
+  const bar = document.querySelector('#peek-overlay .peek-tabs');
+  if (bar) { bar.hidden = true; bar.inert = true; }
 }
-// The one gate every split entry point asks. A peek inside an embed (Workspace
-// tile or the split side panel itself) must never open a split: that is the
-// recursion. Refusing is beaconed so a regression shows in the server log.
+// The one gate every split entry point asks. The split side panel must never
+// open a split of its own: that is the recursion. Refusing is beaconed so a
+// regression shows in the server log.
 function _peekSplitNestedRefuse(where) {
-  let framed = false;
-  try { framed = window.self !== window.top; } catch (e) { framed = true; }
-  if (!window._peekEmbed && !(framed && /[?&](peekEmbed|embed)=/.test(location.search))) return false;
+  if (!window._peekSplitChild) return false;
   try {
     fetch(API + '/api/client-debug', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
       body: JSON.stringify({ kind: 'split-view', verdict: 'nested_split_refused', where,
-        session: window._peekEmbed || '', panel: !!window._peekEmbedPanel, framed,
-        measured: true, n_considered: 1, ver: APP_VER }),
+        session: window._peekEmbed || '', measured: true, n_considered: 1, ver: APP_VER }),
     }).catch(() => {});
   } catch (e) {}
   return true;
@@ -15565,11 +15561,11 @@ function closePeek() {
 let _peekSplitPath = null;
 
 function _savePeekState() {
-  // An embedded peek (Workspace tile, split side panel) shares this origin's
-  // storage with the page around it. Writing here overwrote the outer page's
-  // peekState with the embed's own (split side panel = tab chat), and the
-  // outer page's split:true, read back by an embed, is what nested the split.
-  if (window._peekEmbed) return;
+  // The split side panel shares this origin's storage with the page around
+  // it. Writing here overwrote the outer page's peekState with the panel's
+  // own (tab chat), and the outer page's split:true, read back by the panel,
+  // is what nested the split.
+  if (window._peekSplitChild) return;
   if (peekSession) {
     const state = { session: peekSession };
     // "Back to that location" includes WHICH tab (Ethan 2026-08-20): a
@@ -15635,7 +15631,7 @@ function _peekSplitShow(view) {
   if (!frame) return;
   frame.style.display = embed ? '' : 'none';
   if (embed && peekSession) {
-    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view);
+    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view) + '&peekSplitChild=1';
     if (frame.dataset.src !== src) { frame.dataset.src = src; frame.src = src; }
   }
 }
@@ -46923,9 +46919,9 @@ function _restoreScreen() {
   //    2026-08-08: #peek=amux opened amux-frustrations), and a shared link
   //    would misdirect the same way.
   if (/^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)) return;
-  // An embedded peek opens only what its URL names. Restoring the outer page's
-  // peek here (split included) is how the split side panel nested itself.
-  if (window._peekEmbed) return;
+  // The split side panel opens only what its URL names. Restoring the outer
+  // page's peek here (split included) is how it nested itself.
+  if (window._peekSplitChild) return;
   let _ps = null;
   try { _ps = JSON.parse(sessionStorage.getItem('peekState') || 'null'); } catch(e) {}
   if (!_ps || !_ps.session) {

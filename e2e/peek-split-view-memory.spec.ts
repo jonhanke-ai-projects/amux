@@ -71,7 +71,7 @@ test.describe('desktop split', () => {
       await page.locator('#peek-split-toggle').click();
       await page.locator('#psp-menu button', { hasText: view === 'chat' ? 'Chat' : 'Messages' }).click();
       await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
-      await expect(page.locator('#psp-frame')).toHaveAttribute('src', new RegExp('peekTab=' + view));
+      await expect(page.locator('#psp-frame')).toHaveAttribute('src', new RegExp('peekTab=' + view + '&peekSplitChild=1'));
       const frame = page.frameLocator('#psp-frame');
       expect(await frameState(frame)).toEqual(NO_NESTING);
       expect(await nesting(page)).toEqual({ tabBars: 1, splitWraps: 1 });
@@ -101,6 +101,19 @@ test.describe('desktop split', () => {
     await expect(page.locator('#psp-frame')).toBeHidden();
     expect(await nesting(page)).toEqual({ tabBars: 1, splitWraps: 1 });
     expect(await page.locator('iframe#psp-frame[src]').count()).toBe(0);
+  });
+
+  // Only the iframe the split builds (&peekSplitChild=1) is a side panel. A
+  // plain ?peekEmbed= page (Workspace tile, embedded chat) keeps its Files split.
+  test('a plain ?peekEmbed= page still opens the Files split', async ({ page }) => {
+    await page.route('**/api/sessions', (route) => route.fulfill({ json: [worker(A), worker(B)] }));
+    await page.goto('/?peekEmbed=' + A);
+    await expect(page.locator('#peek-overlay')).toHaveAttribute('data-session', A);
+    await expect(page.locator('body')).not.toHaveClass(/peek-embed-panel/);
+    expect(await page.locator('#peek-split-files').count()).toBe(1);
+    await page.evaluate(() => (window as any)._peekSplitOpen('files'));
+    await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
+    await expect(page.locator('#psf-body')).toBeVisible();
   });
 
   test('each worker keeps its own view: A split+Chat, B default, reload restores', async ({ page }) => {
