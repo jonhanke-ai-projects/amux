@@ -14176,7 +14176,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1441';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1451';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14828,6 +14828,85 @@ async function _chatCopy(btn) {
   setTimeout(() => { btn.textContent = was; }, 1500);
 }
 
+// READ ALOUD BESIDE COPY (Ethan, 2026-10-13: "in chat next to the Copy button
+// per message add a read aloud button"). It goes through _ttsSpeak, the same
+// /api/tts path as every other read-aloud, so the clip plays in the bottom
+// player and lands in the worker's Read alouds tab. The state lives here, keyed
+// by message, so a full _chatRender (SSE turn boundary, history reload) paints
+// the speaking message's button as Stop instead of resetting it.
+// phase: 'idle' | 'loading' | 'playing'.
+let _chatRA = { key: '', phase: 'idle', gen: 0 };
+function _chatReadKey(m) { return (m.turn_id || '') + '|' + (m.ts || ''); }
+function _chatReadPhase(key) { return _chatRA.key === key ? _chatRA.phase : 'idle'; }
+function _chatReadLabel(ph) { return ph === 'loading' ? 'Loading…' : ph === 'playing' ? 'Stop' : 'Read aloud'; }
+function _chatReadBtnHtml(m) {
+  const key = _chatReadKey(m);
+  const ph = _chatReadPhase(key);
+  return ' <button type="button" class="chat-copy-btn chat-read-btn" data-ra-key="' + esc(key) + '" data-ra-phase="' + ph
+    + '" data-read="' + encodeURIComponent(m.text) + '" onclick="_chatReadAloud(this)" title="Read reply aloud"'
+    + ' aria-pressed="' + (ph !== 'idle') + '" aria-label="' + (ph === 'idle' ? 'Read reply aloud' : 'Stop reading') + '">'
+    + _chatReadLabel(ph) + '</button>';
+}
+function _chatReadPaint() {
+  document.querySelectorAll('.chat-read-btn').forEach(b => {
+    const ph = _chatReadPhase(b.dataset.raKey || '');
+    b.dataset.raPhase = ph;
+    b.textContent = _chatReadLabel(ph);
+    b.setAttribute('aria-pressed', String(ph !== 'idle'));
+    b.setAttribute('aria-label', ph === 'idle' ? 'Read reply aloud' : 'Stop reading');
+  });
+}
+function _chatReadReset(gen) {
+  if (gen != null && gen !== _chatRA.gen) return;   // a newer read owns the state
+  _chatRA = { key: '', phase: 'idle', gen: _chatRA.gen + 1 };
+  _chatReadPaint();
+}
+function _chatReadBeacon(fields) {
+  try {
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }), keepalive: true,
+      body: JSON.stringify(Object.assign({ kind: 'chat-read-aloud', session: (typeof _chat !== 'undefined' && _chat.name) || '',
+        ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }, fields)),
+    }).catch(() => {});
+  } catch (_) {}
+}
+async function _chatReadAloud(btn) {
+  const key = btn.dataset.raKey || '';
+  // A second press on the speaking (or loading) message stops it.
+  if (_chatRA.key === key && _chatRA.phase !== 'idle') { _ttsCancel(); _chatReadReset(); return; }
+  // One message speaks at a time: starting another stops the current one.
+  if (_chatRA.phase !== 'idle') _ttsCancel();
+  // Same markdown cleanup the file read-aloud uses: code blocks are skipped.
+  const text = _mdToSpeech(decodeURIComponent(btn.dataset.read || ''));
+  if (!text) { _chatReadReset(); showToast('Nothing to read aloud in this reply', 'error'); return; }
+  const gen = _chatRA.gen + 1;
+  _chatRA = { key, phase: 'loading', gen };
+  _chatReadPaint();
+  let res;
+  try { res = await _ttsSpeak(text, null); }
+  catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+  if (gen !== _chatRA.gen) return;   // stopped or superseded while generating
+  if (!res || !res.ok) {
+    // _ttsSpeak already toasted the reason; a cancel is not a failure.
+    if (!res || !res.aborted) _chatReadBeacon({ outcome: 'failed', error: String((res && res.error) || 'unknown').slice(0, 200), chars: text.length });
+    _chatReadReset(gen);
+    return;
+  }
+  _chatRA.phase = 'playing';
+  _chatReadPaint();
+  // Back to idle when the clip ends, is paused or stopped from the bottom
+  // player or the floating indicator, or another clip replaces it.
+  const el = _abAudio, url = res.url;
+  if (!el) { _chatReadReset(gen); return; }
+  const evs = ['ended', 'pause', 'emptied', 'error'];
+  const off = () => evs.forEach(ev => el.removeEventListener(ev, done));
+  function done() {
+    if (gen !== _chatRA.gen) { off(); return; }
+    if (_abCurrentFile !== url || el.paused || el.ended) { off(); _chatReadReset(gen); }
+  }
+  evs.forEach(ev => el.addEventListener(ev, done));
+}
+
 function _chatBubble(role, html, meta, cls, attrs) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '"' + (attrs || '') + '>'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -14924,7 +15003,8 @@ function _chatMessageHtml(m) {
   if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
   bits.push(..._chatUsageBits(m));
   if (m.interrupted) bits.push('stopped');
-  const copy = m.text ? ' <button type="button" class="chat-copy-btn" data-copy="' + encodeURIComponent(m.text) + '" onclick="_chatCopy(this)" title="Copy reply" aria-label="Copy reply">Copy</button>' : '';
+  const copy = m.text ? ' <button type="button" class="chat-copy-btn" data-copy="' + encodeURIComponent(m.text) + '" onclick="_chatCopy(this)" title="Copy reply" aria-label="Copy reply">Copy</button>'
+    + _chatReadBtnHtml(m) : '';
   return _chatBubble('assistant', head + _chatCodeCopy(_chatMarkdown(m.text || '')), esc(bits.filter(Boolean).join(' · ')) + copy,
     m.interrupted ? 'is-interrupted' : '');
 }
@@ -21964,9 +22044,12 @@ function _ttsCancel() {
   _ttsIndicator('off');
 }
 
+// Resolves to {ok:true, url} once playback started, or {ok:false, error,
+// aborted} so a caller with its own button state (the Chat tab's per-message
+// Read aloud) can reset it and report why. Existing callers ignore the value.
 async function _ttsSpeak(text, btn) {
   if (_ttsSpeakAudio) { _ttsSpeakAudio.pause(); _ttsSpeakAudio = null; }
-  if (!text) return;
+  if (!text) return { ok: false, error: 'Nothing to read' };
   // btn is optional — the ellipsis "read latest" actions have no button to spin,
   // so every btn access is guarded and the floating _ttsLoading covers them.
   const orig = btn ? btn.innerHTML : '';
@@ -21997,8 +22080,11 @@ async function _ttsSpeak(text, btn) {
       body: JSON.stringify({ text }),
       signal: _ttsAbort.signal,
     });
-    const d = await r.json();
-    if (d.error) { showToast(d.error, 'error'); return; }
+    // A non-JSON failure (proxy 502, HTML error page) used to surface as a
+    // JSON parse error; name the status instead.
+    const d = await r.json().catch(() => ({ error: 'Read aloud failed: HTTP ' + r.status }));
+    if (!d.error && !d.url) d.error = 'Read aloud failed: no audio returned';
+    if (d.error) { showToast(d.error, 'error'); return { ok: false, error: String(d.error) }; }
     // Play through the SHARED bottom player (Ethan, 2026-08-15: a read-aloud
     // "should show the player thing at the bottom like if i were playing an
     // audio file from within the dir viewer"). It was playing on a detached
@@ -22016,10 +22102,11 @@ async function _ttsSpeak(text, btn) {
     // Record for replay (Ethan: a tab of past read-alouds). Fire-and-forget so a
     // storage hiccup never blocks playback.
     _raRecord(text, d.url, (typeof peekSession !== 'undefined' && peekSession) || '');
+    return { ok: true, url: d.url };
   } catch(e) {
     // A user-initiated Cancel aborts the fetch; that is the feature working, not
     // an error — stay quiet (state was already reset by _ttsCancel) (AMUX-3333).
-    if (e && e.name === 'AbortError') return;
+    if (e && e.name === 'AbortError') return { ok: false, aborted: true, error: 'cancelled' };
     // NotAllowedError is not a permission the user can grant — it means the tap's
     // user-activation expired. Say something actionable instead of WebKit's
     // "possibly because the user denied permission", which sends people hunting
@@ -22036,6 +22123,7 @@ async function _ttsSpeak(text, btn) {
         new Blob([JSON.stringify({ kind: 'tts-error', name: e && e.name, msg: e && e.message })],
                  { type: 'application/json' }));
     } catch (_) {}
+    return { ok: false, error: msg };
   } finally {
     _ttsAbort = null;
     if (!_ttsPlaying) _ttsIndicator('off');   // hide only if playback did NOT start

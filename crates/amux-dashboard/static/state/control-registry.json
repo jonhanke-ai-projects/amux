@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2878,
+  "n_considered": 2887,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -652,6 +652,18 @@
     },
     "_chatPaintCached": {
       "kind": "command._chatPaintCached",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chatReadAloud": {
+      "kind": "command._chatReadAloud",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chatReadBeacon": {
+      "kind": "command._chatReadBeacon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
