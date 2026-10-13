@@ -14,6 +14,15 @@ import { cleanup } from './teardown';
 
 type Win = Window & { _draw: any; switchView: (v: string) => void; _AMUX_DATA_DIR: string; _AMUX_AUTH_TOKEN: string };
 
+// Switch Excalidraw's tool and wait until it is active. setActiveTool applies on
+// the editor's next state update, so a drag sent straight after it could still
+// draw with the previous tool (main CI, 2026-10-13: a rectangle drag drew a
+// second freedraw stroke).
+async function setTool(page: Page, type: string) {
+  await page.evaluate((t) => (window as unknown as Win)._draw.api.setActiveTool({ type: t }), type);
+  await page.waitForFunction((t) => (window as unknown as Win)._draw.api.getAppState().activeTool.type === t, type);
+}
+
 async function openDraw(page: Page) {
   await page.waitForFunction(() => typeof (window as unknown as Win).switchView === 'function');
   await expect(page.locator('#tab-draw')).toHaveCount(1);
@@ -67,9 +76,9 @@ test('Draw tab: draw, autosave to disk, reopen, library, snap, export, live relo
     // A freehand stroke and a rectangle, with real pointer events.
     const box = await canvasBox(page);
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
-    await page.evaluate(() => (window as unknown as Win)._draw.api.setActiveTool({ type: 'freedraw' }));
+    await setTool(page, 'freedraw');
     await drag(page, [cx - 120, cy - 60], [cx - 20, cy - 10], 12);
-    await page.evaluate(() => (window as unknown as Win)._draw.api.setActiveTool({ type: 'rectangle' }));
+    await setTool(page, 'rectangle');
     await drag(page, [cx + 10, cy + 10], [cx + 110, cy + 70]);
     await expect.poll(() => sceneTypes(page)).toEqual(['freedraw', 'rectangle']);
 
@@ -170,7 +179,7 @@ test('Draw tab: draw, autosave to disk, reopen, library, snap, export, live relo
     await page.route('**/api/file', route => route.request().method() === 'PUT'
       ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'disk full' }) })
       : route.continue());
-    await page.evaluate(() => (window as unknown as Win)._draw.api.setActiveTool({ type: 'rectangle' }));
+    await setTool(page, 'rectangle');
     await drag(page, [cx - 100, cy + 40], [cx - 40, cy + 90]);
     await expect(page.locator('#draw-save-state')).toHaveAttribute('data-state', 'error', { timeout: 10_000 });
     await expect(page.locator('#draw-save-state')).toHaveText('Not saved');
@@ -213,7 +222,7 @@ test('Draw tab: a disk change over unsaved edits asks first; .excalidraw files f
       ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'disk full' }) })
       : route.continue());
     const box = await canvasBox(page);
-    await page.evaluate(() => (window as unknown as Win)._draw.api.setActiveTool({ type: 'diamond' }));
+    await setTool(page, 'diamond');
     await drag(page, [box.x + box.width / 2 - 40, box.y + box.height / 2 + 60], [box.x + box.width / 2 + 40, box.y + box.height / 2 + 120]);
     await expect(page.locator('#draw-save-state')).toHaveAttribute('data-state', 'error', { timeout: 10_000 });
     await new Promise(r => setTimeout(r, 1100));
