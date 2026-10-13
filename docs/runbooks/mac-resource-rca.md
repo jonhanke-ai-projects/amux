@@ -1,12 +1,30 @@
 # Mac resource RCA (escalated by the cleanup tick)
 
-`scripts/mac-cleanup-tick.sh` (SCHED-465, every 30 minutes, shell, no model
-cost) fixes the symptoms it can compute: purge, restarting a leaking agent,
-killing stale shell snapshots, reaping idle cargo targets, thinning local
-snapshots. After that it re-measures. Any class still constrained (disk,
-memory, cpu, family) gets an RCA bundle and one message to the desktop lane,
-at most once per class per cooldown (6h by default). This page is what that
-lane does with the message.
+`scripts/mac-cleanup-tick.sh` (SCHED-465, hourly, shell, no model cost) fixes
+the symptoms it can compute: purge, restarting a leaking agent, killing stale
+shell snapshots, reaping idle cargo targets, thinning local snapshots. After
+that it re-measures. Any class still constrained (disk, memory, cpu, family,
+and the health classes below) gets an RCA bundle and one message to the
+escalation target, at most once per class per cooldown (6h by default). This
+page is what that lane does with the message.
+
+## The system health section
+
+Beside disk and memory, every tick checks the rest of the machine. Each probe
+is cheap (the section takes about 8s) and goes through a seam;
+`AMUX_CLEANUP_HEALTH_PROBES=off` turns them all off.
+
+| Probe | Fixes on its own | Escalates (class) |
+|---|---|---|
+| CPU hogs: at or over 80% on two ticks in a row | sends TERM to a listed macOS helper that launchd starts again (`AMUX_CLEANUP_CPU_RESTART_NAMES`, default ReportCrash, ecosystemanalyticsd, mediaanalysisd, photoanalysisd, mdworker_shared, spotlightknowledged), only when this user owns it. Log: `cpu-restarts.log` | `hog`: any other process over 300% on two ticks |
+| Leftover test processes | stops a process older than 2h whose parent has exited (ppid 1) and whose command runs out of a pytest temp dir. Log: `test-orphans.log` | none |
+| Kernel limits | nothing | `limits`: open files, this user's processes or inodes at 85% of the limit. `zombies`: one parent holding 200 unreaped children |
+| Crash reports | prunes `.ips/.crash/.diag/.hang/.spin` older than 30 days in `~/Library/Logs/DiagnosticReports` | `crashes`: one app crashing 10 times in 24h |
+| launchd jobs, network, thermal | nothing (report only) | none |
+
+The logs named above live in `~/.amux/logs/mac-cleanup/`. A `zombies`
+escalation names a parent that is not waiting on its children; the fix is in
+that parent's code, and the zombies go away when it reaps them or exits.
 
 ## 1. Read the evidence before measuring anything new
 
