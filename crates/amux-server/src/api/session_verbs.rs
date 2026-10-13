@@ -20056,6 +20056,19 @@ fn session_destructive_allowed(state: &AppState, headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+/// The request is the owner's own dashboard: a verified invited member, or
+/// the UI token the dashboard page carries. Unlike
+/// `session_destructive_allowed`, no environment switch widens it.
+fn owner_ui_proof(state: &AppState, headers: &HeaderMap) -> bool {
+    if super::org::is_verified_local_member(headers) {
+        return true;
+    }
+    headers
+        .get("x-amux-ui-token")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == ui_token(state))
+}
+
 /// Origin header, py:15208 _hdr_worker precedence (X-Amux-Worker first,
 /// legacy X-Amux-Session).
 pub(crate) fn hdr_worker(headers: &HeaderMap) -> String {
@@ -26910,9 +26923,22 @@ pub(crate) fn peer_receive_refusal(origin: &str, target: &str) -> Option<String>
 
 pub(crate) use super::worker_messaging::{worker_group_refusal, PeerInputRefusal};
 
+/// The owner @-mentioned `target` in a message to `origin` (api/mention_grants.rs).
+pub(crate) fn owner_mention_grant_allows(origin: &str, target: &str) -> bool {
+    let Some(g) = super::mention_grants::active(&crate::config::amux_home(), origin, target, now_f64() as i64) else {
+        return false;
+    };
+    tracing::info!(origin, target, expires = g.expires, verdict = "owner_mention_grant_used", measured = true,
+        n_considered = 1, "worker input allowed outside a shared group: the owner @-mentioned this worker");
+    true
+}
+
 pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInputRefusal> {
     if let Some(reason) = peer_receive_refusal(origin, target) {
         return Some(PeerInputRefusal { code: "peer_receive_denied", reason });
+    }
+    if owner_mention_grant_allows(origin, target) {
+        return None;
     }
     let target_groups = lane_groups(target);
     let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &target_groups);
@@ -27788,6 +27814,23 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
         text = format!("{}{text}", super::repeat_ask::note(rid, rts));
     }
     let repeat_of = repeat.map(|(rid, _)| rid);
+    // OWNER @-MENTION GRANTS (api/mention_grants.rs). Only the owner's own
+    // dashboard input creates one: no worker origin, no worker header, and the
+    // UI token. A worker's sends never reach this branch.
+    if matches!(send_origin, SendOrigin::Owner)
+        && hdr_worker(headers).is_empty()
+        && body_str(body, "source_session").is_empty()
+        && !is_chat_companion(name)
+        && owner_ui_proof(state, headers)
+    {
+        let mentioned = super::mention_grants::mentioned_workers(&orig_text, name, |w| {
+            valid_session_name(w) && env_path(w).exists()
+        });
+        let made = super::mention_grants::record(&crate::config::amux_home(), name, &mentioned, now_f64() as i64);
+        if !made.is_empty() && !isolated {
+            text.push_str(&super::mention_grants::delivery_note(&made));
+        }
+    }
     if !isolated && parse_env(name).get("CC_PROJECT").is_some() {
         let task = state
             .store

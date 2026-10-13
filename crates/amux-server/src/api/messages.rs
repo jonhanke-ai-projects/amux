@@ -124,6 +124,9 @@ pub(crate) fn native_peer_input_refusal(
     if source.group_id.is_none() && receiver.group_id.is_none() {
         return Ok(super::session_verbs::peer_input_refusal(&source.display_name, &receiver.display_name));
     }
+    if super::session_verbs::owner_mention_grant_allows(&source.display_name, &receiver.display_name) {
+        return Ok(None);
+    }
     let source_groups = source.group_id.into_iter().collect();
     let receiver_groups = receiver.group_id.into_iter().collect();
     let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &receiver_groups);
