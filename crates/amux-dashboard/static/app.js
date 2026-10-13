@@ -10704,6 +10704,25 @@ async function doSend(name, text, identity = {}) {
   return 'queued';
 }
 
+// Keys that stop work (Ctrl-C, Escape, Ctrl-X) say where they came from. A
+// Ctrl-C from Ethan's Mac app stopped mxp-gs12's 10 background agents
+// (2026-10-13 16:10:44Z) and the server's keys line could not say whether a
+// chip or a shortcut sent it.
+const _STOP_KEYS = new Set(['C-c', 'Escape', 'C-x']);
+function _stopKeyBeacon(name, keys, source) {
+  if (!_STOP_KEYS.has(keys)) return;
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'interrupt-key', session: name, keys, source: source || 'unknown',
+        ver: APP_VER, measured: true, n_considered: 1 }) }).catch(() => {});
+  } catch (e) {}
+}
+// The keyboard interrupt is the real Ctrl key only. Cmd+C and Cmd+X are copy
+// and cut on a Mac: with the selection lost to a terminal refresh they used
+// to send Ctrl-C / Ctrl-X to the worker.
+function _ctrlChord(e, key) {
+  return e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key === key;
+}
 async function doKeys(name, keys) {
   showSendingIndicator();
   const r = await apiCall(API + '/api/sessions/' + name + '/keys', {
@@ -14179,7 +14198,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1454';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1455';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -21299,6 +21318,7 @@ function _chipAction(chip, sessionName, isPeek) {
       _submitSuggestion(isPeek ? peekSession : sessionName, isPeek, 'Enter');
       return;
     }
+    if (typeof _stopKeyBeacon === 'function') _stopKeyBeacon(isPeek ? peekSession : sessionName, chip.value, isPeek ? 'peek-chip' : 'card-chip');
     if (isPeek) peekQuickKeys(chip.value);
     else doKeys(sessionName, chip.value);
   } else if (chip.action === 'slash') {
@@ -31959,13 +31979,13 @@ document.addEventListener('keydown', (e) => {
 
   if (document.getElementById('grid-view').classList.contains('active')) {
     if (e.key === 'Escape') { e.preventDefault(); exitGridMode(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key === 'c' && !e.altKey && !e.shiftKey) {
+    if (_ctrlChord(e, 'c')) {
       const hasSelection = window.getSelection().toString().length > 0;
       if (!hasSelection) {
         const names = Object.keys(_gridPanes);
         const target = _lastActivePane && _gridPanes[_lastActivePane] ? _lastActivePane
           : names.length === 1 ? names[0] : null;
-        if (target) { e.preventDefault(); gpDoKeys(target, 'C-c'); return; }
+        if (target) { e.preventDefault(); _stopKeyBeacon(target, 'C-c', 'grid-shortcut'); gpDoKeys(target, 'C-c'); return; }
       }
     }
     return;
@@ -31986,16 +32006,16 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault(); closePeek(); return;
   }
   // Ctrl+C with no selection → send interrupt; Ctrl+X (outside input) → send Ctrl-X
-  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+  if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
     const ae = document.activeElement;
     const inInput = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
     const hasPageSelection = window.getSelection().toString().length > 0;
     const hasInputSelection = inInput && ae.selectionStart !== ae.selectionEnd;
     if (e.key === 'c' && !hasPageSelection && !hasInputSelection) {
-      e.preventDefault(); peekQuickKeys('C-c'); return;
+      e.preventDefault(); _stopKeyBeacon(peekSession, 'C-c', 'peek-shortcut'); peekQuickKeys('C-c'); return;
     }
     if (e.key === 'x' && !inInput && !hasPageSelection) {
-      e.preventDefault(); peekQuickKeys('C-x'); return;
+      e.preventDefault(); _stopKeyBeacon(peekSession, 'C-x', 'peek-shortcut'); peekQuickKeys('C-x'); return;
     }
   }
 });
@@ -43275,9 +43295,9 @@ function gpSendKeydown(name, e) {
   const inp = document.getElementById(_gpSafeId(name) + '-input');
   if (e.key === 'Enter' && !e.shiftKey) {
     sendGridCmd(name); e.preventDefault();
-  } else if ((e.ctrlKey || e.metaKey) && e.key === 'c' && !e.altKey && !e.shiftKey) {
+  } else if (_ctrlChord(e, 'c')) {
     const hasSelection = inp && inp.selectionStart !== inp.selectionEnd;
-    if (!hasSelection) { e.preventDefault(); gpDoKeys(name, 'C-c'); }
+    if (!hasSelection) { e.preventDefault(); _stopKeyBeacon(name, 'C-c', 'grid-input-shortcut'); gpDoKeys(name, 'C-c'); }
   } else if (e.key === 'ArrowUp' && inp && inp.selectionStart === 0) {
     e.preventDefault(); cmdHistoryUp(inp, name);
   } else if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) {

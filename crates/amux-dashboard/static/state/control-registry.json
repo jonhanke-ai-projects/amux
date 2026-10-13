@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2893,
+  "n_considered": 2895,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3730,6 +3730,12 @@
     },
     "_steeringSetDelay": {
       "kind": "command._steeringSetDelay",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_stopKeyBeacon": {
+      "kind": "command._stopKeyBeacon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
