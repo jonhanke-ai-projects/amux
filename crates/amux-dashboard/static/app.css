@@ -2797,6 +2797,8 @@
      parked the button that far in from the edge on desktop. The button carries
      its own background + border-left + shadow, so a tab scrolling under it at
      the extreme right stays legible. */
+  /* The split side panel (?peekTab=) renders one panel, no tab strip. */
+  .peek-tabs[hidden] { display: none !important; }
   .peek-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 0 0 12px;
     overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none;
     overscroll-behavior-x: contain; touch-action: pan-x; }
