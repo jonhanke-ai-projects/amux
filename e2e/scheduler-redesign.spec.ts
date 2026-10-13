@@ -148,7 +148,11 @@ test('details: tabs, pause/resume, run now, edit keeps the stored expression, du
   // Every Related action has real height (they once shrank to 2px in the
   // scrolling flex column and could not be tapped).
   for (const label of ['Edit schedule', 'Duplicate', 'Delete schedule']) {
-    const bb = await page.locator('#sched-detail .sx-rel', { hasText: label }).boundingBox();
+    // Wait for the row before measuring it: boundingBox() reads null while the
+    // details sheet is still rendering (CI, 2026-10-13: "reading 'height' of null").
+    const row = page.locator('#sched-detail .sx-rel', { hasText: label });
+    await expect(row).toBeVisible();
+    const bb = await row.boundingBox();
     expect(bb!.height, label + ' height').toBeGreaterThanOrEqual(40);
   }
   await page.waitForTimeout(400);   // let the sheet finish sliding in
@@ -217,6 +221,55 @@ test('details: tabs, pause/resume, run now, edit keeps the stored expression, du
   await expect.poll(async () => (await listAll(request, tok)).some((s: any) => s.id === id)).toBe(false);
   await expect(page.locator('#toast')).toContainText('Deleted ' + id);
   await expect(panel).toBeHidden();
+});
+
+// An Edit save refetches the list and then closes the form. Duplicate tapped
+// during that refetch opened a new form, which the late close hid behind
+// display:none with its fields filled (iOS e2e, 2026-10-13). The refetch is
+// held here so the tap always lands inside it.
+test('a form opened while an edit save refetches stays open', async ({ page, request }) => {
+  await settle(page);
+  const tok = await token(page);
+  const p = `sx-race-${Date.now()}-`;
+  const id = await create(request, tok, { title: p + 'one', kind: 'shell', command: 'true', schedule_expr: 'daily at 9am' });
+  await openScheduler(page, p);
+  await page.locator(`[data-sched-id="${id}"] .sx-title`).click();
+  await expect(page.locator('#sched-detail')).toBeVisible();
+  await page.locator('#sched-detail .sx-rel', { hasText: 'Edit schedule' }).click();
+  await expect(page.locator('#sched-overlay')).toHaveClass(/active/);
+  await page.fill('#sched-title', p + 'renamed');
+
+  let release!: () => void;
+  const held = new Promise<void>(r => { release = r; });
+  let sawRefetch!: () => void;
+  const refetching = new Promise<void>(r => { sawRefetch = r; });
+  // Hold every list GET after the save's PATCH until released: the save's own
+  // refetch is among them (an SSE-driven refetch can arrive first).
+  let armed = false;
+  await page.route(/\/api\/schedules(\/[^/?]+)?(\?.*)?$/, async (route) => {
+    const req = route.request();
+    const isList = /\/api\/schedules(\?.*)?$/.test(req.url());
+    if (req.method() === 'PATCH') { armed = true; return route.continue(); }
+    if (req.method() !== 'GET' || !isList || !armed) return route.continue();
+    sawRefetch();
+    await held;
+    await route.continue();
+  });
+  await page.locator('#sched-save-btn').click();
+  await refetching;
+  await page.evaluate(`duplicateSchedule(${JSON.stringify(id)})`);
+  await expect(page.locator('#sched-modal-title')).toHaveText('Duplicate schedule');
+  // The save ends by reopening the edited schedule's details, which fetches
+  // its runs; that request marks the point the old close would have run.
+  const saveDone = page.waitForRequest(r => r.url().includes('/api/schedules/runs?schedule_id=' + id));
+  armed = false;
+  release();
+  await saveDone;
+  await page.waitForTimeout(400);   // past closeSchedModal's 250ms hide timer
+  await expect(page.locator('#sched-overlay')).toHaveClass(/active/);
+  await expect(page.locator('#sched-save-btn')).toBeVisible();
+  await page.locator('#sched-save-btn').click();
+  await expect.poll(async () => (await listAll(request, tok)).filter((s: any) => s.title === 'Copy of ' + p + 'one').length).toBe(1);
 });
 
 test('row menu: run, pause, edit and delete are reachable from the list', async ({ page, request }) => {

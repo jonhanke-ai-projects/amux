@@ -8998,9 +8998,45 @@ let _peekEmbedOpened = false;
   const name = new URLSearchParams(location.search).get('peekEmbed');
   if (!name) return;
   window._peekEmbed = name;
-  const apply = () => document.body && document.body.classList.add('peek-embed');
+  // &peekSplitChild=1 marks the iframe the split pane itself built (Split >
+  // Messages / Chat). Only that page is a side panel: Workspace tiles and
+  // other ?peekEmbed= pages keep their own split and storage as before.
+  if (new URLSearchParams(location.search).get('peekSplitChild') === '1') window._peekSplitChild = true;
+  const apply = () => {
+    if (!document.body) return;
+    document.body.classList.add('peek-embed');
+    _peekEmbedStripSplit();
+  };
   if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
 })();
+// SPLIT NEVER NESTS (Ethan, 2026-10-12: Split > Chat showed a whole second
+// worker view, with its own tab bar and its own split, recursively). The split
+// side panel is one panel: its side pane, divider and Split button are removed
+// from the DOM, so there is no split to restore or toggle, and its tab strip
+// is hidden. Called at boot, before openPeek can run.
+function _peekEmbedStripSplit() {
+  if (!window._peekSplitChild) return;
+  for (const id of ['peek-split-handle', 'peek-split-files', 'peek-split-toggle']) {
+    document.getElementById(id)?.remove();
+  }
+  document.body.classList.add('peek-embed-panel');
+  const bar = document.querySelector('#peek-overlay .peek-tabs');
+  if (bar) { bar.hidden = true; bar.inert = true; }
+}
+// The one gate every split entry point asks. The split side panel must never
+// open a split of its own: that is the recursion. Refusing is beaconed so a
+// regression shows in the server log.
+function _peekSplitNestedRefuse(where) {
+  if (!window._peekSplitChild) return false;
+  try {
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'split-view', verdict: 'nested_split_refused', where,
+        session: window._peekEmbed || '', measured: true, n_considered: 1, ver: APP_VER }),
+    }).catch(() => {});
+  } catch (e) {}
+  return true;
+}
 function _maybeAutoOpenEmbedPeek() {
   if (!window._peekEmbed || _peekEmbedOpened) return;
   if (!sessions || !sessions.some(s => s.name === window._peekEmbed)) return;
@@ -12266,6 +12302,7 @@ function setPeekTab(tab) {
   _peekTab = tab;
   // Persist so an app-switch away and back lands on this tab, not the default.
   try { _savePeekState(); } catch(e) {}
+  try { _peekViewRemember(); } catch(e) {}
   // The notes tab is gone; this flushed its pending save and called
   // _peekNotesSave(), which went with it. The branch never fired only because
   // _peekNotesSaveTimer is now never assigned non-null — so a single line
@@ -14139,7 +14176,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1420';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1441';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15183,7 +15220,12 @@ function openPeek(name, opts) {
   _peekGitData = null;
   const _gtp = document.getElementById('peek-git-tree-panel');
   if (_gtp) _gtp.classList.remove('collapsed');
-  if (_peekTab !== 'terminal') setPeekTab('terminal');
+  // The reset is not a choice the human made, so it must not be remembered as
+  // this worker's view (_peekViewApply below restores the real one).
+  if (_peekTab !== 'terminal') {
+    _peekViewApplying = true;
+    try { setPeekTab('terminal'); } finally { _peekViewApplying = false; }
+  }
   document.getElementById('peek-terminal-panel').style.display = '';
   document.getElementById('peek-split-wrap').style.display = '';
   document.getElementById('peek-memory-panel').classList.remove('active');
@@ -15350,6 +15392,7 @@ function openPeek(name, opts) {
   // resize-on-peek + its lease removed (AMUX-2981); the capture is a fixed
   // 220-col pane the reader scrolls, so there is nothing to fit or hold.
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
+  _peekViewApply(name);   // bring this worker's own tab + split back
   _savePeekState();
 }
 
@@ -15518,6 +15561,11 @@ function closePeek() {
 let _peekSplitPath = null;
 
 function _savePeekState() {
+  // The split side panel shares this origin's storage with the page around
+  // it. Writing here overwrote the outer page's peekState with the panel's
+  // own (tab chat), and the outer page's split:true, read back by the panel,
+  // is what nested the split.
+  if (window._peekSplitChild) return;
   if (peekSession) {
     const state = { session: peekSession };
     // "Back to that location" includes WHICH tab (Ethan 2026-08-20): a
@@ -15571,8 +15619,10 @@ function _peekSplitOpen(view) {
   _peekSplitShow(view);
 }
 function _peekSplitShow(view) {
+  if (!['files', 'messages', 'chat'].includes(view)) view = 'files';
   _peekSplitView = view;
   try { localStorage.setItem('amux_peek_split_view', view); } catch (e) {}
+  _peekViewRemember();
   const panel = document.getElementById('peek-split-files');
   const frame = document.getElementById('psp-frame');
   document.querySelectorAll('.psp-opt').forEach(b => b.classList.toggle('active', b.dataset.psp === view));
@@ -15581,26 +15631,24 @@ function _peekSplitShow(view) {
   if (!frame) return;
   frame.style.display = embed ? '' : 'none';
   if (embed && peekSession) {
-    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view);
+    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view) + '&peekSplitChild=1';
     if (frame.dataset.src !== src) { frame.dataset.src = src; frame.src = src; }
   }
 }
-function togglePeekSplit(ev, force) {
-  if (window.innerWidth <= 600) {
-    openExplore(peekSessionDir, peekSession);
-    return;
-  }
+// Open or close the split with no menu and no persistence. Every path that
+// changes the split goes through here, so the nesting gate has one place.
+function _peekSplitSetActive(active, path) {
   const wrap = document.getElementById('peek-split-wrap');
   const btn = document.getElementById('peek-split-toggle');
-  if (ev && btn && !wrap.classList.contains('split-active')) { _peekSplitMenu(btn); return; }
-  const active = force ? (wrap.classList.add('split-active'), true) : wrap.classList.toggle('split-active');
+  if (!wrap) return false;
+  if (active && (_peekSplitNestedRefuse('activate') || !document.getElementById('peek-split-files'))) active = false;
+  wrap.classList.toggle('split-active', active);
   if (btn) btn.classList.toggle('active', active);
   if (active) {
-    _peekSplitPath = peekSessionDir || '/';
+    _peekSplitPath = path || peekSessionDir || '/';
     _psfLoad(_peekSplitPath);
     _initSplitResize();
     _restoreSplitWidths();
-    if (!force) _peekSplitShow(_peekSplitView);
   } else {
     const frame = document.getElementById('psp-frame');
     if (frame) { frame.removeAttribute('src'); frame.dataset.src = ''; }
@@ -15609,7 +15657,95 @@ function togglePeekSplit(ev, force) {
     if (tp) tp.style.flex = '';
     if (sf) sf.style.flex = '';
   }
+  return active;
+}
+function togglePeekSplit(ev, force) {
+  if (window.innerWidth <= 600) {
+    openExplore(peekSessionDir, peekSession);
+    return;
+  }
+  if (_peekSplitNestedRefuse('toggle')) return;
+  const wrap = document.getElementById('peek-split-wrap');
+  const btn = document.getElementById('peek-split-toggle');
+  if (ev && btn && !wrap.classList.contains('split-active')) { _peekSplitMenu(btn); return; }
+  const active = _peekSplitSetActive(force ? true : !wrap.classList.contains('split-active'));
+  if (active && !force) _peekSplitShow(_peekSplitView);
+  _peekViewRemember();
   _savePeekState();
+}
+
+// ── Per-worker view memory ──
+// "If I have Split View in worker A then return to worker A it should resume
+// that view" (Ethan, 2026-10-12). Each worker keeps its own main tab, split
+// on/off, split pill and divider ratio, keyed by worker name, newest
+// _PEEK_VIEW_CAP kept. A worker with no entry opens on the default (Terminal,
+// no split). Embeds never read or write it.
+const _PEEK_VIEWS_KEY = 'amux_peek_views';
+const _PEEK_VIEW_CAP = 50;
+let _peekViewApplying = false;
+function _peekViewsLoad() {
+  try {
+    const v = JSON.parse(localStorage.getItem(_PEEK_VIEWS_KEY) || '{}');
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+  } catch (e) { return {}; }
+}
+function _peekViewGet(name) {
+  const v = name ? _peekViewsLoad()[name] : null;
+  return (v && typeof v === 'object') ? v : null;
+}
+function _peekViewRemember() {
+  if (window._peekEmbed || _peekViewApplying || !peekSession) return;
+  const all = _peekViewsLoad();
+  const prev = all[peekSession] || {};
+  const wrap = document.getElementById('peek-split-wrap');
+  const entry = { tab: (typeof _peekTab === 'string' && _peekTab) || 'terminal', ts: Date.now() };
+  if (window.innerWidth <= 600) {
+    // A phone has no split (the button opens the file explorer), so a narrow
+    // window keeps whatever split the wide one chose.
+    entry.split = !!prev.split;
+    if (prev.splitView) entry.splitView = prev.splitView;
+    if (prev.ratio) entry.ratio = prev.ratio;
+  } else {
+    entry.split = !!(wrap && wrap.classList.contains('split-active'));
+    entry.splitView = _peekSplitView;
+    const tp = document.getElementById('peek-terminal-panel');
+    const ratio = (entry.split && tp && tp.style.flex) || prev.ratio;
+    if (ratio) entry.ratio = ratio;
+  }
+  all[peekSession] = entry;
+  const names = Object.keys(all);
+  if (names.length > _PEEK_VIEW_CAP) {
+    names.sort((a, b) => ((all[b] && all[b].ts) || 0) - ((all[a] && all[a].ts) || 0));
+    for (const n of names.slice(_PEEK_VIEW_CAP)) delete all[n];
+  }
+  try { localStorage.setItem(_PEEK_VIEWS_KEY, JSON.stringify(all)); } catch (e) {}
+}
+// Called at the end of openPeek, which has already reset to the default view.
+function _peekViewApply(name) {
+  if (window._peekEmbed || name !== peekSession) return;
+  const v = _peekViewGet(name);
+  _peekViewApplying = true;
+  try {
+    const wrap = document.getElementById('peek-split-wrap');
+    const wantSplit = !!(v && v.split) && window.innerWidth > 600;
+    if (wantSplit) {
+      if (['files', 'messages', 'chat'].includes(v.splitView)) _peekSplitView = v.splitView;
+      _peekSplitSetActive(true);
+      _peekSplitShow(_peekSplitView);
+    } else if (wrap && wrap.classList.contains('split-active')) {
+      _peekSplitSetActive(false);
+    }
+    // A saved tab this worker no longer has (provider changed, tab hidden)
+    // falls back to the default silently.
+    const tab = v && v.tab;
+    if (tab && tab !== 'terminal') {
+      const b = document.getElementById('peek-tab-' + tab);
+      if (b && b.style.display !== 'none' && !b.hidden) setPeekTab(tab);
+    }
+  } catch (e) {
+  } finally {
+    _peekViewApplying = false;
+  }
 }
 
 // --- Split pane drag resize ---
@@ -15646,6 +15782,7 @@ function _initSplitResize() {
     handle.classList.remove('dragging');
     document.body.classList.remove('split-dragging');
     try { localStorage.setItem('peekSplitRatio', tp.style.flex); } catch (e) {}
+    _peekViewRemember();
   };
   handle.addEventListener('pointerdown', e => {
     if (e.button !== undefined && e.button !== 0) return;
@@ -15677,10 +15814,13 @@ function _initSplitResize() {
     if (!tp || !sf) return;
     tp.style.flex = '0.5 1 0%'; sf.style.flex = '0.5 1 0%';
     try { localStorage.setItem('peekSplitRatio', tp.style.flex); } catch (e) {}
+    _peekViewRemember();
   });
 }
 function _restoreSplitWidths() {
-  const saved = localStorage.getItem('peekSplitRatio');
+  // This worker's own divider first, then the last one used anywhere.
+  const mine = _peekViewGet(peekSession);
+  const saved = (mine && mine.ratio) || localStorage.getItem('peekSplitRatio');
   if (!saved) return;
   const tp = document.getElementById('peek-terminal-panel');
   const sf = document.getElementById('peek-split-files');
@@ -32709,6 +32849,9 @@ let boardTimer = null;
 let schedules = [];
 let schedSearchQuery = '';
 let _schedEditId = null;
+// Bumped on every open of the schedule form, so a save closes only the form
+// it was started from (see saveSchedModal).
+let _sxModalGen = 0;
 let boardEditId = null;
 let boardEditStatus = 'todo';
 let lastBoardJSON = '';
@@ -39725,6 +39868,7 @@ function _sxApplyToForm(src, opts) {
 }
 function openSchedModal(editId, opts) {
   opts = opts || {};
+  _sxModalGen++;
   _schedEditId = editId || null;
   _sxOrig = null;
   _sxSchedDirty = false;
@@ -39855,6 +39999,16 @@ function _sxInvalid(id, msg) {
   if (el) { el.setAttribute('aria-invalid', 'true'); try { el.focus(); } catch (e) {} }
   showToast(msg);
 }
+function _sxModalBeacon(event, extra) {
+  try {
+    console.warn('[sched]', event, extra || '');
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify(Object.assign({ kind: 'sched-form', event,
+        ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?'), measured: true, n_considered: 1 }, extra || {})),
+    }).catch(() => {});
+  } catch (e) {}
+}
 async function saveSchedModal() {
   document.querySelectorAll('#sched-overlay [aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
   const title = _sxVal('sched-title');
@@ -39882,6 +40036,7 @@ async function saveSchedModal() {
                     worktree, worker,
                     by: 'dashboard' };
   const editId = _schedEditId;
+  const gen = _sxModalGen;
   const url = editId ? API + '/api/schedules/' + editId : API + '/api/schedules';
   const method = editId ? 'PATCH' : 'POST';
   // An expression the server cannot parse is marked on the field it came from,
@@ -39901,7 +40056,11 @@ async function saveSchedModal() {
     renderScheduler();
     renderSchedulerAudit();
     if (typeof peekSession !== 'undefined' && peekSession) _peekLoadSchedules();
-    closeSchedModal();
+    // The form may have been reopened while this save refetched (Duplicate
+    // tapped right after Save changes). Closing then hid the NEW form and left
+    // its fields filled behind display:none (scheduler e2e on iOS, 2026-10-13).
+    if (gen === _sxModalGen) closeSchedModal();
+    else _sxModalBeacon('sched-form-reopened-during-save', { saved: editId || 'new', gens_behind: _sxModalGen - gen });
     if (editId) { _sxDetailAudit = null; openSchedDetail(editId); }
   }
 }
@@ -46779,6 +46938,9 @@ function _restoreScreen() {
   //    2026-08-08: #peek=amux opened amux-frustrations), and a shared link
   //    would misdirect the same way.
   if (/^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)) return;
+  // The split side panel opens only what its URL names. Restoring the outer
+  // page's peek here (split included) is how it nested itself.
+  if (window._peekSplitChild) return;
   let _ps = null;
   try { _ps = JSON.parse(sessionStorage.getItem('peekState') || 'null'); } catch(e) {}
   if (!_ps || !_ps.session) {
@@ -46799,6 +46961,9 @@ function _restoreScreen() {
         return;
       }
       openPeek(_ps.session);
+      // openPeek restored this worker's own remembered view. The legacy
+      // tab/split below only covers a worker with no remembered view yet.
+      if (_peekViewGet(_ps.session)) return;
       // Restore the tab WITHIN the peek — guarded on the button still
       // existing, because localStorage outlives removed tabs (the notes-view
       // lesson above applies one level down).
@@ -46811,18 +46976,11 @@ function _restoreScreen() {
       }
       if (_ps.split && window.innerWidth > 600) {
         setTimeout(() => {
-          const wrap = document.getElementById('peek-split-wrap');
-          const btn = document.getElementById('peek-split-toggle');
-          if (wrap) wrap.classList.add('split-active');
-          if (btn) btn.classList.add('active');
-          _psfLoad(_ps.splitPath || peekSessionDir || '/');
-          // The same three steps togglePeekSplit takes when it opens the split.
-          // Skipping them left a restored split with a divider that could not
+          // _peekSplitSetActive takes the same steps togglePeekSplit does:
+          // skipping them left a restored split with a divider that could not
           // be dragged (no handler), its default width, and the file view in
           // place of the Chat/Messages panel that had been open.
-          _initSplitResize();
-          _restoreSplitWidths();
-          _peekSplitShow(_peekSplitView);
+          if (_peekSplitSetActive(true, _ps.splitPath)) _peekSplitShow(_peekSplitView);
         }, 300);
       }
     }, 200);

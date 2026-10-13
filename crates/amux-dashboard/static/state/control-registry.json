@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2870,
+  "n_considered": 2878,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2756,8 +2756,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekSplitNestedRefuse": {
+      "kind": "command._peekSplitNestedRefuse",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekSplitOpen": {
       "kind": "command._peekSplitOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekSplitSetActive": {
+      "kind": "command._peekSplitSetActive",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2776,6 +2788,12 @@
     },
     "_peekToolbarCheck": {
       "kind": "command._peekToolbarCheck",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekViewApply": {
+      "kind": "command._peekViewApply",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3724,6 +3742,12 @@
     },
     "_sxBulk": {
       "kind": "command._sxBulk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_sxModalBeacon": {
+      "kind": "command._sxModalBeacon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

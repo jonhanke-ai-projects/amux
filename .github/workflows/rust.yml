@@ -302,7 +302,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -371,7 +371,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
       - name: Golden scenarios (desktop + mobile + ios-safari)
-        run: npx playwright test --config e2e/playwright.config.ts --workers=2 --shard=${{ matrix.shard }}/4 --global-timeout=1200000
+        run: npx playwright test --config e2e/playwright.config.ts --workers=2 --shard=${{ matrix.shard }}/7 --global-timeout=1200000
         env:
           AMUX_E2E_EVIDENCE_DIR: ci-results/shard-${{ matrix.shard }}
           AMUX_E2E_WORKING_TREE: '1'
@@ -434,7 +434,7 @@ jobs:
         if: always()
         run: |
           set -o pipefail
-          node scripts/check-e2e-evidence.mjs ci-results ci-full/manifest.json 4 | tee e2e-verdict.json
+          node scripts/check-e2e-evidence.mjs ci-results ci-full/manifest.json 7 | tee e2e-verdict.json
       - name: Require successful setup and test jobs too
         if: always()
         env:
