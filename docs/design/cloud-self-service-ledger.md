@@ -18,7 +18,7 @@ todo.
 | 5 | Safe lifecycle in shadow mode, dunning, cancel, deletion, abuse, disputes | done except abuse isolation (M17) | 17 lifecycle tests, every one of 11 safety-rule mutations reddens a named test; account deletion with retried steps; dispute evidence |
 | 6 | Invites through cloud.amux.io; add to tailnet | done | door redeems invites against a real amux-server; `/api/tailnet/*`; tailnet-only switch refused without a tailnet |
 | 7 | iOS: Sign in with Apple and web sign-in | done, not yet on a device | app builds for the simulator; control-plane Apple verification tested with generated keys; no-purchase string scan; device test needs the Apple capability (P3) |
-| 8 | Journey every 6 hours, nightly capability suite, weekly report | in progress | Control plane deployed at cp-test.amux.io; `synthetic.mjs` runs against it with real Hetzner and Cloudflare and a fake checkout; `report.py` says "not measured" instead of zero |
+| 8 | Journey every 6 hours, nightly capability suite, weekly report | journey passes on real infrastructure | Control plane deployed at cp-test.amux.io; `synthetic.mjs` runs against it with real Hetzner and Cloudflare and a fake checkout; `report.py` says "not measured" instead of zero |
 | - | Portability: amux.yaml, export/import, `amux cloud move/pull/apply/login` | done | export from one real amux-server and import into another: every kind, idempotent re-import, schedules disabled, workers not started, secret-shaped values refused (5 tests) |
 
 ## Real infrastructure runs (2026-10-14)
@@ -37,6 +37,9 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 | Customer run 2 | Backup credentials failed on a missing `CF_ACCOUNT_ID` | `deploy_control.sh` reads it from the zone |
 | Customer run 3 (image 443614609) | Everything up to the first backup works: ACME certificate, door sign-in page, API 401 without a login, door hand-off into the dashboard with `/api/sessions` 200. Backup credentials fail on the real permission (R2 403), so the server never reaches ready; the control plane failed it at 15 minutes and removed the server and its DNS record | Needs the Cloudflare token ask. The synthetic's dashboard check matched only a hidden modal; it now waits for `#brand-header` and an API call through the door |
 
+| Customer run 4 | **Passed end to end**: Origin certificate issued, first backup, ready, door hand-off and dashboard 2 min 32 s after payment (fake checkout, real Hetzner and Cloudflare) | A scoped control-plane token, `AMUX_CLOUD_CF_TOKEN` (R2 Edit, API Tokens Edit, DNS, SSL and Zone Read on amux.io only), created through the owner's signed-in Cloudflare dashboard over CDP |
+| Run 4 account deletion | Server, DNS, subscription and account went; the bucket retried forever because R2 refuses a non-empty bucket, and backup tokens were never revoked | `delete_bucket` empties through R2's S3 API with a one-hour bucket-scoped token, deletes, and revokes every `amux-backup-<bucket>` token; the stuck record then finished with every step done |
+
 ## Where the build departed from the plan, and why
 
 | Plan said | Built | Why |
@@ -50,7 +53,6 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | Ask | Why it blocks | Unblocks |
 |---|---|---|
-| Cloudflare token with SSL and Certificates Edit, R2 Edit and API Tokens Edit | Origin certificates (ACME covers it for now) and the per-server backup bucket; a server cannot reach ready without its first backup | The token in `server.env` as `CLOUDFLARE_API_TOKEN` |
 | A Stripe test-mode secret key in `~/.amux/server.env` as `STRIPE_TEST_SECRET_KEY` | Checkout, webhook and dunning tests against real Stripe test mode | The key present |
 | Sign in with Apple enabled on the App ID, plus a Services ID and a Sign in with Apple key (P3) | The iOS sign-in on a device, and token revocation on deletion | The capability on, and the key in `server.env` as `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` |
 | Offer to existing $20 and $200 tunnel subscribers (O3) | Rewriting /cloud and /pricing for the new product | A decision; the email itself goes out only after the owner approves its text |
