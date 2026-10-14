@@ -323,6 +323,11 @@ class Door(BaseHTTPRequestHandler):
                 return self.send(200, headers=[("X-Door-User", user)] + ([("X-Amux-Member", tok)] if tok else []))
             accept = self.headers.get("Accept", "")
             if self.headers.get("X-Forwarded-Method", "GET") == "GET" and "text/html" in accept:
+                cfg = fleet()
+                if cfg.get("AMUX_CONTROL_URL") and cfg.get("AMUX_SLUG") and not users():
+                    # amux Cloud: people arrive through cloud.amux.io, which sends them back with a fresh token.
+                    loc = "%s/?server=%s" % (cfg["AMUX_CONTROL_URL"].rstrip("/"), urllib.parse.quote(cfg["AMUX_SLUG"]))
+                    return self.send(302, headers=[("Location", loc), ("Cache-Control", "no-store")])
                 loc = "/_door/login?next=" + urllib.parse.quote(safe_next(uri), safe="")
                 return self.send(302, headers=[("Location", loc)])
             return self.send(401, b'{"error":"sign in required"}', [("Content-Type", "application/json"),

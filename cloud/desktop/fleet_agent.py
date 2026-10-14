@@ -170,7 +170,68 @@ def run_backup(full=False):
     if full:
         sh("litestream", "snapshots", "-config", os.path.join(ETC, "litestream.yml"), "/home/amux/.amux/amux.db", check=False)
     state("backup", {"last_ok": time.time()})
+    try:
+        state("backup_fingerprint", fingerprint("/home/amux/.amux/amux.db", e))
+    except Exception as ex:
+        log(event="backup", verdict="fleet_fingerprint_failed", error=str(ex)[:200])
     log(event="backup", verdict="fleet_backup_ok")
+    return True
+
+
+def fingerprint(db_path, restic_env, snapshot="latest", tree_root=None):
+    """Rows per table plus a hash of the file list (path and size). The live server computes it from
+    restic's listing of its newest snapshot; a restore drill computes the same from what it restored."""
+    import sqlite3
+    tables = {}
+    if os.path.exists(db_path):
+        c = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"):
+            tables[t] = c.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+        c.close()
+    entries = []
+    if tree_root:
+        for dp, _, names in os.walk(tree_root):
+            for n in names:
+                full = os.path.join(dp, n)
+                entries.append(f"{os.path.relpath(full, tree_root)}\t{os.path.getsize(full)}")
+    else:
+        r = sh("restic", "ls", "--json", snapshot, env=restic_env, timeout=600)
+        for line in r.stdout.splitlines():
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if o.get("type") == "file":
+                entries.append(f"{o['path'].lstrip('/').removeprefix('home/amux/')}\t{o.get('size', 0)}")
+    entries.sort()
+    return {"tables": tables, "files": len(entries),
+            "files_sha256": hashlib.sha256("\n".join(entries).encode()).hexdigest()}
+
+
+def restic_env():
+    e = dict(os.environ)
+    with open(os.path.join(ETC, "restic.env")) as f:
+        e.update(dict(l.strip().split("=", 1) for l in f if "=" in l))
+    return e
+
+
+def run_drill(cfg):
+    """AMUX_MODE=drill: restore the live server's backups here, fingerprint them, report, done."""
+    reply = post(cfg, "heartbeat", {})
+    creds = reply.get("restore_from")
+    if not creds:
+        return False
+    write_backup_config(creds)
+    work = os.path.join(STATE, "drill")
+    os.makedirs(work, exist_ok=True)
+    db = os.path.join(work, "amux.db")
+    sh("litestream", "restore", "-config", os.path.join(ETC, "litestream.yml"), "-o", db, "/home/amux/.amux/amux.db",
+       timeout=1800)
+    sh("restic", "restore", "latest", "--target", os.path.join(work, "files"), env=restic_env(), timeout=3600)
+    root = os.path.join(work, "files", "home", "amux")
+    got = fingerprint(db, None, tree_root=root if os.path.isdir(root) else os.path.join(work, "files"))
+    post(cfg, "heartbeat", {"drill_result": got})
+    log(event="drill", verdict="fleet_drill_reported", tables=len(got["tables"]), files=got["files"])
     return True
 
 
@@ -267,16 +328,116 @@ def apply_reply(cfg, reply):
             outcome = f"refused: {e}"
             log(event="release", verdict="fleet_release_refused", error=str(e)[:200])
         state("release_report", {"version": reply["release"].get("version"), "outcome": outcome})
+    if "stop_workers" in (reply.get("commands") or []) and not (state("workers_stopped") or {}).get("on"):
+        # M17 isolation: pause every worker; the customer restarts them after a successful appeal.
+        sh("runuser", "-u", "amux", "--", "bash", "-lc", "amux stop-all", check=False, timeout=120)
+        state("workers_stopped", {"on": True, "at": time.time()})
+        log(event="abuse", verdict="fleet_workers_stopped")
+    elif "stop_workers" not in (reply.get("commands") or []) and (state("workers_stopped") or {}).get("on"):
+        state("workers_stopped", {"on": False, "at": time.time()})
     want_tailnet_only = bool(reply.get("tailnet_only"))
     if (state("tailnet_only") or {}).get("on") != want_tailnet_only:
-        state("tailnet_only", {"on": want_tailnet_only})
+        apply_tailnet_only(want_tailnet_only)
+
+
+def tailnet_url():
+    r = sh("tailscale", "status", "--json", check=False, timeout=10) if shutil.which("tailscale") else None
+    try:
+        st = json.loads(r.stdout) if r and r.returncode == 0 else {}
+    except ValueError:
+        return None
+    dns = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
+    return f"https://{dns}" if st.get("BackendState") == "Running" and dns.endswith(".ts.net") else None
+
+
+def apply_tailnet_only(on):
+    """Plan 8.5: public 443 closed, tailnet open. Refuses to close the public door with no tailnet to use."""
+    if on and not tailnet_url():
+        log(event="tailnet_only", verdict="fleet_tailnet_only_refused", why="server is not on a tailnet")
+        return False
+    if on:
+        sh("ufw", "allow", "in", "on", "tailscale0", check=False)
+        sh("ufw", "delete", "allow", "443/tcp", check=False)
+        sh("ufw", "delete", "allow", "80/tcp", check=False)
+    else:
+        sh("ufw", "allow", "443/tcp", check=False)
+    state("tailnet_only", {"on": on, "at": time.time()})
+    log(event="tailnet_only", on=on, verdict="fleet_tailnet_only_applied")
+    return True
+
+
+def abuse_signals():
+    """M17 inputs: names of running processes and the six-hour average CPU, from load samples kept here."""
+    try:
+        load1 = os.getloadavg()[0] / (os.cpu_count() or 1) * 100
+    except OSError:
+        return None
+    samples = [x for x in (state("cpu_samples") or []) if x[0] > time.time() - 6 * 3600] + [[time.time(), load1]]
+    state("cpu_samples", samples[-400:])
+    procs = sh("ps", "-eo", "comm=", check=False, timeout=10).stdout.split()
+    full_window = samples and samples[0][0] < time.time() - 5.5 * 3600
+    return {"cpu_pct_6h": round(sum(x[1] for x in samples) / len(samples), 1) if full_window else None,
+            "processes": sorted(set(os.path.basename(p) for p in procs))[:400]}
+
+
+def usage():
+    """M6, M7, M10 inputs, counts only: is any model connected, how many messages people have sent to
+    workers (a running total), and CPU and memory use now. Never message content."""
+    import sqlite3, ssl
+    out = {"model_connected": None, "turns_total": None, "cpu_pct": None, "mem_pct": None}
+    try:
+        ctx = ssl.create_default_context(); ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+        with urllib.request.urlopen(HEALTH.replace("/health", "/api/identity"), timeout=5, context=ctx) as r:
+            ident = json.load(r)
+        ma = ident.get("model_auth") or {}
+        out["model_connected"] = bool(ident.get("has_api_key")) or any(
+            any(bool(v) for v in (prov or {}).values()) for prov in ma.values())
+    except Exception:
+        pass
+    db = "/home/amux/.amux/amux.db"
+    if os.path.exists(db):
+        try:
+            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+            out["turns_total"] = c.execute("SELECT COUNT(*) FROM cmd_history WHERE type='user'").fetchone()[0]
+            c.close()
+        except sqlite3.Error:
+            pass
+    try:
+        out["cpu_pct"] = round(os.getloadavg()[0] / (os.cpu_count() or 1) * 100, 1)
+        mem = dict(l.split(":", 1) for l in open("/proc/meminfo"))
+        total, avail = int(mem["MemTotal"].split()[0]), int(mem["MemAvailable"].split()[0])
+        out["mem_pct"] = round(100 * (total - avail) / total, 1)
+    except (OSError, KeyError, ValueError):
+        pass
+    return out
+
+
+def relieve_disk(du_pct):
+    """M3: above 85%, prune only what regenerates (logs, package and build caches). Never customer data."""
+    if du_pct < 85:
+        return None
+    before = shutil.disk_usage("/").used
+    for cmd in (["journalctl", "--vacuum-size=200M"], ["apt-get", "clean"], ["docker", "system", "prune", "-f"]):
+        sh(*cmd, check=False, timeout=300)
+    cache = "/home/amux/.cache"
+    if os.path.isdir(cache):
+        for name in os.listdir(cache):
+            shutil.rmtree(os.path.join(cache, name), ignore_errors=True)
+    freed = before - shutil.disk_usage("/").used
+    log(event="disk", verdict="fleet_disk_pruned", freed_mb=round(freed / 1e6))
+    return {"freed_bytes": max(0, freed)}
 
 
 def heartbeat(cfg):
     du = shutil.disk_usage("/")
+    pruned = relieve_disk(100 * du.used / du.total)
+    if pruned:
+        du = shutil.disk_usage("/")
     body = {"version": server_version(), "last_backup_at": last_backup_at(),
             "disk_used_pct": round(100 * du.used / du.total, 1), "serving": server_version() is not None,
-            "release_report": state("release_report")}
+            "release_report": state("release_report"), "tailnet_url": tailnet_url(),
+            "backup_fingerprint": state("backup_fingerprint"), "abuse_signals": abuse_signals(), "usage": usage(),
+            "disk_pruned": pruned}
     reply = post(cfg, "heartbeat", body)
     apply_reply(cfg, reply)
     return reply
@@ -285,6 +446,14 @@ def heartbeat(cfg):
 def run():
     cfg = env()
     log(event="start", server=cfg.get("AMUX_SERVER_ID"), verdict="fleet_agent_started")
+    if cfg.get("AMUX_MODE") == "drill":
+        while True:                                   # the control plane deletes this server after the report
+            try:
+                if run_drill(cfg):
+                    return
+            except Exception as e:
+                log(event="drill", verdict="fleet_drill_error", error=str(e)[:300])
+            time.sleep(INTERVAL)
     while True:
         try:
             if first_boot(cfg):

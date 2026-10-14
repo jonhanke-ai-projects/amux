@@ -11,7 +11,11 @@ CREATE TABLE IF NOT EXISTS orgs (
   stripe_customer_id TEXT UNIQUE, source TEXT, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, email TEXT NOT NULL, email_verified INTEGER NOT NULL DEFAULT 0,
-  org_id TEXT, created_at REAL NOT NULL, role TEXT NOT NULL DEFAULT 'owner');
+  org_id TEXT, created_at REAL NOT NULL, role TEXT NOT NULL DEFAULT 'owner',
+  apple_sub TEXT UNIQUE, apple_refresh TEXT);
+CREATE TABLE IF NOT EXISTS deletions (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, email TEXT NOT NULL, created_at REAL NOT NULL,
+  steps TEXT NOT NULL, done_at REAL);
 CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(lower(email));
 CREATE TABLE IF NOT EXISTS signups (
   checkout_session_id TEXT PRIMARY KEY, org_id TEXT NOT NULL, plan TEXT NOT NULL,
@@ -32,7 +36,8 @@ CREATE TABLE IF NOT EXISTS servers (
   plan TEXT NOT NULL, location TEXT, hetzner_id INTEGER, ipv4 TEXT, dns_record_id TEXT,
   status TEXT NOT NULL, fleet_secret TEXT NOT NULL, created_at REAL NOT NULL, ready_at REAL,
   last_heartbeat REAL, last_backup_at REAL, version TEXT, tailnet_only INTEGER NOT NULL DEFAULT 0,
-  synthetic INTEGER NOT NULL DEFAULT 0, backup_bucket TEXT, restic_password TEXT);
+  synthetic INTEGER NOT NULL DEFAULT 0, backup_bucket TEXT, restic_password TEXT, tailnet_url TEXT,
+  backup_fingerprint TEXT);
 CREATE TABLE IF NOT EXISTS releases (
   version TEXT PRIMARY KEY, url TEXT NOT NULL, sha256 TEXT NOT NULL, sig_url TEXT NOT NULL,
   stage INTEGER NOT NULL DEFAULT 0, stage_started_at REAL NOT NULL, created_at REAL NOT NULL,
@@ -49,6 +54,15 @@ CREATE TABLE IF NOT EXISTS lifecycle_actions (
   state TEXT NOT NULL, shadow INTEGER NOT NULL, proposed_at REAL NOT NULL, hold_until REAL NOT NULL,
   snapshot_id TEXT, evidence TEXT NOT NULL DEFAULT '{}', decided_at REAL,
   replay_at REAL, replay_verdict TEXT);
+CREATE TABLE IF NOT EXISTS resizes (
+  id TEXT PRIMARY KEY, server_id TEXT NOT NULL, to_plan TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL,
+  detail TEXT, finished_at REAL);
+CREATE TABLE IF NOT EXISTS drills (
+  id TEXT PRIMARY KEY, server_id TEXT NOT NULL, hetzner_id INTEGER, fleet_secret TEXT NOT NULL, started_at REAL NOT NULL,
+  expected TEXT, result TEXT, detail TEXT, finished_at REAL);
+CREATE TABLE IF NOT EXISTS device_codes (
+  device_code TEXT PRIMARY KEY, user_code TEXT UNIQUE NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
+  user_id TEXT, state TEXT NOT NULL DEFAULT 'pending');
 CREATE TABLE IF NOT EXISTS memberships (
   user_id TEXT NOT NULL, server_id TEXT NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(user_id, server_id));
 CREATE TABLE IF NOT EXISTS flags (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL);
@@ -116,9 +130,9 @@ class Store:
                  "ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                  name, str(value), time.time())
 
-    def event(self, name, org_id=None, **props):
+    def event(self, name, org_id=None, _ts=None, **props):
         self.run("INSERT INTO events(ts,name,org_id,props) VALUES(?,?,?,?)",
-                 time.time(), name, org_id, json.dumps(props, sort_keys=True))
+                 _ts or time.time(), name, org_id, json.dumps(props, sort_keys=True))
 
     def alert(self, kind, message):
         """Owner-facing alert. The sender (emails.py) delivers unacknowledged rows."""

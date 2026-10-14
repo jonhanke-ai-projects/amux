@@ -111,8 +111,9 @@ def upsert_subscription(store, sub, org_id, plan, now):
 
 
 # ---------------------------------------------------------------- webhooks
-def handle_event(store, billing, event, now=None):
-    """Stripe webhook dispatcher. Each event id is processed once."""
+def handle_event(store, billing, event, now=None, on_plan_change=None):
+    """Stripe webhook dispatcher. Each event id is processed once.
+    on_plan_change(sub_id, new_plan) is called when the subscription's price moved to another plan (J15)."""
     now = now or time.time()
     store.event("stripe.webhook", type=event.get("type"))
     try:
@@ -128,9 +129,13 @@ def handle_event(store, billing, event, now=None):
         sub = _norm(obj)
         row = store.one("SELECT org_id, plan FROM subscriptions WHERE id=?", sub["id"])
         if row:
-            upsert_subscription(store, sub, row["org_id"], row["plan"], now)
+            new_plan = plan_for_lookup(sub.get("price_lookup_key")) or row["plan"]
+            upsert_subscription(store, dict(sub, plan=new_plan), row["org_id"], row["plan"], now)
+            store.run("UPDATE subscriptions SET plan=? WHERE id=?", new_plan, sub["id"])
             if sub["status"] == "active":
                 store.run("UPDATE subscriptions SET failure_started_at=NULL WHERE id=?", sub["id"])
+            if new_plan != row["plan"] and on_plan_change:
+                on_plan_change(sub["id"], new_plan)
         return "subscription"
     if t == "invoice.paid":
         sub_id = _cust_id(obj.get("subscription") or ((obj.get("parent") or {}).get("subscription_details") or {}).get("subscription"))
@@ -154,6 +159,13 @@ def handle_event(store, billing, event, now=None):
     if t == "charge.dispute.created":
         return answer_dispute(store, billing, obj, now)
     return "ignored"
+
+
+def plan_for_lookup(lookup_key):
+    if not lookup_key:
+        return None
+    from price_check import load_plans
+    return next((p["id"] for p in load_plans()["plans"] if p["stripe_lookup_key"] == lookup_key), None)
 
 
 # ---------------------------------------------------------------- refunds (budget 4.7)

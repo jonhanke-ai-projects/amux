@@ -45,6 +45,10 @@ class ReleaseInstall(unittest.TestCase):
         cls.restarts = os.path.join(cls.t, "restarts")
         shim = os.path.join(bindir, "systemctl")
         open(shim, "w").write(f'#!/bin/sh\necho "$@" >> {cls.restarts}\n'); os.chmod(shim, 0o755)
+        cls.ufw_log = os.path.join(cls.t, "ufw.log")
+        cls.ts_state = os.path.join(cls.t, "ts.json")
+        for name, body in (("ufw", f'echo "$@" >> {cls.ufw_log}'), ("tailscale", f'cat {cls.ts_state} 2>/dev/null || exit 1')):
+            p = os.path.join(bindir, name); open(p, "w").write("#!/bin/sh\n" + body + "\n"); os.chmod(p, 0o755)
         cls.port = free_port()
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", cls.port), Health); srv.files = cls.files
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -90,6 +94,18 @@ class ReleaseInstall(unittest.TestCase):
             self.fa.install_release(self.release("NEW BINARY 2", sha="0" * 64))
         self.assertEqual(open(self.server_bin).read(), "OLD BINARY")
 
+    def test_fingerprint_counts_rows_and_hashes_the_file_list(self):
+        import sqlite3
+        db = os.path.join(self.t, "fp.db")
+        c = sqlite3.connect(db); c.execute("CREATE TABLE board_items(x)"); c.executemany("INSERT INTO board_items VALUES(?)", [(1,), (2,)]); c.commit(); c.close()
+        tree = os.path.join(self.t, "tree"); os.makedirs(os.path.join(tree, "mdai"), exist_ok=True)
+        open(os.path.join(tree, "mdai", "a.mdai"), "w").write("x")
+        fp = self.fa.fingerprint(db, None, tree_root=tree)
+        self.assertEqual(fp["tables"], {"board_items": 2})
+        self.assertEqual(fp["files"], 1)
+        open(os.path.join(tree, "mdai", "b.mdai"), "w").write("yy")
+        self.assertNotEqual(self.fa.fingerprint(db, None, tree_root=tree)["files_sha256"], fp["files_sha256"])
+
     def test_backup_config_is_private_and_scoped(self):
         self.fa.write_backup_config({"endpoint": "https://e", "bucket": "amux-a-1", "access_key_id": "ak",
                                      "secret_access_key": "sk", "restic_password": "pw"})
@@ -97,6 +113,22 @@ class ReleaseInstall(unittest.TestCase):
             p = os.path.join(self.t, f)
             self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o600")
         self.assertIn("sync-interval: 60s", open(os.path.join(self.t, "litestream.yml")).read())
+
+
+    def test_tailnet_only_refuses_without_a_tailnet_then_applies_on_one(self):
+        if os.path.exists(self.ufw_log):
+            os.remove(self.ufw_log)
+        open(self.ts_state, "w").write(json.dumps({"BackendState": "NeedsLogin"}))
+        self.assertFalse(self.fa.apply_tailnet_only(True))
+        self.assertFalse(os.path.exists(self.ufw_log), "no firewall change without a tailnet to fall back on")
+        open(self.ts_state, "w").write(json.dumps({"BackendState": "Running", "Self": {"DNSName": "amux-a.tail1.ts.net."}}))
+        self.assertEqual(self.fa.tailnet_url(), "https://amux-a.tail1.ts.net")
+        self.assertTrue(self.fa.apply_tailnet_only(True))
+        log = open(self.ufw_log).read()
+        self.assertIn("allow in on tailscale0", log)
+        self.assertIn("delete allow 443/tcp", log)
+        self.assertTrue(self.fa.apply_tailnet_only(False))
+        self.assertTrue(open(self.ufw_log).read().strip().endswith("allow 443/tcp"))
 
 
 if __name__ == "__main__":

@@ -32,6 +32,12 @@ class FakeBilling:
             raise ProviderError("stripe unreachable")
         return dict((self.sessions or {})[session_id])
 
+    def cancel_now(self, sub_id):
+        self.canceled = getattr(self, "canceled", []) + [sub_id]
+        if sub_id in self.subs:
+            self.subs[sub_id]["status"] = "canceled"
+        return {"id": sub_id, "status": "canceled"}
+
     def close_dispute(self, dispute_id):
         self.disputes.append((dispute_id, "accepted"))
         return {"id": dispute_id, "status": "lost"}
@@ -88,6 +94,8 @@ class FakeInfra:
         return self.images.get(int(image_id))
 
     def delete_server(self, server_id):
+        if server_id not in self.servers:
+            raise KeyError(server_id)
         self.servers.pop(server_id)
         self.deleted.append(server_id)
 
@@ -108,6 +116,25 @@ class FakeInfra:
         self.buckets[b] = {"token_scope": b}
         return {"endpoint": "https://fake.r2.example", "bucket": b, "access_key_id": f"ak-{b}",
                 "secret_access_key": f"sk-{b}"}
+
+    def resize(self, server_id, server_type):
+        if getattr(self, "resize_fails", False):
+            raise RuntimeError("resource_unavailable for the new type")
+        self.servers[server_id]["server_type"] = server_type
+
+    def pricing(self):
+        return getattr(self, "prices", {})
+
+    def isolate(self, server_id, allow_ips):
+        self.isolated = getattr(self, "isolated", {})
+        self.isolated[server_id] = list(allow_ips)
+
+    def unisolate(self, server_id):
+        getattr(self, "isolated", {}).pop(server_id, None)
+
+    def delete_bucket(self, bucket):
+        getattr(self, "buckets", {}).pop(bucket, None)
+        self.deleted_buckets = getattr(self, "deleted_buckets", []) + [bucket]
 
     def origin_certificate(self, hostname, csr_pem):
         return f"-----BEGIN CERTIFICATE-----\nfake for {hostname}\n-----END CERTIFICATE-----\n"

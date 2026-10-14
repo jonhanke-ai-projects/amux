@@ -152,6 +152,58 @@ class Infra:
         return {"endpoint": f"https://{acct}.r2.cloudflarestorage.com", "bucket": bucket,
                 "access_key_id": tok["id"], "secret_access_key": hashlib.sha256(tok["value"].encode()).hexdigest()}
 
+    def _wait_action(self, action, timeout=900):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            a = _call(f"{HCLOUD}/actions/{action['id']}", self.h)["action"]
+            if a["status"] == "success":
+                return a
+            if a["status"] == "error":
+                raise InfraError(500, f"{a['command']} failed: {a.get('error')}")
+            time.sleep(5)
+        raise InfraError(504, f"{action['command']} did not finish in {timeout}s")
+
+    def resize(self, server_id, server_type):
+        """J15: shut down, change type with the larger disk, power on. A failed change powers the old type back on."""
+        self._wait_action(_call(f"{HCLOUD}/servers/{server_id}/actions/shutdown", self.h, "POST", {})["action"])
+        try:
+            self._wait_action(_call(f"{HCLOUD}/servers/{server_id}/actions/change_type", self.h, "POST",
+                                    {"server_type": server_type, "upgrade_disk": True})["action"])
+        finally:
+            self._wait_action(_call(f"{HCLOUD}/servers/{server_id}/actions/poweron", self.h, "POST", {})["action"])
+
+    def pricing(self):
+        r = _call(f"{HCLOUD}/pricing", self.h)["pricing"]
+        return {st["name"]: {p["location"]: float(p["price_monthly"]["net"]) for p in st["prices"]} for st in r["server_types"]}
+
+    def isolate(self, server_id, allow_ips):
+        """M17: a firewall whose only outbound rule is HTTPS to the control plane. Hetzner denies all
+        other outbound traffic once a firewall has any outbound rule. Inbound SSH stays closed too."""
+        name = f"amux-isolate-{server_id}"
+        rules = [{"direction": "out", "protocol": "tcp", "port": "443",
+                  "destination_ips": [ip if "/" in ip else ip + "/32" for ip in allow_ips]},
+                 {"direction": "out", "protocol": "udp", "port": "53", "destination_ips": ["0.0.0.0/0", "::/0"]}]
+        existing = _call(f"{HCLOUD}/firewalls?name={name}", self.h)["firewalls"]
+        fw = existing[0]["id"] if existing else _call(f"{HCLOUD}/firewalls", self.h, "POST", {
+            "name": name, "labels": {LABEL: "1", "purpose": "abuse-isolation"}, "rules": rules})["firewall"]["id"]
+        _call(f"{HCLOUD}/firewalls/{fw}/actions/apply_to_resources", self.h, "POST",
+              {"apply_to": [{"type": "server", "server": {"id": server_id}}]})
+        return fw
+
+    def unisolate(self, server_id):
+        for fw in _call(f"{HCLOUD}/firewalls?name=amux-isolate-{server_id}", self.h)["firewalls"]:
+            _call(f"{HCLOUD}/firewalls/{fw['id']}/actions/remove_from_resources", self.h, "POST",
+                  {"remove_from": [{"type": "server", "server": {"id": server_id}}]})
+
+    def delete_bucket(self, bucket):
+        """Empties nothing itself: R2 refuses to delete a non-empty bucket, so objects go first."""
+        acct = os.environ["CF_ACCOUNT_ID"]
+        try:
+            _call(f"{CF}/accounts/{acct}/r2/buckets/{bucket}", self.cf, "DELETE")
+        except InfraError as e:
+            if e.code != 404:
+                raise
+
     def origin_certificate(self, hostname, csr_pem, days=5475):
         """Cloudflare Origin CA certificate for one host. The server made the key and sends only the CSR."""
         r = _call(f"{CF}/certificates", self.cf, "POST", {

@@ -116,6 +116,15 @@ class StripeBilling:
         s = self._req("GET", f"/subscriptions/{sub_id}")
         return normalize_subscription(s)
 
+    def cancel_now(self, sub_id):
+        """Account deletion: end the subscription now, not at period end."""
+        try:
+            return normalize_subscription(self._req("DELETE", f"/subscriptions/{sub_id}"))
+        except StripeError as e:
+            if e.code == 404:
+                return {"id": sub_id, "status": "canceled"}
+            raise
+
     def cancel_at_period_end(self, sub_id):
         return normalize_subscription(self._req("POST", f"/subscriptions/{sub_id}", {"cancel_at_period_end": True}))
 
@@ -145,9 +154,11 @@ def normalize_subscription(s):
         items = (s.get("items") or {}).get("data") or []
         end = items[0].get("current_period_end") if items else None
     plan = ((s.get("metadata") or {}).get("plan")) or None
+    items = (s.get("items") or {}).get("data") or []
+    lookup = ((items[0].get("price") or {}).get("lookup_key")) if items else None
     return {"id": s["id"], "status": s["status"], "current_period_end": end,
             "cancel_at_period_end": bool(s.get("cancel_at_period_end")), "customer": s.get("customer"),
-            "plan": plan}
+            "plan": plan, "price_lookup_key": lookup}
 
 
 def verify_webhook(payload, sig_header, secret, tolerance=300, now=None):

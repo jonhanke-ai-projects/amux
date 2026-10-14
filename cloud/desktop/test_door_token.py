@@ -120,6 +120,12 @@ class DoorToken(unittest.TestCase):
         self.assertEqual((c, user), (200, "owner@example.com"))
         self.assertTrue(member)
 
+    def test_0_signed_out_browser_is_sent_to_cloud_for_a_fresh_link(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.door_port, timeout=10)
+        c.request("GET", "/_door/check", headers={"Accept": "text/html", "X-Forwarded-Method": "GET", "X-Forwarded-Uri": "/"})
+        r = c.getresponse(); r.read()
+        self.assertEqual((r.status, r.getheader("Location")), (302, "https://cloud.example/?server=alice"))
+
     def test_2_tokens_for_another_server_expired_or_unknown_people_are_refused(self):
         self.assertEqual(self.enter("owner@example.com", secret=tokens.new_secret())[0], 401)     # other server's key
         self.assertEqual(self.enter("owner@example.com", slug="bob")[0], 401)                     # other server's name

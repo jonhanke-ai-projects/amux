@@ -221,3 +221,107 @@ class Fleet(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Abuse(Base):
+    def test_M17_clear_isolates_likely_notifies_noise_ignores(self):
+        import abuse
+        self.pay("cs_1", "a@example.com", "sub_1")
+        h = self.infra.create_server("amux-a", "cx33", "fsn1", "g", {"amux-cloud": "1"}, "")
+        self.store.run("UPDATE servers SET hetzner_id=?, status='ready'", h["id"])
+        srv = self.store.one("SELECT * FROM servers")
+        self.assertEqual(abuse.handle(self.store, self.infra, srv, {"cpu_pct_6h": 40, "processes": ["node"]}, ["1.2.3.4"], T0), "noise")
+        self.assertEqual(abuse.handle(self.store, self.infra, srv, {"cpu_pct_6h": 99}, ["1.2.3.4"], T0), "likely")
+        self.assertEqual(getattr(self.infra, "isolated", {}), {}, "a likely signal changes nothing on the server")
+        self.assertEqual(abuse.handle(self.store, self.infra, srv, {"processes": ["XMRig"]}, ["1.2.3.4"], T0 + 10), "isolated")
+        self.assertEqual(self.infra.isolated[h["id"]], ["1.2.3.4"])
+        self.assertTrue(abuse.stop_workers_command(self.store, srv))
+        self.assertEqual(abuse.handle(self.store, self.infra, srv, {"processes": ["xmrig"]}, ["1.2.3.4"], T0 + 20), "already_isolated")
+        self.assertIn(h["id"], self.infra.servers, "abuse never deletes a server")
+        abuse.lift(self.store, self.infra, srv, "appeal accepted")
+        self.assertFalse(abuse.stop_workers_command(self.store, srv))
+        self.assertEqual(self.infra.isolated, {})
+        templates = [r["template"] for r in self.store.all("SELECT template FROM outbox")]
+        self.assertEqual(templates.count("abuse_notice"), 2)
+
+
+class Nudges(Base):
+    def setUp(self):
+        super().setUp()
+        import nudges
+        self.n = nudges
+        self.pay("cs_1", "a@example.com", "sub_1")
+        h = self.infra.create_server("amux-a", "cx33", "fsn1", "g", {"amux-cloud": "1"}, "")
+        self.store.run("UPDATE servers SET hetzner_id=?, status='ready', ready_at=?", h["id"], T0)
+        self.hid = h["id"]
+
+    def srv(self):
+        return self.store.one("SELECT * FROM servers")
+
+    def templates(self):
+        return [r["template"] for r in self.store.all("SELECT template FROM outbox WHERE template NOT IN ('being_built')")]
+
+    def test_M6_M7_once_each_window(self):
+        self.n.sweep(self.store, now=T0 + 3600)
+        self.n.sweep(self.store, now=T0 + 7200)
+        self.assertEqual(self.templates(), ["setup_model"])
+        self.n.record_usage(self.store, self.srv(), {"model_connected": True, "turns_total": 0}, T0 + 8000)
+        self.n.sweep(self.store, now=T0 + 2 * 86400)
+        self.assertEqual(self.templates(), ["setup_model", "setup_first_task"])
+        self.n.record_usage(self.store, self.srv(), {"model_connected": True, "turns_total": 5}, T0 + 3 * 86400)
+        self.assertIsNotNone(self.store.one("SELECT 1 x FROM events WHERE name='cloud.first_reply'"))
+        self.n.sweep(self.store, now=T0 + 6 * 86400)
+        self.assertNotIn("inactive", self.templates())
+        self.n.sweep(self.store, now=T0 + 11 * 86400)
+        self.n.sweep(self.store, now=T0 + 12 * 86400)
+        self.assertEqual(self.templates().count("inactive"), 1)
+
+    def test_J15_upgrade_resizes_and_downgrade_does_not(self):
+        r = self.n.upgrade_if_plan_changed(self.store, self.infra, PLANS, "sub_1", "team")
+        self.assertEqual(r, "upgrade_pending")
+        self.assertEqual(self.n.resize_tick(self.store, self.infra, PLANS), "upgraded")
+        self.assertEqual(self.infra.servers[self.hid]["server_type"], "cx43")
+        self.assertEqual(self.srv()["plan"], "team")
+        self.assertEqual(self.n.upgrade_if_plan_changed(self.store, self.infra, PLANS, "sub_1", "solo"), "downgrade_needs_move")
+        self.assertEqual(self.infra.servers[self.hid]["server_type"], "cx43")
+        self.infra.resize_fails = True
+        self.n.upgrade_if_plan_changed(self.store, self.infra, PLANS, "sub_1", "max")
+        self.assertEqual(self.n.resize_tick(self.store, self.infra, PLANS), "failed")
+        self.assertIn("upgrade_failed", [a["kind"] for a in self.store.all("SELECT kind FROM alerts")])
+
+    def test_webhook_plan_change_reaches_the_resize(self):
+        seen = []
+        accounts.handle_event(self.store, self.billing, {"id": "e9", "type": "customer.subscription.updated", "data": {"object": {
+            "id": "sub_1", "status": "active", "items": {"data": [{"price": {"lookup_key": "amux_cloud_team_monthly"},
+                                                                    "current_period_end": T0 + 9e5}]}}}},
+                              now=T0, on_plan_change=lambda s, p: seen.append((s, p)))
+        self.assertEqual(seen, [("sub_1", "team")])
+
+    def test_M13_price_guard_alerts_on_a_price_rise(self):
+        prices = {t: {l: 9.99 for l in PLANS["locations"]} for t in ("cx33", "cx43", "cx53")}
+        self.assertEqual(self.n.price_guard(self.store, PLANS, prices), [])
+        prices["cx33"] = {l: 30.0 for l in PLANS["locations"]}
+        self.assertTrue(self.n.price_guard(self.store, PLANS, prices))
+        self.assertIn("price_guard", [a["kind"] for a in self.store.all("SELECT kind FROM alerts")])
+
+
+class Support(Base):
+    def test_M8_drafts_wait_for_the_owner_unless_auto_reply_is_on(self):
+        import support
+        support.ensure(self.store)
+        self.pay("cs_1", "a@example.com", "sub_1")
+        u = self.store.one("SELECT * FROM users")
+        srv = self.store.one("SELECT * FROM servers")
+        rid = support.open_request(self.store, u, "My worker stopped replying", srv, now=T0)
+        self.assertEqual([q["id"] for q in support.queue(self.store)], [rid])
+        self.assertEqual(support.draft(self.store, rid, "Restart the worker from its card.", now=T0 + 60), "awaiting_approval")
+        self.assertEqual(self.store.all("SELECT * FROM outbox WHERE template='support_reply'"), [], "nothing reaches the customer unapproved")
+        self.assertEqual(support.send(self.store, rid, now=T0 + 120), "sent")
+        self.assertEqual(len(self.store.all("SELECT * FROM outbox WHERE template='support_reply'")), 1)
+        self.store.set_flag("support_auto_reply", "1")
+        rid2 = support.open_request(self.store, u, "Second question", srv, now=T0 + 200)
+        self.assertEqual(support.draft(self.store, rid2, "Answer.", now=T0 + 260), "sent")
+        for i in range(3):
+            support.open_request(self.store, u, f"q{i}", srv, now=T0 + 300 + i)
+        with self.assertRaises(ValueError):
+            support.open_request(self.store, u, "sixth in an hour", srv, now=T0 + 400)

@@ -66,3 +66,65 @@ class Rollout(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WeeklyReport(unittest.TestCase):
+    def test_quiet_week_and_blind_week_read_differently(self):
+        import report
+        store = Store(os.path.join(tempfile.mkdtemp(), "r.db"))
+        lines, waiting = report.build(store, now=T0)
+        self.assertEqual(lines["Synthetic journey"], "not measured: no synthetic runs recorded this week")
+        self.assertEqual(lines["Owner time"], "not measured: no owner actions logged")
+        self.assertEqual(waiting, [])
+        store.run("INSERT INTO servers(id,org_id,slug,plan,status,fleet_secret,created_at,last_backup_at) VALUES('s','o','alice','solo','ready','x',?,?)", T0, T0 - 7200)
+        store.alert("lifecycle_breaker", "4 lapsed at once")
+        lines, waiting = report.build(store, now=T0 + 10)
+        self.assertIn("alice", lines["Backups"])
+        self.assertEqual(len(waiting), 1)
+        text = report.render(lines, waiting)
+        self.assertIn("\n\n- Backups:", text)          # blank line between blocks survives mail reflow
+
+
+class RestoreDrill(unittest.TestCase):
+    def setUp(self):
+        import drill
+        self.drill = drill
+        self.store = Store(os.path.join(tempfile.mkdtemp(), "d.db"))
+        self.infra = FakeInfra()
+        self.store.run("INSERT INTO orgs(id,email,created_at) VALUES('o','o@example.com',?)", T0)
+        self.store.run("INSERT INTO servers(id,org_id,slug,plan,status,fleet_secret,created_at,backup_bucket,restic_password,location) "
+                       "VALUES('srv1','o','alice','solo','ready','x',?,'amux-alice-1','pw','fsn1')", T0)
+        fleet.heartbeat(self.store, self.infra, self.store.one("SELECT * FROM servers"),
+                        {"backup_fingerprint": {"tables": {"board_items": 12, "schedules": 3}, "files_sha256": "abc", "files": 40}}, now=T0)
+
+    def run_drill(self, got, at):
+        self.drill.sweep(self.store, self.infra, "golden", "https://cloud.example", now=at)
+        d = self.store.one("SELECT * FROM drills WHERE finished_at IS NULL")
+        ds = fleet.authenticate(self.store, d["id"], d["fleet_secret"])
+        self.assertIsNotNone(ds)
+        self.assertIsNone(fleet.authenticate(self.store, d["id"], "wrong"))
+        first = fleet.heartbeat(self.store, self.infra, ds, {}, now=at + 60)
+        self.assertEqual(first["restore_from"]["bucket"], "amux-alice-srv1")
+        return fleet.heartbeat(self.store, self.infra, ds, {"drill_result": got}, now=at + 600)["result"]
+
+    def test_T_OPS_3_pass_fail_cleanup_and_escalation(self):
+        good = {"tables": {"board_items": 12, "schedules": 3}, "files_sha256": "abc", "files": 40}
+        self.assertEqual(self.run_drill(good, T0 + 10), "pass")
+        self.assertEqual([s for s in self.infra.servers.values() if s["labels"].get("purpose") == "restore-drill"], [],
+                         "the drill server is deleted")
+        self.assertEqual(self.drill.sweep(self.store, self.infra, "golden", "x", now=T0 + 3 * DAY), 0, "weekly, not daily")
+        bad = {"tables": {"board_items": 7}, "files_sha256": "zzz", "files": 39}
+        self.assertEqual(self.run_drill(bad, T0 + 8 * DAY), "fail")
+        self.assertEqual(self.store.all("SELECT * FROM alerts"), [], "one failure is retried, not escalated")
+        self.assertEqual(self.run_drill(bad, T0 + 16 * DAY), "fail")
+        self.assertIn("restore_drill_failed", [a["kind"] for a in self.store.all("SELECT kind FROM alerts")])
+        detail = self.store.one("SELECT detail FROM drills ORDER BY started_at DESC LIMIT 1")["detail"]
+        self.assertIn("board_items: 7 rows restored, 12 expected", detail)
+        self.assertIn("schedules missing", detail)
+
+    def test_a_silent_drill_times_out_as_a_failure(self):
+        self.drill.sweep(self.store, self.infra, "golden", "x", now=T0 + 10)
+        self.drill.sweep(self.store, self.infra, "golden", "x", now=T0 + 10 + 46 * 60)
+        d = self.store.one("SELECT * FROM drills")
+        self.assertEqual(d["result"], "fail")
+        self.assertIn("did not report", d["detail"])
