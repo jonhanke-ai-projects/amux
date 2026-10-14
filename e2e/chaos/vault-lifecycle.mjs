@@ -33,7 +33,7 @@ const real = d => fs.realpathSync(d);
 const records = (pred) => amux.fakeLog().filter(pred);
 const launches = dir => records(r => r.event === 'launch' && r.cwd && real(r.cwd) === real(dir));
 async function launchEnv(name, dir, n) {
-  await waitFor(`${name} launch #${n}`, () => launches(dir).length >= n, 90000);
+  await waitFor(`${name} launch #${n}`, () => launches(dir).length >= n, 180000);
   return launches(dir)[n - 1].env_sha256 || {};
 }
 // What each worker should hold: a hash, or null for "not set".

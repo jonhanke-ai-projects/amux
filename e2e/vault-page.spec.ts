@@ -49,6 +49,11 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
   await boot(page);
   const auth = { Authorization: `Bearer ${await token(page)}` };
   const created: string[] = [];
+  const removeFixtures = async () => {
+    const list = await (await request.get('/api/vault/secrets', { headers: auth })).json();
+    for (const i of list.items || []) if (/^VP_/.test(i.key)) await request.delete(`/api/vault/secrets/${i.id}`, { headers: auth });
+    for (const n of created) await request.delete(`/api/sessions/${n}`, { headers: auth });
+  };
   try {
     for (const [name, tags] of [[wa, ['research']], [wb, ['devops']]] as const) {
       const r = await request.post('/api/sessions', { headers: auth, data: { name, dir: '/tmp', tags, start: false } });
@@ -191,10 +196,6 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await page.keyboard.press('Escape');
     await expect(vault).toHaveCount(0);
   } finally {
-    await cleanup('remove vault fixtures', async () => {
-      const list = await (await request.get('/api/vault/secrets', { headers: auth })).json();
-      for (const i of list.items || []) if (/^VP_/.test(i.key)) await request.delete(`/api/vault/secrets/${i.id}`, { headers: auth });
-      for (const n of created) await request.delete(`/api/sessions/${n}`, { headers: auth });
-    }, info);
+    await cleanup('remove vault fixtures', removeFixtures, info);
   }
 });
