@@ -3184,6 +3184,50 @@ fn resolve_task_name(
 /// It outranks a stale card title and the role description (Ethan,
 /// 2026-09-25: "make sure the task names are up to date"; amux-helper, a
 /// worker with no card, showed its role text as its task).
+/// Claude Code names a conversation itself: it writes `{"type":"ai-title",
+/// "aiTitle":...}` records into the transcript and rewrites them as the work
+/// moves, even for a worker amux launched with a custom title (measured
+/// 2026-10-14: mixpeek-funnel held 1175, latest "Done cards awaiting
+/// verification"). Ethan: "this needs to be the task, I know Claude Code comes
+/// up with its own task naming. use that" — the card showed his last message.
+pub(crate) fn latest_ai_title(records: &[Value]) -> Option<String> {
+    records.iter().rev()
+        .find(|r| r["type"] == "ai-title")
+        .and_then(|r| r["aiTitle"].as_str())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// The latest title in a transcript written within the last day. Cached per
+/// file and re-read at most once a minute, so a sessions poll stays cheap.
+pub(crate) fn ai_title_from_file(path: &std::path::Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant, SystemTime};
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    if SystemTime::now().duration_since(modified).map(|d| d > Duration::from_secs(86_400)).unwrap_or(false) {
+        return None;
+    }
+    type TitleCache = HashMap<std::path::PathBuf, (SystemTime, Instant, Option<String>)>;
+    static CACHE: OnceLock<Mutex<TitleCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((m, at, t)) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+        if *m == modified || at.elapsed() < Duration::from_secs(60) {
+            return t.clone();
+        }
+    }
+    let title = latest_ai_title(&super::session_verbs::iter_jsonl_tail(path, 524_288));
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), (modified, Instant::now(), title.clone()));
+    title
+}
+
+/// Claude Code's own title for `name`'s current conversation, if it has one.
+fn claude_ai_title(name: &str, report: Option<&Value>) -> Option<String> {
+    let sid = report?.get("session_id")?.as_str().filter(|s| !s.is_empty())?;
+    let path = super::session_verbs::lifecycle_transcript_path(name, sid)?;
+    ai_title_from_file(&path)
+}
+
 fn resolve_task_name_with(
     board_title: Option<&str>,
     board_fresh: bool,
@@ -5655,7 +5699,10 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                 // The owner's own latest message is not a board claim: it is
                 // what this worker was last asked to do, so it names the task
                 // better than the role description (amux-helper, 2026-09-25).
-                if let Some(m) = recent_owner_messages.get(&name) {
+                if let Some(t) = claude_ai_title(&name, signals.reports.get(&name)) {
+                    v["task_name"] = json!(t);
+                    v["task_source"] = json!("claude_title");
+                } else if let Some(m) = recent_owner_messages.get(&name) {
                     v["task_name"] = json!(m);
                     v["task_source"] = json!("message");
                 } else {
@@ -5788,6 +5835,10 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             );
             v["task_name"] = json!(tname);
             v["task_source"] = json!(tsrc);
+            if let Some(t) = claude_ai_title(&name, signals.reports.get(&name)) {
+                v["task_name"] = json!(t);
+                v["task_source"] = json!("claude_title");
+            }
             // The dashboard shows a non-empty override as the task headline, so
             // a stale one must not be sent at all: this is how a 40-day-old
             // "AMUX-2676 — worker card evidence" sat above amux's real card.
@@ -10118,6 +10169,23 @@ mod discovery_race_tests {
 
 #[cfg(test)]
 mod picker_companion_tests {
+    #[test]
+    fn claude_code_title_is_the_latest_ai_title_in_the_transcript() {
+        let recs = vec![
+            serde_json::json!({"type":"custom-title","customTitle":"amux"}),
+            serde_json::json!({"type":"ai-title","aiTitle":"Fix the split view"}),
+            serde_json::json!({"type":"user","message":"this happens when I open Split View"}),
+            serde_json::json!({"type":"ai-title","aiTitle":"  Compact mobile headers  "}),
+        ];
+        assert_eq!(super::latest_ai_title(&recs).as_deref(), Some("Compact mobile headers"));
+        assert_eq!(super::latest_ai_title(&recs[..3]).as_deref(), Some("Fix the split view"));
+        assert_eq!(super::latest_ai_title(&recs[..1]), None);
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("t.jsonl");
+        std::fs::write(&f, recs.iter().map(|r| r.to_string() + "\n").collect::<String>()).unwrap();
+        assert_eq!(super::ai_title_from_file(&f).as_deref(), Some("Compact mobile headers"));
+    }
+
     use super::is_chat_companion_row;
 
     #[test]
