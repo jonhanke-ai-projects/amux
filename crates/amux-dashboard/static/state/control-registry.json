@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2987,
+  "n_considered": 2988,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2956,6 +2956,12 @@
     },
     "_pickCmdHistory": {
       "kind": "command._pickCmdHistory",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_placeFixedAt": {
+      "kind": "command._placeFixedAt",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
