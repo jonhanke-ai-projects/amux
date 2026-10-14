@@ -1,6 +1,6 @@
 # amux Cloud: a boring, profitable hosting business that runs itself
 
-Status: plan, revision 8. Owner: amux-cloud. Written 2026-10-14. Supersedes the
+Status: plan, revision 9. Owner: amux-cloud. Written 2026-10-14. Supersedes the
 multi-tenant trial model in [cloud-poc-provisioning-plan.md](../cloud-poc-provisioning-plan.md).
 
 **Purpose.** A customer pays, gets their own amux server, brings their own model
@@ -135,8 +135,9 @@ states: proposed, held, executing, done, cancelled. Rules:
    a month each). Each shadow decision is checked automatically 14 days later
    against a fresh read of the provider: a decision to delete must still show
    the subscription ended, and no deleted-in-shadow customer may have paid since.
-   Execution turns on after 30 days with no disagreement; any disagreement keeps
-   shadow mode on and opens a card.
+   Execution turns on after at least 30 days **and** at least 5 replayed
+   decisions with no disagreement; any disagreement keeps shadow mode on and
+   opens a card. With too few lapses to judge, shadow mode simply continues.
 
 Provisioning in the other direction (paid but no server) is safe and runs
 immediately.
@@ -716,6 +717,7 @@ UI. A test that cannot run reports "not run" and fails the suite.
 | T-CAN-1 | Export downloads and opens |
 | T-CAN-2 | Injected clock: 30 days after deletion the snapshot is gone |
 | T-DEL-1 | Every listed resource gone; receipt lists each |
+| T-DEL-2 | A sandbox Apple account's token is revoked by the deletion path actually used (Clerk's or ours); Apple's revoke endpoint returns success and a new sign-in asks for consent |
 | T-PLAN-1 | Upgrade keeps data |
 | T-HELP-1 | Bundle produced; agent answers |
 | T-OP-1 | Each Operator credential attempts a write outside its scope and is refused; a merge outside `site/` and `docs/` is refused |
@@ -747,7 +749,7 @@ Memories, journal, habits, CRM, Settings, Team presence, Self-update.
 |---|---|---|
 | P1 | Paddle approval for "managed hosting of open-source software", products from `plans.json` | Approval email; sandbox and live products match `plans.json` |
 | P2 | Terms, privacy policy, data processing agreement, subprocessor list (Hetzner, Cloudflare, Clerk, Paddle, PostHog, Apple) | Pages live; linked from checkout |
-| P3 | Clerk production with email code, Google, GitHub and Apple; Apple Services ID and key; relay email domain registered; whether Clerk revokes Apple tokens on user deletion, recorded | T-ACC-3, T-IOS-4 |
+| P3 | Clerk production with email code, Google, GitHub and Apple; Apple Services ID and key; relay email domain registered; Clerk production configured with our own Apple Services ID and key (so our key can sign Apple's client secret for revocation); whether Clerk revokes Apple tokens on user deletion, recorded | T-ACC-3, T-IOS-4, T-DEL-2 |
 | P4 | `amux.cloud` on Cloudflare; Origin CA; Hetzner project with quota raised and abuse@ as contact; two payment methods on every provider | T-PROV-1; provider pages |
 | P5 | Backups, restore drill and signed updates with rollback | T-OPS-1..4 green 7 days running |
 | P6 | Safe lifecycle in shadow mode | T-LIFE-1..6 |
@@ -764,8 +766,17 @@ handles the rare exception directly (about 1.4 hours a month at 10 customers,
 
 Cost, stated plainly: about 32 agent-days to build [H], roughly $3,200 of
 inference at $100 an agent-day [H], against $234 a month of contribution at 10
-customers. That pays back in about 14 months at 10 customers and in under 2
-months at 100. The build is justified by the path to 100, and every step below
+customers. That pays back in about 14 months at 10 customers before owner time,
+and only after several years once realistic owner time is counted ($28 a month
+left, 4.8); at 100 customers it pays back in under 2 months.
+
+**Step 0, a demand check before the 32 agent-days.** Only 19 people viewed
+`/cloud` last month. Replace the Calendly button there and the OSS "Move to amux
+Cloud" entry with "Get notified when your server is ready" (email only, stored
+in the control plane). Build steps 2 to 8 once 10 people have signed up, and
+email them at launch. If fewer than 10 sign up in 60 days, the plan stays at
+step 1 and the decision goes to the weekly report as an L3 item whose default
+is to wait. The build is justified by the path to 100, and every step below
 is one that path needs anyway. The iOS step runs in parallel and launch is not
 gated on App Review; web checkout and web Sign in with Apple cover payment.
 
@@ -785,7 +796,7 @@ gated on App Review; web checkout and web Sign in with Apple cover payment.
 
 | Step | Ships | Done when |
 |---|---|---|
-| 9 | Lifecycle execution switches on by itself after 30 shadow days with no replay disagreement | T-LIFE-6 |
+| 9 | Lifecycle execution switches on by itself after 30 shadow days and 5 replayed decisions with no disagreement | T-LIFE-6 |
 | 10 | The Operator (one worker), its three MDAI nodes, budgets (M18) | T-OP-1, T-BUD-1 |
 | 11 | Support agent answering first (M8), setup and inactivity emails (M6, M7) | Agent resolution rate measured weekly |
 | 12 | Move to Cloud: bundle, importer, `amux cloud move`, the dashboard button and every CTA in 7.1 | T-MIG-1..5 |
@@ -813,4 +824,5 @@ payment provider, the control plane and the tests all read prices from it.
 | 5 | 7.1 | Independent reviewer | Merchant of record, VAT-net economics, volume model, move to Cloud, monitoring worker | Bundle secrets, credential scopes |
 | 6 | 7.7 | Independent reviewer | Allowlist bundle, scoped credentials, flat-traffic ceiling | App Store key, Operator cost, traffic stop rule |
 | 7 | 7.6 | Independent reviewer | Owner's safety revision: backups, restores and updates before launch; safe lifecycle (3.2); owner-intervention stress test with outsourcing (4.8); sample-size rule for experiments; content never auto-unpublished; channel versus tactic judging; failure audit (11.1); one payment provider name; launch prerequisites; paths to 10 and 100; invites end to end (8.2); Sign in with Apple (8.3); cut M9, M16, M20, four MDAI nodes and hourly runs | R2 write cost, breaker at small fleets, Apple sign-in through Clerk, unstated build cost, test-range and invite-mail details |
-| 8 | pending | | litestream every 60 s and R2 in the model; breaker uses the greater of 3 servers or 5%; shadow mode judged automatically by a 14-day replay; Apple sign-in through Clerk's iOS SDK with token revocation confirmed; build cost and payback stated; iOS not a launch gate; invite email and revocation mechanics; journey server lifetime | |
+| 8 | 8.0 | Independent reviewer | litestream every 60 s and R2 in the model; breaker uses the greater of 3 servers or 5%; shadow mode judged automatically by a 14-day replay; Apple sign-in through Clerk's iOS SDK with token revocation confirmed; build cost and payback stated; iOS not a launch gate; invite email and revocation mechanics; journey server lifetime | |
+| 9 | not re-scored | | Payback after owner time stated; a step-0 demand check gates the build; shadow mode needs 5 replayed decisions; Apple revocation tested with our own Apple key (T-DEL-2) | Final reviewer score 8.0 on revision 8, below the 9 target |
