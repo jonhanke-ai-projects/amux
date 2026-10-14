@@ -18052,12 +18052,14 @@ pub async fn debug_logs(RawQuery(q): RawQuery) -> Response {
         // #{session_activity} untouched (it tracks session-level use). Keying
         // the stale verdict on session_activity made every busy pane look
         // dormant — the verdict would have answered, plausibly, and wrongly.
-        "#{session_name}\t#{pane_pipe}\t#{window_activity}",
+        // `|`, not a tab: in the server's C locale tmux prints a tab as `_`
+        // (see runtime_jobs::pane_size), which left this list empty.
+        "#{session_name}|#{pane_pipe}|#{window_activity}",
     ])
     .await
     {
         for line in String::from_utf8_lossy(&o.stdout).lines() {
-            let mut it = line.split('\t');
+            let mut it = line.split('|');
             let (Some(sess), Some(pipe), Some(act)) = (it.next(), it.next(), it.next()) else {
                 continue;
             };
