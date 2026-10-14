@@ -95,9 +95,23 @@
   .report-last-refresh { font-size:0.72rem; color:var(--dim); }
   .report-total { font-weight:600; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* UI font (Settings > Device > Font). Self-hosted, latin, variable weight;
+     only the selected face is downloaded. Licenses beside the files (OFL). */
+  @font-face { font-family: "Geist"; src: url("/vendor/fonts/geist.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+  @font-face { font-family: "Inter"; src: url("/vendor/fonts/inter.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+  @font-face { font-family: "IBM Plex Sans"; src: url("/vendor/fonts/ibm-plex-sans.woff2") format("woff2"); font-weight: 100 700; font-display: swap; }
+  :root { --font-sys: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; --font-ui: var(--font-sys); }
+  html[data-font="geist"] { --font-ui: "Geist", var(--font-sys); }
+  html[data-font="inter"] { --font-ui: "Inter", var(--font-sys); }
+  html[data-font="plex"] { --font-ui: "IBM Plex Sans", var(--font-sys); }
+  /* Inter: the open digits and single-storey forms Linear-style UIs use. */
+  html[data-font="inter"] body { font-feature-settings: "cv01", "cv11", "ss03"; }
+  html[data-font] body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  /* Form controls do not inherit the page font by default. */
+  button, input, select, textarea { font-family: inherit; }
   html { font-size: 16px; overflow-x: clip; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-family: var(--font-ui);
     background: var(--bg); color: var(--text);
     min-height: 100vh; min-height: 100dvh;
     width: 100%; overflow-x: clip;
@@ -601,7 +615,7 @@
   /* Chat renderer (ACW-7): the peek body shows a transcript, not a terminal. */
   #peek-body.peek-chat {
     background: var(--bg) !important; color: var(--text) !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--font-ui);
     white-space: normal; font-size: 0.92rem; line-height: 1.5;
     padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
   }
@@ -1315,7 +1329,7 @@
   .img-zoom-wrap.zoomed .img-zoomable { cursor:grab; }
   .file-overlay-body.file-video { display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000;padding:0;white-space:normal; }
   .file-video-player { max-width:100%;max-height:calc(100% - 36px);outline:none;display:block; }
-  .file-video-meta { width:100%;box-sizing:border-box;padding:6px 14px;display:flex;align-items:center;gap:12px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:0.72rem;color:var(--dim);flex-shrink:0;background:rgba(0,0,0,0.7); }
+  .file-video-meta { width:100%;box-sizing:border-box;padding:6px 14px;display:flex;align-items:center;gap:12px;font-family:var(--font-ui);font-size:0.72rem;color:var(--dim);flex-shrink:0;background:rgba(0,0,0,0.7); }
   .file-overlay-body.file-pdf { padding:0;background:var(--bg);white-space:normal;overflow:auto;-webkit-overflow-scrolling:touch; }
   /* AMUX-3068: pdf.js renders each page to a canvas, stacked and centered, so
      PDFs preview on iOS where the native <embed> is blank. Pages fit the
@@ -1431,7 +1445,7 @@
   mark.md-search-hit { background: rgba(255, 215, 0, 0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
   mark.md-search-hit.current { background: #ffb000; color: #000; }
   /* Unified markdown content styling — used everywhere renderMarkdown() output appears */
-  .md-content { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 0.88rem; line-height: 1.6; }
+  .md-content { font-family: var(--font-ui); font-size: 0.88rem; line-height: 1.6; }
   .md-content > *:first-child { margin-top: 0 !important; }
   .md-content > *:last-child { margin-bottom: 0 !important; }
   .md-content p { margin: 0 0 10px; }
@@ -1976,7 +1990,7 @@
     font-size: 1.1rem; line-height: 1; padding: 6px 10px; margin: 0;
   }
   .ac-close:hover { color: var(--text); }
-  .ac-item .ac-desc { font-family: -apple-system, sans-serif; color: var(--dim); font-size: 0.75rem; margin-left: 8px; }
+  .ac-item .ac-desc { font-family: var(--font-ui); color: var(--dim); font-size: 0.75rem; margin-left: 8px; }
   .ac-item {
     padding: 8px 12px; font-size: 0.88rem; cursor: pointer;
     font-family: "SF Mono", "Fira Code", monospace; color: var(--text);
@@ -1984,9 +1998,9 @@
   }
   .ac-item:last-child { border-bottom: none; }
   .ac-item.ac-example { padding-left: 22px; }
-  .ac-item .ac-eg { font-family: -apple-system, sans-serif; color: var(--dim); font-size: 0.7rem; margin-right: 6px; }
+  .ac-item .ac-eg { font-family: var(--font-ui); color: var(--dim); font-size: 0.7rem; margin-right: 6px; }
   .ac-item:active, .ac-item.selected { background: rgba(88,166,255,0.15); }
-  .ac-section { padding: 4px 12px; font-size: 0.68rem; font-family: -apple-system, sans-serif;
+  .ac-section { padding: 4px 12px; font-size: 0.68rem; font-family: var(--font-ui);
     color: var(--dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
     border-bottom: 1px solid var(--border); background: var(--bg); pointer-events: none; }
   .at-item .at-at { color: var(--accent); }
