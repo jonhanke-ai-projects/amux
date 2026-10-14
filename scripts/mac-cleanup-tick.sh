@@ -174,11 +174,16 @@ USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
 # level short of them, and the tick's report read "found 2 ... scan complete=no":
 # the 310G scratchpad root listed next spends the whole scan budget, so a cheap
 # root placed after it is never reached. Shallow and high-yield goes first.
+# @9, not @2 (disk RCA 2026-10-14 02:23, 3.7G free): a worker's TMPDIR,
+# ~/.amux/tmp/<worker>/, holds its checkouts, and their targets sit at
+# <worker>/<run>/<tree>/server/mvs/shard-rs/target, eight levels down. mxp-gs12 had
+# 183.1G in seven of them, 155G idle past 6h, none visible at @2. The depth-9 scan
+# of the whole tree takes about 8s.
 # /private/tmp/claude-<uid>@8 (disk RCA 2026-10-12): a session that keeps its clones under
 # scratchpad/work/<clone>/ puts the tag at <proj>/<session>/scratchpad/work/<clone>/target/CACHEDIR.TAG,
 # seven levels down. At @6 the scan never saw them: one session held 47G and 23G of targets idle
 # over 6h with 21G free on the disk, and the summary read "eligible 0".
-TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@2:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
+TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@9:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
 TARGET_IDLE_H=${AMUX_CLEANUP_TARGET_IDLE_H:-24}
 # Under disk pressure the idle floor drops (DESKT-62). On 2026-10-01 the disk fell
 # from 574G to 155G in five days, and about 60G of build output sat 21-23h idle in
