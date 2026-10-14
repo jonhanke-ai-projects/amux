@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1536';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1537';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -59302,6 +59302,7 @@ async function _drawRename(title) {
       const old = d.path;
       d.path = res.path || newPath;
       d.recents = d.recents.filter(x => x.path !== old);
+      (d.recentsDropped = d.recentsDropped || new Set()).add(old);
     } catch (e) {
       showToast('Rename failed: ' + (e.message || e));
       _drawRenderChrome();
@@ -59892,9 +59893,28 @@ async function _drawSaveRecents() {
   const d = _draw;
   d.recentsTimer = null;
   try {
+    // Merge with what is on disk: every tab and device writes this one file,
+    // and writing only this tab's list erased drawings another tab had
+    // opened. Newest entry per path wins; paths this tab renamed away stay out.
+    let disk = [];
+    try {
+      const g = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(_drawRecentsPath()), { cache: 'no-store' });
+      if (g.ok) { const data = await g.json(); if (Array.isArray(data.recents)) disk = data.recents; }
+    } catch (e) {}
+    const dropped = d.recentsDropped || new Set();
+    const byPath = new Map();
+    for (const x of d.recents.concat(disk)) {
+      if (!x || !x.path || dropped.has(x.path)) continue;
+      const have = byPath.get(x.path);
+      if (!have || (x.ts || 0) > (have.ts || 0)) byPath.set(x.path, x);
+    }
+    const merged = [...byPath.values()].sort((p, q) => (q.ts || 0) - (p.ts || 0)).slice(0, _DRAW_RECENTS_MAX);
+    if (merged.length > d.recents.length) _drawBeacon('recents-merged', { measured: true, n_considered: disk.length, added: merged.length - d.recents.length });
+    d.recents = merged;
     const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: _drawRecentsPath(), content: JSON.stringify({ recents: d.recents }) }), _skipOutbox: true });
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (d.libTab === 'drawings') _drawLibRender();
   } catch (e) { _drawBeacon('recents-save-failed', { error: String(e && e.message || e) }); }
 }
 async function _drawRenderDrawings(body, q) {
