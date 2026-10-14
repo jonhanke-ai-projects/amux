@@ -30,6 +30,14 @@
 #
 # Idempotent: safe to re-run after a partial failure, and re-running with a
 # new AMUX_WEB_USERS or ANTHROPIC_API_KEY rotates them.
+#
+# amux Cloud fleet mode (docs/design/cloud-self-service.md): when cloud-init
+# has written /etc/amux/fleet.env (AMUX_SLUG, AMUX_OWNER_EMAIL, AMUX_FLEET_SECRET,
+# AMUX_CONTROL_URL), the domain is <slug>.amux.cloud, the owner is a member by
+# email with no password (they arrive through cloud.amux.io's door token), and
+# Caddy serves the Cloudflare Origin CA certificate the fleet agent fetched into
+# /etc/amux/origin.{crt,key} instead of asking Let's Encrypt.
+# AMUX_SKIP_PACKAGES=1 skips package installation on a prepared golden image.
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
@@ -49,12 +57,20 @@ UPDATES="${AMUX_UPDATES:-image}"
 # provisions the host. 0 or unset: updates happen when someone presses Pull.
 FOLLOW_MIN="${AMUX_UPDATE_FOLLOW_MIN:-0}"
 WEB_USERS="${AMUX_WEB_USERS:-}"
+FLEET_ENV=/etc/amux/fleet.env
+FLEET=0
+if [[ -f "$FLEET_ENV" ]]; then
+  set -a; . "$FLEET_ENV"; set +a
+  FLEET=1
+  DOMAIN="${AMUX_SLUG:?fleet.env has no AMUX_SLUG}.${AMUX_CUSTOMER_DOMAIN:-amux.cloud}"
+fi
 LOG=/var/log/amux-desktop-setup.log
 
 log() { echo "[amux-desktop] $(date '+%H:%M:%S') $*" | tee -a "$LOG"; }
 [[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 [[ -n "$DOMAIN" ]] || { echo "AMUX_DOMAIN is required (the name Caddy gets a cert for)" >&2; exit 1; }
-[[ -n "$WEB_USERS" ]] || { echo "AMUX_WEB_USERS is required, e.g. 'ethan:pw:ethan@x.com elliot:pw:elliot@y.com'" >&2; exit 1; }
+[[ -n "$WEB_USERS" || "$FLEET" == 1 ]] || { echo "AMUX_WEB_USERS is required, e.g. 'ethan:pw:ethan@x.com elliot:pw:elliot@y.com'" >&2; exit 1; }
+[[ "$FLEET" == 0 || -n "${AMUX_OWNER_EMAIL:-}" ]] || { echo "fleet.env has no AMUX_OWNER_EMAIL" >&2; exit 1; }
 
 # ── Swap ──
 # The Linux amux box OOM-killed chromium and rustc with zero swap configured
@@ -70,6 +86,9 @@ if ! swapon --show | grep -q /swapfile; then
 fi
 
 # ── Packages ──
+if [[ "${AMUX_SKIP_PACKAGES:-0}" == 1 ]]; then
+  log "packages: skipped (AMUX_SKIP_PACKAGES=1, prepared image)"
+else
 log "installing desktop, xrdp, caddy and amux runtime deps"
 apt-get update -qq
 apt-get install -y -qq \
@@ -102,6 +121,10 @@ if ! command -v node &>/dev/null; then
   apt-get install -y -qq nodejs
 fi
 command -v claude &>/dev/null || npm install -g @anthropic-ai/claude-code >/dev/null
+# The other coding CLIs a customer can sign in to (plan 8.4).
+command -v codex &>/dev/null || npm install -g @openai/codex >/dev/null
+command -v gemini &>/dev/null || npm install -g @google/gemini-cli >/dev/null
+fi
 
 # ── User ──
 if ! id "$USER_NAME" &>/dev/null; then
@@ -323,8 +346,13 @@ fi
 # password a person types IS their amux identity, and a browser never sees a
 # token it could hand to someone else.
 for _ in $(seq 1 30); do curl -sk -m 2 -o /dev/null https://127.0.0.1:8824/health && break; sleep 1; done
-MEMBERS=/etc/caddy/amux-members          # "user token" per line
-touch "$MEMBERS"; chown root:caddy "$MEMBERS"; chmod 640 "$MEMBERS"
+# Member tokens live with amux-door, which returns the verified user's token to
+# Caddy as X-Amux-Member and re-validates it every minute (cloud/desktop/door.py).
+id amux-door &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin amux-door
+install -d -m 770 -o root -g amux-door /etc/amux-door
+MEMBERS=/etc/amux-door/members           # "user-or-email token" per line
+if [[ ! -s "$MEMBERS" && -s /etc/caddy/amux-members ]]; then cp /etc/caddy/amux-members "$MEMBERS"; fi
+touch "$MEMBERS"; chown amux-door:amux-door "$MEMBERS"; chmod 600 "$MEMBERS"
 member_ok() {  # token still a verified member WITH the wanted scope ("global" or "group:<name>")?
   curl -sk -m 5 -H "Cookie: amux_member=$1" https://127.0.0.1:8824/api/identity \
     | python3 -c '
@@ -352,7 +380,7 @@ member_token() {  # user email scope -> token (reuse when the scope matches, els
     "https://127.0.0.1:8824/invite/$tok"
   member_ok "$tok" "$scope" || { log "FATAL: accepted invite for $u did not yield a member with scope $scope"; exit 1; }
   grep -v "^$u " "$MEMBERS" > "$MEMBERS.tmp" || true
-  echo "$u $tok" >> "$MEMBERS.tmp"; mv "$MEMBERS.tmp" "$MEMBERS"; chown root:caddy "$MEMBERS"; chmod 640 "$MEMBERS"
+  echo "$u $tok" >> "$MEMBERS.tmp"; mv "$MEMBERS.tmp" "$MEMBERS"; chown amux-door:amux-door "$MEMBERS"; chmod 600 "$MEMBERS"
   echo "$tok"
 }
 
@@ -361,8 +389,8 @@ member_token() {  # user email scope -> token (reuse when the scope matches, els
 # page and a 30-day cookie; another amux's Settings > Connect > Connections
 # signs in by posting to it. Basic auth keeps working for scripts. See
 # cloud/desktop/door.py for why a URL with embedded credentials cannot work.
-id amux-door &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin amux-door
-install -d -m 750 -o root -g amux-door /etc/amux-door /opt/amux-door
+install -d -m 750 -o root -g amux-door /opt/amux-door
+if [[ "$FLEET" == 1 ]]; then chgrp amux-door "$FLEET_ENV"; chmod 640 "$FLEET_ENV"; fi   # the door verifies tokens with it
 DOOR_PY="$(dirname "$(readlink -f "$0")")/door.py"            # shipped beside this script
 [[ -f "$DOOR_PY" ]] || DOOR_PY="$SRC/cloud/desktop/door.py"       # else the checkout's copy
 install -m 755 "$DOOR_PY" /opt/amux-door/door.py
@@ -383,7 +411,6 @@ UNIT
 
 # ── Caddy: TLS + door sign-in + member identity + access log ──
 CREDS_OUT=""
-MEMBER_MAP=""
 : > /etc/amux-door/users.new
 for entry in $WEB_USERS; do
   IFS=: read -r u p email grant <<<"$entry"
@@ -398,18 +425,28 @@ for entry in $WEB_USERS; do
   [[ "$email" == *@*.* ]] || { echo "user $u needs an email: user:password:email" >&2; exit 1; }
   [[ -n "$p" ]] || { p=$(openssl rand -base64 18); CREDS_OUT+=" $u:$p"; }
   printf '%s\n' "$p" | python3 /opt/amux-door/door.py hash "$u" >> /etc/amux-door/users.new
-  MEMBER_MAP+="    $u \"$(member_token "$u" "$email" "$scope")\""$'\n'
+  member_token "$u" "$email" "$scope" >/dev/null
 done
+if [[ "$FLEET" == 1 ]]; then
+  member_token "$AMUX_OWNER_EMAIL" "$AMUX_OWNER_EMAIL" global >/dev/null   # the paying customer, by email
+fi
 chown root:amux-door /etc/amux-door/users.new; chmod 640 /etc/amux-door/users.new
 mv /etc/amux-door/users.new /etc/amux-door/users
 systemctl daemon-reload
 systemctl enable amux-door >/dev/null
 systemctl restart amux-door
 install -d -o caddy -g caddy /var/log/caddy
+TLS_LINE=""
+if [[ "$FLEET" == 1 ]]; then
+  [[ -s /etc/amux/origin.crt && -s /etc/amux/origin.key ]] || { log "FATAL: fleet mode needs /etc/amux/origin.{crt,key} from the fleet agent"; exit 1; }
+  chgrp caddy /etc/amux/origin.key; chmod 640 /etc/amux/origin.key
+  TLS_LINE="  tls /etc/amux/origin.crt /etc/amux/origin.key"
+fi
 cat > /etc/caddy/Caddyfile <<EOF
 # Generated by amux cloud/desktop/bootstrap.sh. Re-run the script to change users.
-# Holds member tokens: keep it root:caddy 0640.
+# Member tokens live in /etc/amux-door/members, not here.
 $DOMAIN {
+$TLS_LINE
   log {
     output file /var/log/caddy/amux-access.log {
       roll_size 50MiB
@@ -422,16 +459,19 @@ $DOMAIN {
     reverse_proxy 127.0.0.1:8890
   }
   handle {
-    # Cookie or Basic, checked by amux-door. On success X-Door-User is the
-    # verified username, overwriting anything the client sent under that name.
+   # route keeps this block in the order written. Without it Caddy runs
+   # request_header after forward_auth and strips the door's own X-Amux-Member,
+   # so no member token reaches amux (found by a real-Caddy test, 2026-10-14).
+   route {
+    # Cookie, Basic or a cloud.amux.io token, checked by amux-door. On success
+    # X-Door-User is the verified person and X-Amux-Member their amux member
+    # token. Anything the client sent under either name is removed first.
+    request_header -X-Amux-Member
     forward_auth 127.0.0.1:8890 {
       uri /_door/check
-      copy_headers X-Door-User
+      copy_headers X-Door-User X-Amux-Member
     }
     log_append door_user {http.request.header.X-Door-User}
-    map {http.request.header.X-Door-User} {amux_member} {
-$MEMBER_MAP      default ""
-    }
     # A client that names its own lane (the amux CLI from another machine
     # sends X-Amux-Session) keeps it, prefixed with the verified user. A
     # browser sends none and gets none: a bare user name there reads as a
@@ -446,11 +486,13 @@ $MEMBER_MAP      default ""
       }
       # The ONLY cookie amux sees is the member cookie for the verified user,
       # so a client cannot present someone else's (and amux_door stays here).
-      header_up Cookie "amux_member={amux_member}"
+      header_up Cookie "amux_member={http.request.header.X-Amux-Member}"
+      header_up -X-Amux-Member
       header_up -Authorization
       header_up -X-Door-User
       flush_interval -1
     }
+   }
   }
 }
 EOF

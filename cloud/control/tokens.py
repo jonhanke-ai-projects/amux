@@ -41,8 +41,11 @@ def verify(token, secret, audience=None, now=None):
     return claims
 
 
-def door_token(server, member_email, role="owner", ttl=60):
-    return sign({"aud": server["slug"], "sub": member_email, "role": role}, server["fleet_secret"], ttl)
+def door_token(server, member_email, role="owner", ttl=60, invite=None):
+    claims = {"aud": server["slug"], "sub": member_email, "role": role}
+    if invite:
+        claims["invite"] = invite
+    return sign(claims, server["fleet_secret"], ttl)
 
 
 def new_secret():

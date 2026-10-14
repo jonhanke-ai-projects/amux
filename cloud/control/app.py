@@ -179,7 +179,7 @@ def r_root(h, _):
         if q.get("from") == "ios" or q.get("signin"):
             return h.redirect("/signin" + ("?from=ios" if q.get("from") == "ios" else ""))
         return h.redirect(f"{SITE}/pricing/")
-    servers = STORE.all("SELECT * FROM servers WHERE org_id=? ORDER BY created_at DESC", u["org_id"])
+    servers = visible_servers(u)
     live = [s for s in servers if s["status"] in ("ready", "provisioning")]
     if not live:
         snap = STORE.one("SELECT a.* FROM lifecycle_actions a JOIN servers s ON s.id=a.server_id WHERE s.org_id=? "
@@ -196,6 +196,20 @@ def r_root(h, _):
     if srv["status"] == "provisioning":
         return h.redirect("/progress")
     h.redirect(f"/go/{srv['id']}")
+
+
+def visible_servers(u):
+    """Servers this person may enter: their own org's (owner) plus any they joined by invite."""
+    own = STORE.all("SELECT *, 'owner' AS my_role FROM servers WHERE org_id=? ORDER BY created_at DESC", u["org_id"]) \
+        if u["role"] == "owner" else []
+    joined = STORE.all("SELECT s.*, 'member' AS my_role FROM servers s JOIN memberships m ON m.server_id=s.id "
+                       "WHERE m.user_id=? ORDER BY s.created_at DESC", u["id"])
+    seen, out = set(), []
+    for srv in own + joined:
+        if srv["id"] not in seen:
+            seen.add(srv["id"])
+            out.append(srv)
+    return out
 
 
 def r_start(h, _):
@@ -244,9 +258,10 @@ def r_me(h, _):
     if not u:
         return h.json(401, {"error": "signed out"})
     out = []
-    for s in STORE.all("SELECT s.*, j.step FROM servers s LEFT JOIN provision_jobs j ON j.server_id=s.id "
-                       "WHERE s.org_id=? ORDER BY s.created_at DESC", u["org_id"]):
+    steps = {r["server_id"]: r["step"] for r in STORE.all("SELECT server_id, step FROM provision_jobs")}
+    for s in [dict(x, step=steps.get(x["id"])) for x in visible_servers(u)]:
         out.append({"id": s["id"], "slug": s["slug"], "url": server_url(s), "status": s["status"], "plan": s["plan"],
+                    "role": s["my_role"],
                     "step": "ready" if s["status"] == "ready" else s["step"]})
     h.json(200, {"email": u["email"], "email_verified": bool(u["email_verified"]), "servers": out})
 
@@ -255,11 +270,12 @@ def r_go(h, path):
     u = h.user()
     if not u:
         return h.redirect("/signin")
-    srv = STORE.one("SELECT * FROM servers WHERE id=? AND org_id=? AND status='ready'", path.rsplit("/", 1)[-1], u["org_id"])
+    sid = path.rsplit("/", 1)[-1]
+    srv = next((s for s in visible_servers(u) if s["id"] == sid and s["status"] == "ready"), None)
     if not srv:
         return h.redirect("/")
-    STORE.event("cloud.enter", u["org_id"], server=srv["id"])
-    h.redirect(f"{server_url(srv)}/__door/enter?t={tokens.door_token(srv, u['email'])}")
+    STORE.event("cloud.enter", srv["org_id"], server=srv["id"], role=srv["my_role"])
+    h.redirect(f"{server_url(srv)}/_door/enter?t={tokens.door_token(srv, u['email'], role=srv['my_role'])}")
 
 
 def r_webhook(h, _):
@@ -316,6 +332,39 @@ def r_notify_options(h, _):
                                     "Access-Control-Allow-Headers": "Content-Type"})
 
 
+INVITE_COOKIE = "amux_invite"
+
+
+def r_invite(h, path):
+    """8.2: cloud.amux.io/invite/<slug>/<invite>. Sign in first; the door redeems the invite."""
+    parts = path.strip("/").split("/")
+    if len(parts) != 3:
+        return h.send(404, page("Invite", "<h1>This invite link is incomplete</h1>"))
+    _, slug, invite = parts
+    srv = STORE.one("SELECT * FROM servers WHERE slug=? AND status='ready'", slug)
+    if not srv:
+        return h.send(404, page("Invite", "<h1>This invite is for a server that is not running</h1>"
+                                "<p>Ask the person who invited you for a new link.</p>"))
+    u = h.user()
+    if not u:
+        pending = f"{INVITE_COOKIE}={slug}/{invite}; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600" + \
+                  ("; Secure" if PUBLIC.startswith("https://") else "")
+        return h.redirect("/signin", {"Set-Cookie": pending})
+    STORE.run("INSERT OR IGNORE INTO memberships(user_id,server_id,created_at) VALUES(?,?,?)", u["id"], srv["id"], time.time())
+    STORE.event("cloud.invite_followed", srv["org_id"], server=srv["id"])
+    # The door refuses the invite if this email is not the one it was sent to (T-TEAM-4).
+    h.redirect(f"{server_url(srv)}/_door/enter?t={tokens.door_token(srv, u['email'], role='member', invite=invite)}",
+               {"Set-Cookie": f"{INVITE_COOKIE}=; Path=/; Max-Age=0"})
+
+
+def pending_invite(h):
+    for part in (h.headers.get("Cookie") or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == INVITE_COOKIE and "/" in v:
+            return v.split("/", 1)
+    return None
+
+
 def r_signin(h, _):
     if FAKE:
         return h.send(200, page("Sign in", "<h1>Sign in (fake mode)</h1><form method=post action=/api/session>"
@@ -328,7 +377,7 @@ def r_signin(h, _):
 <script>async function go(){{await window.Clerk.load();
  if(window.Clerk.user){{const t=await window.Clerk.session.getToken();
   const r=await fetch('/api/session',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{token:t}})}});
-  location=r.ok?'/':'/signin?error=1';return}}
+  const j=await r.json().catch(()=>({{}}));location=r.ok?(j.next||'/'):'/signin?error=1';return}}
  window.Clerk.mountSignIn(document.getElementById('clerk'),{{afterSignInUrl:'/signin',afterSignUpUrl:'/signin'}})}}</script>"""))
 
 
@@ -346,6 +395,19 @@ def r_session(h, _):
             STORE.event("control.signin_rejected", reason=str(e)[:200])
             return h.json(401, {"error": "sign-in could not be verified"})
     u = STORE.one("SELECT * FROM users WHERE lower(email)=?", email)
+    inv = pending_invite(h)
+    if not u and inv and verified:
+        srv = STORE.one("SELECT * FROM servers WHERE slug=? AND status='ready'", inv[0])
+        if srv:
+            uid = new_id("usr")
+            STORE.run("INSERT INTO users(id,email,email_verified,org_id,created_at,role) VALUES(?,?,1,?,?,'member')",
+                      uid, email, srv["org_id"], time.time())
+            STORE.event("cloud.member_joined", srv["org_id"], server=srv["id"])
+            u = STORE.one("SELECT * FROM users WHERE id=?", uid)
+    if u and inv:
+        cookie = h.session_cookie(u["id"])
+        target = f"/invite/{inv[0]}/{inv[1]}"
+        return h.redirect(target, cookie) if FAKE else h.json(200, {"ok": True, "next": target}, cookie)
     if not u:
         # Signing in creates nothing: an account comes from paying (D6) or an invite.
         return (h.redirect(f"{SITE}/pricing/?no_account=1") if FAKE else h.json(404, {"error": "no account", "pricing": f"{SITE}/pricing/"}))
@@ -363,6 +425,8 @@ def r_billing(h, _):
     u = h.user()
     if not u:
         return h.redirect("/signin")
+    if u["role"] != "owner":
+        return h.send(403, page("Billing", "<h1>Billing</h1><p>Only the account owner can change billing.</p>"))
     org = STORE.one("SELECT * FROM orgs WHERE id=?", u["org_id"])
     if FAKE or not org["stripe_customer_id"]:
         return h.send(200, page("Billing", "<h1>Billing</h1><p class=dim>No billing portal in this mode.</p>"))
@@ -410,7 +474,7 @@ ROUTES = [
     ("GET", "/progress", r_progress), ("GET", "/api/me", r_me), ("GET", "/go/", r_go),
     ("POST", "/webhooks/stripe", r_webhook), ("POST", "/api/fleet/", r_fleet),
     ("POST", "/api/notify", r_notify), ("OPTIONS", "/api/notify", r_notify_options),
-    ("GET", "/signin", r_signin), ("POST", "/api/session", r_session), ("GET", "/signout", r_signout),
+    ("GET", "/invite/", r_invite), ("GET", "/signin", r_signin), ("POST", "/api/session", r_session), ("GET", "/signout", r_signout),
     ("GET", "/billing", r_billing), ("GET", "/api/admin/", r_admin), ("POST", "/api/admin/", r_admin),
     ("GET", "/fake/checkout/", r_fake_checkout), ("POST", "/fake/checkout/", r_fake_checkout),
 ]

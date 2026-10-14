@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS orgs (
   stripe_customer_id TEXT UNIQUE, source TEXT, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, email TEXT NOT NULL, email_verified INTEGER NOT NULL DEFAULT 0,
-  org_id TEXT, created_at REAL NOT NULL);
+  org_id TEXT, created_at REAL NOT NULL, role TEXT NOT NULL DEFAULT 'owner');
 CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(lower(email));
 CREATE TABLE IF NOT EXISTS signups (
   checkout_session_id TEXT PRIMARY KEY, org_id TEXT NOT NULL, plan TEXT NOT NULL,
@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS lifecycle_actions (
   state TEXT NOT NULL, shadow INTEGER NOT NULL, proposed_at REAL NOT NULL, hold_until REAL NOT NULL,
   snapshot_id TEXT, evidence TEXT NOT NULL DEFAULT '{}', decided_at REAL,
   replay_at REAL, replay_verdict TEXT);
+CREATE TABLE IF NOT EXISTS memberships (
+  user_id TEXT NOT NULL, server_id TEXT NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(user_id, server_id));
 CREATE TABLE IF NOT EXISTS flags (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS waitlist (email TEXT PRIMARY KEY, source TEXT, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS events (
