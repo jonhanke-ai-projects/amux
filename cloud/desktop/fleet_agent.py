@@ -55,7 +55,8 @@ def env():
 def sh(*cmd, check=True, timeout=600, **kw):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
     if check and r.returncode != 0:
-        raise RuntimeError(f"{cmd[0]} exited {r.returncode}: {r.stderr.strip()[:300]}")
+        # The cause is at the end (set -e stops on the failing line); the start is apt and install noise.
+        raise RuntimeError(f"{cmd[0]} exited {r.returncode}: {r.stderr.strip()[-600:]}")
     return r
 
 

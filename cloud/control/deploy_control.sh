@@ -49,7 +49,7 @@ for _ in $(seq 1 90); do "${SSH[@]}" test -f /var/lib/amux-control-ready 2>/dev/
 "${SSH[@]}" test -f /var/lib/amux-control-ready || { log "FATAL: cloud-init did not finish on $IP"; exit 1; }
 
 # ── DNS: DNS-only so Caddy gets its own certificate ──
-ZID=$(capi "https://api.cloudflare.com/client/v4/zones?name=${HOST#*.}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"][0]["id"])')
+read -r ZID ACCT < <(capi "https://api.cloudflare.com/client/v4/zones?name=${HOST#*.}" | python3 -c 'import json,sys;z=json.load(sys.stdin)["result"][0];print(z["id"], z["account"]["id"])')
 RID=$(capi "https://api.cloudflare.com/client/v4/zones/$ZID/dns_records?name=$HOST" | python3 -c 'import json,sys;r=json.load(sys.stdin)["result"];print(r[0]["id"] if r else "")')
 REC="{\"type\":\"A\",\"name\":\"$HOST\",\"content\":\"$IP\",\"proxied\":false,\"ttl\":60,\"comment\":\"amux control plane\"}"
 if [[ -z "$RID" ]]; then capi -X POST "https://api.cloudflare.com/client/v4/zones/$ZID/dns_records" -d "$REC" >/dev/null
@@ -70,6 +70,7 @@ GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=sn
   echo "HCLOUD_TOKEN=$HC"
   echo "CLOUDFLARE_API_TOKEN=$CF"
   echo "CF_ZONE_ID=$ZID"
+  echo "CF_ACCOUNT_ID=$ACCT"   # R2 buckets and per-server tokens live on the account
   echo "AMUX_CUSTOMER_DOMAIN=${HOST#*.}"
   echo "AMUX_GOLDEN_IMAGE=$GOLDEN"
   echo "CONTROL_OWNER_EMAIL=${CONTROL_OWNER_EMAIL:-ethan@mixpeek.com}"

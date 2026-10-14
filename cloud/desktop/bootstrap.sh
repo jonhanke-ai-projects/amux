@@ -250,6 +250,9 @@ if [[ "$IMAGE_BUILD" == 1 || "$FLEET" == 1 ]]; then
   install -d -m 755 /opt/amux /etc/amux
   SELF_DIR="$(dirname "$(readlink -f "$0")")"
   for f in bootstrap.sh door.py fleet_agent.py; do
+    # Fleet mode runs from /opt/amux itself; install refuses to copy a file onto itself, and
+    # under set -e that failed every first boot (second real customer run, 2026-10-14).
+    [[ -f "$SELF_DIR/$f" && "$SELF_DIR/$f" -ef "/opt/amux/$f" ]] && continue
     [[ -f "$SELF_DIR/$f" ]] && install -m 755 "$SELF_DIR/$f" "/opt/amux/$f"
   done
   cat > /etc/systemd/system/litestream.service <<'UNIT'
