@@ -3024,6 +3024,11 @@
   .peek-split-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .peek-split-wrap.split-active { flex-direction: row; gap: 0; }
   .peek-split-wrap.split-active > .peek-terminal-panel { flex: 1; min-width: 0; }
+  /* The divider ratio is an inline flex on the panel and only means something
+     beside the side panel. Out of split it would size the HEIGHT: closing a
+     split worker left flex 0.57 and the next worker's terminal and composer
+     stopped 57% down the window (Ethan, 2026-10-14). */
+  .peek-split-wrap:not(.split-active) > .peek-terminal-panel { flex: 1 1 0% !important; }
   .peek-split-wrap.split-active > .peek-split-files { display: flex; flex: 1; min-width: 0; flex-direction: column;
     border-left: 1px solid var(--border); background: var(--bg); }
   .peek-split-files { display: none; }

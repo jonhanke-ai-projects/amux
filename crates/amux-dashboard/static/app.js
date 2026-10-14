@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1525';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1526';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15709,6 +15709,9 @@ function closePeek() {
   // Attachments were stashed above, beside the draft — do NOT clear them here.
   // This line used to be clearPeekFiles(), which is what dropped them on close.
   // Close split pane if open
+  // Through the same path as the toggle, so the divider's inline flex is
+  // cleared too (it sized the next worker's height to the split ratio).
+  try { _peekSplitSetActive(false); } catch (e) {}
   const splitWrap = document.getElementById('peek-split-wrap');
   if (splitWrap) splitWrap.classList.remove('split-active');
   const splitBtn = document.getElementById('peek-split-toggle');
