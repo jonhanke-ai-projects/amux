@@ -7047,6 +7047,11 @@ pub(crate) fn mint_capture_card(
     let Some(title) = amux_core::board::title_from_prompt(body) else {
         return Ok(None); // steering / control text — mint nothing
     };
+    if !session_name.trim().is_empty() && !super::board_lifecycle::enabled(session_name) {
+        tracing::info!(session = %session_name, measured = true, n_considered = 1,
+            verdict = "board_capture_off", "ledger: decompose onto board is off; no capture card minted");
+        return Ok(None);
+    }
     if session_name.trim().is_empty() {
         return Ok(None);
     }
@@ -8091,6 +8096,24 @@ pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
             crate::log_dedupe::hour_bucket(now_f64()),
         ) {
             tracing::warn!(message_id=row_id,session=cap_session,measured=true,n_considered=1,verdict="project.legacy_intake_held","project worker receipt cannot enter independent legacy intake; settle duplicate through project cancellation API");
+        }
+        return;
+    }
+    // "Decompose onto board" off means the owner's messages stay messages
+    // (Ethan, 2026-10-14: "we have all the board toggles off yet tasks
+    // accumulate and its not an isolated worker"). Raw prompt capture used to
+    // ignore that switch and card every prompt anyway.
+    if !super::board_lifecycle::enabled(&cap_session) {
+        let result = state.store.write_async(move |conn| {
+            conn.execute("UPDATE cmd_history SET capture_pending=0,intake_result=?2 WHERE id=?1 AND card_id IS NULL",
+                rusqlite::params![row_id, json!({"state":"board_capture_off","reason":"decompose onto board is off for this worker"}).to_string()])?;
+            Ok(crate::db::WriteOutcome { applied:true, events:vec![] })
+        }).await;
+        match result {
+            Ok(_) => tracing::info!(session=%cap_session, message_id=row_id, measured=true, n_considered=1,
+                verdict="board_capture_off", "ledger: decompose onto board is off; message kept in Messages without a card"),
+            Err(error) => tracing::warn!(session=%cap_session, message_id=row_id, %error, measured=false, n_considered=1,
+                verdict="board_capture_off_pending", "could not clear the capture receipt; it stays pending for recovery"),
         }
         return;
     }
@@ -39627,12 +39650,41 @@ mod tests {
             .unwrap();
         assert_eq!(queued, literal);
         drop(c);
-        // Same task-bearing prompt into managed mode still captures work.
+        // "Decompose onto board" off: the prompt stays a message, no card
+        // (Ethan, 2026-10-14: toggles off yet tasks accumulate).
         std::fs::write(
-            sessions.join("managed.env"),
+            sessions.join("quiet.env"),
             "CC_ISOLATED=0\nAMUX_COMMAND_LIFECYCLE=0\n",
         )
         .unwrap();
+        cmd_hist_record_full(
+            &st,
+            "quiet",
+            "Implement parser validation and regression tests",
+            "user",
+            "",
+            false,
+            DeliveryMeta {
+                delivery: Some(Delivery::Direct),
+                queued_at_ms: None,
+                submit_verdict: Some("confirmed"),
+                client_meta: None,
+                repeat_of: None,
+            },
+        )
+        .await;
+        let c = st.store.read().unwrap();
+        let quiet: (Option<String>, i64) = c
+            .query_row("SELECT card_id,capture_pending FROM cmd_history WHERE session='quiet'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(quiet, (None, 0), "decompose off: no card, no pending receipt");
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM issues WHERE session='quiet'", [], |r| r.get::<_, i64>(0)).unwrap(),
+            0
+        );
+        drop(c);
+        // Same task-bearing prompt into managed mode still captures work.
+        std::fs::write(sessions.join("managed.env"), "CC_ISOLATED=0\n").unwrap();
         cmd_hist_record_full(
             &st,
             "managed",
