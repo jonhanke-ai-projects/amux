@@ -47,12 +47,24 @@ def heartbeat(store, infra, srv, body, now=None):
               now, body.get("version"), body.get("last_backup_at"),
               tn if isinstance(tn, str) and tn.startswith("https://") and tn.endswith(".ts.net") else None, srv["id"])
     reply = {"commands": [], "tailnet_only": bool(srv["tailnet_only"])}
-    if body.get("csr"):
+    if body.get("csr") and srv.get("tls_mode", "origin") == "origin":
         try:
             reply["origin_certificate"] = infra.origin_certificate(srv["slug"], body["csr"])
             store.event("cloud.origin_cert", srv["org_id"], server=srv["id"])
         except Exception as e:
+            # Fallback: the record goes DNS-only and the server's Caddy gets its own Let's Encrypt
+            # certificate (50 new ones a week for the domain, plenty at small scale). Logged so the
+            # weekly report shows how many servers run without Cloudflare in front.
             store.event("cloud.origin_cert_failed", srv["org_id"], server=srv["id"], error=str(e)[:200])
+            try:
+                if srv.get("dns_record_id"):
+                    infra.set_dns_proxied(srv["dns_record_id"], False)
+                store.run("UPDATE servers SET tls_mode='acme' WHERE id=?", srv["id"])
+                srv = dict(srv, tls_mode="acme")
+                store.event("cloud.tls_fallback_acme", srv["org_id"], server=srv["id"])
+            except Exception as e2:
+                store.event("cloud.tls_fallback_failed", srv["org_id"], server=srv["id"], error=str(e2)[:200])
+    reply["tls_mode"] = srv.get("tls_mode") or "origin"
     if srv["status"] == "provisioning" and body.get("serving") and body.get("last_backup_at"):
         provision.mark_ready(store, srv["id"], now)
         reply["ready"] = True

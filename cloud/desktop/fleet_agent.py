@@ -295,17 +295,24 @@ def install_release(rel):
 # ------------------------------------------------------------------ the loop
 def first_boot(cfg):
     """Idempotent: each step records itself in STATE and is skipped once done."""
-    if not have_cert():
+    tls_mode = (state("tls") or {}).get("mode", "origin")
+    if not have_cert() and tls_mode == "origin":
         reply = post(cfg, "heartbeat", {"version": None, "csr": ensure_csr(), "serving": False})
         if reply.get("origin_certificate"):
             with open(os.path.join(ETC, "origin.crt"), "w") as f:
                 f.write(reply["origin_certificate"])
             log(event="first_boot", step="certificate", verdict="fleet_cert_ok")
+        elif reply.get("tls_mode") == "acme":
+            # The control plane could not issue an Origin CA certificate and made this host DNS-only:
+            # Caddy gets its own Let's Encrypt certificate instead.
+            tls_mode = "acme"
+            state("tls", {"mode": "acme", "at": time.time()})
+            log(event="first_boot", step="certificate", verdict="fleet_tls_acme_fallback")
         apply_reply(cfg, reply)
-        if not have_cert():
+        if not have_cert() and tls_mode == "origin":
             return False
     if not state("bootstrapped"):
-        sh("bash", BOOTSTRAP, env=dict(os.environ, AMUX_SKIP_PACKAGES="1"), timeout=1800)
+        sh("bash", BOOTSTRAP, env=dict(os.environ, AMUX_SKIP_PACKAGES="1", AMUX_TLS_MODE=tls_mode), timeout=1800)
         state("bootstrapped", {"at": time.time()})
         log(event="first_boot", step="bootstrap", verdict="fleet_bootstrap_ok")
     if not state("backup_configured"):

@@ -236,6 +236,12 @@ grep -q '.local/bin' "$HOME_DIR/.profile" 2>/dev/null || echo 'export PATH="$HOM
 # ── Golden image: backup tools, the door and the fleet agent, then stop ──
 if [[ "$IMAGE_BUILD" == 1 || "$FLEET" == 1 ]]; then
   command -v restic &>/dev/null || apt_install restic >/dev/null
+  # "Add to my tailnet" in Settings drives tailscale as the amux user (plan 8.5).
+  command -v tailscale &>/dev/null || curl -fsSL https://tailscale.com/install.sh | sh >/dev/null
+  systemctl enable --now tailscaled >/dev/null 2>&1 || true
+  if [[ "$FLEET" == 1 ]]; then
+    tailscale set --operator="$USER_NAME" >/dev/null 2>&1 || log "WARN: tailscale set --operator failed; Add to my tailnet will report it"
+  fi
   if ! command -v litestream &>/dev/null; then
     LV=v0.3.13
     curl -fsSL -o /tmp/litestream.deb "https://github.com/benbjohnson/litestream/releases/download/$LV/litestream-$LV-linux-amd64.deb"
@@ -512,7 +518,9 @@ systemctl enable amux-door >/dev/null
 systemctl restart amux-door
 install -d -o caddy -g caddy /var/log/caddy
 TLS_LINE=""
-if [[ "$FLEET" == 1 ]]; then
+if [[ "$FLEET" == 1 && "${AMUX_TLS_MODE:-origin}" == acme ]]; then
+  log "TLS: Caddy gets its own Let's Encrypt certificate (DNS-only record; Origin CA was not available)"
+elif [[ "$FLEET" == 1 ]]; then
   [[ -s /etc/amux/origin.crt && -s /etc/amux/origin.key ]] || { log "FATAL: fleet mode needs /etc/amux/origin.{crt,key} from the fleet agent"; exit 1; }
   chgrp caddy /etc/amux/origin.key; chmod 640 /etc/amux/origin.key
   TLS_LINE="  tls /etc/amux/origin.crt /etc/amux/origin.key"

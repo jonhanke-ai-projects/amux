@@ -123,6 +123,9 @@ class Infra:
                    "comment": "amux-cloud"})
         return r["result"]["id"]
 
+    def set_dns_proxied(self, record_id, proxied):
+        _call(f"{CF}/zones/{self.zone}/dns_records/{record_id}", self.cf, "PATCH", {"proxied": bool(proxied)})
+
     def delete_dns(self, record_id):
         try:
             _call(f"{CF}/zones/{self.zone}/dns_records/{record_id}", self.cf, "DELETE")

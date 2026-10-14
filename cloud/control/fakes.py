@@ -110,6 +110,9 @@ class FakeInfra:
         self.dns[rid] = {"name": name, "content": ipv4, "proxied": True}
         return rid
 
+    def set_dns_proxied(self, record_id, proxied):
+        self.dns[record_id]["proxied"] = bool(proxied)
+
     def delete_dns(self, record_id):
         self.dns.pop(record_id, None)
 
@@ -140,6 +143,8 @@ class FakeInfra:
         self.deleted_buckets = getattr(self, "deleted_buckets", []) + [bucket]
 
     def origin_certificate(self, hostname, csr_pem):
+        if getattr(self, "origin_ca_denied", False):
+            raise RuntimeError("401: User is not authorized to perform this action")
         return f"-----BEGIN CERTIFICATE-----\nfake for {hostname}\n-----END CERTIFICATE-----\n"
 
 

@@ -338,3 +338,30 @@ class Names(Base):
         self.billing.subs["sub_d"] = {"id": "sub_d", "status": "active", "current_period_end": T0 + 9e5}
         r = accounts.complete_checkout(self.store, self.billing, "cs_d", now=T0, name_taken=self.infra.dns_name_taken)
         self.assertEqual(r["server"]["slug"], "dana-2", "a name already in DNS is never handed out")
+
+
+class TlsFallback(Base):
+    def test_origin_ca_refused_falls_back_to_dns_only_and_acme(self):
+        self.pay("cs_1", "a@example.com", "sub_1")
+        provision.tick(self.store, self.infra, PLANS, "g", "https://cp", now=T0 + 1)
+        provision.tick(self.store, self.infra, PLANS, "g", "https://cp", now=T0 + 2)
+        self.infra.origin_ca_denied = True
+        reply = fleet.heartbeat(self.store, self.infra, self.store.one("SELECT * FROM servers"), {"csr": "CSR"}, now=T0 + 60)
+        self.assertEqual(reply["tls_mode"], "acme")
+        self.assertNotIn("origin_certificate", reply)
+        self.assertEqual(list(self.infra.dns.values())[0]["proxied"], False)
+        again = fleet.heartbeat(self.store, self.infra, self.store.one("SELECT * FROM servers"), {"csr": "CSR"}, now=T0 + 120)
+        self.assertEqual(again["tls_mode"], "acme", "the fallback sticks; no second attempt per heartbeat")
+
+    def test_old_databases_gain_new_columns(self):
+        import sqlite3, store as st
+        path = os.path.join(tempfile.mkdtemp(), "old.db")
+        c = sqlite3.connect(path)
+        c.execute("CREATE TABLE servers (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, subscription_id TEXT, slug TEXT UNIQUE NOT NULL, "
+                  "plan TEXT NOT NULL, location TEXT, hetzner_id INTEGER, ipv4 TEXT, dns_record_id TEXT, status TEXT NOT NULL, "
+                  "fleet_secret TEXT NOT NULL, created_at REAL NOT NULL, ready_at REAL, last_heartbeat REAL, last_backup_at REAL, "
+                  "version TEXT, tailnet_only INTEGER NOT NULL DEFAULT 0)")
+        c.commit(); c.close()
+        s = st.Store(path)
+        cols = {r["name"] for r in s.all("PRAGMA table_info(servers)")}
+        self.assertTrue({"tls_mode", "backup_bucket", "tailnet_url", "synthetic"} <= cols)

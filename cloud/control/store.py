@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS servers (
   status TEXT NOT NULL, fleet_secret TEXT NOT NULL, created_at REAL NOT NULL, ready_at REAL,
   last_heartbeat REAL, last_backup_at REAL, version TEXT, tailnet_only INTEGER NOT NULL DEFAULT 0,
   synthetic INTEGER NOT NULL DEFAULT 0, backup_bucket TEXT, restic_password TEXT, tailnet_url TEXT,
-  backup_fingerprint TEXT);
+  backup_fingerprint TEXT, tls_mode TEXT NOT NULL DEFAULT 'origin');
 CREATE TABLE IF NOT EXISTS releases (
   version TEXT PRIMARY KEY, url TEXT NOT NULL, sha256 TEXT NOT NULL, sig_url TEXT NOT NULL,
   stage INTEGER NOT NULL DEFAULT 0, stage_started_at REAL NOT NULL, created_at REAL NOT NULL,
@@ -78,6 +78,21 @@ CREATE TABLE IF NOT EXISTS alerts (
   acknowledged INTEGER NOT NULL DEFAULT 0);
 """
 
+# Columns added after a control-plane database first went live. CREATE TABLE IF NOT EXISTS never
+# alters an existing table, so each is added here when missing (append only; never rename or drop).
+ADDED_COLUMNS = [
+    ("servers", "synthetic", "INTEGER NOT NULL DEFAULT 0"),
+    ("servers", "backup_bucket", "TEXT"),
+    ("servers", "restic_password", "TEXT"),
+    ("servers", "tailnet_url", "TEXT"),
+    ("servers", "backup_fingerprint", "TEXT"),
+    ("servers", "tls_mode", "TEXT NOT NULL DEFAULT 'origin'"),
+    ("users", "role", "TEXT NOT NULL DEFAULT 'owner'"),
+    ("users", "apple_sub", "TEXT"),
+    ("users", "apple_refresh", "TEXT"),
+    ("ledger", "payment_intent", "TEXT"),
+]
+
 # Kill switches (plan 11.2) and the lifecycle shadow flag (plan 3.2 rule 8).
 DEFAULT_FLAGS = {
     "lifecycle_freeze": "0",
@@ -94,6 +109,11 @@ class Store:
         self._local = threading.local()
         with self.conn() as c:
             c.executescript(SCHEMA)
+            for table, col, decl in ADDED_COLUMNS:
+                have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+                if col not in have:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                    print(f"[control] migrated: {table}.{col}", flush=True)
             for k, v in DEFAULT_FLAGS.items():
                 c.execute("INSERT OR IGNORE INTO flags(name,value,updated_at) VALUES(?,?,?)", (k, v, time.time()))
 
