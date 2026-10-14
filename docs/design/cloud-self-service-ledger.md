@@ -35,6 +35,7 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 | Image build 5 | The builder's SSH key was baked into the image | Image cleanup removes `authorized_keys` |
 | Customer run 2 | First boot ran `install` of `/opt/amux/bootstrap.sh` onto itself and exited 1 every minute; the control plane failed it at 15 minutes, deleted the server and queued the refund for review | Skip files already in place; agent keeps the end of stderr; reproduced and verified on a scratch server (`e09b3a17`) |
 | Customer run 2 | Backup credentials failed on a missing `CF_ACCOUNT_ID` | `deploy_control.sh` reads it from the zone |
+| Customer run 3 (image 443614609) | Everything up to the first backup works: ACME certificate, door sign-in page, API 401 without a login, door hand-off into the dashboard with `/api/sessions` 200. Backup credentials fail on the real permission (R2 403), so the server never reaches ready; the control plane failed it at 15 minutes and removed the server and its DNS record | Needs the Cloudflare token ask. The synthetic's dashboard check matched only a hidden modal; it now waits for `#brand-header` and an API call through the door |
 
 ## Where the build departed from the plan, and why
 
