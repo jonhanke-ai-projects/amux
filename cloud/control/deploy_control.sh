@@ -4,7 +4,7 @@
 #
 #   CONTROL_HOST=cp-test.amux.io cloud/control/deploy_control.sh
 #
-# Reads HCLOUD_TOKEN and CLOUDFLARE_API_TOKEN from ~/.amux/server.env. Keeps the control
+# Reads HCLOUD_TOKEN and AMUX_CLOUD_CF_TOKEN (else CLOUDFLARE_API_TOKEN) from ~/.amux/server.env. Keeps the control
 # plane's own secrets in ~/.amux/cloud/ (mode 600): control-secret, admin-token.
 # Secrets reach the server over SSH, never through cloud-init metadata.
 set -euo pipefail
@@ -15,7 +15,9 @@ NAME="amux-control-${HOST%%.*}"
 KEY="${CONTROL_SSH_KEY:-$HOME/.ssh/amux_wexus}"
 KEY_NAME="${CONTROL_SSH_KEY_NAME:-amux-wexus}"
 envv() { grep -E "^(export )?$1=" "$HOME/.amux/server.env" | head -1 | cut -d= -f2- | tr -d '"'; }
-HC="$(envv HCLOUD_TOKEN)"; CF="$(envv CLOUDFLARE_API_TOKEN)"
+# AMUX_CLOUD_CF_TOKEN is the control plane's own token: R2, API tokens, and DNS plus SSL on the
+# customer zone only. The shared CLOUDFLARE_API_TOKEN is the fallback and lacks R2 and Origin CA.
+HC="$(envv HCLOUD_TOKEN)"; CF="$(envv AMUX_CLOUD_CF_TOKEN)"; [[ -n "$CF" ]] || CF="$(envv CLOUDFLARE_API_TOKEN)"
 [[ -n "$HC" && -n "$CF" ]] || { echo "HCLOUD_TOKEN and CLOUDFLARE_API_TOKEN must be in ~/.amux/server.env" >&2; exit 1; }
 mkdir -p "$HOME/.amux/cloud"; chmod 700 "$HOME/.amux/cloud"
 for f in control-secret admin-token; do
