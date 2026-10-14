@@ -46056,7 +46056,7 @@ function _vaultScopeLabel(i) {
 const _vault = { items: [], workers: [], groups: [], keystore: '', tab: 'secrets', q: '', scope: '', group: '',
   worker: '', sort: 'name', prov: null, revealed: {}, timers: {}, loadErr: '' };
 const _VAULT_ICONS = {
-  key: '<path d="M15 7a4 4 0 1 1-3.9 4.9L4 19v-3h3v-3h3l1.1-1.1A4 4 0 0 1 15 7z"/><circle cx="16" cy="8" r="1"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3M16 7l3 3M13.5 9.5l2 2"/>',
   card: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/>',
   shield: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
   global: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 3 2.5 15 0 18M12 3c-2.5 3-2.5 15 0 18"/>',
@@ -46355,6 +46355,9 @@ function _vaultSub(id, title, bodyHtml, footHtml, opts) {
     _vaultTrapTab(e, o);
   };
   document.body.appendChild(o);
+  // Focus moves into the dialog, so Escape and Tab act on it (a caller that
+  // wants a field focused instead does that after this returns).
+  o.querySelector('.modal-close').focus();
   return o;
 }
 function _vaultSubClose(id) {
@@ -46381,7 +46384,7 @@ function _vaultEdit(id, mode) {
   const body = '<form id="vault-edit-form" class="vault-form" novalidate onsubmit="event.preventDefault();_vaultSecretSave(' + (it ? '\'' + escJs(it.id) + '\'' : 'null') + ',\'' + mode + '\')">'
     + (rotate ? '<p class="ui-help">Workers that start or restart after this get the new value. Running workers keep the previous one until they restart; you will be offered a restart.</p>' : (
       '<label class="ui-field">Name<input id="vault-e-key" class="input" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="128" placeholder="OPENAI_API_KEY" value="' + esc(it ? it.key : '') + '" aria-describedby="vault-e-key-help vault-e-key-err" oninput="_vaultKeyInput(this)"><span class="ui-help" id="vault-e-key-help">Use uppercase letters, numbers, and underscores</span><span class="ui-error" id="vault-e-key-err" role="alert"></span></label>'
-      + '<label class="ui-field">Description <span class="ui-help">(optional)</span><textarea id="vault-e-note" class="input" rows="2" maxlength="200" aria-describedby="vault-e-note-count" oninput="_vaultNoteCount()">' + esc(it ? it.note || '' : '') + '</textarea><span class="ui-help vault-counter" id="vault-e-note-count" aria-live="polite"></span></label>'))
+      + '<label class="ui-field"><span>Description <span class="ui-help">(optional)</span></span><textarea id="vault-e-note" class="input" rows="2" maxlength="200" aria-describedby="vault-e-note-count" oninput="_vaultNoteCount()">' + esc(it ? it.note || '' : '') + '</textarea><span class="ui-help vault-counter" id="vault-e-note-count" aria-live="polite"></span></label>'))
     + '<label class="ui-field">' + (rotate ? 'New value' : 'Value') + '<span class="vault-secret-input"><input id="vault-e-value" class="input" type="password" data-secret="1" autocomplete="new-password" spellcheck="false" placeholder="' + (mode === 'edit' ? 'Unchanged · type a new value to rotate' : '') + '" aria-describedby="vault-e-value-err">'
     + '<button type="button" class="vault-icon-btn" id="vault-e-eye" aria-label="Show value" aria-pressed="false" onclick="_vaultEye()">' + _vaultIcon('eye') + '</button></span>'
     + '<span class="ui-error" id="vault-e-value-err" role="alert"></span></label>'

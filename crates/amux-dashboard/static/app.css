@@ -7835,7 +7835,7 @@ body:not(.light) .vault-chip-worker { color: #6fdc9b; }
 .vault-foot .btn { min-width: 120px; min-height: 40px; }
 .vault-form { display: grid; gap: var(--space-4); }
 .vault-form .ui-field { display: grid; gap: 4px; font-weight: 600; font-size: 0.85rem; }
-.vault-form textarea.input { resize: vertical; min-height: 64px; font-weight: 400; }
+.vault-form textarea.input { resize: vertical; min-height: 64px; font-weight: 400; font-family: inherit; }
 .vault-counter { justify-self: end; font-weight: 400; }
 .vault-form .ui-error:empty { display: none; }
 .vault-secret-input { position: relative; display: block; }
