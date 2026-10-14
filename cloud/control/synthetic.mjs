@@ -75,7 +75,11 @@ try {
   if (!fakeInfra) {
     await step('dashboard loads', async () => {
       await page.waitForLoadState('domcontentloaded');
-      await page.waitForSelector('#apikey-setup-modal, .card, #sessions', { timeout: 60_000 });
+      // A visible element plus an API call through the door cookie. The old selector list only
+      // matched a hidden modal, so it failed on a healthy server (first real door hand-off, 2026-10-14).
+      await page.waitForSelector('#brand-header', { timeout: 60_000 });
+      const api = await page.evaluate(async () => (await fetch('/api/sessions')).status);
+      if (api !== 200) throw new Error(`/api/sessions through the door returned ${api}`);
       return new URL(page.url()).host;
     });
     await step('delete the synthetic account', async () => {
