@@ -22,7 +22,11 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   failure_started_at REAL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS ledger (
   invoice_id TEXT PRIMARY KEY, org_id TEXT NOT NULL, subscription_id TEXT,
-  amount_cents INTEGER NOT NULL, paid_at REAL NOT NULL);
+  amount_cents INTEGER NOT NULL, paid_at REAL NOT NULL, payment_intent TEXT);
+CREATE TABLE IF NOT EXISTS refunds (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL, payment_intent TEXT, amount_cents INTEGER NOT NULL,
+  reason TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL, decided_at REAL);
+CREATE TABLE IF NOT EXISTS stripe_events (id TEXT PRIMARY KEY, type TEXT NOT NULL, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS servers (
   id TEXT PRIMARY KEY, org_id TEXT NOT NULL, subscription_id TEXT, slug TEXT UNIQUE NOT NULL,
   plan TEXT NOT NULL, location TEXT, hetzner_id INTEGER, ipv4 TEXT, dns_record_id TEXT,
@@ -111,10 +115,10 @@ class Store:
         self.run("INSERT INTO alerts(ts,kind,message) VALUES(?,?,?)", time.time(), kind, message)
         print(f"[control] ALERT {kind}: {message}", flush=True)
 
-    def enqueue_email(self, to, template, dedupe=None, **params):
+    def enqueue_email(self, to, template, dedupe=None, ts=None, **params):
         """Idempotent on dedupe: the same lifecycle email is never queued twice."""
         self.run("INSERT OR IGNORE INTO outbox(ts,to_addr,template,params,dedupe) VALUES(?,?,?,?,?)",
-                 time.time(), to, template, json.dumps(params, sort_keys=True), dedupe)
+                 ts or time.time(), to, template, json.dumps(params, sort_keys=True), dedupe)
 
 
 class _Tx:

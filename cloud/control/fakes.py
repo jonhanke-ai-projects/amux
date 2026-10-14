@@ -24,6 +24,18 @@ class FakeBilling:
             raise ProviderError(f"no such subscription {sub_id}")
         return dict(self.subs[sub_id])
 
+    sessions = None
+
+    def get_checkout_session(self, session_id):
+        self.reads += 1
+        if self.fail_reads:
+            raise ProviderError("stripe unreachable")
+        return dict((self.sessions or {})[session_id])
+
+    def close_dispute(self, dispute_id):
+        self.disputes.append((dispute_id, "accepted"))
+        return {"id": dispute_id, "status": "lost"}
+
     def refund(self, payment_intent, amount_cents, reason):
         self.refunds.append((payment_intent, amount_cents, reason))
         return {"id": f"re_{len(self.refunds)}"}
@@ -89,6 +101,9 @@ class FakeInfra:
 
     def delete_dns(self, record_id):
         self.dns.pop(record_id, None)
+
+    def origin_certificate(self, hostname, csr_pem):
+        return f"-----BEGIN CERTIFICATE-----\nfake for {hostname}\n-----END CERTIFICATE-----\n"
 
 
 class CapacityError(Exception):
