@@ -285,6 +285,9 @@ if [[ "$IMAGE_BUILD" == 1 ]]; then
   # first boot and writes fleet.env; host keys and machine-id are regenerated.
   cloud-init clean --logs >/dev/null 2>&1 || true
   rm -f /etc/ssh/ssh_host_* /etc/amux/fleet.env /etc/amux/origin.* /var/lib/amux-fleet/* 2>/dev/null || true
+  # The builder's SSH key must not ride into every customer server (found on the fifth image,
+  # 2026-10-14). Customer servers get keys from the control plane at creation, if at all.
+  rm -f /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys 2>/dev/null || true
   truncate -s 0 /etc/machine-id
   # A builder created without an SSH key gets a root password Hetzner marks expired; the snapshot
   # would keep it and refuse every non-interactive SSH login on customer servers.

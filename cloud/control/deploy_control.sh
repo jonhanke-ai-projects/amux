@@ -73,6 +73,7 @@ GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=sn
   echo "AMUX_CUSTOMER_DOMAIN=${HOST#*.}"
   echo "AMUX_GOLDEN_IMAGE=$GOLDEN"
   echo "CONTROL_OWNER_EMAIL=${CONTROL_OWNER_EMAIL:-ethan@mixpeek.com}"
+  echo "CONTROL_SSH_KEY_NAME=${CONTROL_SSH_KEY_NAME:-$KEY_NAME}"
 } | "${SSH[@]}" "umask 077; cat > /etc/amux-control.env; chown root:amux-control /etc/amux-control.env; chmod 640 /etc/amux-control.env"
 "${SSH[@]}" bash -s "$HOST" <<'REMOTE'
 set -euo pipefail

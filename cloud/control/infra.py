@@ -73,11 +73,14 @@ class Infra:
 
     def create_server(self, name, server_type, location, image, labels, user_data):
         labels = dict(labels, **{LABEL: "1"})
-        r = _call(f"{HCLOUD}/servers", self.h, "POST", {
-            "name": name, "server_type": server_type, "location": location, "image": image,
-            "labels": labels, "user_data": user_data, "start_after_create": True,
-            "public_net": {"enable_ipv4": True, "enable_ipv6": True},
-        })
+        body = {"name": name, "server_type": server_type, "location": location, "image": image,
+                "labels": labels, "user_data": user_data, "start_after_create": True,
+                "public_net": {"enable_ipv4": True, "enable_ipv6": True}}
+        # Without a key Hetzner sets an expiring root password and emails it to the account owner,
+        # one email per customer server. An operations key avoids both.
+        if os.environ.get("CONTROL_SSH_KEY_NAME"):
+            body["ssh_keys"] = [os.environ["CONTROL_SSH_KEY_NAME"]]
+        r = _call(f"{HCLOUD}/servers", self.h, "POST", body)
         s = r["server"]
         if s.get("id") and s.get("server_type", {}).get("name") == server_type:
             _call(f"{HCLOUD}/servers/{s['id']}/actions/enable_backup", self.h, "POST", {})
