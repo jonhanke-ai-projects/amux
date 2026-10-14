@@ -32,6 +32,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>/* UI font before first paint: no flash of the system font */try{var f=localStorage.getItem('amux_font');if(f)document.documentElement.dataset.font=f;}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <!-- status-bar-style: 'default' (not black-translucent). black-translucent asked iOS to
@@ -584,6 +585,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </select>
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Counts stay visible in every mode</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px;">
+            <label for="settings-font-select" style="font-size:0.85rem;">Font</label>
+            <select id="settings-font-select" onchange="saveUiFont(this.value)"
+              style="min-height:44px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.82rem;">
+              <option value="">System</option>
+              <option value="geist">Geist</option>
+              <option value="inter">Inter</option>
+              <option value="plex">IBM Plex Sans</option>
+            </select>
+          </div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:8px;">
             <span style="font-size:0.85rem;">Zoom</span>
             <div style="display:flex;align-items:center;gap:6px;">

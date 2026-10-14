@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 3007,
+  "n_considered": 3008,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -5428,6 +5428,12 @@
     },
     "saveTaskGuard": {
       "kind": "command.saveTaskGuard",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "saveUiFont": {
+      "kind": "command.saveUiFont",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

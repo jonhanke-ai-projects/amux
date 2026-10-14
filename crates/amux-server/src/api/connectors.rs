@@ -2438,8 +2438,12 @@ async fn test_connection_inner(
 /// scopes there is nothing to compare, and nothing is reported missing.
 fn missing_scopes<'a>(wanted: &'a str, granted: Option<&str>) -> Vec<&'a str> {
     let Some(granted) = granted.filter(|g| !g.trim().is_empty()) else { return vec![] };
-    let have: Vec<&str> = granted.split_whitespace().collect();
-    wanted.split_whitespace().filter(|w| !have.contains(w)).collect()
+    // Google separates granted scopes with spaces, Slack with commas.
+    let have: Vec<&str> = granted.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).collect();
+    // A full scope covers its `.readonly` form: a grant of admin.directory.user
+    // can read users, and Google reports only the scope that was granted.
+    let covered = |w: &str| have.contains(&w) || w.strip_suffix(".readonly").is_some_and(|full| have.contains(&full));
+    wanted.split_whitespace().filter(|w| !covered(w)).collect()
 }
 
 /// Provider success includes application-level errors (Slack/Telegram can return HTTP 200).
@@ -5197,6 +5201,10 @@ mod connector_maintenance_regressions {
         assert!(super::missing_scopes(admin, Some(&format!("{gmail_only} {admin}"))).is_empty());
         assert!(super::missing_scopes(admin, None).is_empty(), "no recorded scopes: nothing to compare");
         assert!(super::missing_scopes(admin, Some("  ")).is_empty());
+        let full = "https://www.googleapis.com/auth/admin.directory.user https://www.googleapis.com/auth/admin.directory.group";
+        assert!(super::missing_scopes(admin, Some(full)).is_empty(), "a full scope covers its readonly form");
+        assert!(super::missing_scopes("channels:read chat:write", Some("chat:write,channels:read")).is_empty(), "Slack's comma list");
+        assert_eq!(super::missing_scopes("https://www.googleapis.com/auth/drive", Some("https://www.googleapis.com/auth/drive.readonly")).len(), 1, "readonly does not cover full");
     }
 
     use super::*;

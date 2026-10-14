@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1550';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1535';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -32704,6 +32704,24 @@ function _applyWorkersPerRow() {
   }
 }
 
+// UI font (Ethan, 2026-10-14: "allow me to swap between: Geist, inter and IBM
+// plex sans"). Per device, like zoom. index.html applies it before first paint.
+const _UI_FONTS = { geist: 'Geist', inter: 'Inter', plex: 'IBM Plex Sans' };
+function saveUiFont(val) {
+  const v = Object.prototype.hasOwnProperty.call(_UI_FONTS, val) ? val : '';
+  try { v ? localStorage.setItem('amux_font', v) : localStorage.removeItem('amux_font'); } catch (e) {}
+  if (v) document.documentElement.dataset.font = v; else delete document.documentElement.dataset.font;
+  // Say whether the face actually loaded: a 404 or a blocked font falls back
+  // to the system stack silently, which would read as "the setting does nothing".
+  if (v && document.fonts && document.fonts.load) {
+    document.fonts.load('400 14px "' + _UI_FONTS[v] + '"').then(faces => {
+      const ok = faces.length > 0;
+      if (!ok) showToast(_UI_FONTS[v] + ' did not load; showing the system font');
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ kind: 'ui-font', font: v, verdict: ok ? 'font_loaded' : 'font_load_failed', measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+    }).catch(() => {});
+  }
+}
 function saveWorkersPerRow(val) {
   _workersPerRow = val || 'auto';
   if (_workersPerRow === 'auto') {
@@ -46658,6 +46676,8 @@ function toggleSettings() {
       else if (/Linux/.test(ua)) auto = 'Linux';
       inp.placeholder = custom ? 'Override (' + auto + ')' : auto + ' (auto-detected)';
     }
+    const fontSel = document.getElementById('settings-font-select');
+    if (fontSel) fontSel.value = document.documentElement.dataset.font || '';
     // Workers per row
     const wprSel = document.getElementById('settings-wpr-select');
     if (wprSel) wprSel.value = _workersPerRow || 'auto';
