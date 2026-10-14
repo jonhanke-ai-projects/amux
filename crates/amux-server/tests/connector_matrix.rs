@@ -282,7 +282,7 @@ async fn provider(
         s.refresh.insert(refresh.clone(), identity.clone());
         return reply(
             200,
-            json!({"ok":true,"access_token":format!("access-{identity}"),"refresh_token":refresh,"expires_in":3600,"scope":"https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/admin.directory.user chat:write","team":{"name":identity}}),
+            json!({"ok":true,"access_token":format!("access-{identity}"),"refresh_token":refresh,"expires_in":3600,"scope":"https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/admin.directory.user https://www.googleapis.com/auth/admin.directory.group channels:read,chat:write,channels:history","team":{"name":identity}}),
         );
     }
     if path.ends_with("/users/login") {
