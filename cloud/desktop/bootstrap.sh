@@ -38,6 +38,9 @@
 # Caddy serves the Cloudflare Origin CA certificate the fleet agent fetched into
 # /etc/amux/origin.{crt,key} instead of asking Let's Encrypt.
 # AMUX_SKIP_PACKAGES=1 skips package installation on a prepared golden image.
+# AMUX_IMAGE_BUILD=1 prepares that golden image: packages, the amux binaries,
+# litestream, restic, the door and the fleet agent, then stops before anything
+# that belongs to one customer (cloud/control/build_image.py snapshots it).
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
@@ -68,8 +71,9 @@ LOG=/var/log/amux-desktop-setup.log
 
 log() { echo "[amux-desktop] $(date '+%H:%M:%S') $*" | tee -a "$LOG"; }
 [[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }
-[[ -n "$DOMAIN" ]] || { echo "AMUX_DOMAIN is required (the name Caddy gets a cert for)" >&2; exit 1; }
-[[ -n "$WEB_USERS" || "$FLEET" == 1 ]] || { echo "AMUX_WEB_USERS is required, e.g. 'ethan:pw:ethan@x.com elliot:pw:elliot@y.com'" >&2; exit 1; }
+IMAGE_BUILD="${AMUX_IMAGE_BUILD:-0}"
+[[ -n "$DOMAIN" || "$IMAGE_BUILD" == 1 ]] || { echo "AMUX_DOMAIN is required (the name Caddy gets a cert for)" >&2; exit 1; }
+[[ -n "$WEB_USERS" || "$FLEET" == 1 || "$IMAGE_BUILD" == 1 ]] || { echo "AMUX_WEB_USERS is required, e.g. 'ethan:pw:ethan@x.com elliot:pw:elliot@y.com'" >&2; exit 1; }
 [[ "$FLEET" == 0 || -n "${AMUX_OWNER_EMAIL:-}" ]] || { echo "fleet.env has no AMUX_OWNER_EMAIL" >&2; exit 1; }
 
 # ── Swap ──
@@ -185,6 +189,10 @@ ufw --force enable >/dev/null
 # the CI-built binary, linked against bookworm's glibc 2.36, which runs here.
 BIN_DIR="$HOME_DIR/.local/bin"
 install -d -o "$USER_NAME" -g "$USER_NAME" "$BIN_DIR"
+if [[ "$FLEET" == 1 && "${AMUX_SKIP_PACKAGES:-0}" == 1 && -x "$BIN_DIR/amux-server-rs" ]]; then
+  log "binaries: baked into the image; releases arrive through the fleet agent"
+  IMAGE_ID=baked
+else
 log "pulling $IMAGE for its binaries"
 docker pull -q "$IMAGE" >/dev/null
 CID=$(docker create "$IMAGE")
@@ -207,12 +215,64 @@ if [[ -n "${AMUX_SERVER_BINARY:-}" && "$UPDATES" != source ]]; then
 fi
 chown "$USER_NAME:$USER_NAME" "$BIN_DIR"/amux-*
 IMAGE_ID=$(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)
+fi
 
 # Checkout for the bash CLI, worker templates and the systemd unit template.
 SRC="$HOME_DIR/Dev/amux"
 [[ -d "$SRC/.git" ]] || as_user git clone -q "$REPO" "$SRC"
 as_user make -C "$SRC" install-cli BIN_DIR="$BIN_DIR" >/dev/null
 grep -q '.local/bin' "$HOME_DIR/.profile" 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME_DIR/.profile"
+
+# ── Golden image: backup tools, the door and the fleet agent, then stop ──
+if [[ "$IMAGE_BUILD" == 1 || "$FLEET" == 1 ]]; then
+  command -v restic &>/dev/null || apt-get install -y -qq restic >/dev/null
+  if ! command -v litestream &>/dev/null; then
+    LV=v0.3.13
+    curl -fsSL -o /tmp/litestream.deb "https://github.com/benbjohnson/litestream/releases/download/$LV/litestream-$LV-linux-amd64.deb"
+    dpkg -i /tmp/litestream.deb >/dev/null && rm -f /tmp/litestream.deb
+  fi
+  install -d -m 755 /opt/amux /etc/amux
+  SELF_DIR="$(dirname "$(readlink -f "$0")")"
+  for f in bootstrap.sh door.py fleet_agent.py; do
+    [[ -f "$SELF_DIR/$f" ]] && install -m 755 "$SELF_DIR/$f" "/opt/amux/$f"
+  done
+  cat > /etc/systemd/system/litestream.service <<'UNIT'
+[Unit]
+Description=litestream: amux.db to this server's own R2 bucket every 60 s
+After=network-online.target
+ConditionPathExists=/etc/amux/litestream.yml
+[Service]
+ExecStart=/usr/bin/litestream replicate -config /etc/amux/litestream.yml
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+  cat > /etc/systemd/system/amux-fleet-agent.service <<'UNIT'
+[Unit]
+Description=amux Cloud fleet agent (heartbeat, certificate, backups, releases)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/amux/fleet.env
+[Service]
+ExecStart=/usr/bin/python3 /opt/amux/fleet_agent.py run
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable amux-fleet-agent.service litestream.service >/dev/null 2>&1 || true
+fi
+if [[ "$IMAGE_BUILD" == 1 ]]; then
+  # Nothing customer-specific may be in the snapshot: cloud-init runs again on
+  # first boot and writes fleet.env; host keys and machine-id are regenerated.
+  cloud-init clean --logs >/dev/null 2>&1 || true
+  rm -f /etc/ssh/ssh_host_* /etc/amux/fleet.env /etc/amux/origin.* /var/lib/amux-fleet/* 2>/dev/null || true
+  truncate -s 0 /etc/machine-id
+  log "golden image prepared: $(as_user "$BIN_DIR/amux-server-rs" --version 2>/dev/null || echo 'amux-server-rs present')"
+  exit 0
+fi
 
 # ── server.env: credentials and tenant settings, read by the server at start ──
 AMUX_HOME_DIR="$HOME_DIR/.amux"

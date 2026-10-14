@@ -25,9 +25,12 @@ import hashlib, json, os, shutil, subprocess, sys, time, urllib.error, urllib.re
 FLEET_ENV = os.environ.get("FLEET_ENV", "/etc/amux/fleet.env")
 STATE = os.environ.get("FLEET_STATE", "/var/lib/amux-fleet")
 ETC = os.environ.get("FLEET_ETC", "/etc/amux")
-BOOTSTRAP = os.environ.get("FLEET_BOOTSTRAP", "/opt/amux/bootstrap.sh")
-SERVER_BIN = os.environ.get("FLEET_SERVER_BIN", "/usr/local/bin/amux-server")
-SERVER_UNIT = os.environ.get("FLEET_SERVER_UNIT", "amux-server.service")
+BOOTSTRAP = os.environ.get("FLEET_BOOTSTRAP", "/opt/amux/bootstrap.sh")   # installed by AMUX_IMAGE_BUILD
+# bootstrap.sh runs amux-server as the amux user's systemd user unit from ~/.local/bin.
+SERVER_BIN = os.environ.get("FLEET_SERVER_BIN", "/home/amux/.local/bin/amux-server-rs")
+RESTART_CMD = os.environ.get("FLEET_RESTART_CMD",
+                             'runuser -u amux -- env XDG_RUNTIME_DIR=/run/user/$(id -u amux) '
+                             'systemctl --user restart amux-server.service')
 HEALTH = os.environ.get("FLEET_HEALTH", "https://127.0.0.1:8824/health")
 RELEASE_SIGNERS = os.environ.get("FLEET_RELEASE_SIGNERS", "/etc/amux/release_signers")
 INTERVAL = float(os.environ.get("FLEET_INTERVAL", "60"))
@@ -192,6 +195,10 @@ def healthy_for(seconds):
     return True
 
 
+def restart_server():
+    sh("sh", "-c", RESTART_CMD)
+
+
 def install_release(rel):
     """rel: {version, url, sha256, sig_url}. Verified before anything changes; old binary kept for rollback."""
     stage = os.path.join(STATE, "release")
@@ -212,13 +219,13 @@ def install_release(rel):
     prev = SERVER_BIN + ".prev"
     shutil.copy2(SERVER_BIN, prev)                      # rollback target
     os.replace(binp, SERVER_BIN)                        # rename: a running process keeps its old image
-    sh("systemctl", "restart", SERVER_UNIT)
+    restart_server()
     if healthy_for(HEALTH_SOAK):
         state("release_result", {"version": rel["version"], "result": "installed", "at": time.time()})
         log(event="release", version=rel["version"], verdict="fleet_release_installed")
         return "installed"
     os.replace(prev, SERVER_BIN)
-    sh("systemctl", "restart", SERVER_UNIT)
+    restart_server()
     state("release_result", {"version": rel["version"], "result": "rolled_back", "at": time.time()})
     log(event="release", version=rel["version"], verdict="fleet_release_rolled_back")
     return "rolled_back"

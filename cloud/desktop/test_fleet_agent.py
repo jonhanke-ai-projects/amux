@@ -51,7 +51,7 @@ class ReleaseInstall(unittest.TestCase):
         cls.server_bin = os.path.join(cls.t, "amux-server")
         os.environ.update(FLEET_STATE=os.path.join(cls.t, "state"), FLEET_ETC=cls.t, FLEET_SERVER_BIN=cls.server_bin,
                           FLEET_RELEASE_SIGNERS=cls.signers, FLEET_HEALTH=f"http://127.0.0.1:{cls.port}/health",
-                          FLEET_HEALTH_SOAK="1", PATH=bindir + os.pathsep + os.environ["PATH"])
+                          FLEET_HEALTH_SOAK="1", FLEET_RESTART_CMD="systemctl --user restart amux-server.service", PATH=bindir + os.pathsep + os.environ["PATH"])
         sys.path.insert(0, HERE)
         cls.fa = importlib.import_module("fleet_agent")
 
