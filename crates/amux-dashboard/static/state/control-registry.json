@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2973,
+  "n_considered": 2975,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -22,6 +22,12 @@
     },
     "_applyYoloDefault": {
       "kind": "command._applyYoloDefault",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_applyZoom": {
+      "kind": "command._applyZoom",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5258,6 +5264,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "resetZoom": {
+      "kind": "command.resetZoom",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "resumeWorker": {
       "kind": "command.resumeWorker",
       "feedback_required": true,
@@ -5878,6 +5890,18 @@
     },
     "wsTermSendTmux": {
       "kind": "command.wsTermSendTmux",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "zoomIn": {
+      "kind": "command.zoomIn",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "zoomOut": {
+      "kind": "command.zoomOut",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

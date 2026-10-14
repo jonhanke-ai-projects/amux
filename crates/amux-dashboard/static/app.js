@@ -1,3 +1,42 @@
+// ── localStorage write guard (disk RCA 2026-10-14) ──────────────────────────
+// WebKit keeps localStorage in SQLite and appends every write to its WAL, which
+// it does not shrink while the app runs. The dashboard rewrote its caches on
+// every poll (sessions ~880KB, schedules ~850KB, message history ~780KB, board
+// ~360KB, the page itself ~310KB), and the macOS app's localStorage WAL reached
+// 13.7G, with an older install's at 57.9G. So: an identical value is never
+// rewritten, and a cache key (`*_cache`, `amux_app_html`) is written at most
+// once per 30s, its latest value flushed when the page hides. Counts are
+// beaconed as kind=localstorage-writes.
+(function () {
+  try {
+    const ls = window.localStorage, P = Storage.prototype, set = P.setItem;
+    const st = window._lsWrites = { written: 0, written_bytes: 0, skipped_identical: 0, deferred: 0 };
+    const last = {}, pending = {};
+    const throttled = k => /_cache$/.test(k) || k === 'amux_app_html';
+    function flush() { for (const k in pending) { const v = pending[k]; delete pending[k]; last[k] = Date.now(); try { set.call(ls, k, v); st.written++; st.written_bytes += v.length; } catch (e) {} } }
+    P.setItem = function (k, v) {
+      if (this !== ls) return set.call(this, k, v);
+      k = String(k); v = String(v);
+      if (throttled(k)) {
+        const now = Date.now();
+        if (last[k] && now - last[k] < 30000) { if (!(k in pending)) st.deferred++; pending[k] = v; return; }
+        last[k] = now; delete pending[k];
+      }
+      try { if (ls.getItem(k) === v) { st.skipped_identical++; return; } } catch (e) {}
+      st.written++; st.written_bytes += v.length;
+      return set.call(this, k, v);
+    };
+    setInterval(flush, 30000);
+    addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+    setInterval(() => {
+      if (!st.written && !st.skipped_identical && !st.deferred) return;
+      try { fetch('/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify(Object.assign({ kind: 'localstorage-writes', measured: true, n_considered: st.written + st.skipped_identical + st.deferred, window_s: 600 }, st)) }).catch(() => {}); } catch (e) {}
+      st.written = st.written_bytes = st.skipped_identical = st.deferred = 0;
+    }, 600000);
+  } catch (e) {}
+})();
 // ── block 1 (amux-server.py lines 35246-59333) — main dashboard client
 // ── Legacy-origin self-migration (must run before anything starts polling) ──
 //
@@ -1026,6 +1065,11 @@ const _isClosedStatus = (st) => _CLOSED_STATUSES.has(_statusCanon(st));
 const ZOOM_STEPS = [50, 60, 70, 75, 80, 85, 90, 95, 100, 110, 120, 130, 150, 175, 200];
 let _zoomLevel = parseInt(localStorage.getItem('amux_zoom')) || 100;
 if (!ZOOM_STEPS.includes(_zoomLevel)) _zoomLevel = 100;
+// Safari, the macOS web app and other WebKit browsers that are not Chromium.
+function _isAppleWebKit() {
+  const ua = navigator.userAgent || '';
+  return /AppleWebKit/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua);
+}
 function _applyZoom() {
   // CSS zoom on the root breaks position:fixed geometry in WebKit — a zoomed
   // page renders the peek overlay short of the physical screen bottom (dead
@@ -1038,7 +1082,15 @@ function _applyZoom() {
   // 100-200px from the cursor (Ethan, 2026-10-13, at 130%). Un-zooming only the
   // canvas fixed Chromium but not WebKit (the macOS app), measured from
   // screenshot pixels, so the root carries no CSS zoom while Draw is open.
-  if (matchMedia('(pointer: coarse)').matches || window._zoomFontMode) {
+  //
+  // Safari and the macOS app (any WebKit that is not Chromium) take the same
+  // path (Ethan, 2026-10-14, the Mac app at 130%: the worker view ended 725px
+  // above the window bottom, its own report reading overlay bottom 968 of
+  // innerHeight 1259, which is 1259/1.30). Safari 26 lays a fixed overlay out in
+  // unzoomed units under root zoom; headless WebKit does not, so this is keyed
+  // on the engine rather than on a measurement.
+  const fontMode = matchMedia('(pointer: coarse)').matches || window._zoomFontMode || _isAppleWebKit();
+  if (fontMode) {
     document.documentElement.style.zoom = '';
     document.documentElement.style.fontSize = _zoomLevel === 100 ? '' : (16 * _zoomLevel / 100) + 'px';
   } else {
@@ -1046,7 +1098,15 @@ function _applyZoom() {
     document.documentElement.style.zoom = (_zoomLevel / 100);
   }
   // Elements that counter the root's CSS zoom read 1 when there is none to counter.
-  document.documentElement.style.setProperty('--root-zoom', window._zoomFontMode ? 1 : _zoomLevel / 100);
+  document.documentElement.style.setProperty('--root-zoom', fontMode ? 1 : _zoomLevel / 100);
+  if (_zoomLevel !== 100 && !window._zoomModeBeaconSent) {
+    window._zoomModeBeaconSent = true;
+    try {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ kind: 'zoom-mode', mode: fontMode ? 'font-size' : 'css-zoom', level: _zoomLevel,
+          apple_webkit: _isAppleWebKit(), measured: true, n_considered: 1, ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }) }).catch(() => {});
+    } catch (e) {}
+  }
   localStorage.setItem('amux_zoom', _zoomLevel);
   const el = document.getElementById('zoom-level-display');
   if (el) el.textContent = _zoomLevel + '%';
@@ -14217,7 +14277,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1520';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1522';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
