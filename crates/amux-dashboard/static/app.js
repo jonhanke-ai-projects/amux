@@ -14217,7 +14217,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1518';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1520';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -29908,7 +29908,7 @@ function _mdaiGutter(ta) {
 function _mdaiSyncDirty() {
   const dirty = _mdaiDraft !== null && _mdaiCur && _mdaiDraft !== _mdaiCur.content;
   const btn = document.getElementById('mdai-save-btn');
-  if (btn) { btn.textContent = dirty ? 'Save' : 'Saved'; btn.classList.toggle('primary', !!dirty); }
+  if (btn) { btn.textContent = dirty ? 'Save' : 'Saved'; btn.classList.toggle('primary', !!dirty); btn.classList.toggle('mdai-clean', !dirty); }
   const b = document.getElementById('mdai-dirty');
   if (b) b.style.display = dirty ? '' : 'none';
 }
@@ -30006,7 +30006,11 @@ function _mdaiRender() {
     badges.innerHTML = h;
   }
   const runBtn = document.getElementById('mdai-run-btn');
-  if (runBtn) { runBtn.disabled = _mdaiRunning; runBtn.innerHTML = _mdaiRunning ? '<span class="mdai-spin"></span>Running…' : '&#9655; Run'; }
+  if (runBtn) {
+    runBtn.disabled = _mdaiRunning;
+    runBtn.innerHTML = _mdaiRunning ? '<span class="mdai-spin"></span><span class="mdai-run-lbl">Running…</span>' : '&#9655;<span class="mdai-run-lbl"> Run</span>';
+    runBtn.setAttribute('aria-label', _mdaiRunning ? 'Running' : 'Run');
+  }
   document.querySelectorAll('#mdai-overlay .mdai-tab').forEach(b => {
     const on = b.dataset.tab === _mdaiTab; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
     if (b.dataset.tab === 'runs') b.querySelector('.mdai-tab-n').textContent = _mdaiCur.runsTotal ? String(_mdaiCur.runsTotal) : '';
@@ -30045,8 +30049,8 @@ function _mdaiPreviewHtml() {
   const st = _mdaiStatusOf(run);
   let h = '<div class="mdai-prev-head"><span class="mdai-dot ' + st.cls + '"></span><span>Run ' + _mdaiRunNo(run) + ' · ' + timeAgo(run.ts)
     + (run.model ? ' · ' + esc(run.model) : '') + (run.dur_ms ? ' · ' + _mdaiDur(run.dur_ms) : '') + (run.cached ? ' · cached' : '') + '</span>'
-    + '<span class="mdai-prev-nav"><button class="btn" ' + (i >= _mdaiHist.length - 1 || i < 0 ? 'disabled' : '') + ' onclick="_mdaiHistNav(1)" aria-label="Older run">‹ Older</button>'
-    + '<button class="btn" ' + (i <= 0 ? 'disabled' : '') + ' onclick="_mdaiHistNav(-1)" aria-label="Newer run">Newer ›</button></span></div>';
+    + '<span class="mdai-prev-nav"><button class="btn" ' + (i >= _mdaiHist.length - 1 || i < 0 ? 'disabled' : '') + ' onclick="_mdaiHistNav(1)" aria-label="Older run">‹<span class="mdai-nav-lbl"> Older</span></button>'
+    + '<button class="btn" ' + (i <= 0 ? 'disabled' : '') + ' onclick="_mdaiHistNav(-1)" aria-label="Newer run"><span class="mdai-nav-lbl">Newer </span>›</button></span></div>';
   if (run.status === 'error') h += '<div class="mdai-err"><b>This run failed.</b> ' + esc(run.error || '') + '</div>';
   else h += '<div class="mdai-output md-content">' + renderMarkdown(run.output || '', _mdaiCur.abs) + '</div>';
   return h;
@@ -30088,10 +30092,16 @@ function _mdaiRunsHtml() {
       const st = _mdaiStatusOf(r);
       return '<div class="mdai-run' + (_mdaiShown === r ? ' sel' : '') + '" role="row" tabindex="0" onclick="_mdaiShowRun(_mdaiHist[' + i + '])" onkeydown="if(event.key===\'Enter\')_mdaiShowRun(_mdaiHist[' + i + '])">'
         + '<span>' + _mdaiRunNo(r) + '</span><span data-l="When">' + timeAgo(r.ts) + '</span><span data-l="Status"><span class="mdai-dot ' + st.cls + '"></span>' + st.label + '</span>'
-        + '<span data-l="Model">' + esc(r.model || '') + '</span><span data-l="Time">' + (_mdaiDur(r.dur_ms) || '—') + '</span>'
-        + '<span data-l="In">' + _mdaiTok(r.tokens_in) + '</span><span data-l="Out">' + _mdaiTok(r.tokens_out) + '</span><span data-l="Cost">' + _mdaiCost(r.cost_usd) + '</span></div>';
+        + _mdaiCell('Model', esc(r.model || '')) + _mdaiCell('Time', _mdaiDur(r.dur_ms) || '—')
+        + _mdaiCell('In', _mdaiTok(r.tokens_in)) + _mdaiCell('Out', _mdaiTok(r.tokens_out)) + _mdaiCell('Cost', _mdaiCost(r.cost_usd)) + '</div>';
     }).join('') + '</div>' + more
     + '<div class="mdai-hint">Tokens and cost are what the provider reported. The claude CLI reports both; the raw API reports tokens only, so cost shows —.</div>';
+}
+// A run-table cell; an empty value ('—' or nothing) is marked so a phone can
+// leave it out instead of spending a line on "Cost: —".
+function _mdaiCell(label, html) {
+  const empty = !html || html === '—';
+  return '<span data-l="' + label + '"' + (empty ? ' class="mdai-v-empty"' : '') + '>' + (html || '—') + '</span>';
 }
 function _mdaiSettingsHtml() {
   const m = _mdaiCur.model || '';
@@ -30152,9 +30162,11 @@ function _mdaiRenderSide() {
     const st = _mdaiStatusOf(last);
     h += '<div class="mdai-last ' + st.cls + '"><b>' + (last.status === 'error' ? 'Failed' : 'Completed successfully') + '</b>'
       + '<span>' + timeAgo(last.ts) + (last.dur_ms ? ' · ' + _mdaiDur(last.dur_ms) : '') + ' · ' + esc(last.model || '') + (last.cached ? ' · cached' : '') + '</span></div>'
-      + '<div class="mdai-stats"><div><span>Input</span><b>' + _mdaiTok(last.tokens_in) + (last.tokens_in != null ? ' tokens' : '') + '</b></div>'
-      + '<div><span>Output</span><b>' + _mdaiTok(last.tokens_out) + (last.tokens_out != null ? ' tokens' : '') + '</b></div>'
-      + '<div><span>Cost</span><b>' + _mdaiCost(last.cost_usd) + '</b></div></div>'
+      // Nothing reported (the raw API path): no row of three dashes.
+      + (last.tokens_in == null && last.tokens_out == null && last.cost_usd == null ? ''
+        : '<div class="mdai-stats"><div><span>Input</span><b>' + _mdaiTok(last.tokens_in) + (last.tokens_in != null ? ' tokens' : '') + '</b></div>'
+        + '<div><span>Output</span><b>' + _mdaiTok(last.tokens_out) + (last.tokens_out != null ? ' tokens' : '') + '</b></div>'
+        + '<div><span>Cost</span><b>' + _mdaiCost(last.cost_usd) + '</b></div></div>')
       + '<div class="mdai-row-end"><button class="btn" onclick="_mdaiShowRun(_mdaiHist[0])">View output</button>'
       + '<button class="btn" ' + (_mdaiRunning ? 'disabled' : '') + ' onclick="_mdaiRun({show:true})">&#9655; Run again</button></div>';
   }

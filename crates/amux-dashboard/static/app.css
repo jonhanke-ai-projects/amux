@@ -9173,7 +9173,9 @@ html.draw-active { overflow:hidden; }
 .mdai-tabs { display: flex; gap: 4px; padding: 0 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto; scrollbar-width: none; }
 .mdai-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--dim); padding: 10px 12px; font-size: 0.84rem; cursor: pointer; white-space: nowrap; min-height: 40px; }
 .mdai-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
-.mdai-tab-n { font-size: 0.68rem; color: var(--dim); margin-left: 2px; }
+.mdai-tab-n { font-size: 0.68rem; color: var(--dim); margin-left: 5px; }
+.mdai-tab-n:empty { display: none; }
+.mdai-tab-ico { margin-right: 5px; }
 .mdai-cols { display: flex; gap: 16px; flex: 1; min-height: 0; padding: 14px 18px max(14px, env(safe-area-inset-bottom)); }
 .mdai-main.mdai-node-body { flex: 1; min-width: 0; border-radius: 10px; padding: 14px; background: var(--card); display: flex; flex-direction: column; gap: 12px; }
 .mdai-side { width: 330px; flex: 0 0 330px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
@@ -9265,6 +9267,44 @@ body.light #mdai-overlay.mdai-detail { background: var(--bg); }
   .mdai-run-h { display: none; }
   .mdai-run > span[data-l]::before { content: attr(data-l) ': '; color: var(--dim); }
   .mdai-prev-nav .btn, .mdai-row-end .btn, .mdai-rrow { min-height: 44px; }
+  /* Compact phone header (Ethan, 2026-10-14: the header and its button row took
+     a quarter of the screen). One row: back, title, Run, more. The path and the
+     status chips share one small line under the title. "Saved" is a state, so
+     the button hides while there is nothing to save and returns as "Save". */
+  .mdai-dhead { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 0; align-items: center; padding: 6px 8px 4px; }
+  .mdai-back { grid-column: 1; grid-row: 1; width: 44px; padding: 0; }
+  .mdai-dtitles { grid-column: 2; grid-row: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 2px; }
+  .mdai-dtitles h2 { flex: 0 0 100%; font-size: 1rem; line-height: 1.25; }
+  .mdai-dtitles .file-subpath { flex: 0 1 auto; min-width: 0; max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.7rem; margin: 0; }
+  .mdai-badges { margin-top: 0; gap: 4px; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+  .mdai-badges > * { font-size: 0.66rem; padding: 1px 6px; white-space: nowrap; }
+  .mdai-actions { grid-column: 3; grid-row: 1; width: auto; gap: 4px; flex-wrap: nowrap; }
+  .mdai-actions .btn { padding-left: 10px; padding-right: 10px; }
+  #mdai-save-btn.mdai-clean { display: none; }
+  .mdai-run-lbl { display: none; }
+  #mdai-run-btn .mdai-spin { margin-right: 0; }
+  .mdai-dtitles .file-subpath { display: none; }
+  .mdai-badges { flex-wrap: wrap; overflow: visible; }
+  .mdai-tabs { padding: 0 4px; gap: 2px; }
+  .mdai-tab { padding-left: 9px; padding-right: 9px; }
+  .mdai-tab-ico { display: none; }
+  .mdai-tab-n { background: var(--border); color: var(--text); border-radius: 9px; padding: 0 6px; }
+  /* The preview is one card, not a card inside a card. */
+  .mdai-cols { padding: 8px 8px max(8px, env(safe-area-inset-bottom)); }
+  .mdai-main.mdai-node-body { padding: 0; background: none; gap: 8px; border: none; border-radius: 0; }
+  .mdai-prev-head { flex-wrap: nowrap; min-width: 0; }
+  .mdai-prev-head > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mdai-prev-nav { flex-shrink: 0; gap: 4px; }
+  .mdai-prev-nav .btn { min-width: 44px; padding: 0 12px; }
+  .mdai-nav-lbl { display: none; }
+  .mdai-output { padding: 12px; }
+  /* A run is one wrapped line on a phone: number, status, when, model, time,
+     with no labels and no empty fields. */
+  .mdai-run { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 10px 12px; min-height: 44px; }
+  .mdai-run > span:first-child { font-weight: 700; }
+  .mdai-run > span[data-l]::before { content: none; }
+  .mdai-run > span.mdai-v-empty { display: none; }
+  .mdai-run.mdai-run-h { display: none; }
 }
 /* MDAI directory list on a phone: same treatment as Scratchpad (no sideways
    scroll wrapper here), so drop Size and keep Name, Modified and the menu. */
