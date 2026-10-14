@@ -48,7 +48,9 @@ fn tailscale_bin() -> String {
 }
 
 async fn run(args: &[&str], timeout: Duration) -> Result<(bool, String, String), String> {
-    let fut = Command::new(tailscale_bin()).args(args).output();
+    // kill_on_drop: when the timeout below fires it drops this future, and without it the
+    // tailscale child would keep running (tests/kill_on_drop_guard.rs).
+    let fut = Command::new(tailscale_bin()).args(args).kill_on_drop(true).output();
     match tokio::time::timeout(timeout, fut).await {
         Err(_) => Err(format!("tailscale {} did not finish in {}s", args.join(" "), timeout.as_secs())),
         Ok(Err(e)) => Err(format!("tailscale is not installed or cannot run: {e}")),
