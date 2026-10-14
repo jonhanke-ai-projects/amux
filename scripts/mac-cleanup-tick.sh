@@ -345,6 +345,12 @@ SWAP_FREE_FLOOR_MB=${AMUX_CLEANUP_SWAP_FREE_FLOOR_MB:-512}
 # still trusted even with pr==1, since the kernel's own pressure read can
 # lag a genuine fast-moving emergency.
 SWAP_FREE_CRITICAL_PCT=${AMUX_CLEANUP_SWAP_FREE_CRITICAL_PCT:-0.10}
+# ...but only when macOS cannot add swap. The pager creates swapfiles on
+# demand while the disk has room, so free swap is always a small fraction just
+# after it grows: 2026-10-13 (AMUX memory RCA 19:17) swap_total went 10240M ->
+# 12288M at 18:48, then read 385MB free with pressure 1 (normal), 83% memory
+# free and 61G of disk. Under this much free disk the low fraction is trusted.
+SWAP_GROW_DISK_GB=${AMUX_CLEANUP_SWAP_GROW_DISK_GB:-20}
 CPU_SHARE=${AMUX_CLEANUP_CPU_SHARE:-0.9}
 STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 
@@ -1420,11 +1426,11 @@ disk_trend() { # <prev_ts> <prev_free_gb> <now_ts> <now_free_gb> <min_gbh>
 # caught up to a genuinely fast-moving emergency.
 classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swap_free_mb> <load15> <ncpu> <family_exceeds:0|1> <swap_total_mb>
   awk -v df="$1" -v b="$2" -v h="$3" -v pr="$4" -v sw="$5" -v l="$6" -v n="$7" -v fam="$8" -v swt="$9" \
-      -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" -v swcp="$SWAP_FREE_CRITICAL_PCT" 'BEGIN{
+      -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" -v swcp="$SWAP_FREE_CRITICAL_PCT" -v sgd="$SWAP_GROW_DISK_GB" 'BEGIN{
     if (df >= 0 && df < floor) printf "disk free %.1fG is under the %dG floor\n", df, floor
     else if (h != "-" && h+0 < htf) printf "disk burning %.1fG/h, full in %.1fh (under %dh)\n", b, h, htf
     if (pr >= 2) printf "memory kernel pressure %d after the purge arm\n", pr
-    else if (swt > 0 && sw >= 0 && sw < swf && (pr != 1 || sw/swt < swcp)) printf "memory swap has %dMB free (under %dMB)\n", sw, swf
+    else if (swt > 0 && sw >= 0 && sw < swf && (pr != 1 || (sw/swt < swcp && (df < 0 || df < sgd)))) printf "memory swap has %dMB free (under %dMB)\n", sw, swf
     if (l >= 0 && n > 0 && l/n > cs) printf "cpu 15-min load %.1f is %.0f%% of %d cores (over %.0f%%)\n", l, l/n*100, n, cs*100
     if (fam == 1) print "family a process family is over its share of RAM"
   }'
@@ -2240,6 +2246,13 @@ if [ "$burn" = "-" ]; then burn_txt="unmeasured (no previous reading)"; else bur
 if [ "$htf" = "-" ]; then htf_txt="not filling"; else htf_txt="full in ${htf}h"; fi
 [ "$DRY" = "1" ] || state_put "$STATE" "last_ts=$now" "last_disk_free_gb=$disk_now"
 verdicts=$(classify_constraints "$disk_now" "$burn" "$htf" "$level_now" "$swap_free_now" "$load15" "$ncpu" "$fam_over" "$swap_total_now")
+# Say so when a low swap reading was let through because swap can still grow,
+# so a sweep can tell "judged growable" from "never measured".
+if [ "$level_now" = 1 ] && printf '%s' "$swap_free_now" | grep -qE '^[0-9.]+$' && \
+   awk -v sw="$swap_free_now" -v swf="$SWAP_FREE_FLOOR_MB" -v df="$disk_now" -v sgd="$SWAP_GROW_DISK_GB" \
+     'BEGIN{exit !(sw < swf && df >= sgd)}'; then
+  echo "mac-cleanup: swap ${swap_free_now}MB free of ${swap_total_now}MB but pressure is normal and ${disk_now}G of disk lets macOS add swap: not a constraint (verdict=swap_low_growable)"
+fi
 if [ -n "${fse_verdict:-}" ]; then verdicts=$(printf '%s\n%s\n' "$verdicts" "$fse_verdict" | grep . || true); fi
 if [ -n "${HEALTH_VERDICTS:-}" ]; then verdicts=$(printf '%s\n%s\n' "$verdicts" "$HEALTH_VERDICTS" | grep . || true); fi
 echo "mac-cleanup: assess disk=${disk_now}G burn=${burn_txt} ${htf_txt} pressure=${level_now} swap_free=${swap_free_now}MB swap_total=${swap_total_now}MB load15=${load15}/${ncpu}"
