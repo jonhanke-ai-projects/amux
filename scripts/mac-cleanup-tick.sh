@@ -168,11 +168,17 @@ USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
 # covered it, so 106G sat there unseen while one afternoon added 58G of new ones.
 # Depth 2 reaches <name>/CACHEDIR.TAG and nothing deeper; the shared target is in
 # TARGET_KEEP, and a target being built holds open files, which the lsof guard keeps.
+# $HOME/.amux/tmp@2, FIRST (disk RCA 2026-10-13 20:16): per-agent targets land at
+# ~/.amux/tmp/<name>/CACHEDIR.TAG (desktop-target 34.8G, target-drawzoom/rt/
+# schedspec/drawfix/schedfail 30G more, all built that day). $HOME/.amux@2 stops one
+# level short of them, and the tick's report read "found 2 ... scan complete=no":
+# the 310G scratchpad root listed next spends the whole scan budget, so a cheap
+# root placed after it is never reached. Shallow and high-yield goes first.
 # /private/tmp/claude-<uid>@8 (disk RCA 2026-10-12): a session that keeps its clones under
 # scratchpad/work/<clone>/ puts the tag at <proj>/<session>/scratchpad/work/<clone>/target/CACHEDIR.TAG,
 # seven levels down. At @6 the scan never saw them: one session held 47G and 23G of targets idle
 # over 6h with 21G free on the disk, and the summary read "eligible 0".
-TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
+TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@2:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
 TARGET_IDLE_H=${AMUX_CLEANUP_TARGET_IDLE_H:-24}
 # Under disk pressure the idle floor drops (DESKT-62). On 2026-10-01 the disk fell
 # from 574G to 155G in five days, and about 60G of build output sat 21-23h idle in
