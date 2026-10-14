@@ -1,6 +1,6 @@
 # amux Cloud: a boring, profitable hosting business that runs itself
 
-Status: plan, revision 7. Owner: amux-cloud. Written 2026-10-14. Supersedes the
+Status: plan, revision 8. Owner: amux-cloud. Written 2026-10-14. Supersedes the
 multi-tenant trial model in [cloud-poc-provisioning-plan.md](../cloud-poc-provisioning-plan.md).
 
 **Purpose.** A customer pays, gets their own amux server, brings their own model
@@ -39,7 +39,7 @@ keep working with the Operator stopped or deleted.
 | # | Decision | Why |
 |---|---|---|
 | D1 | **Single tenant: one Hetzner server per paying customer.** | Each server pays for itself from day one; isolation is physical. The multi-tenant host is already offline (`.github/workflows/deploy-cloud.yml:229`, `CLOUD_HOST` unset) [exists]. |
-| D2 | **Floor 2x server cost; launch price $39 Solo.** **[owner]** approves once. | $39 contributes $24.85 a customer a month after VAT and fees, against $11.03 at $26 (4.2). $39 wins unless it converts under 44% as many buyers as $26 [H]. Hosted agents sell at $20 to $25 plus usage (Devin Core, Cursor background agents, Replit); generic open-source hosting at $1 to $12 per app (PikaPods, Elestio). |
+| D2 | **Floor 2x server cost; launch price $39 Solo.** **[owner]** approves once. | $39 contributes $24.60 a customer a month after VAT, fees and backups, against $10.79 at $26 (4.2). $39 wins unless it converts under 44% as many buyers as $26 [H]. Hosted agents sell at $20 to $25 plus usage (Devin Core, Cursor background agents, Replit); generic open-source hosting at $1 to $12 per app (PikaPods, Elestio). |
 | D3 | **Paid first, no free trial.** The free tier is the open-source install; moving a local install to Cloud is the main way in. | A trial spends servers on non-buyers and invites abuse. OSS users are the warmest buyers (4.5). |
 | D4 | **Bring your own model key or subscription.** | No model spend on our books. The gateway's `/anthropic/` proxy (`cloud/gateway/gateway.py:1264`) is removed. |
 | D5 | **One account, at cloud.amux.io.** Clerk accounts with email code, Google, GitHub and Sign in with Apple. | Today Clerk lives on the gateway and passwords in `cloud/desktop/door.py`, so a customer would have two logins [exists]. Apple sign-in is required in the iOS app whenever other social sign-ins are offered (App Store guideline 4.8). |
@@ -48,7 +48,7 @@ keep working with the Operator stopped or deleted.
 | D8 | **Cloudflare proxies every customer host.** | Its edge certificate covers `*.amux.cloud` and Origin CA certificates have no rate limit, so Let's Encrypt limits never apply. It also hides server IPs. Free-plan limits: 100 MB per request (amux uploads chunk, `upq`), 100 s response timeout (SSE pings every 10 s). |
 | D9 | **Releases ship as signed binaries through a fleet agent, with canary and automatic rollback, before the first customer.** | `AMUX_UPDATES=source` compiles Rust on the box for 10 to 15 minutes [exists]; wrong on a customer machine. A broken update with no rollback is the likeliest way to need the founder. |
 | D10 | **The objective is owner cash flow after owner time and risk.** | Judged on retained contribution at 30 and 90 days and on measured owner minutes (section 9). |
-| D11 | **Paddle as merchant of record; Stripe only if Paddle declines.** **[owner]** confirms. | A US seller to EU consumers owes VAT registration and quarterly filing from the first sale, and must answer every dispute. Paddle is the seller of record: it files VAT, handles disputes and issues invoices, and nets about the same as Stripe once Stripe's 1.5% international-card and 1% currency fees count ($24,820 against $24,513 at 1,000 customers). Paddle reviews hosting businesses before approving them, so A0 asks first. All billing code sits behind one `billing` module either provider can fill. |
+| D11 | **Paddle as merchant of record; Stripe only if Paddle declines.** **[owner]** confirms. | A US seller to EU consumers owes VAT registration and quarterly filing from the first sale, and must answer every dispute. Paddle is the seller of record: it files VAT, handles disputes and issues invoices, and nets about the same as Stripe once Stripe's 1.5% international-card and 1% currency fees count ($24,577 against $24,269 at 1,000 customers). Paddle reviews hosting businesses before approving them, so A0 asks first. All billing code sits behind one `billing` module either provider can fill. |
 | D12 | **A server is running or deleted, never stopped.** | Hetzner bills stopped servers. A lapsed server is snapshotted, the snapshot is verified, then the server is deleted; restoring is a re-provision from the snapshot. |
 | D13 | **No automatic deletion acts on a single signal.** | Section 3.2. Every destructive step needs agreeing evidence from two sources, waits out a hold period, stays under a daily cap, and stops when any provider is unhealthy. |
 | D14 | **Every plan includes teammates at no extra charge.** | Invites already exist in amux (`/api/org/invites`, teams with scopes, revocation) [exists]. Seat billing would be a new subsystem; plans differ only by server size. |
@@ -87,7 +87,7 @@ cloud.amux.io  CONTROL PLANE (plain code)
 
 | Layer | What | Verified by |
 |---|---|---|
-| Continuous | litestream streams `amux.db` to R2 every second; a nightly `restic` snapshot of the home directory (files, `.mdai`, skills, checkouts) to R2 | Fleet agent reports the age of the last replicated write; over 15 minutes raises M4 |
+| Continuous | litestream replicates `amux.db` to R2 every 60 seconds (`sync-interval: 60s`, a daily full snapshot), so at most one minute of data can be lost; the 1-second default would cost up to $11.70 a month per server in R2 writes; a nightly `restic` snapshot of the home directory (files, `.mdai`, skills, checkouts) to R2 | Fleet agent reports the age of the last replicated write; over 15 minutes raises M4 |
 | Daily | Hetzner backups (7 kept, 20% of the server price) | Hetzner API lists today's backup |
 | Weekly | Restore drill: a throwaway server restores from R2, starts amux, compares row counts and a file checksum list with the live server, then is deleted | A failed or skipped drill raises M4; T-OPS-3 |
 | Before every destructive step | A snapshot whose existence and size are confirmed through the API | Section 3.2 |
@@ -120,8 +120,8 @@ states: proposed, held, executing, done, cancelled. Rules:
    webhook queue (no webhook for 6 hours while checkouts happen), Hetzner or R2
    is unhealthy, every destructive action pauses. Pausing costs a few dollars of
    server time; it never costs a customer.
-5. **Caps and a breaker.** At most 3 deletions a day, and none if more than 5%
-   of the fleet would be affected in one run. Breaching either freezes all
+5. **Caps and a breaker.** At most 3 deletions a day, and none if one run would
+   delete more than the greater of 3 servers or 5% of the fleet. Breaching either freezes all
    lifecycle actions and alerts the owner, because that pattern means our data
    or a provider is wrong.
 6. **Snapshot first, verified.** No server is deleted until its snapshot is
@@ -132,8 +132,11 @@ states: proposed, held, executing, done, cancelled. Rules:
    is reported in the weekly report and left running.
 8. **Shadow mode first.** For the first 30 days after launch, lifecycle actions
    are recorded but not executed (lapsed servers keep running at about $12.59
-   a month each). Execution turns on when 30 days of shadow decisions match what
-   a person would have done, checked in the weekly report.
+   a month each). Each shadow decision is checked automatically 14 days later
+   against a fresh read of the provider: a decision to delete must still show
+   the subscription ended, and no deleted-in-shadow customer may have paid since.
+   Execution turns on after 30 days with no disagreement; any disagreement keeps
+   shadow mode on and opens a card.
 
 Provisioning in the other direction (paid but no server) is safe and runs
 immediately.
@@ -157,7 +160,7 @@ as Paddle displays by default; tables use the amount after VAT.
 ### 4.2 Profit at scale (Paddle)
 
 Variable per customer: server; Paddle 5% + $0.50; refunds 1% [H]; abuse 0.5%
-[H]; support inference $0.40 [H]; lapsed snapshots about $0.02 [H]. VAT: 35% of
+[H]; support inference $0.40 [H]; lapsed snapshots about $0.02 [H]; R2 backups $0.24 (litestream syncing every 60 seconds plus a nightly file snapshot and about 3 GB stored) [H, measured per server in the synthetic run]. VAT: 35% of
 customers are EU consumers at 21% [H]. Fixed: control plane $7.09 per 1,500
 servers [H]; the synthetic customer every 6 hours and on each deploy, $7.65; the
 Operator's server $12.59 and its inference capped at $50 plus 5% of
@@ -166,17 +169,17 @@ here is the target; section 4.8 stresses it.
 
 | Ladder | Customers | Gross | After VAT | Variable | Fixed | Contribution | Margin |
 |---|---|---|---|---|---|---|---|
-| $26 (2x cost) | 100 | $3,160 | $2,968 | $1,840 | $132 | $996 | 34% |
-| $26 (2x cost) | 1,000 | $31,600 | $29,680 | $18,396 | $277 | $11,007 | 37% |
-| **$39** | 10 (no Operator) | $474 | $445 | $194 | $15 | $236 | 53% |
-| **$39** | 100 | $4,740 | $4,452 | $1,942 | $201 | $2,308 | 52% |
-| **$39** | 500 | $23,700 | $22,260 | $9,711 | $277 | $12,272 | 55% |
-| **$39** | 1,000 | $47,400 | $44,521 | $19,423 | $277 | $24,820 | 56% |
-| **$39** | 5,000 | $237,000 | $222,604 | $97,115 | $299 | $125,190 | 56% |
-| $49 | 100 | $5,980 | $5,617 | $2,023 | $256 | $3,338 | 59% |
-| $49 | 1,000 | $59,800 | $56,168 | $20,229 | $277 | $35,661 | 63% |
+| $26 (2x cost) | 100 | $3,160 | $2,968 | $1,864 | $131 | $973 | 33% |
+| $26 (2x cost) | 1,000 | $31,600 | $29,680 | $18,640 | $277 | $10,763 | 36% |
+| **$39** | 10 (no Operator) | $474 | $445 | $196 | $15 | $234 | 53% |
+| **$39** | 100 | $4,740 | $4,452 | $1,967 | $200 | $2,285 | 51% |
+| **$39** | 500 | $23,700 | $22,260 | $9,833 | $277 | $12,150 | 55% |
+| **$39** | 1,000 | $47,400 | $44,521 | $19,667 | $277 | $24,577 | 55% |
+| **$39** | 5,000 | $237,000 | $222,604 | $98,334 | $299 | $123,971 | 56% |
+| $49 | 100 | $5,980 | $5,617 | $2,047 | $254 | $3,315 | 59% |
+| $49 | 1,000 | $59,800 | $56,168 | $20,473 | $277 | $35,417 | 63% |
 
-Stripe fallback at $39 and 1,000 customers: $24,513, plus VAT filing and
+Stripe fallback at $39 and 1,000 customers: $24,269, plus VAT filing and
 disputes as recurring work.
 
 ### 4.3 Price against churn
@@ -186,16 +189,16 @@ as many [H]:
 
 | Ladder | Monthly churn | Per customer | Customers at day 90 | Months 1 to 3 | Lifetime |
 |---|---|---|---|---|---|
-| $26 | 5% | $11.03 | 857 | $31,476 | $220,690 |
-| $26 | 12% | $11.03 | 681 | $29,290 | $91,954 |
-| $39 | 5% | $24.85 | 686 | $56,703 | $397,564 |
-| $39 | 12% | $24.85 | 545 | $52,765 | $165,652 |
-| $49 | 5% | $35.69 | 557 | $66,171 | $463,951 |
-| $49 | 12% | $35.69 | 443 | $61,576 | $193,313 |
+| $26 | 5% | $10.79 | 857 | $30,780 | $215,812 |
+| $26 | 12% | $10.79 | 681 | $28,643 | $89,922 |
+| $39 | 5% | $24.60 | 686 | $56,146 | $393,662 |
+| $39 | 12% | $24.60 | 545 | $52,247 | $164,026 |
+| $49 | 5% | $35.44 | 557 | $65,719 | $460,780 |
+| $49 | 12% | $35.44 | 443 | $61,155 | $191,992 |
 
-A higher price wins on conversion unless conversion falls under 44% ($39) or 31%
-($49) of the $26 rate. Churn decides it: $26 at 5% churn ($221K lifetime) beats
-$39 at 12% ($166K). Price is judged on 90-day retained contribution (M13).
+A higher price wins on conversion unless conversion falls under 44% ($39) or 30%
+($49) of the $26 rate. Churn decides it: $26 at 5% churn ($216K lifetime) beats
+$39 at 12% ($164K). Price is judged on 90-day retained contribution (M13).
 
 ### 4.4 Single against multi-tenant
 
@@ -222,10 +225,10 @@ amux.io 177 and Google 64) and 534 stars since 2026-02-18.
 
 | Share of pricing viewers who buy [H] | Viewers flat | Viewers +10%/month | Flat-traffic ceiling at 5% churn |
 |---|---|---|---|
-| 1% (planning case) | 100 never reached | 23 months | 36 customers, $782/month |
-| 2% | 100 never reached | 17 months | 71 customers, $1,617/month |
-| 5% | 17 months | 9 months | 178 customers, $4,190/month |
-| 8% | 9 months | 7 months | 285 customers, $6,876/month |
+| 1% (planning case) | 100 never reached | 23 months | 36 customers, $774/month |
+| 2% | 100 never reached | 17 months | 71 customers, $1,600/month |
+| 5% | 17 months | 9 months | 178 customers, $4,147/month |
+| 8% | 9 months | 7 months | 285 customers, $6,806/month |
 
 Qualified traffic is the constraint. The 500 to 5,000 rows of 4.2 describe the
 business's value at scale and arrive only if organic traffic grows severalfold.
@@ -263,17 +266,17 @@ with the owner.
 
 | Scenario | Customers | Contribution | Owner hours, all in-house | After owner time | Owner hours if outsourced | Contractor | After outsourcing and owner time |
 |---|---|---|---|---|---|---|---|
-| Optimistic | 100 | $2,308 | 1.1 | $2,145 | 0.7 | $322 | $1,878 |
-| Realistic | 10 | $236 | 1.4 | $30 | 1.3 | $306 | -$260 |
-| Realistic | 100 | $2,308 | 2.5 | $1,936 | 1.4 | $365 | $1,733 |
-| Realistic | 500 | $12,272 | 7.4 | $11,159 | 2.0 | $625 | $11,347 |
-| Realistic | 1,000 | $24,820 | 13.6 | $22,783 | 2.8 | $950 | $23,458 |
-| Pessimistic | 100 | $2,308 | 7.2 | $1,225 | 3.1 | $548 | $1,296 |
-| Pessimistic | 1,000 | $24,820 | 49.8 | $17,358 | 8.5 | $2,775 | $20,770 |
+| Optimistic | 100 | $2,285 | 1.1 | $2,121 | 0.7 | $322 | $1,854 |
+| Realistic | 10 | $234 | 1.4 | $28 | 1.3 | $306 | -$262 |
+| Realistic | 100 | $2,285 | 2.5 | $1,913 | 1.4 | $365 | $1,710 |
+| Realistic | 500 | $12,150 | 7.4 | $11,037 | 2.0 | $625 | $11,225 |
+| Realistic | 1,000 | $24,577 | 13.6 | $22,539 | 2.8 | $950 | $23,214 |
+| Pessimistic | 100 | $2,285 | 7.2 | $1,201 | 3.1 | $548 | $1,273 |
+| Pessimistic | 1,000 | $24,577 | 49.8 | $17,114 | 8.5 | $2,775 | $20,527 |
 
 What this means:
 
-- At 10 customers the business earns about $236 a month and the realistic owner
+- At 10 customers the business earns about $234 a month and the realistic owner
   load (1.4 hours) consumes almost all of it at $150/hour. That is acceptable
   for a launch phase and is why the path to 10 is kept small.
 - At 100 customers the realistic case is 2.5 hours, over the 2-hour target.
@@ -427,9 +430,9 @@ schedules were missed); first in `amux cloud` CLI help. Never in the iOS app.
 | J8 | Enter | `https://<slug>.amux.cloud`, signed in | 60-second token, `__Host-` cookie | < 2 s | Expired token: one bounce through the control plane | T-SSO-1 |
 | J9 | Connect a model | First screen: paste a key, or import from local amux | Key saved on the customer's own origin after one validating call | < 1 min | Invalid key: provider's error, nothing saved | T-KEY-1..3 |
 | J10 | First value | "Start with a template": code on a repo, inbox triage, research brief, nightly schedule | Worker created, first task sent | Paid to first reply < 5 min [H] | Failure: the cause from the worker log and a retry | T-FIRST-1 |
-| J11 | Invite a teammate | Team settings: email and scope | Section 8.2 | < 1 min to send | Section 8.2 | T-TEAM-1..7 |
+| J11 | Invite a teammate | Team settings: email and scope | Section 8.2 | < 1 min to send | Section 8.2 | T-TEAM-1..6 |
 | J12 | Move local work | Section 7.1 | Bundle, upload, dry run, apply | < 10 min for 1 GB | A failed apply leaves the server unchanged and lists failures | T-MIG-1..5 |
-| J13 | Phone | Section 8.3 | Section 8.3 | < 1 min | Section 8.3 | T-IOS-1..5 |
+| J13 | Phone | Section 8.3 | Section 8.3 | < 1 min | Section 8.3 | T-IOS-1..5, T-TEAM-7 |
 | J14 | Day 2 and after | Release notes after an update | Fleet agent updates and backs up (3.1) | Update downtime < 10 s | Rollback; backup retries, then M4 | T-OPS-1..4 |
 | J15 | Change plan | "Upgrade" | hcloud `change_type` with the larger disk; about 1 minute down, announced | < 5 min | Failure restores the old type | T-PLAN-1 |
 | J16 | Payment fails | Banner with Paddle's update link; emails 3 and 4 | Paddle retries; 14 days of service; then snapshot and delete under 3.2 | Paddle's schedule | A fixed card restores from the snapshot in < 10 min | T-DUN-1 |
@@ -470,11 +473,18 @@ sign-in hop.
    invited address; Apple private-relay addresses are accepted when the invite
    was sent to that relay address, otherwise the invitee is asked to sign in
    with the invited email instead.
+   Email 7 is sent by the control plane: the customer server calls
+   `POST cloud.amux.io/api/fleet/invite-email` with its per-server fleet token
+   and the invite id; the control plane sends only to the address bound to that
+   invite, at most 20 a day per server.
 3. The control plane redeems the invite on the customer server and issues a
    door token whose subject is the new member. The member lands in the server
    with their scope; presence and Messages show them.
-4. Revocation from Team settings ends access within 60 seconds: the door checks
-   membership on each token refresh and closes open streams.
+4. Revocation from Team settings ends access within 60 seconds. The door cookie
+   lasts 12 hours, but the door, which runs on the same host, re-checks the
+   member's status with amux-server at most every 60 seconds and rejects a
+   revoked member; amux-server closes that member's open streams when the
+   member is revoked.
 5. Invitees never need a subscription. Teammates count toward nothing.
 
 Failure handling: an expired or used invite shows who to ask; a wrong email is
@@ -489,12 +499,12 @@ so the current "schedule onboarding" button that opens amux.io is replaced.
 | Step | Behaviour |
 |---|---|
 | Sign in | Native Sign in with Apple button first, then "Sign in with email, Google or GitHub" through `ASWebAuthenticationSession` to cloud.amux.io |
-| Apple sign-in | The app sends Apple's identity token to the control plane, which verifies it against Apple's keys (audience = the app's bundle id) and signs the user into Clerk through Clerk's native Apple strategy |
+| Apple sign-in | The app uses Clerk's iOS SDK, whose native Sign in with Apple completes the Clerk session on the device; the app then exchanges that Clerk session at the control plane for its server list and door tokens |
 | Same person, same account | Apple sign-in is also offered on the web, at checkout and in account settings, so the identity used to pay can be linked. If an Apple sign-in in the app finds no account, the app says "No amux Cloud server for this Apple ID" and offers email sign-in, after which Apple is linked to that account. The app never creates an account |
 | Hide My Email | Our sending domain is registered with Apple's private relay service in A0, so emails to relay addresses arrive |
 | Servers | The account's servers are listed; tapping one opens it with a fresh door token |
 | Teammates | An invitee who signs in with Apple sees the servers they were invited to |
-| Delete account | Settings, "Delete account", which runs J18 and revokes the Apple token |
+| Delete account | Settings, "Delete account", which runs J18. Apple requires the Apple token to be revoked through its REST API; P3 confirms whether deleting a Clerk user does this, and if not the control plane fetches the user's Apple token from Clerk's Backend API and calls Apple's revoke endpoint before deleting the Clerk user |
 | Apple notifications | The control plane receives Apple's server-to-server notifications; consent revoked signs the app out, account deleted runs J18 |
 
 ## 9. The owner's interface
@@ -650,8 +660,9 @@ Control-plane flags; each leaves customer servers and data untouched.
 ## 12. Tests
 
 One Playwright journey, `cloud/tests/journey.spec.ts`, drives a synthetic
-customer from amux.io to a working server, every 6 hours and on every deploy.
-The capability suite runs nightly on the same server. Lifecycle timers are our
+customer from amux.io to a working server, every 6 hours and on every deploy;
+each run's server is deleted when the run ends. Once a night the journey server
+is kept for the capability suite and deleted after it (about two server-hours). Lifecycle timers are our
 own code and are tested with an injected clock; provider events are replayed
 through Paddle's sandbox webhook simulations. Each test checks the API and the
 UI. A test that cannot run reports "not run" and fails the suite.
@@ -684,7 +695,7 @@ UI. A test that cannot run reports "not run" and fails the suite.
 | T-IOS-1 | XCUITest: Sign in with Apple (sandbox Apple ID) lists the server and opens it |
 | T-IOS-2 | XCUITest: email sign-in through the web sheet lists the server; message a worker and see the reply |
 | T-IOS-3 | Apple sign-in with no account shows the message, offers email sign-in, then links Apple; no account is created by the app |
-| T-IOS-4 | In-app "Delete account" completes J18 and revokes the Apple token |
+| T-IOS-4 | In-app "Delete account" completes J18; Apple's token is revoked (a later sign-in with the same Apple ID asks for consent again) |
 | T-IOS-5 | The app contains no price, purchase link or call to buy (string and link scan of the build) |
 | T-MIG-1 | `amux cloud move` from a seeded instance: dry run lists every worker, card, schedule, memory and file; apply makes them present |
 | T-MIG-2 | A second import of the same bundle changes nothing and says so |
@@ -697,10 +708,10 @@ UI. A test that cannot run reports "not run" and fails the suite.
 | T-OPS-4 | Fleet agent SIGKILLed mid-swap: old or new version, never neither, and it says which |
 | T-LIFE-1 | Webhook says cancelled while the provider API says active: nothing happens and a card opens |
 | T-LIFE-2 | Provider API unreachable or webhooks silent for 6 hours: every destructive action pauses, provisioning continues |
-| T-LIFE-3 | A run that would delete 4 servers in a day, or over 5% of the fleet, trips the breaker and deletes none |
+| T-LIFE-3 | At 10 customers one deletion proceeds; a run that would delete more than the greater of 3 servers or 5% of the fleet trips the breaker and deletes none |
 | T-LIFE-4 | No deletion without a listed snapshot and a backup under 1 hour old |
 | T-LIFE-5 | An unlabelled server and a labelled orphan are both left running and reported |
-| T-LIFE-6 | Shadow mode records decisions and executes none |
+| T-LIFE-6 | Shadow mode records decisions and executes none; the 14-day replay flags a decision the provider no longer supports |
 | T-DUN-1 | Injected clock: payment failure keeps service 14 days, then snapshot and delete; a fixed card restores from the snapshot |
 | T-CAN-1 | Export downloads and opens |
 | T-CAN-2 | Injected clock: 30 days after deletion the snapshot is gone |
@@ -736,7 +747,7 @@ Memories, journal, habits, CRM, Settings, Team presence, Self-update.
 |---|---|---|
 | P1 | Paddle approval for "managed hosting of open-source software", products from `plans.json` | Approval email; sandbox and live products match `plans.json` |
 | P2 | Terms, privacy policy, data processing agreement, subprocessor list (Hetzner, Cloudflare, Clerk, Paddle, PostHog, Apple) | Pages live; linked from checkout |
-| P3 | Clerk production with email code, Google, GitHub and Apple; Apple Services ID and key; relay email domain registered | T-ACC-3 |
+| P3 | Clerk production with email code, Google, GitHub and Apple; Apple Services ID and key; relay email domain registered; whether Clerk revokes Apple tokens on user deletion, recorded | T-ACC-3, T-IOS-4 |
 | P4 | `amux.cloud` on Cloudflare; Origin CA; Hetzner project with quota raised and abuse@ as contact; two payment methods on every provider | T-PROV-1; provider pages |
 | P5 | Backups, restore drill and signed updates with rollback | T-OPS-1..4 green 7 days running |
 | P6 | Safe lifecycle in shadow mode | T-LIFE-1..6 |
@@ -751,6 +762,13 @@ The smallest system that sells, provisions, protects and supports. Founder
 handles the rare exception directly (about 1.4 hours a month at 10 customers,
 4.8).
 
+Cost, stated plainly: about 32 agent-days to build [H], roughly $3,200 of
+inference at $100 an agent-day [H], against $234 a month of contribution at 10
+customers. That pays back in about 14 months at 10 customers and in under 2
+months at 100. The build is justified by the path to 100, and every step below
+is one that path needs anyway. The iOS step runs in parallel and launch is not
+gated on App Review; web checkout and web Sign in with Apple cover payment.
+
 | Step | Ships | Done when |
 |---|---|---|
 | 1 | `plans.json` and the price check; site pricing, cloud page and homepage CTA without trial or Calendly | T-SITE-1..3 |
@@ -759,7 +777,7 @@ handles the rare exception directly (about 1.4 hours a month at 10 customers,
 | 4 | Fleet agent: litestream and nightly file backup to R2, Hetzner backups, weekly restore drill, signed releases with canary and rollback, heartbeat (M2, M4, M12) | T-OPS-1..4 |
 | 5 | Safe lifecycle (M5) in shadow mode, dunning, cancel with export, account deletion (M19), abuse isolation (M17), provisioning recovery (M1) | T-LIFE-*, T-DUN-1, T-CAN-*, T-DEL-1, T-PROV-4 |
 | 6 | Invites through cloud.amux.io | T-TEAM-1..6 |
-| 7 | iOS app update: Sign in with Apple and web sign-in; the onboarding button removed | T-IOS-1..5, T-TEAM-7 |
+| 7 | iOS app update: Sign in with Apple and web sign-in; the onboarding button removed (parallel; not a launch gate) | T-IOS-1..5, T-TEAM-7 |
 | 8 | Journey every 6 hours, nightly capability suite, weekly report with owner minutes | 7 green days; first report sent |
 | Launch | Prerequisites P1 to P10 hold | |
 
@@ -767,7 +785,7 @@ handles the rare exception directly (about 1.4 hours a month at 10 customers,
 
 | Step | Ships | Done when |
 |---|---|---|
-| 9 | Lifecycle execution switched on after 30 shadow days | Shadow decisions matched for 30 days |
+| 9 | Lifecycle execution switches on by itself after 30 shadow days with no replay disagreement | T-LIFE-6 |
 | 10 | The Operator (one worker), its three MDAI nodes, budgets (M18) | T-OP-1, T-BUD-1 |
 | 11 | Support agent answering first (M8), setup and inactivity emails (M6, M7) | Agent resolution rate measured weekly |
 | 12 | Move to Cloud: bundle, importer, `amux cloud move`, the dashboard button and every CTA in 7.1 | T-MIG-1..5 |
@@ -794,4 +812,5 @@ payment provider, the control plane and the tests all read prices from it.
 | 4 | 6.3 | Independent reviewer, owner's revised brief | Rewritten as an owner-light business with an Operator, funnel, budgets, mechanisms | VAT, fees, stopped servers, hidden owner work |
 | 5 | 7.1 | Independent reviewer | Merchant of record, VAT-net economics, volume model, move to Cloud, monitoring worker | Bundle secrets, credential scopes |
 | 6 | 7.7 | Independent reviewer | Allowlist bundle, scoped credentials, flat-traffic ceiling | App Store key, Operator cost, traffic stop rule |
-| 7 | pending | | Owner's safety revision: backups, restores and updates before launch; safe lifecycle (3.2); owner-intervention stress test with outsourcing (4.8); sample-size rule for experiments; content never auto-unpublished; channel versus tactic judging; failure audit (11.1); one payment provider name; launch prerequisites; paths to 10 and 100; invites end to end (8.2); Sign in with Apple (8.3); cut M9, M16, M20, four MDAI nodes and hourly runs | |
+| 7 | 7.6 | Independent reviewer | Owner's safety revision: backups, restores and updates before launch; safe lifecycle (3.2); owner-intervention stress test with outsourcing (4.8); sample-size rule for experiments; content never auto-unpublished; channel versus tactic judging; failure audit (11.1); one payment provider name; launch prerequisites; paths to 10 and 100; invites end to end (8.2); Sign in with Apple (8.3); cut M9, M16, M20, four MDAI nodes and hourly runs | R2 write cost, breaker at small fleets, Apple sign-in through Clerk, unstated build cost, test-range and invite-mail details |
+| 8 | pending | | litestream every 60 s and R2 in the model; breaker uses the greater of 3 servers or 5%; shadow mode judged automatically by a 14-day replay; Apple sign-in through Clerk's iOS SDK with token revocation confirmed; build cost and payback stated; iOS not a launch gate; invite email and revocation mechanics; journey server lifetime | |

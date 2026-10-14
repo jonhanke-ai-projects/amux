@@ -14,6 +14,9 @@ INTL = 0.75            # H: share of cards issued outside the US (EU default pro
 REFUND, ABUSE, DISPUTE_RATE, DISPUTE_FEE = 0.01, 0.005, 0.003, 15.0   # H, H, H, Stripe list fee per dispute
 SUPPORT_TOKENS = 0.40  # H: support-agent inference per customer per month
 LAPSED_SNAPSHOT = 0.02 * 1.0   # H: 2% of customers lapsed at any time x ~$1 snapshot each (servers deleted, not stopped)
+# R2 per customer: litestream sync every 60 s = 43,200 PUTs/month at $4.50/M, plus a nightly restic snapshot
+# (~1,000 PUTs) and ~3 GB stored at $0.015/GB-month (H: measure PUTs per server in the synthetic run)
+R2 = 44200 / 1e6 * 4.50 + 3 * 0.015
 PAYMENTS = {
   'Stripe': dict(pct=0.029 + 0.007 + 0.005 + INTL * (0.015 + 0.01), fix=0.30, disputes=True),   # card, Billing, Tax, intl + FX
   'Merchant of record (Paddle)': dict(pct=0.05, fix=0.50, disputes=False),                      # handles VAT filing and disputes
@@ -38,7 +41,7 @@ def month(n, ladder, pay, operator=True):
         gross = c * price
         net_price = price * (1 - EU_CONSUMER) + price / (1 + VAT) * EU_CONSUMER   # VAT leaves with the tax authority
         rev += gross; net += c * net_price
-        var += c * (COST[plan] + price * (p['pct'] + REFUND + ABUSE) + p['fix'] + SUPPORT_TOKENS + LAPSED_SNAPSHOT
+        var += c * (COST[plan] + price * (p['pct'] + REFUND + ABUSE) + p['fix'] + SUPPORT_TOKENS + LAPSED_SNAPSHOT + R2
                     + (DISPUTE_RATE * DISPUTE_FEE if p['disputes'] else 0))
     f = fixed(n, operator)
     if operator:
@@ -109,3 +112,8 @@ if __name__ == '__main__':
         for lift in (0.2, 0.5, 1.0):
             n = n_per_arm(base, lift)
             print(f"  {label:22} base {base:5.1%} lift +{lift:4.0%}: {n:8,.0f} per arm = {2*n/monthly:6.1f} months of traffic")
+    print(f"\nR2 per customer per month: ${R2:.2f} (sync every 60 s); at the 1 s default it would be up to ${2.6e6/1e6*4.5:.2f}")
+    BUILD_AGENT_DAYS, AGENT_DAY_COST = 32, 100.0     # H: path-to-10 steps 1-8; inference per agent-day
+    for n in (10, 100):
+        c = month(n, '$39 entry', 'Merchant of record (Paddle)', operator=(n >= 100))[4]
+        print(f"  build ~{BUILD_AGENT_DAYS} agent-days x ${AGENT_DAY_COST:.0f} = ${BUILD_AGENT_DAYS*AGENT_DAY_COST:,.0f}; payback at {n} customers: {BUILD_AGENT_DAYS*AGENT_DAY_COST/c:.1f} months")
