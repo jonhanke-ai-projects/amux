@@ -36,10 +36,14 @@ def main():
     ap.add_argument("--location", default="fsn1")
     ap.add_argument("--server-type", default="cx33")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--ssh-key", default=os.environ.get("AMUX_BUILD_SSH_KEY", "amux-wexus"),
+                    help="Hetzner SSH key name to put on the builder for inspection ('' for none)")
     a = ap.parse_args()
     name = f"amux-golden-build-{a.ref[:8]}"
     plan = {"create": {"name": name, "server_type": a.server_type, "location": a.location, "image": "ubuntu-24.04",
-                       "labels": {"amux-golden-build": "1"}},
+                       "labels": {"amux-golden-build": "1"},
+                       # A key on the builder lets a failed build be read directly instead of through rescue mode.
+                       **({"ssh_keys": [a.ssh_key]} if a.ssh_key else {})},
             "then": ["wait for status off (bootstrap powers off when done, up to 45 min)",
                      f"snapshot with labels amux-golden={a.ref[:12]}", "delete the builder server"],
             "user_data": user_data(a.ref)}

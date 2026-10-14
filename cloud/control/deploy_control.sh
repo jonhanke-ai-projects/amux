@@ -57,7 +57,7 @@ else capi -X PUT "https://api.cloudflare.com/client/v4/zones/$ZID/dns_records/$R
 log "DNS $HOST -> $IP"
 
 # ── code and config ──
-tar -C "$REPO" -czf - cloud/control | "${SSH[@]}" "mkdir -p /opt/amux && tar -C /opt/amux -xzf - && id amux-control >/dev/null 2>&1 || useradd --system --home /var/lib/amux-control --create-home amux-control"
+COPYFILE_DISABLE=1 tar --no-mac-metadata -C "$REPO" -czf - cloud/control | "${SSH[@]}" "mkdir -p /opt/amux && tar -C /opt/amux -xzf - && id amux-control >/dev/null 2>&1 || useradd --system --home /var/lib/amux-control --create-home amux-control"
 GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=snapshot&label_selector=amux-golden&sort=created:desc' | python3 -c 'import json,sys;i=json.load(sys.stdin)["images"];print(i[0]["id"] if i else "")')}"
 {
   echo "CONTROL_DB=/var/lib/amux-control/control.db"

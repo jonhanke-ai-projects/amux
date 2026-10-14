@@ -94,9 +94,19 @@ if [[ "${AMUX_SKIP_PACKAGES:-0}" == 1 ]]; then
   log "packages: skipped (AMUX_SKIP_PACKAGES=1, prepared image)"
 else
 log "installing desktop, xrdp, caddy and amux runtime deps"
+# No recommended extras: they pulled 735 packages into a server (printers, iPhone USB, speech
+# recognition) and one of them, usbmuxd, failed dpkg on a fresh Hetzner Ubuntu 24.04 and stopped the
+# golden image build (2026-10-14). One repair-and-retry covers a transient dpkg failure.
+apt_install() {
+  apt-get install -y -qq --no-install-recommends "$@" && return 0
+  log "apt install failed once; repairing and retrying: $*"
+  dpkg --configure -a || true
+  apt-get -f install -y -qq --no-install-recommends || true
+  apt-get install -y -qq --no-install-recommends "$@"
+}
 apt-get update -qq
-apt-get install -y -qq \
-  xfce4 xfce4-goodies dbus-x11 xrdp xorgxrdp \
+apt_install \
+  xfce4 xfce4-terminal xfce4-goodies dbus-x11 dbus-user-session xrdp xorgxrdp \
   tmux git curl wget jq unzip python3 python3-pip python3-yaml ripgrep ffmpeg procps \
   openssh-client gettext-base build-essential ca-certificates gnupg ufw docker.io \
   debian-keyring debian-archive-keyring apt-transport-https \
@@ -105,7 +115,7 @@ apt-get install -y -qq \
 if ! command -v caddy &>/dev/null; then
   curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -qq && apt-get install -y -qq caddy
+  apt-get update -qq && apt_install caddy
 fi
 
 # Google Chrome from Google's repo. Ubuntu's chromium is a snap, and snaps
@@ -115,14 +125,14 @@ if ! command -v google-chrome &>/dev/null; then
   curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
   echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
     > /etc/apt/sources.list.d/google-chrome.list
-  apt-get update -qq && apt-get install -y -qq google-chrome-stable
+  apt-get update -qq && apt_install google-chrome-stable
 fi
 
 # Node 22 + Claude Code CLI
 if ! command -v node &>/dev/null; then
   log "installing Node 22"
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
-  apt-get install -y -qq nodejs
+  apt_install nodejs
 fi
 command -v claude &>/dev/null || npm install -g @anthropic-ai/claude-code >/dev/null
 # The other coding CLIs a customer can sign in to (plan 8.4).
@@ -225,7 +235,7 @@ grep -q '.local/bin' "$HOME_DIR/.profile" 2>/dev/null || echo 'export PATH="$HOM
 
 # ── Golden image: backup tools, the door and the fleet agent, then stop ──
 if [[ "$IMAGE_BUILD" == 1 || "$FLEET" == 1 ]]; then
-  command -v restic &>/dev/null || apt-get install -y -qq restic >/dev/null
+  command -v restic &>/dev/null || apt_install restic >/dev/null
   if ! command -v litestream &>/dev/null; then
     LV=v0.3.13
     curl -fsSL -o /tmp/litestream.deb "https://github.com/benbjohnson/litestream/releases/download/$LV/litestream-$LV-linux-amd64.deb"
