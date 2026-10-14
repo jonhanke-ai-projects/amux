@@ -355,10 +355,17 @@ test('realtime draw: a blocked main thread catches up in one frame; WebSocket-bl
     // A slow receiver: block B's main thread while A draws. Everything that
     // arrived meanwhile is applied in ONE frame when it wakes, not replayed.
     await resetStats(B.p);
-    const block = B.p.evaluate(() => { const end = Date.now() + 1500; while (Date.now() < end) { /* busy */ } });
+    // Long enough that the whole stroke arrives while B is blocked even on a
+    // slow CI WebKit runner; otherwise the tail is applied frame by frame after
+    // B wakes and the count measures the sender's speed, not the collapse
+    // (CI 38486320066: 37 frames on ios-safari with a 1.5s block).
+    const blockMs = 5000;
+    const blockEnd = B.p.evaluate((ms) => { const end = Date.now() + ms; while (Date.now() < end) { /* busy */ } return end; }, blockMs);
     await setTool(A.p, 'freedraw');
     await stroke(A.p, { steps: 60, radius: 60 });
-    await block;
+    const strokeDone = Date.now();
+    const blockedUntil = await blockEnd;
+    expect(strokeDone, 'the whole stroke was drawn while B was blocked').toBeLessThan(blockedUntil);
     await expect.poll(async () => JSON.stringify(await scene(B.p)), { timeout: 10_000 }).toBe(JSON.stringify(await scene(A.p)));
     const applied = await B.p.evaluate(() => (window as unknown as Win)._drawRt.stats.applied);
     console.log(`[rt] blocked receiver applied ${applied} frames for a 60-move stroke`);
