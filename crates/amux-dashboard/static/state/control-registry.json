@@ -2174,6 +2174,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiEditKey": {
+      "kind": "command._mdaiEditKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiMenu": {
       "kind": "command._mdaiMenu",
       "feedback_required": true,
@@ -2192,6 +2198,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiPutDoc": {
+      "kind": "command._mdaiPutDoc",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiRun": {
       "kind": "command._mdaiRun",
       "feedback_required": true,
@@ -2200,6 +2212,36 @@
     },
     "_mdaiRunMenu": {
       "kind": "command._mdaiRunMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiSave": {
+      "kind": "command._mdaiSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiSaveDoc": {
+      "kind": "command._mdaiSaveDoc",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiSaveSettings": {
+      "kind": "command._mdaiSaveSettings",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiSaveSources": {
+      "kind": "command._mdaiSaveSources",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiSetModel": {
+      "kind": "command._mdaiSetModel",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

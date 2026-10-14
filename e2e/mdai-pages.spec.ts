@@ -176,8 +176,12 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     expect(text).toContain('amux:messages?days=30&limit=150&offset=10&kb=200');
     expect(text).not.toContain('notes.md');
     expect(text).toContain('Accept: application/json');
-    // Clearing the URL removes the API call again.
+    // Clearing the URL removes the API call again. The edit starts once the
+    // save has finished rendering; a render that lands while the field is
+    // being edited must not put the saved URL back.
+    await expect(page.locator('#mdai-fetch-url')).toHaveValue(api.url + '/data');
     await page.locator('#mdai-fetch-url').fill('');
+    await expect(page.locator('#mdai-fetch-url')).toHaveValue('');
     await page.locator('#mdai-src-save').click();
     await expect.poll(() => fileText(file)).not.toContain('fetch:');
     await tab(page, 'edit');

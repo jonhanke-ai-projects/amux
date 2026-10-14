@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1546';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1547';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -30005,7 +30005,19 @@ async function _mdaiPutDoc(req) {
     }
     _mdaiApplyDoc(d);
     _mdaiDraft = null; _mdaiBodyDraft = null;
-    _mdaiLoadGraph().then(() => { if (_mdaiCur) _mdaiRender(); });
+    // The graph reload lands after the save's own render. If the owner is
+    // already typing the next change, re-rendering would put the saved
+    // values back over it, so that render waits for the next one.
+    _mdaiLoadGraph().then(() => {
+      if (!_mdaiCur) return;
+      const el = document.activeElement;
+      if (el && el.closest && el.closest('#mdai-body') && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) {
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+          body: JSON.stringify({ kind: 'mdai-render-deferred', verdict: 'owner_editing', field: el.id || el.tagName, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+        return;
+      }
+      _mdaiRender();
+    });
     return true;
   } catch (e) { showToast('Could not save the node'); return false; }
 }
