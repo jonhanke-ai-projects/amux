@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1523';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1524';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15776,6 +15776,26 @@ function _savePeekState() {
 // (?peekEmbed=<name>&peekTab=<tab>, the Workspace tile path), so each works
 // exactly as its tab does with no shared state with the terminal beside it.
 let _peekSplitView = localStorage.getItem('amux_peek_split_view') || 'files';
+// Place a position:fixed element so its box lands at viewport (x, y) as
+// getBoundingClientRect reports it. On the Mac app the Split menu opened ~500px
+// right of its button (Ethan, 2026-10-14): the style coordinates and the rect
+// coordinates disagreed by a scale. Set, measure where it landed, and rescale,
+// so any zoom mismatch corrects itself; a correction beacons its scale.
+function _placeFixedAt(el, x, y, label) {
+  el.style.left = x + 'px'; el.style.top = y + 'px';
+  if (!x && !y) return;
+  const got = el.getBoundingClientRect();
+  const kx = x ? got.left / x : 1, ky = y ? got.top / y : 1;
+  if (Math.abs(kx - 1) < 0.02 && Math.abs(ky - 1) < 0.02) return;
+  if (kx > 0) el.style.left = (x / kx) + 'px';
+  if (ky > 0) el.style.top = (y / ky) + 'px';
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'fixed-place-corrected', verdict: 'fixed_coords_scaled', label, kx: Math.round(kx * 1000) / 1000,
+        ky: Math.round(ky * 1000) / 1000, zoom: (typeof _zoomLevel !== 'undefined' ? _zoomLevel : null),
+        measured: true, n_considered: 1, ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }) }).catch(() => {});
+  } catch (e) {}
+}
 function _peekSplitMenuClose() { document.getElementById('psp-menu')?.remove(); }
 function _peekSplitMenu(btn) {
   _peekSplitMenuClose();
@@ -15789,8 +15809,7 @@ function _peekSplitMenu(btn) {
   }
   document.body.appendChild(m);
   const r = btn.getBoundingClientRect();
-  m.style.top = (r.bottom + 6) + 'px';
-  m.style.left = Math.max(8, Math.min(window.innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
+  _placeFixedAt(m, Math.max(8, Math.min(window.innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)), r.bottom + 6, 'psp-menu');
   m.querySelector('button')?.focus();
   setTimeout(() => document.addEventListener('click', function off(e) {
     if (!m.contains(e.target)) { _peekSplitMenuClose(); document.removeEventListener('click', off, true); }
