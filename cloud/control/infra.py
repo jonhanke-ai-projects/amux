@@ -4,7 +4,8 @@ Standard library only. fakes.FakeInfra has the same methods for tests.
 Every server we create carries the label amux-cloud=1; lifecycle never touches
 a server without it.
 """
-import hashlib, json, os, time, urllib.error, urllib.request
+import base64, hashlib, hmac, json, os, re, time, urllib.error, urllib.parse, urllib.request
+from xml.sax.saxutils import escape as _xml_escape
 
 from lifecycle import ProviderError, LABEL
 from fakes import CapacityError
@@ -206,13 +207,50 @@ class Infra:
                   {"remove_from": [{"type": "server", "server": {"id": server_id}}]})
 
     def delete_bucket(self, bucket):
-        """Empties nothing itself: R2 refuses to delete a non-empty bucket, so objects go first."""
+        """Empty the bucket, delete it, and revoke every backup token minted for it.
+
+        R2 refuses to delete a non-empty bucket (10008), which left the first real account
+        deletion retrying forever (2026-10-14). Objects are removed through R2's S3 API with a
+        short-lived token scoped to this bucket, since the REST API has no bulk delete.
+        """
         acct = os.environ["CF_ACCOUNT_ID"]
         try:
             _call(f"{CF}/accounts/{acct}/r2/buckets/{bucket}", self.cf, "DELETE")
         except InfraError as e:
-            if e.code != 404:
+            if e.code == 409:
+                self._empty_bucket(acct, bucket)
+                _call(f"{CF}/accounts/{acct}/r2/buckets/{bucket}", self.cf, "DELETE")
+            elif e.code != 404:
                 raise
+        self._revoke_tokens(f"amux-backup-{bucket}")
+
+    def _revoke_tokens(self, name):
+        """Delete every user API token with this exact name. Returns how many went."""
+        n = 0
+        for t in _call(f"{CF}/user/tokens?per_page=50", self.cf)["result"]:
+            if t.get("name") == name:
+                _call(f"{CF}/user/tokens/{t['id']}", self.cf, "DELETE")
+                n += 1
+        return n
+
+    def _empty_bucket(self, acct, bucket):
+        purge = f"amux-purge-{bucket}"
+        groups = _call(f"{CF}/user/tokens/permission_groups", self.cf)["result"]
+        want = {"Workers R2 Storage Bucket Item Write", "Workers R2 Storage Bucket Item Read"}
+        tok = _call(f"{CF}/user/tokens", self.cf, "POST", {
+            "name": purge, "expires_on": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600)),
+            "policies": [{"effect": "allow", "permission_groups": [{"id": g["id"]} for g in groups if g["name"] in want],
+                          "resources": {f"com.cloudflare.edge.r2.bucket.{acct}_default_{bucket}": "*"}}]})["result"]
+        s3 = S3(f"{acct}.r2.cloudflarestorage.com", tok["id"], hashlib.sha256(tok["value"].encode()).hexdigest())
+        try:
+            for _ in range(200):                      # 1000 keys a pass; a backup bucket is far smaller
+                keys = s3.list_keys(bucket)
+                if not keys:
+                    return
+                s3.delete_keys(bucket, keys)
+            raise InfraError(500, f"bucket {bucket} still not empty after 200 passes")
+        finally:
+            self._revoke_tokens(purge)
 
     def origin_certificate(self, hostname, csr_pem, days=5475):
         """Cloudflare Origin CA certificate for one host. The server made the key and sends only the CSR."""
@@ -220,3 +258,58 @@ class Infra:
             "hostnames": [f"{hostname}.{self.domain}"], "requested_validity": days,
             "request_type": "origin-ecc", "csr": csr_pem})
         return r["result"]["certificate"]
+
+
+class S3:
+    """The two S3 calls bucket deletion needs (ListObjectsV2, DeleteObjects), signed with SigV4.
+
+    Standard library only, like the rest of the control plane. R2 uses region "auto".
+    """
+
+    def __init__(self, host, key_id, secret, region="auto"):
+        self.host, self.key_id, self.secret, self.region = host, key_id, secret, region
+
+    def _request(self, method, path, query, body=b"", extra=None, tries=6):
+        for attempt in range(tries):
+            now = time.gmtime()
+            amz, day = time.strftime("%Y%m%dT%H%M%SZ", now), time.strftime("%Y%m%d", now)
+            payload = hashlib.sha256(body).hexdigest()
+            headers = {"host": self.host, "x-amz-content-sha256": payload, "x-amz-date": amz, **(extra or {})}
+            names = sorted(headers)
+            qs = "&".join(f"{urllib.parse.quote(k, safe='-_.~')}={urllib.parse.quote(v, safe='-_.~')}"
+                          for k, v in sorted(query.items()))
+            canonical = "\n".join([method, urllib.parse.quote(path), qs,
+                                   "".join(f"{n}:{headers[n].strip()}\n" for n in names), ";".join(names), payload])
+            scope = f"{day}/{self.region}/s3/aws4_request"
+            to_sign = "\n".join(["AWS4-HMAC-SHA256", amz, scope, hashlib.sha256(canonical.encode()).hexdigest()])
+            k = ("AWS4" + self.secret).encode()
+            for part in (day, self.region, "s3", "aws4_request"):
+                k = hmac.new(k, part.encode(), hashlib.sha256).digest()
+            sig = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
+            headers["Authorization"] = (f"AWS4-HMAC-SHA256 Credential={self.key_id}/{scope}, "
+                                        f"SignedHeaders={';'.join(names)}, Signature={sig}")
+            url = f"https://{self.host}{urllib.parse.quote(path)}" + (f"?{qs}" if qs else "")
+            req = urllib.request.Request(url, data=body or None, method=method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return r.read()
+            except urllib.error.HTTPError as e:
+                # A just-minted token takes a few seconds to reach R2; it answers 401/403 until then.
+                if e.code in (401, 403) and attempt < tries - 1:
+                    time.sleep(5)
+                    continue
+                raise InfraError(e.code, e.read()[:300].decode("utf-8", "replace"))
+
+    def list_keys(self, bucket):
+        xml = self._request("GET", f"/{bucket}", {"list-type": "2", "max-keys": "1000"}).decode()
+        return [_xml_unescape(k) for k in re.findall(r"<Key>(.*?)</Key>", xml, re.S)]
+
+    def delete_keys(self, bucket, keys):
+        body = ("<Delete><Quiet>true</Quiet>" + "".join(f"<Object><Key>{_xml_escape(k)}</Key></Object>" for k in keys)
+                + "</Delete>").encode()
+        md5 = base64.b64encode(hashlib.md5(body).digest()).decode()
+        self._request("POST", f"/{bucket}", {"delete": ""}, body, {"content-md5": md5, "content-type": "application/xml"})
+
+
+def _xml_unescape(s):
+    return s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&apos;", "'").replace("&amp;", "&")
