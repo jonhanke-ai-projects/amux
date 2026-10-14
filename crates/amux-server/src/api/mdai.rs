@@ -1418,8 +1418,12 @@ impl ModelClient for ApiModel {
             "messages": [{ "role": "user", "content": prompt }],
         });
         std::thread::spawn(move || {
+            // No redirects: x-api-key is not a header reqwest strips on a
+            // cross-host redirect, so a loopback override that answered with
+            // a redirect would forward the key. The provider never redirects.
             let res = reqwest::blocking::Client::builder()
                 .timeout(budget)
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| e.to_string())
                 .and_then(|client| {
