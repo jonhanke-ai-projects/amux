@@ -102,6 +102,13 @@ class FakeInfra:
     def delete_dns(self, record_id):
         self.dns.pop(record_id, None)
 
+    def backup_bucket(self, slug, server_id):
+        b = f"amux-{slug}-{server_id[-6:]}"
+        self.buckets = getattr(self, "buckets", {})
+        self.buckets[b] = {"token_scope": b}
+        return {"endpoint": "https://fake.r2.example", "bucket": b, "access_key_id": f"ak-{b}",
+                "secret_access_key": f"sk-{b}"}
+
     def origin_certificate(self, hostname, csr_pem):
         return f"-----BEGIN CERTIFICATE-----\nfake for {hostname}\n-----END CERTIFICATE-----\n"
 

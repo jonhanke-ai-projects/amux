@@ -7,7 +7,8 @@ backups and lifecycle keep working when a customer turns on tailnet-only.
 """
 import hmac, time
 
-import provision
+import provision, releases
+from tokens import new_secret
 
 INVITE_EMAILS_PER_DAY = 20
 
@@ -36,8 +37,18 @@ def heartbeat(store, infra, srv, body, now=None):
     if srv["status"] == "provisioning" and body.get("serving") and body.get("last_backup_at"):
         provision.mark_ready(store, srv["id"], now)
         reply["ready"] = True
-    deploy_frozen = store.flag("deploy_freeze") == "1"
-    reply["release_channel"] = None if deploy_frozen else "stable"
+    if body.get("need_backup_creds") or (srv["status"] == "provisioning" and not srv["backup_bucket"]):
+        try:
+            creds = infra.backup_bucket(srv["slug"], srv["id"])
+            restic_pw = srv["restic_password"] or new_secret()
+            store.run("UPDATE servers SET backup_bucket=?, restic_password=? WHERE id=?", creds["bucket"], restic_pw, srv["id"])
+            reply["backup_credentials"] = dict(creds, restic_password=restic_pw)
+        except Exception as e:
+            store.event("cloud.backup_creds_failed", srv["org_id"], server=srv["id"], error=str(e)[:200])
+    releases.report(store, srv, body.get("release_report"), now)
+    offer = releases.offer_for(store, dict(srv, version=body.get("version")), now)
+    if offer:
+        reply["release"] = offer
     return reply
 
 

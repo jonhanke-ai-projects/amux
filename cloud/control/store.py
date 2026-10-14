@@ -31,7 +31,15 @@ CREATE TABLE IF NOT EXISTS servers (
   id TEXT PRIMARY KEY, org_id TEXT NOT NULL, subscription_id TEXT, slug TEXT UNIQUE NOT NULL,
   plan TEXT NOT NULL, location TEXT, hetzner_id INTEGER, ipv4 TEXT, dns_record_id TEXT,
   status TEXT NOT NULL, fleet_secret TEXT NOT NULL, created_at REAL NOT NULL, ready_at REAL,
-  last_heartbeat REAL, last_backup_at REAL, version TEXT, tailnet_only INTEGER NOT NULL DEFAULT 0);
+  last_heartbeat REAL, last_backup_at REAL, version TEXT, tailnet_only INTEGER NOT NULL DEFAULT 0,
+  synthetic INTEGER NOT NULL DEFAULT 0, backup_bucket TEXT, restic_password TEXT);
+CREATE TABLE IF NOT EXISTS releases (
+  version TEXT PRIMARY KEY, url TEXT NOT NULL, sha256 TEXT NOT NULL, sig_url TEXT NOT NULL,
+  stage INTEGER NOT NULL DEFAULT 0, stage_started_at REAL NOT NULL, created_at REAL NOT NULL,
+  rollbacks INTEGER NOT NULL DEFAULT 0, halted INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS release_reports (
+  server_id TEXT NOT NULL, version TEXT NOT NULL, outcome TEXT NOT NULL, ts REAL NOT NULL,
+  PRIMARY KEY(server_id, version));
 CREATE TABLE IF NOT EXISTS provision_jobs (
   id TEXT PRIMARY KEY, server_id TEXT NOT NULL, step TEXT NOT NULL, status TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0, error TEXT, started_at REAL NOT NULL, updated_at REAL NOT NULL,

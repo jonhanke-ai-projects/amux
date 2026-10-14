@@ -4,7 +4,7 @@ Standard library only. fakes.FakeInfra has the same methods for tests.
 Every server we create carries the label amux-cloud=1; lifecycle never touches
 a server without it.
 """
-import json, time, urllib.error, urllib.request
+import hashlib, json, os, time, urllib.error, urllib.request
 
 from lifecycle import ProviderError, LABEL
 from fakes import CapacityError
@@ -125,6 +125,32 @@ class Infra:
         except InfraError as e:
             if e.code != 404:
                 raise
+
+    def backup_bucket(self, slug, server_id):
+        """An R2 bucket for this server alone, and S3 credentials that can touch only that bucket.
+
+        Needs CF_ACCOUNT_ID and a control-plane token allowed to create R2 buckets and user API
+        tokens. The customer has root on their server, so per-server scoping is what keeps one
+        customer's backups unreadable to another.
+        """
+        acct = os.environ["CF_ACCOUNT_ID"]
+        bucket = f"amux-{slug}-{server_id[-6:]}".lower()
+        try:
+            _call(f"{CF}/accounts/{acct}/r2/buckets", self.cf, "POST", {"name": bucket, "locationHint": "weur"})
+        except InfraError as e:
+            if e.code != 409:
+                raise
+        groups = _call(f"{CF}/user/tokens/permission_groups", self.cf)["result"]
+        want = {"Workers R2 Storage Bucket Item Write", "Workers R2 Storage Bucket Item Read"}
+        ids = [{"id": g["id"]} for g in groups if g["name"] in want]
+        if len(ids) != 2:
+            raise InfraError(500, f"R2 permission groups not found: {sorted(want)}")
+        tok = _call(f"{CF}/user/tokens", self.cf, "POST", {
+            "name": f"amux-backup-{bucket}",
+            "policies": [{"effect": "allow", "permission_groups": ids,
+                          "resources": {f"com.cloudflare.edge.r2.bucket.{acct}_default_{bucket}": "*"}}]})["result"]
+        return {"endpoint": f"https://{acct}.r2.cloudflarestorage.com", "bucket": bucket,
+                "access_key_id": tok["id"], "secret_access_key": hashlib.sha256(tok["value"].encode()).hexdigest()}
 
     def origin_certificate(self, hostname, csr_pem, days=5475):
         """Cloudflare Origin CA certificate for one host. The server made the key and sends only the CSR."""
