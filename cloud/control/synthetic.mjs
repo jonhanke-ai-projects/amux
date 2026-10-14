@@ -28,8 +28,15 @@ async function step(name, fn) {
   }
 }
 
+const health = await fetch(`${CP}/health`).then(r => r.json()).catch(() => ({}));
+const fakeInfra = health.fake === true;              // no real server behind the checkout
 const browser = await chromium.launch();
-const page = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+if (ADMIN && health.payments !== 'live') {
+  // Payments not live: the control plane only lets the admin start a server.
+  await ctx.addCookies([{ name: 'amux_admin', value: ADMIN, url: CP }]);
+}
+const page = await ctx.newPage();
 let fake = false, doorUrl = null;
 try {
   await step('open pricing link', async () => {
@@ -61,11 +68,11 @@ try {
   await step('server ready and door hand-off', async () => {
     doorUrl = await new Promise((resolve, reject) => {
       page.on('request', r => { if (r.url().includes('/_door/enter')) resolve(r.url().replace(/t=.*/, 't=<token>')); });
-      setTimeout(() => reject(new Error('no door hand-off within 15 minutes')), fake ? 20_000 : 15 * 60_000);
+      setTimeout(() => reject(new Error('no door hand-off within 15 minutes')), fakeInfra ? 20_000 : 15 * 60_000);
     });
     return doorUrl;
   });
-  if (!fake) {
+  if (!fakeInfra) {
     await step('dashboard loads', async () => {
       await page.waitForLoadState('domcontentloaded');
       await page.waitForSelector('#apikey-setup-modal, .card, #sessions', { timeout: 60_000 });
@@ -83,7 +90,7 @@ try {
 } finally {
   await browser.close();
 }
-const run = { ok, fake, ms: Date.now() - t0, steps };
+const run = { ok, fake: fakeInfra, fake_checkout: fake, ms: Date.now() - t0, steps };
 console.log(JSON.stringify(run, null, 1));
 if (ADMIN) {
   const r = await fetch(`${CP}/api/admin/synthetic`, { method: 'POST', headers: { Authorization: `Bearer ${ADMIN}`, 'Content-Type': 'application/json' },

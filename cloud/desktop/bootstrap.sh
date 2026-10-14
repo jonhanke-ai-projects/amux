@@ -283,7 +283,9 @@ if [[ "$IMAGE_BUILD" == 1 ]]; then
   # A builder created without an SSH key gets a root password Hetzner marks expired; the snapshot
   # would keep it and refuse every non-interactive SSH login on customer servers.
   chage -d "$(date +%F)" -M 99999 root 2>/dev/null || true
-  log "golden image prepared: $(as_user "$BIN_DIR/amux-server-rs" --version 2>/dev/null || echo 'amux-server-rs present')"
+  # Never run the server binary here: it has no --version flag and would start serving, so the
+  # build would never reach poweroff (the third real build hung exactly there, 2026-10-14).
+  log "golden image prepared: amux-server-rs $(sha256sum "$BIN_DIR/amux-server-rs" | cut -c1-12)"
   exit 0
 fi
 
