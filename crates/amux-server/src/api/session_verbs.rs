@@ -1263,6 +1263,16 @@ async fn tmux(args: &[&str]) -> Option<std::process::Output> {
     run_cmd("tmux", args, OP_TIMEOUT).await
 }
 
+/// Workers with a live tmux session (`amux-<name>`), by worker name. The
+/// Vault uses it to tell "receives at next start" from "running now".
+pub(crate) async fn running_workers() -> std::collections::BTreeSet<String> {
+    tmux_sessions_set()
+        .await
+        .into_iter()
+        .filter_map(|s| s.strip_prefix("amux-").map(str::to_string))
+        .collect()
+}
+
 async fn tmux_sessions_set() -> std::collections::BTreeSet<String> {
     let Some(out) = tmux(&["list-sessions", "-F", "#{session_name}"]).await else {
         return Default::default();
@@ -15715,15 +15725,16 @@ pub(crate) async fn start_session(
     // imported after the scope env files are sourced, so for its keys the
     // vault wins over a plaintext line that is still there mid-migration.
     // Keys delivered last launch and deleted since are unset.
-    let mut vault_values = match super::vault_secrets::launch_values(&home(), name) {
-        Ok(v) => v,
-        Err(error) => {
-            tracing::warn!(session = name, %error, measured = false, n_considered = 0,
-                verdict = "vault_delivery_failed",
-                "vault: secrets could not be resolved; the worker launches without them (AMUX-5375)");
-            Vec::new()
-        }
-    };
+    let (mut vault_values, vault_manifest) =
+        match super::vault_secrets::deliver(&home(), name, super::vault_secrets::DeliveryPath::Launch) {
+            Ok(d) => (d.values, d.manifest),
+            Err(error) => {
+                tracing::warn!(session = name, %error, measured = false, n_considered = 0,
+                    verdict = "vault_delivery_failed",
+                    "vault: secrets could not be resolved; the worker launches without them (AMUX-5375)");
+                (Vec::new(), Default::default())
+            }
+        };
     // Contract rule 10 (AH-387): the lane's minted identity rides the vault
     // channel (set-environment, imported by name), so it never reaches argv or
     // a typed line, and a lane the rule left gets it unset as a stale key.
@@ -16041,6 +16052,9 @@ pub(crate) async fn start_session(
             shell_step!(&vault_line, false);
         }
     }
+    // What this process now holds, by item id and version (never a value), so
+    // the Vault can say which running workers need a restart after a rotation.
+    super::vault_secrets::record_running(&home(), name, &vault_manifest);
     if has_oauth && provider != "codex" && provider != "gemini" && provider != "grok" && provider != "muse" {
         shell_step!("unset ANTHROPIC_API_KEY", false);
     }
