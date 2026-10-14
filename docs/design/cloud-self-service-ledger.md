@@ -53,6 +53,6 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | Ask | Why it blocks | Unblocks |
 |---|---|---|
-| A Stripe test-mode secret key in `~/.amux/server.env` as `STRIPE_TEST_SECRET_KEY` | Checkout, webhook and dunning tests against real Stripe test mode | The key present |
-| Sign in with Apple enabled on the App ID, plus a Services ID and a Sign in with Apple key (P3) | The iOS sign-in on a device, and token revocation on deletion | The capability on, and the key in `server.env` as `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` |
+| A Stripe test-mode secret key in `~/.amux/server.env` as `STRIPE_TEST_SECRET_KEY` | Checkout, webhook and dunning tests against real Stripe test mode | The key present. Tried 2026-10-14: no saved profile and no Chrome session is signed in to Stripe; the login is the owner's |
+| Sign in with Apple enabled on the App ID, plus a Services ID and a Sign in with Apple key (P3) | The iOS sign-in on a device, and token revocation on deletion | The capability on, and the key in `server.env` as `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`. Tried 2026-10-14: Chrome lands on Apple's sign-in page and no profile holds an Apple login |
 | Offer to existing $20 and $200 tunnel subscribers (O3) | Rewriting /cloud and /pricing for the new product | A decision; the email itself goes out only after the owner approves its text |
