@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1526';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1527';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -18790,7 +18790,7 @@ function _closePeekMore() {
 let _peekMsgIndex = -1;
 let _peekMsgNavKind = 'all';
 let _peekMsgNavContent = 'any';
-const _PEEK_SOURCE_LABELS = {all:'Everyone', human:'Human', session:'Workers', schedule:'Scheduled', amux:'Harness', unstamped:'Unstamped', unknown:'Unclassified'};
+const _PEEK_SOURCE_LABELS = {all:'Everyone', human:'Human', chat:'Chat', session:'Workers', schedule:'Scheduled', amux:'Harness', unstamped:'Unstamped', unknown:'Unclassified'};
 const _PEEK_CONTENT_LABELS = {any:'Any message', board:'Board references', files:'Files', links:'Links'};
 function _peekFiltersActive() { return _peekMsgNavKind !== 'all' || _peekMsgNavContent !== 'any'; }
 // True when the visible count depends on prompt KIND, which is the only part
@@ -23293,6 +23293,7 @@ function _msgKind(e) {
   const t = (typeof e === 'string' ? '' : (e.type || '')).toLowerCase();
   if (t === 'session') return 'session';
   if (t === 'schedule') return 'schedule';
+  if (t === 'chat') return 'chat';
   if (t === 'system') return 'amux';   // amux's own nudges, not a person
   // A send that went in via raw tmux while the server was unreachable, and was
   // reconciled into the trail afterwards by the CLI (AMUX-2670). It MUST NOT
@@ -23442,6 +23443,9 @@ function _fmtDur(ms) {
 }
 const _MSG_KIND = {
   human:    { label: 'Human',     color: '#58a6ff', bg: 'rgba(88,166,255,0.14)' },
+  // Typed into a worker's Chat tab (stored type "chat"), kept apart from the
+  // terminal so the Messages tab can show and filter it (Ethan, 2026-10-14).
+  chat:     { label: 'Chat',      color: '#db61a2', bg: 'rgba(219,97,162,0.14)' },
   session:  { label: 'Session',   color: '#8957e5', bg: 'rgba(137,87,229,0.16)' },
   schedule: { label: 'Scheduled', color: '#3fb950', bg: 'rgba(63,185,80,0.15)' },
   amux:     { label: 'amux',      color: '#8b949e', bg: 'rgba(139,148,158,0.14)' },
@@ -23459,7 +23463,7 @@ const _MSG_KIND = {
   // nothing on screen.
   unknown:  { label: 'Unclassified', color: '#d29922', bg: 'rgba(210,153,34,0.14)' },
 };
-const _MSG_KIND_ORDER = ['human', 'session', 'schedule', 'amux', 'unstamped', 'unknown'];
+const _MSG_KIND_ORDER = ['human', 'chat', 'session', 'schedule', 'amux', 'unstamped', 'unknown'];
 // Back-compat shim: _msgOrigin was the old 4-way classifier. Anything still
 // calling it gets the canonical kind.
 function _msgOrigin(e) { return _msgKind(e); }
