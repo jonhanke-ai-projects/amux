@@ -359,7 +359,7 @@ test('realtime draw: a blocked main thread catches up in one frame; WebSocket-bl
     // slow CI WebKit runner; otherwise the tail is applied frame by frame after
     // B wakes and the count measures the sender's speed, not the collapse
     // (CI 38486320066: 37 frames on ios-safari with a 1.5s block).
-    const blockMs = 5000;
+    const blockMs = 15000;   // CI ios-safari took ~7.5s for this stroke (run 38491054930)
     const blockEnd = B.p.evaluate((ms) => { const end = Date.now() + ms; while (Date.now() < end) { /* busy */ } return end; }, blockMs);
     await setTool(A.p, 'freedraw');
     await stroke(A.p, { steps: 60, radius: 60 });
