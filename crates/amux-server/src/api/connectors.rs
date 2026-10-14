@@ -2342,7 +2342,15 @@ async fn test_connection_inner(
                     .await
                     .unwrap_or_default();
                 let minted: Value = serde_json::from_slice(&bytes).unwrap_or_default();
-                let mut check = if status.is_success() {
+                let missing = missing_scopes(scopes, minted["scope"].as_str());
+                let mut check = if status.is_success() && !missing.is_empty() {
+                    // A shared Google grant that never consented this connector's
+                    // scopes is not connected FOR this connector: calling the
+                    // provider only produces a 403 that reads as broken (google-admin
+                    // failed for every saved account, two of them gmail.com, 2026-10-14).
+                    json!({"ok":false,"status":"needs_auth","measured":true,
+                        "detail":format!("this account's grant does not include {}; connect it for this connector", missing.join(" "))})
+                } else if status.is_success() {
                     match minted["access_token"].as_str() {
                         Some(token) => provider_canary(&ctx, p.id, p.test_url, token).await,
                         None => {
@@ -2356,8 +2364,21 @@ async fn test_connection_inner(
                 check["account"] = json!(account);
                 checks.push(check);
             }
-            let ok = checks.iter().all(|c| c["ok"] == true);
-            return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":checks.iter().all(|c| c["measured"] == true),"accounts":checks,"detail":if ok {"all saved accounts passed the live provider test"} else {"one or more saved accounts failed; inspect accounts"}})).into_response();
+            let unscoped = checks.iter().filter(|c| c["status"] == "needs_auth").count();
+            if unscoped == checks.len() {
+                // No saved account carries this connector's scopes: report it as not
+                // set up, unless a domain-wide service account can test it below.
+                tracing::info!(connector=%id, accounts=unscoped, measured=true, n_considered=unscoped,
+                    verdict="connector_accounts_lack_scope", "no saved account granted this connector's scopes");
+                if !(p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some()) {
+                    return Json(json!({"ok":false,"status":"needs_auth","measured":true,"accounts":checks,
+                        "detail":format!("no saved account granted this connector's scopes; connect first — POST /api/connectors/{}/auth", p.id)})).into_response();
+                }
+            } else {
+                let scoped: Vec<&Value> = checks.iter().filter(|c| c["status"] != "needs_auth").collect();
+                let ok = scoped.iter().all(|c| c["ok"] == true);
+                return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":scoped.iter().all(|c| c["measured"] == true),"accounts":checks,"detail":if ok {"all saved accounts passed the live provider test"} else {"one or more saved accounts failed; inspect accounts"}})).into_response();
+            }
         }
         if p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some() {
             return match super::google_sa::mint_token(scopes).await {
@@ -2410,6 +2431,15 @@ async fn test_connection_inner(
         p.test_url.into()
     };
     Json(provider_canary(&ctx, p.id, &url, &key).await).into_response()
+}
+
+/// The connector scopes a grant did not include. `granted` is the scope string
+/// the mint reports for the stored grant; when the grant never recorded its
+/// scopes there is nothing to compare, and nothing is reported missing.
+fn missing_scopes<'a>(wanted: &'a str, granted: Option<&str>) -> Vec<&'a str> {
+    let Some(granted) = granted.filter(|g| !g.trim().is_empty()) else { return vec![] };
+    let have: Vec<&str> = granted.split_whitespace().collect();
+    wanted.split_whitespace().filter(|w| !have.contains(w)).collect()
 }
 
 /// Provider success includes application-level errors (Slack/Telegram can return HTTP 200).
@@ -5159,6 +5189,16 @@ mod connector_storage_regressions {
 
 #[cfg(test)]
 mod connector_maintenance_regressions {
+    #[test]
+    fn missing_scopes_names_what_a_grant_lacks_and_trusts_unrecorded_grants() {
+        let admin = "https://www.googleapis.com/auth/admin.directory.user.readonly https://www.googleapis.com/auth/admin.directory.group.readonly";
+        let gmail_only = "openid https://www.googleapis.com/auth/gmail.modify";
+        assert_eq!(super::missing_scopes(admin, Some(gmail_only)).len(), 2);
+        assert!(super::missing_scopes(admin, Some(&format!("{gmail_only} {admin}"))).is_empty());
+        assert!(super::missing_scopes(admin, None).is_empty(), "no recorded scopes: nothing to compare");
+        assert!(super::missing_scopes(admin, Some("  ")).is_empty());
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
