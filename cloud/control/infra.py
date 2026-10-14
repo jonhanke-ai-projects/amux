@@ -46,7 +46,7 @@ class InfraError(Exception):
 
 
 class Infra:
-    def __init__(self, hcloud_token, cf_token, cf_zone_id, domain="amux.cloud"):
+    def __init__(self, hcloud_token, cf_token, cf_zone_id, domain="amux.io"):
         self.h, self.cf, self.zone, self.domain = hcloud_token, cf_token, cf_zone_id, domain
 
     # ---------------------------------------------------------- Hetzner
@@ -113,6 +113,10 @@ class Infra:
         return []
 
     # ---------------------------------------------------------- Cloudflare
+    def dns_name_taken(self, name):
+        r = _call(f"{CF}/zones/{self.zone}/dns_records?name={name}.{self.domain}", self.cf)
+        return bool(r.get("result"))
+
     def create_dns(self, name, ipv4):
         r = _call(f"{CF}/zones/{self.zone}/dns_records", self.cf, "POST",
                   {"type": "A", "name": f"{name}.{self.domain}", "content": ipv4, "proxied": True, "ttl": 1,

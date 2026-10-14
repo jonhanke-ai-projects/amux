@@ -18,7 +18,7 @@ def _date(ts):
 
 def render(template, p):
     slug = p.get("slug", "")
-    host = f"https://{slug}.amux.cloud" if slug else BASE
+    host = f"https://{slug}.{os.environ.get('AMUX_CUSTOMER_DOMAIN', 'amux.io')}" if slug else BASE
     T = {
         "being_built": ("Your amux server is being built",
                         f"Thanks for ordering amux Cloud.\n\nYour server, {host}, is being built now. It is usually ready "

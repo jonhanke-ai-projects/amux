@@ -33,7 +33,7 @@
 #
 # amux Cloud fleet mode (docs/design/cloud-self-service.md): when cloud-init
 # has written /etc/amux/fleet.env (AMUX_SLUG, AMUX_OWNER_EMAIL, AMUX_FLEET_SECRET,
-# AMUX_CONTROL_URL), the domain is <slug>.amux.cloud, the owner is a member by
+# AMUX_CONTROL_URL), the domain is <slug>.amux.io, the owner is a member by
 # email with no password (they arrive through cloud.amux.io's door token), and
 # Caddy serves the Cloudflare Origin CA certificate the fleet agent fetched into
 # /etc/amux/origin.{crt,key} instead of asking Let's Encrypt.
@@ -65,7 +65,7 @@ FLEET=0
 if [[ -f "$FLEET_ENV" ]]; then
   set -a; . "$FLEET_ENV"; set +a
   FLEET=1
-  DOMAIN="${AMUX_SLUG:?fleet.env has no AMUX_SLUG}.${AMUX_CUSTOMER_DOMAIN:-amux.cloud}"
+  DOMAIN="${AMUX_SLUG:?fleet.env has no AMUX_SLUG}.${AMUX_CUSTOMER_DOMAIN:-amux.io}"
 fi
 LOG=/var/log/amux-desktop-setup.log
 
@@ -270,6 +270,9 @@ if [[ "$IMAGE_BUILD" == 1 ]]; then
   cloud-init clean --logs >/dev/null 2>&1 || true
   rm -f /etc/ssh/ssh_host_* /etc/amux/fleet.env /etc/amux/origin.* /var/lib/amux-fleet/* 2>/dev/null || true
   truncate -s 0 /etc/machine-id
+  # A builder created without an SSH key gets a root password Hetzner marks expired; the snapshot
+  # would keep it and refuse every non-interactive SSH login on customer servers.
+  chage -d "$(date +%F)" -M 99999 root 2>/dev/null || true
   log "golden image prepared: $(as_user "$BIN_DIR/amux-server-rs" --version 2>/dev/null || echo 'amux-server-rs present')"
   exit 0
 fi

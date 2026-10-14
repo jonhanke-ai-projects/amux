@@ -18,7 +18,7 @@ REPO = "https://github.com/mixpeek/amux.git"
 def user_data(ref):
     return f"""#cloud-config
 runcmd:
-  - [bash, -c, "set -e; git clone -q {REPO} /root/amux && cd /root/amux && git checkout -q {ref} && AMUX_IMAGE_BUILD=1 bash cloud/desktop/bootstrap.sh > /var/log/amux-image-build.log 2>&1 && echo IMAGE_OK >> /var/log/amux-image-build.log; poweroff"]
+  - [bash, -c, "git clone -q {REPO} /root/amux && cd /root/amux && git checkout -q {ref} && AMUX_IMAGE_BUILD=1 bash cloud/desktop/bootstrap.sh > /var/log/amux-image-build.log 2>&1 && echo IMAGE_OK >> /var/log/amux-image-build.log && poweroff"]
 """
 
 

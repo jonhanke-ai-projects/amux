@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Get your own amux server</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Your own amux server, running all day, updated and backed up for you. Bring your Claude, ChatGPT or Gemini sign-in. From $39 a month.">
+  <link rel="canonical" href="https://amux.io/start/">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <h1>Your own amux server</h1>
+    <p class="subtitle">Running all day at <code>yourname.amux.io</code>, updated and backed up for you. Bring your Claude, ChatGPT or Gemini sign-in, or an API key. Teammates included. Cancel any time.</p>
+    <div class="plan-grid">
+      <div class="plan-card">
+        <h2>Solo</h2>
+        <p class="plan-price"><span data-plan-price="solo:39">$39</span><small>/month</small></p>
+        <p class="plan-specs">4 vCPU, 8 GB RAM, 80 GB disk</p>
+        <a class="btn btn-primary plan-cta" data-plan="solo" href="/cloud/#notify">Get notified</a>
+      </div>
+      <div class="plan-card">
+        <h2>Team</h2>
+        <p class="plan-price"><span data-plan-price="team:69">$69</span><small>/month</small></p>
+        <p class="plan-specs">8 vCPU, 16 GB RAM, 160 GB disk</p>
+        <a class="btn btn-primary plan-cta" data-plan="team" href="/cloud/#notify">Get notified</a>
+      </div>
+      <div class="plan-card">
+        <h2>Max</h2>
+        <p class="plan-price"><span data-plan-price="max:129">$129</span><small>/month</small></p>
+        <p class="plan-specs">16 vCPU, 32 GB RAM, 320 GB disk</p>
+        <a class="btn btn-primary plan-cta" data-plan="max" href="/cloud/#notify">Get notified</a>
+      </div>
+    </div>
+    <p id="start-status" class="notify-status" role="status"></p>
+    <p>Prefer to run it yourself? amux is free and open source: <a href="https://github.com/mixpeek/amux">install it on your own machine</a>.
+       Already running it? Move your setup over with <code>amux cloud move</code>.</p>
+    <script>
+      // The buttons sell only when the control plane says payments are live; until then they
+      // lead to the waitlist, so this page never offers something that cannot be bought.
+      (function () {
+        var CP = 'https://cloud.amux.io';
+        var src = new URLSearchParams(location.search).get('source') || 'site:start';
+        fetch(CP + '/health', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (h) {
+          if (h.payments !== 'live') return;
+          document.querySelectorAll('.plan-cta').forEach(function (a) {
+            a.textContent = 'Get your server';
+            a.href = CP + '/start?plan=' + a.dataset.plan + '&source=' + encodeURIComponent(src);
+          });
+        }).catch(function () {
+          document.getElementById('start-status').textContent = 'Signups open soon. Leave your email to hear first.';
+        });
+      })();
+    </script>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

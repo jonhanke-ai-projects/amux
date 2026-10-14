@@ -6,7 +6,7 @@ places that must agree with it, and exits non-zero naming each disagreement:
 
   hetzner  every plan's price is at least guard_multiple x its server cost
            (server + IPv4 + backups), from the live Hetzner pricing API
-  site     every plan price shown on site/pricing/index.html (data-plan-price
+  site     every plan price shown on site/start/index.html (data-plan-price
            attributes) equals plans.json
   stripe   every plan's Stripe price (by lookup key) equals plans.json
 
@@ -119,7 +119,7 @@ def main(argv):
         else:
             problems += check_margin(plans, fetch_hetzner(tok))
     if "site" in which:
-        with open(os.path.join(REPO, "site", "pricing", "index.html")) as f:
+        with open(os.path.join(REPO, "site", "start", "index.html")) as f:
             html = f.read()
         if "data-plan-price=" not in html and plans["status"] != "approved":
             not_run.append("site: prices not published yet (plans.json status is "

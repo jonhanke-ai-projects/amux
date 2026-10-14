@@ -4,7 +4,7 @@ One job per server, advanced by `tick()` from the control plane's loop:
 
   create  create the Hetzner server from the golden image in the first location
           that has capacity (capacity errors move to the next EU location)
-  dns     a proxied Cloudflare A record <slug>.amux.cloud
+  dns     a proxied Cloudflare A record <slug>.amux.io
   boot    wait for the fleet agent's first heartbeat; it sends a CSR, and the
           heartbeat reply carries the Origin CA certificate for that host
   ready   the agent reports door, amux-server and the first backup healthy
@@ -21,19 +21,24 @@ PROVISION_TIMEOUT = 15 * 60
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
-def make_slug(store, email):
+def make_slug(store, email, taken=None):
+    """<slug>.amux.io for this customer: never a name we reserve, already gave out, or that exists in DNS."""
     base = SLUG_RE.sub("-", email.split("@")[0].lower()).strip("-")[:20] or "amux"
     slug, n = base, 1
-    while store.one("SELECT 1 x FROM servers WHERE slug=?", slug) or slug in RESERVED:
+    while (store.one("SELECT 1 x FROM servers WHERE slug=?", slug) or slug in RESERVED or slug.startswith("_")
+           or (taken and taken(slug))):
         n += 1
         slug = f"{base}-{n}"
     return slug
 
 
-RESERVED = {"www", "api", "cloud", "control", "admin", "status", "mail", "app", "amux"}
+# Names amux.io uses or will want: the site, its services, and anything that reads as ours.
+RESERVED = {"www", "api", "cloud", "control", "admin", "status", "mail", "app", "amux", "start", "docs", "blog", "help",
+            "support", "billing", "accounts", "clerk", "clkmail", "demo", "sandbox", "login", "signin", "signup", "pricing",
+            "dashboard", "console", "staging", "dev", "test", "cdn", "static", "assets", "ios", "android", "team", "security"}
 
 
-def start(store, org_id, subscription_id, plan, email, location=None, now=None):
+def start(store, org_id, subscription_id, plan, email, location=None, now=None, taken=None):
     """Create the server row and its job. Idempotent per subscription."""
     now = now or time.time()
     existing = store.one("SELECT * FROM servers WHERE subscription_id=? AND status IN ('provisioning','ready')",
@@ -42,7 +47,7 @@ def start(store, org_id, subscription_id, plan, email, location=None, now=None):
         return existing
     sid = new_id("srv")
     store.run("INSERT INTO servers(id,org_id,subscription_id,slug,plan,location,status,fleet_secret,created_at) "
-              "VALUES(?,?,?,?,?,?,?,?,?)", sid, org_id, subscription_id, make_slug(store, email), plan,
+              "VALUES(?,?,?,?,?,?,?,?,?)", sid, org_id, subscription_id, make_slug(store, email, taken), plan,
               location, "provisioning", new_secret(), now)
     store.run("INSERT INTO provision_jobs(id,server_id,step,status,started_at,updated_at) VALUES(?,?,?,?,?,?)",
               new_id("job"), sid, "create", "pending", now, now)

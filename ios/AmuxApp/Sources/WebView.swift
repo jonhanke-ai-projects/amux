@@ -229,7 +229,7 @@ struct WebView: UIViewRepresentable {
             // Trust self-signed certs for: Tailscale (.ts.net), local networks,
             // private IPs, and any non-cloud.amux.io host (user-configured servers)
             // amux Cloud servers sit behind Cloudflare with real certificates: verify them normally.
-            let isPublicAmux = host.hasSuffix("amux.io") || host.hasSuffix("amux.cloud")
+            let isPublicAmux = host.hasSuffix("amux.io")
             if !isPublicAmux {
                 completionHandler(.useCredential, URLCredential(trust: serverTrust))
             } else {

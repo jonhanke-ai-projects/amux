@@ -843,3 +843,12 @@ footer, .site-footer {
 .notify-form .btn { min-height: 44px; }
 .notify-status { min-height: 1.2em; margin-top: 8px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* amux.io/start plan cards (docs/design/cloud-self-service.md, J2-J3) */
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 24px 0; }
+.plan-card { border: 1px solid var(--border); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 8px; }
+.plan-card h2 { margin: 0; }
+.plan-price { font-size: 2rem; font-weight: 700; margin: 0; }
+.plan-price small { font-size: 0.9rem; font-weight: 400; color: var(--fg-dim); }
+.plan-specs { color: var(--fg-dim); margin: 0 0 8px; }
+.plan-cta { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; margin-top: auto; }

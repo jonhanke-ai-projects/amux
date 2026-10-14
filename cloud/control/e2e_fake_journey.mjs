@@ -43,7 +43,7 @@ await b.close();
 const expect = {
   checkout_url: v => v.startsWith('/fake/checkout/'), after_pay: v => v === '/progress',
   heartbeat: v => v.ready === true && v.cert === true, wrong_fleet_token: v => v === 401,
-  door_url: v => /^https:\/\/journey\.amux\.cloud\/_door\/enter\?t=/.test(v || ''),
+  door_url: v => /^https:\/\/journey\.amux\.io\/_door\/enter\?t=/.test(v || ''),
   root_signed_in: v => (v || '').startsWith('/go/'), root_signed_out: v => (v || '').endsWith('/pricing/'),
   counts: v => v.servers === 1 && v.jobs === 1 && v.users === 1 && v.emails === 1,
   notify: v => v === 200, start_when_frozen: v => v === 503, admin_without_token: v => v === 401,

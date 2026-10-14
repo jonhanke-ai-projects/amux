@@ -86,7 +86,7 @@ class IOS(unittest.TestCase):
         self.assertEqual([s["id"] for s in me["servers"]], [self.server_id])
         code, d, _, _ = self.call("GET", f"/api/go-url/{self.server_id}", token=self.app_token)
         self.assertEqual(code, 200)
-        self.assertRegex(d["url"], r"^https://pat\.amux\.cloud/_door/enter\?t=")
+        self.assertRegex(d["url"], r"^https://pat\.amux\.io/_door/enter\?t=")
         self.assertEqual(self.call("GET", f"/api/go-url/{self.server_id}", token="forged")[0], 401)
         # A web session token is not an app token
         web = app.tokens.sign({"sub": me and app.STORE.one("SELECT id FROM users")["id"]}, app.SECRET, 60)

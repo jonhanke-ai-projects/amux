@@ -325,3 +325,16 @@ class Support(Base):
             support.open_request(self.store, u, f"q{i}", srv, now=T0 + 300 + i)
         with self.assertRaises(ValueError):
             support.open_request(self.store, u, "sixth in an hour", srv, now=T0 + 400)
+
+
+class Names(Base):
+    def test_reserved_existing_and_taken_names_are_skipped(self):
+        self.infra.existing_names = {"dana"}
+        self.billing.sessions["cs_w"] = session("cs_w", "www@example.com", "sub_w")
+        self.billing.subs["sub_w"] = {"id": "sub_w", "status": "active", "current_period_end": T0 + 9e5}
+        r = accounts.complete_checkout(self.store, self.billing, "cs_w", now=T0, name_taken=self.infra.dns_name_taken)
+        self.assertEqual(r["server"]["slug"], "www-2", "a reserved name is never handed out")
+        self.billing.sessions["cs_d"] = session("cs_d", "dana@example.com", "sub_d", customer="cus_d")
+        self.billing.subs["sub_d"] = {"id": "sub_d", "status": "active", "current_period_end": T0 + 9e5}
+        r = accounts.complete_checkout(self.store, self.billing, "cs_d", now=T0, name_taken=self.infra.dns_name_taken)
+        self.assertEqual(r["server"]["slug"], "dana-2", "a name already in DNS is never handed out")

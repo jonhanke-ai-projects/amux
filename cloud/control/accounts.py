@@ -23,7 +23,7 @@ def _cust_id(c):
     return c["id"] if isinstance(c, dict) else c
 
 
-def complete_checkout(store, billing, session_id, now=None):
+def complete_checkout(store, billing, session_id, now=None, name_taken=None):
     now = now or time.time()
     done = store.one("SELECT * FROM signups WHERE checkout_session_id=?", session_id)
     if done and done["server_id"]:
@@ -53,13 +53,13 @@ def complete_checkout(store, billing, session_id, now=None):
             time.sleep(0.1)
         raise TimeoutError(f"checkout {session_id} is being completed by another request")
     try:
-        return _complete(store, billing, session_id, sess, meta, plan, email, customer, sub_obj, sub_id, now)
+        return _complete(store, billing, session_id, sess, meta, plan, email, customer, sub_obj, sub_id, now, name_taken)
     except Exception:
         store.run("DELETE FROM signups WHERE checkout_session_id=? AND server_id IS NULL", session_id)   # let a retry run
         raise
 
 
-def _complete(store, billing, session_id, sess, meta, plan, email, customer, sub_obj, sub_id, now):
+def _complete(store, billing, session_id, sess, meta, plan, email, customer, sub_obj, sub_id, now, name_taken=None):
     # Existing account by Stripe customer, then by email (T-ACC-2); else a new one (T-ACC-1).
     org = (store.one("SELECT * FROM orgs WHERE stripe_customer_id=?", customer) if customer else None) or \
           store.one("SELECT o.* FROM orgs o JOIN users u ON u.org_id=o.id WHERE lower(u.email)=?", email)
@@ -84,7 +84,7 @@ def _complete(store, billing, session_id, sess, meta, plan, email, customer, sub
         store.run("INSERT OR IGNORE INTO ledger(invoice_id,org_id,subscription_id,amount_cents,paid_at,payment_intent) "
                   "VALUES(?,?,?,?,?,?)", _cust_id(inv), org["id"], sub_id, sess["amount_total"], now,
                   sess.get("payment_intent"))
-    srv = provision.start(store, org["id"], sub_id, plan, email, now=now)
+    srv = provision.start(store, org["id"], sub_id, plan, email, now=now, taken=name_taken)
     store.run("UPDATE signups SET server_id=?, org_id=? WHERE checkout_session_id=?", srv["id"], org["id"], session_id)
     store.event("cloud.paid", org["id"], plan=plan, amount=sess.get("amount_total"), source=meta.get("source"))
     store.enqueue_email(email, "being_built", dedupe=f"built:{srv['id']}", slug=srv["slug"])

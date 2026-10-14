@@ -33,7 +33,8 @@ def start(store, infra, srv, golden_image, control_url, now=None):
     user_data = ("#cloud-config\nwrite_files:\n  - path: /etc/amux/fleet.env\n    permissions: '0600'\n    content: |\n" +
                  "".join(f"      {k}={json.dumps(v)}\n" for k, v in env.items()) +
                  "runcmd:\n  - [systemctl, enable, --now, amux-fleet-agent.service]\n")
-    h = infra.create_server(f"amux-drill-{srv['slug']}", "cx23", srv["location"] or "fsn1", golden_image,
+    # cx33: the golden image is built on cx33 (80 GB) and Hetzner cannot boot it on a smaller disk.
+    h = infra.create_server(f"amux-drill-{srv['slug']}", "cx33", srv["location"] or "fsn1", golden_image,
                             {"amux-cloud": "1", "purpose": "restore-drill", "drill": did}, user_data)
     store.run("INSERT INTO drills(id,server_id,hetzner_id,fleet_secret,started_at,expected) VALUES(?,?,?,?,?,?)",
               did, srv["id"], h["id"], secret, now, srv["backup_fingerprint"])

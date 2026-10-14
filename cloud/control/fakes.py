@@ -102,6 +102,9 @@ class FakeInfra:
     def delete_image(self, image_id):
         self.images.pop(int(image_id), None)
 
+    def dns_name_taken(self, name):
+        return any(r["name"] == name for r in self.dns.values()) or name in getattr(self, "existing_names", set())
+
     def create_dns(self, name, ipv4):
         rid = f"rec{next(self._ids)}"
         self.dns[rid] = {"name": name, "content": ipv4, "proxied": True}

@@ -26,25 +26,30 @@ PLANS = load_plans()
 PLAN_IDS = {p["id"] for p in PLANS["plans"]}
 PUBLIC = os.environ.get("CONTROL_PUBLIC_URL", "https://cloud.amux.io").rstrip("/")
 SITE = os.environ.get("AMUX_SITE_URL", "https://amux.io").rstrip("/")
-CUSTOMER_DOMAIN = os.environ.get("AMUX_CUSTOMER_DOMAIN", "amux.cloud")
+CUSTOMER_DOMAIN = os.environ.get("AMUX_CUSTOMER_DOMAIN", "amux.io")
 SECRET = os.environ.get("CONTROL_SECRET") or ""
 FAKE = os.environ.get("CONTROL_FAKE") == "1"
+# Real Hetzner and Cloudflare with the fake checkout page, until a Stripe key is configured. Anyone could
+# otherwise create servers for free, so in this mode /start needs the admin token (cookie or ?admin=).
+FAKE_BILLING = FAKE or os.environ.get("CONTROL_FAKE_BILLING") == "1"
 COOKIE = "__Host-amux_cp" if PUBLIC.startswith("https://") else "amux_cp"
 SESSION_TTL = 7 * 86400
 
 
 # ------------------------------------------------------------------ providers
 def make_providers():
+    from fakes import FakeBilling, FakeInfra
+    if FAKE_BILLING:
+        b = FakeBilling(); b.sessions = {}
+    else:
+        from billing import StripeBilling
+        b = StripeBilling(os.environ["STRIPE_SECRET_KEY"], PLANS)
     if FAKE:
-        from fakes import FakeBilling, FakeInfra
-        b, i = FakeBilling(), FakeInfra()
-        b.sessions = {}
-        return b, i
-    from billing import StripeBilling
-    from infra import Infra
-    return (StripeBilling(os.environ["STRIPE_SECRET_KEY"], PLANS),
-            Infra(os.environ["HCLOUD_TOKEN"], os.environ["CLOUDFLARE_API_TOKEN"], os.environ["CF_ZONE_ID_AMUX_CLOUD"],
-                  CUSTOMER_DOMAIN))
+        i = FakeInfra()
+    else:
+        from infra import Infra
+        i = Infra(os.environ["HCLOUD_TOKEN"], os.environ["CLOUDFLARE_API_TOKEN"], os.environ["CF_ZONE_ID"], CUSTOMER_DOMAIN)
+    return b, i
 
 
 STORE = None
@@ -172,9 +177,11 @@ class Handler(BaseHTTPRequestHandler):
 
 # ------------------------------------------------------------------ routes
 def r_health(h, _):
+    h.extra_headers = {"Access-Control-Allow-Origin": SITE}       # amux.io/start reads payments from here
     h.json(200, {"ok": True, "measured": True, "fake": FAKE, "flags": {r["name"]: r["value"] for r in STORE.all("SELECT * FROM flags")},
                  "email": "configured" if emails.configured() else "not configured: mail is queued, not sent",
                  "prices": PLANS["status"],
+                 "payments": "live" if (not FAKE_BILLING and PLANS["status"] == "approved") else "not live",
                  "n_considered": STORE.one("SELECT COUNT(*) n FROM servers")["n"]})
 
 
@@ -237,6 +244,9 @@ def r_start(h, _):
                                 "servers are unaffected. Please try again shortly.</p>"))
     if PLANS["status"] != "approved" and not FAKE:
         return h.redirect(f"{SITE}/cloud/#notify")
+    if FAKE_BILLING and not FAKE and not is_admin(h):
+        return h.send(403, page("Not open yet", "<h1>Not open yet</h1><p>Payments are not switched on. "
+                                f"<a href='{SITE}/cloud/#notify'>Get notified</a> when they are.</p>"))
     signup = new_id("su")
     u = h.user()
     org = STORE.one("SELECT * FROM orgs WHERE id=?", u["org_id"]) if u else None
@@ -251,7 +261,7 @@ def r_start(h, _):
 def r_welcome(h, _):
     sid = h.query().get("session_id") or ""
     try:
-        r = accounts.complete_checkout(STORE, BILLING, sid)
+        r = accounts.complete_checkout(STORE, BILLING, sid, name_taken=INFRA.dns_name_taken)
     except accounts.NotPaid:
         return h.send(402, page("Payment not complete", "<h1>Payment not complete</h1><p>Your checkout did not finish. "
                                 f"<a href='{SITE}/pricing/'>Back to pricing</a></p>"))
@@ -296,7 +306,9 @@ def r_go(h, path):
 def r_webhook(h, _):
     from billing import verify_webhook
     payload = h.body()
-    if FAKE:
+    if FAKE_BILLING:
+        if not FAKE and not is_admin(h):
+            return h.json(401, {"error": "admin token required in fake-billing mode"})
         event = json.loads(payload)
     else:
         try:
@@ -649,6 +661,79 @@ def r_billing(h, _):
     h.redirect(BILLING.portal_url(org["stripe_customer_id"], f"{PUBLIC}/"))
 
 
+ADMIN_COOKIE = "amux_admin"
+
+
+def is_admin(h):
+    tok = os.environ.get("CONTROL_ADMIN_TOKEN")
+    if not tok:
+        return False
+    import hmac as _h
+    auth = (h.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+    given = auth or _cookie(h, ADMIN_COOKIE) or h.query().get("admin") or ""
+    return _h.compare_digest(given, tok)
+
+
+def r_admin_page(h, _):
+    """The owner's whole view of the business on one page (plan section 9)."""
+    if not is_admin(h):
+        if h.command == "POST":
+            form = {k: v[0] for k, v in urllib.parse.parse_qs(h.body().decode()).items()}
+            tok = os.environ.get("CONTROL_ADMIN_TOKEN") or ""
+            import hmac as _h
+            if tok and _h.compare_digest(form.get("token", ""), tok):
+                secure = "; Secure" if PUBLIC.startswith("https://") else ""
+                return h.redirect("/admin", {"Set-Cookie": f"{ADMIN_COOKIE}={tok}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000{secure}"})
+        return h.send(401, page("Admin", "<h1>Admin</h1><form method=post><input name=token type=password placeholder='admin token' "
+                                "required> <button class=btn>Open</button></form>"))
+    if h.command == "POST":
+        form = {k: v[0] for k, v in urllib.parse.parse_qs(h.body().decode()).items()}
+        if form.get("flag") in ("lifecycle_freeze", "deploy_freeze", "provisioning_freeze", "spend_freeze", "lifecycle_shadow",
+                                "support_auto_reply"):
+            STORE.set_flag(form["flag"], "1" if form.get("value") == "1" else "0")
+            STORE.event("control.flag", flag=form["flag"], value=form.get("value"))
+        if form.get("ack"):
+            STORE.run("UPDATE alerts SET acknowledged=1 WHERE id=?", int(form["ack"]))
+        if form.get("approve_support"):
+            support.send(STORE, form["approve_support"])
+        return h.redirect("/admin")
+    import report
+    lines, waiting = report.build(STORE)
+    e = html.escape
+    rows = STORE.all("SELECT s.*, o.email FROM servers s JOIN orgs o ON o.id=s.org_id ORDER BY s.created_at DESC LIMIT 200")
+    now = time.time()
+    def age(t):
+        if not t:
+            return "never"
+        m = (now - t) / 60
+        return f"{m:.0f} min ago" if m < 120 else f"{m / 60:.0f} h ago" if m < 2880 else f"{m / 1440:.0f} d ago"
+    srv_html = "".join(
+        f"<tr><td><a href='https://{e(s['slug'])}.{CUSTOMER_DOMAIN}' target=_blank>{e(s['slug'])}</a></td><td>{e(s['email'])}</td>"
+        f"<td>{e(s['plan'])}</td><td>{e(s['status'])}</td><td>{e(s['version'] or '')}</td><td>{age(s['last_heartbeat'])}</td>"
+        f"<td>{age(s['last_backup_at'])}</td></tr>" for s in rows) or "<tr><td colspan=7 class=dim>No servers yet</td></tr>"
+    flags = {r["name"]: r["value"] for r in STORE.all("SELECT * FROM flags")}
+    flag_html = "".join(
+        f"<form method=post style='display:inline-block;margin:4px'><input type=hidden name=flag value={k}>"
+        f"<input type=hidden name=value value={'0' if v == '1' else '1'}><button class=btn style='background:{'#c0392b' if (v == '1') != (k == 'lifecycle_shadow') else ''}'>"
+        f"{e(k)}: {'on' if v == '1' else 'off'}</button></form>" for k, v in sorted(flags.items()))
+    alerts = STORE.all("SELECT * FROM alerts WHERE acknowledged=0 ORDER BY id DESC LIMIT 30")
+    alert_html = "".join(f"<li>{e(a['kind'])}: {e(a['message'])} <form method=post style='display:inline'>"
+                         f"<input type=hidden name=ack value={a['id']}><button>dismiss</button></form></li>" for a in alerts) \
+        or "<li class=dim>Nothing needs you.</li>"
+    drafts = STORE.all("SELECT * FROM support WHERE state='open' AND draft IS NOT NULL ORDER BY created_at")
+    draft_html = "".join(f"<li><b>{e(d['email'])}</b>: {e(d['message'][:200])}<br><i>{e(d['draft'][:600])}</i>"
+                         f"<form method=post><input type=hidden name=approve_support value={d['id']}><button class=btn>Send this reply</button></form></li>"
+                         for d in drafts)
+    body = ("<h1>amux Cloud</h1>" + "".join(f"<p><b>{e(k)}</b>: {e(v)}</p>" for k, v in lines.items()) +
+            f"<h2>Needs you</h2><ul>{alert_html}</ul>" + (f"<h2>Support replies to approve</h2><ul>{draft_html}</ul>" if drafts else "") +
+            f"<h2>Servers</h2><div style='overflow-x:auto'><table style='width:100%;font-size:14px'><tr><th align=left>Server</th>"
+            f"<th align=left>Owner</th><th align=left>Plan</th><th align=left>Status</th><th align=left>Version</th>"
+            f"<th align=left>Heartbeat</th><th align=left>Backup</th></tr>{srv_html}</table></div>"
+            f"<h2>Switches</h2><p class=dim>Red means the switch is stopping something.</p>{flag_html}"
+            f"<p class=dim>Start a test server: <a href='/start?plan=solo&source=admin'>/start?plan=solo</a></p>")
+    h.send(200, page("Admin", body.replace("max-width:560px", "")))
+
+
 def r_admin(h, path):
     """Kill switches (plan 11.2) and alerts, behind CONTROL_ADMIN_TOKEN."""
     tok = os.environ.get("CONTROL_ADMIN_TOKEN")
@@ -697,7 +782,7 @@ def r_admin(h, path):
 
 # fake mode only: a stand-in for Stripe Checkout so the journey runs end to end locally
 def r_fake_checkout(h, path):
-    if not FAKE:
+    if not FAKE_BILLING:
         return h.send(404, "")
     sid = path.rsplit("/", 1)[-1]
     sess = BILLING.sessions.get(sid)
@@ -724,7 +809,7 @@ ROUTES = [
     ("POST", "/api/account/delete", r_account_delete),
     ("POST", "/api/device/start", r_device_start), ("POST", "/api/device/poll", r_device_poll),
     ("GET", "/device", r_device_page), ("POST", "/device", r_device_page), ("GET", "/signin", r_signin), ("POST", "/api/session", r_session), ("GET", "/signout", r_signout),
-    ("GET", "/billing", r_billing), ("GET", "/help", r_help), ("POST", "/help", r_help), ("GET", "/servers/", r_network), ("POST", "/servers/", r_network), ("GET", "/api/admin/", r_admin), ("POST", "/api/admin/", r_admin),
+    ("GET", "/billing", r_billing), ("GET", "/admin", r_admin_page), ("POST", "/admin", r_admin_page), ("GET", "/help", r_help), ("POST", "/help", r_help), ("GET", "/servers/", r_network), ("POST", "/servers/", r_network), ("GET", "/api/admin/", r_admin), ("POST", "/api/admin/", r_admin),
     ("GET", "/fake/checkout/", r_fake_checkout), ("POST", "/fake/checkout/", r_fake_checkout),
 ]
 Handler.do_OPTIONS = lambda self: self._route("OPTIONS")
@@ -777,6 +862,7 @@ def main():
     BILLING, INFRA = make_providers()
     if FAKE:
         globals()["SECRET"] = SECRET or "fake-secret"
+    if FAKE_BILLING:
         install_fake_checkout(BILLING)
     golden = os.environ.get("AMUX_GOLDEN_IMAGE", "debian-12")
     refund = accounts.provisioning_refund(BILLING)

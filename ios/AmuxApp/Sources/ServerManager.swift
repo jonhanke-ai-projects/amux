@@ -47,12 +47,19 @@ class ServerManager: ObservableObject {
         serverURL = entry
         hasServer = true
         AmuxStore.defaults.set(base, forKey: AmuxStore.serverURLKey)
+        var cloud = Set(AmuxStore.defaults.stringArray(forKey: Self.cloudServersKey) ?? [])
+        cloud.insert(base)
+        AmuxStore.defaults.set(Array(cloud), forKey: Self.cloudServersKey)
         logger.info("Opened cloud server \(base)")
     }
 
+    /// Servers opened through amux Cloud sign-in. Their hosts are ordinary *.amux.io names, so the
+    /// app remembers them rather than guessing from the hostname.
+    static let cloudServersKey = "io.amux.cloudServers"
+
     var savedCloudServer: String? {
         guard let s = AmuxStore.defaults.string(forKey: AmuxStore.serverURLKey),
-              let host = URL(string: s)?.host, host.hasSuffix(".amux.cloud") else { return nil }
+              (AmuxStore.defaults.stringArray(forKey: Self.cloudServersKey) ?? []).contains(s) else { return nil }
         return s
     }
 

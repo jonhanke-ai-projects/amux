@@ -19,7 +19,7 @@ def plan_steps(store, user):
             if srv["hetzner_id"] and srv["status"] in ("ready", "provisioning"):
                 steps.append({"kind": "server", "ref": srv["hetzner_id"], "label": f"server {srv['slug']}"})
             if srv["dns_record_id"]:
-                steps.append({"kind": "dns", "ref": srv["dns_record_id"], "label": f"address {srv['slug']}.amux.cloud"})
+                steps.append({"kind": "dns", "ref": srv["dns_record_id"], "label": f"address {srv['slug']}.amux.io"})
             if srv["backup_bucket"]:
                 steps.append({"kind": "bucket", "ref": srv["backup_bucket"], "label": f"backups of {srv['slug']}"})
             for a in store.all("SELECT snapshot_id FROM lifecycle_actions WHERE server_id=? AND snapshot_id IS NOT NULL",
