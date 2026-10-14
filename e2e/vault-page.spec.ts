@@ -63,10 +63,8 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await page.reload();
     await boot(page);
 
-    // Reached the way an owner would: Settings -> Connect -> Open Vault.
-    await page.locator('#settings-btn').click();
-    await page.locator('.settings-tab-btn[data-stab="integrations"]').click();
-    await page.locator('#vault-open-btn').click();
+    // Reached the way an owner would: the Vault tab in the main tab bar.
+    await page.locator('#tab-vault').click();
     const vault = page.locator('#vault-overlay');
     await expect(vault.getByRole('heading', { name: 'Vault' })).toBeVisible();
     await expect(vault.getByRole('tab', { name: 'Secrets' })).toHaveAttribute('aria-selected', 'true');
@@ -193,8 +191,17 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await vault.getByRole('tab', { name: 'Payment Methods' }).click();
     await expect(page.locator('#vault-panel-payments')).toBeVisible();
     await expect(page.locator('#vault-items')).not.toHaveText('Loading…');
-    await page.keyboard.press('Escape');
-    await expect(vault).toHaveCount(0);
+
+    // API Keys moved here from Settings (b15e61d9): the tab borrows the
+    // settings section, returns it on close, and can borrow it again.
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass) await page.locator('#tab-vault').click();
+      await vault.getByRole('tab', { name: 'API Keys' }).click();
+      await expect(page.locator('#vault-panel-apikeys #settings-anthropic-key')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(vault).toHaveCount(0);
+      await expect(page.locator('#settings-moved-out #settings-apikeys-section')).toHaveCount(1);
+    }
   } finally {
     await cleanup('remove vault fixtures', removeFixtures, info);
   }

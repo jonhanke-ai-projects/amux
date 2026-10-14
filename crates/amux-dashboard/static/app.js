@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1549';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1550';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -46102,6 +46102,7 @@ function openVault(tab, filter) {
       <div class="vault-tabs" role="tablist" aria-label="Vault sections">
         <button class="vault-tab" role="tab" id="vault-tab-secrets" aria-controls="vault-panel-secrets" onclick="_vaultTab('secrets')">${_vaultIcon('key')}Secrets</button>
         <button class="vault-tab" role="tab" id="vault-tab-payments" aria-controls="vault-panel-payments" onclick="_vaultTab('payments')">${_vaultIcon('card')}Payment Methods</button>
+        <button class="vault-tab" role="tab" id="vault-tab-apikeys" aria-controls="vault-panel-apikeys" onclick="_vaultTab('apikeys')">${_vaultIcon('key')}API Keys</button>
       </div>
       <div class="modal-body">
         <div id="vault-panel-secrets" role="tabpanel" aria-labelledby="vault-tab-secrets">
@@ -46126,6 +46127,7 @@ function openVault(tab, filter) {
           <p class="ui-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above an item's limit waits for your approval in the approvals banner. Workers stage new cards with <code>amux order</code>; you activate them here.</p>
           <div id="vault-items">Loading…</div>
         </div>
+        <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden></div>
       </div>
     </section>`;
     overlay.onclick = event => { if (event.target === overlay) closeVault(); };
@@ -46141,7 +46143,7 @@ function openVault(tab, filter) {
   _vault.q = ''; _vault.scope = ''; _vault.group = ''; _vault.worker = ''; _vault.prov = null;
   if (filter && filter.group) _vault.group = String(filter.group).toLowerCase();
   if (filter && filter.worker) _vault.worker = filter.worker;
-  _vaultTab(tab === 'payments' ? 'payments' : 'secrets');
+  _vaultTab(['payments', 'apikeys'].includes(tab) ? tab : 'secrets');
   overlay.querySelector('.modal-close').focus();
   _vaultSecretsLoad();
 }
@@ -46155,13 +46157,14 @@ function _vaultTrapTab(event, root) {
 }
 function closeVault() {
   _vaultMaskAll();
+  _vaultApiKeysHome();
   document.querySelectorAll('.vault-sub').forEach(el => el.remove());
   document.getElementById('vault-overlay')?.remove();
   document.getElementById('settings-btn')?.focus();
 }
 function _vaultTab(name) {
   _vault.tab = name;
-  for (const t of ['secrets', 'payments']) {
+  for (const t of ['secrets', 'payments', 'apikeys']) {
     const on = t === name;
     const b = document.getElementById('vault-tab-' + t);
     if (b) { b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
@@ -46169,6 +46172,22 @@ function _vaultTab(name) {
     if (p) p.hidden = !on;
   }
   if (name === 'payments') _vaultLoad();
+  if (name === 'apikeys') {
+    // Settings no longer shows API Keys (b15e61d9); the section's markup and
+    // handlers stay in #settings-moved-out, and this tab borrows the node so
+    // every id its scripts look up keeps working.
+    const sec = document.getElementById('settings-apikeys-section');
+    const panel = document.getElementById('vault-panel-apikeys');
+    if (sec && panel && sec.parentElement !== panel) panel.appendChild(sec);
+    loadApiKeys();
+  }
+}
+// Return the borrowed API Keys section before the overlay is removed, or the
+// next openVault would find nothing to borrow.
+function _vaultApiKeysHome() {
+  const sec = document.getElementById('settings-apikeys-section');
+  const home = document.getElementById('settings-moved-out');
+  if (sec && home && sec.parentElement !== home) home.appendChild(sec);
 }
 async function _vaultSecretsLoad() {
   const table = document.getElementById('vault-secrets-table');
