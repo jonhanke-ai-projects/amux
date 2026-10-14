@@ -9315,3 +9315,11 @@ body.light #mdai-overlay.mdai-detail { background: var(--bg); }
   #mdai-view .fe-cell-size { display: none; }
   #mdai-view .fe-menu-btn { min-width: 44px; min-height: 44px; }
 }
+
+/* Settings folds (Ethan, 2026-10-14): a section label that opens its body.
+   Closed by default; the caret says it opens. */
+details.settings-fold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; min-height: 32px; }
+details.settings-fold > summary::-webkit-details-marker { display: none; }
+details.settings-fold > summary::before { content: '\25B8'; font-size: 0.7em; color: var(--dim); transition: transform .15s; flex: 0 0 auto; }
+details.settings-fold[open] > summary::before { transform: rotate(90deg); }
+@media (max-width: 600px) { details.settings-fold > summary { min-height: 44px; } }

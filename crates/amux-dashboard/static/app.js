@@ -1843,6 +1843,8 @@ function _openConnectionSecurity(event) {
   document.getElementById('about-overlay')?.classList.remove('active');
   document.getElementById('settings-menu')?.classList.add('open');
   _settingsTab('integrations');
+  // The section is a closed fold by default; arriving here to sign in opens it.
+  const fold=document.querySelector('#connection-security details.settings-fold'); if(fold) fold.open=true;
   document.getElementById('connection-security')?.scrollIntoView({block:'nearest'});
 }
 function _connectionSecurityError(message) {
@@ -14277,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1522';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1523';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -46445,11 +46447,13 @@ async function loadSpendAttribution() {
         +   esc(x.origin || x.session || '?') + '</span>'
         + '<span style="font-size:0.72rem;color:var(--dim);white-space:nowrap;">' + usd(x.cost_usd) + '</span>'
         + '</div>').join('');
+    // Collapsed by default (Ethan, 2026-10-14); a refresh keeps it open if opened.
+    const wasOpen = !!box.querySelector('details.settings-fold[open]');
     box.innerHTML =
-        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
+        '<details class="settings-fold"' + (wasOpen ? ' open' : '') + '><summary style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
       +   '<span style="font-size:0.8rem;color:var(--fg);">What spent it (24h)</span>'
       +   '<span style="font-size:0.74rem;color:var(--dim);">' + usd(d.total_cost_usd || 0) + '</span>'
-      + '</div>'
+      + '</summary>'
       + '<div style="height:6px;border-radius:4px;background:var(--border);overflow:hidden;margin-bottom:6px;">'
       +   '<div style="height:100%;width:' + bgPct + '%;background:' + col + ';"></div>'
       + '</div>'
@@ -46457,7 +46461,8 @@ async function loadSpendAttribution() {
       +   bgPct + '% of spend was background work, not you'
       + '</div>'
       + rows
-      + (top ? '<div style="font-size:0.72rem;color:var(--dim);margin:8px 0 2px;">Biggest background sources</div>' + top : '');
+      + (top ? '<div style="font-size:0.72rem;color:var(--dim);margin:8px 0 2px;">Biggest background sources</div>' + top : '')
+      + '</details>';
   } catch (e) {
     // Silent by design: this is a supplementary panel and the meter above is
     // the load-bearing one. A failure here must not replace a working meter
