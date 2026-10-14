@@ -122,7 +122,7 @@ test(`Read aloud sits beside Copy and speaks one reply at a time (${variant.name
    }
   }
   expect(await page.locator('#peek-body').evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
-  for(let i=0;i<3;i++){const b=await read.nth(i).boundingBox();expect(b!.x+b!.width).toBeLessThanOrEqual(vw+1);}
+  for(let i=0;i<3;i++){await expect(read.nth(i)).toBeVisible();const b=await read.nth(i).boundingBox();expect(b!.x+b!.width).toBeLessThanOrEqual(vw+1);}
   await page.locator('.chat-log').screenshot({path:info.outputPath('chat-read-aloud.png')});
  }finally{await cleanup('stop playback',()=>page.evaluate(()=>{try{eval('_ttsCancel()');}catch{}}),info);}
 });
