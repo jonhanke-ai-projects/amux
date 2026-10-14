@@ -226,6 +226,14 @@ static LANE_ACTIVITY: std::sync::Mutex<Option<(f64, std::collections::HashMap<St
 
 const LANE_ACTIVITY_CACHE_TTL_S: f64 = 15.0;
 
+/// `+e.entity_type` keeps the planner off idx_amux_state_events_entity, which
+/// matches nearly every row; the `at` range is the selective one.
+const LANE_ACTIVITY_SQL: &str = "SELECT i.session, COUNT(*) FROM _amux_state_events e \
+     JOIN issues i ON i.id = e.entity_id \
+     WHERE e.at >= ?2 AND +e.entity_type='task' \
+       AND datetime(e.at) > datetime('now', ?1) \
+     GROUP BY i.session";
+
 fn lane_card_activity(
     conn: &rusqlite::Connection,
     window_min: i64,
@@ -245,15 +253,20 @@ fn lane_card_activity(
     // datetime() on BOTH sides: `at` is RFC3339 with an explicit +00:00, and
     // comparing it to a localtime string applies a silent 4-hour skew that
     // reads every lane as inactive (see the AF-334 note at the call site).
+    //
+    // datetime(e.at) alone cannot use idx_amux_state_events_at, so every miss
+    // scanned all 1.2M rows, on several threads at once (Mac hog RCA
+    // 20261014-112244: amux-server-rs at 626% CPU). `e.at >= ?2` is a coarse
+    // indexed range a day wider than the window, so no timezone offset falls
+    // outside it; the datetime() comparison stays as the exact filter.
+    let started = std::time::Instant::now();
+    let coarse = (chrono::Utc::now() - chrono::Duration::minutes(window_min + 24 * 60))
+        .format("%Y-%m-%d")
+        .to_string();
     let rows = conn
-        .prepare(
-            "SELECT i.session, COUNT(*) FROM _amux_state_events e \
-             JOIN issues i ON i.id = e.entity_id \
-             WHERE e.entity_type='task' AND datetime(e.at) > datetime('now', ?1) \
-             GROUP BY i.session",
-        )
+        .prepare(LANE_ACTIVITY_SQL)
         .and_then(|mut st| {
-            st.query_map(rusqlite::params![format!("-{window_min} minutes")], |r| {
+            st.query_map(rusqlite::params![format!("-{window_min} minutes"), coarse], |r| {
                 Ok((
                     r.get::<_, Option<String>>(0)?.unwrap_or_default(),
                     r.get::<_, i64>(1)?,
@@ -261,6 +274,11 @@ fn lane_card_activity(
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
         });
+    let elapsed_ms = started.elapsed().as_millis();
+    if elapsed_ms > 500 {
+        tracing::warn!(target: "board_drive", verdict = "lane_activity_probe_slow", elapsed_ms,
+            measured = true, "lane-activity probe was slow; check the plan uses idx_amux_state_events_at");
+    }
     match rows {
         Ok(v) => {
             for (sess, n) in v {
@@ -10219,6 +10237,36 @@ mod reviewer_renag_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn lane_activity_probe_uses_the_at_index_and_counts_the_window() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE issues(id TEXT PRIMARY KEY, session TEXT);
+             CREATE TABLE _amux_state_events(rev INTEGER, entity_type TEXT, entity_id TEXT, at TEXT);
+             CREATE INDEX idx_amux_state_events_entity ON _amux_state_events(entity_type, entity_id);
+             CREATE INDEX idx_amux_state_events_at ON _amux_state_events(at);
+             INSERT INTO issues VALUES('A-1','lane-a'),('B-1','lane-b');",
+        )
+        .unwrap();
+        let fmt = |m: i64| (chrono::Utc::now() - chrono::Duration::minutes(m)).to_rfc3339();
+        for (id, m) in [("A-1", 5), ("A-1", 10), ("B-1", 200), ("B-1", 3000)] {
+            c.execute("INSERT INTO _amux_state_events VALUES(1,'task',?1,?2)", rusqlite::params![id, fmt(m)]).unwrap();
+        }
+        let plan: Vec<String> = c
+            .prepare(&format!("EXPLAIN QUERY PLAN {LANE_ACTIVITY_SQL}"))
+            .unwrap()
+            .query_map(rusqlite::params!["-60 minutes", "2000-01-01"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(plan.iter().any(|p| p.contains("idx_amux_state_events_at")), "{plan:?}");
+        *LANE_ACTIVITY.lock().unwrap() = None;
+        let map = lane_card_activity(&c, 60);
+        assert_eq!(map.get("lane-a"), Some(&2));
+        assert_eq!(map.get("lane-b"), None, "events outside the window do not count");
+    }
+
     // ---- AF-319: the nudge loop's missing feedback term --------------------
 
     /// The LOOP CLOSES: a lane that moves a card is forgiven, one that does not
