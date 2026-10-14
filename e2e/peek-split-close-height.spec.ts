@@ -13,8 +13,12 @@ test('closing a split worker does not shrink the next worker', async ({ page }) 
     localStorage.setItem('peekSplitRatio', '0.57 1 0%');
   });
   await page.goto('/');
-  await page.waitForFunction(() => typeof (window as any).openPeek === 'function' && (window as any).sessions?.length >= 1);
-  const name = await page.evaluate(() => (window as any).sessions[0].name);
+  await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
+  // `sessions` is a top-level let, not a window property; seed a worker the
+  // way the other peek specs do.
+  // Two workers: returning to the SAME worker resumes its split on purpose.
+  const [name, next] = ['psc-a', 'psc-b'];
+  await page.evaluate((ns) => { for (const n of ns) (globalThis as any).eval('sessions').push({ name: n, status: 'idle', running: true, dir: '/tmp' }); }, [name, next]);
   const bottom = () => page.evaluate(() => {
     const panel = document.getElementById('peek-terminal-panel')!;
     return { panel: Math.round(panel.getBoundingClientRect().bottom), inline: panel.style.flex, ih: innerHeight };
@@ -26,7 +30,7 @@ test('closing a split worker does not shrink the next worker', async ({ page }) 
   await page.waitForTimeout(800);
   expect((await bottom()).inline, 'split applies the saved ratio').toBe('0.57 1 0%');
   await page.evaluate(() => (window as any).closePeek());
-  await page.evaluate((n) => (window as any).openPeek(n), name);
+  await page.evaluate((n) => (window as any).openPeek(n), next);
   await page.waitForTimeout(800);
   const after = await bottom();
   expect(after.inline, 'close cleared the divider ratio').toBe('');
