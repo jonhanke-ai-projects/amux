@@ -1,5 +1,5 @@
 """Unit economics for amux Cloud (docs/design/cloud-self-service.md, section 4).
-Inputs are either measured (Hetzner pricing API 2026-10-14; Stripe/Paddle list
+Inputs are either measured (Hetzner pricing API 2026-10-14; Stripe list
 prices; PostHog and GitHub traffic 2026-10-14) or marked H (hypothesis).
 Run: python3 docs/design/cloud-self-service-econ.py"""
 import math
@@ -19,17 +19,17 @@ LAPSED_SNAPSHOT = 0.02 * 1.0   # H: 2% of customers lapsed at any time x ~$1 sna
 R2 = 44200 / 1e6 * 4.50 + 3 * 0.015
 PAYMENTS = {
   'Stripe': dict(pct=0.029 + 0.007 + 0.005 + INTL * (0.015 + 0.01), fix=0.30, disputes=True),   # card, Billing, Tax, intl + FX
-  'Merchant of record (Paddle)': dict(pct=0.05, fix=0.50, disputes=False),                      # handles VAT filing and disputes
 }
 SYNTHETIC_RUNS_PER_DAY = 4                             # every 6 hours and on every deploy (section 12)
 def fixed(n, operator=True):
     control = 7.09 * max(1, math.ceil(n / 1500))      # H: one cx23 control-plane node per 1500 servers
     synthetic = (0.0137 + 0.05) * SYNTHETIC_RUNS_PER_DAY * 30   # one started cx33 hour + ~$0.05 tokens per run (H)
     clerk = 0 if n <= 10000 else 0.02 * (n - 10000)    # H: check the current Clerk tier
+    vat_filing = 50.0                                  # H: EU OSS quarterly returns through Stripe's tax-filing integration, per month
     if not operator:                                   # path to 10 runs without the Operator (section 13)
-        return control + synthetic + clerk
+        return control + synthetic + clerk + vat_filing
     operator_server = 12.59                            # the Operator's own amux server (cx33)
-    return control + synthetic + clerk + operator_server
+    return control + synthetic + clerk + operator_server + vat_filing
 def operator_tokens(contribution_before):              # cap: $50 + 5% of contribution, at most $250 (section 4.7)
     return min(250.0, 50 + 0.05 * max(0.0, contribution_before))
 OWNER_RATE = 150                                       # H: owner time at $/hour
@@ -80,10 +80,10 @@ if __name__ == '__main__':
             for n in (100, 500, 1000, 5000):
                 g, nt, v, f, c, co = month(n, L, pay)
                 print(f"{pay:28} {L:14} {n:5d} {g:9,.0f} {nt:9,.0f} {v:9,.0f} {f:6,.0f} {c:9,.0f} {c/nt:7.0%} {co:11,.0f}")
-    print('\nPrice and churn: per 1,000 buyers at the $26 conversion rate (H: $39 converts 0.80x, $49 0.65x), merchant of record')
+    print('\nPrice and churn: per 1,000 buyers at the $26 conversion rate (H: $39 converts 0.80x, $49 0.65x), Stripe')
     CONV = {'$26 (2x cost)': 1.0, '$39 entry': 0.80, '$49 entry': 0.65}
     for L in LADDERS:
-        unit = (month(1000, L, 'Merchant of record (Paddle)')[4] + fixed(1000)) / 1000
+        unit = (month(1000, L, 'Stripe')[4] + fixed(1000)) / 1000
         for churn in (0.05, 0.12):
             n0 = 1000 * CONV[L]; alive = [n0 * (1 - churn) ** m for m in range(3)]
             print(f"  {L:14} churn {churn:4.0%}: per-customer contrib ${unit:5.2f}, day-90 customers {alive[2]*(1-churn):5.0f}, months 1-3 ${sum(a*unit for a in alive):9,.0f}, lifetime ${n0*unit/churn:10,.0f}")
@@ -95,17 +95,17 @@ if __name__ == '__main__':
                 n = n * (1 - 0.05) + viewers * pay_rate; viewers *= 1 + growth; m += 1
             print(f"  {pay_rate:4.0%} of pricing viewers buy, viewers grow {growth:4.0%}/month: 100 customers in {m if n >= 100 else '60+'} months")
         ceiling = 178 * pay_rate / 0.05
-        print(f"    flat-traffic ceiling at 5% churn: {ceiling:4.0f} customers, about ${month(max(1,round(ceiling)), '$39 entry', 'Merchant of record (Paddle)')[4]:,.0f}/month contribution at $39")
-    print('\nOwner interventions at $39, merchant of record (section 4.8). Owner time at $150/h; contractor $60/h, 15-min minimum, $300/month retainer')
+        print(f"    flat-traffic ceiling at 5% churn: {ceiling:4.0f} customers, about ${month(max(1,round(ceiling)), '$39 entry', 'Stripe')[4]:,.0f}/month contribution at $39")
+    print('\nOwner interventions at $39 on Stripe (section 4.8). Owner time at $150/h; contractor $60/h, 15-min minimum, $300/month retainer')
     print(f"  {'scenario':12} {'N':>5} {'contrib':>8} {'owner h (all)':>13} {'after owner time':>16} {'owner h (owner-only)':>20} {'contractor $':>12} {'after outsourcing':>17}")
     for scen in INTERVENTIONS:
         for n in (10, 100, 500, 1000):
-            c = month(n, '$39 entry', 'Merchant of record (Paddle)', operator=(n >= 100))[4]
+            c = month(n, '$39 entry', 'Stripe', operator=(n >= 100))[4]
             all_min, only_min, contractor = owner_load(n, scen)
             print(f"  {scen:12} {n:5d} {c:8,.0f} {all_min/60:13.1f} {c - all_min/60*OWNER_RATE:16,.0f} {only_min/60:20.1f} {contractor:12,.0f} {c - contractor - only_min/60*OWNER_RATE:17,.0f}")
-    print('\nPath to 10 (no Operator) at $39, merchant of record:')
+    print('\nPath to 10 (no Operator) at $39 on Stripe:')
     for n in (1, 3, 5, 10):
-        r = month(n, '$39 entry', 'Merchant of record (Paddle)', operator=False)
+        r = month(n, '$39 entry', 'Stripe', operator=False)
         print(f"  {n:3d} customers: contribution ${r[4]:7,.0f}/month (fixed ${r[3]:,.0f})")
     print('\nA/B sample sizes (two-sided, alpha 0.05, power 0.80) at measured traffic: 3,596 visits and 178 pricing views a month')
     for label, base, monthly in (('visit -> pricing view', 178/3596, 3596), ('pricing view -> paid', 0.02, 178)):
@@ -115,5 +115,5 @@ if __name__ == '__main__':
     print(f"\nR2 per customer per month: ${R2:.2f} (sync every 60 s); at the 1 s default it would be up to ${2.6e6/1e6*4.5:.2f}")
     BUILD_AGENT_DAYS, AGENT_DAY_COST = 32, 100.0     # H: path-to-10 steps 1-8; inference per agent-day
     for n in (10, 100):
-        c = month(n, '$39 entry', 'Merchant of record (Paddle)', operator=(n >= 100))[4]
+        c = month(n, '$39 entry', 'Stripe', operator=(n >= 100))[4]
         print(f"  build ~{BUILD_AGENT_DAYS} agent-days x ${AGENT_DAY_COST:.0f} = ${BUILD_AGENT_DAYS*AGENT_DAY_COST:,.0f}; payback at {n} customers: {BUILD_AGENT_DAYS*AGENT_DAY_COST/c:.1f} months")
