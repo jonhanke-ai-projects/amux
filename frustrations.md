@@ -5962,3 +5962,15 @@ CARD: none (see above)
 SYMPTOM: I left the ethan browser at zapier.com/sign-up for Ethan to complete from the needsyou resume link; amux closed it after 6 min with no activity (window 5 min).
 COST: The owner's handoff window disappears before they open it, and the resume link points at nothing.
 FIX: Exempt a browser named by an open needsyou card's resume link from the activity reaper until the card leaves needsyou.
+
+---
+## The /goal stop hook re-fires on a goal whose every remaining step is the owner's
+AREA: steering
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-14
+SESSION: amux-cloud
+CARD: none (amux-cloud is isolated and has no board; an amux-frustrations card is needed)
+SYMPTOM: the goal keeper's own instruction says "If every remaining step needs the owner, list those in one line and stop." The worker did that, and the Stop hook still judged the goal unmet and re-prompted with the same three owner items (a Stripe test key, an Apple key, a pricing decision). It fired six times in a row with no new input between them, each one restating what the previous answer had already said.
+COST: six extra turns of tokens on an isolated worker, and the owner's transcript filled with six near-identical "still stopped" replies, which buries the one message that matters (what they need to do).
+FIX: when the last assistant turn names only owner-gated steps and nothing changed since the previous fire (no new owner input, no new commit), the keeper should record "blocked on owner: <items>" once and stop re-prompting until owner input arrives. The judge already quotes the blocking items, so it has what it needs to tell "stopped honestly" from "stopped early".
