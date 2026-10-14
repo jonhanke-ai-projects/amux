@@ -770,6 +770,7 @@ test('Draw: saving recents keeps entries another tab wrote', async ({ page, requ
       const cur = JSON.parse(await (await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' })).text());
       return cur.recents.map((x: any) => x.path);
     })).toEqual(expect.arrayContaining([mine, other]));
+    await page.evaluate(() => (window as any)._drawLibRender());
     await showDrawings(page);
     await expect(page.locator(`.draw-recent[data-path="${other}"]`)).toHaveCount(1);
   });

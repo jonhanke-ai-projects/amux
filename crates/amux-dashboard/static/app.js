@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1537';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1538';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -59914,7 +59914,9 @@ async function _drawSaveRecents() {
     const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: _drawRecentsPath(), content: JSON.stringify({ recents: d.recents }) }), _skipOutbox: true });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    if (d.libTab === 'drawings') _drawLibRender();
+    // No re-render here: entries merged in from another tab would shift the
+    // list under a pointer that is about to click. They show on the next
+    // render the user causes.
   } catch (e) { _drawBeacon('recents-save-failed', { error: String(e && e.message || e) }); }
 }
 async function _drawRenderDrawings(body, q) {
