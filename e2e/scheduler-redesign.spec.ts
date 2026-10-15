@@ -152,8 +152,9 @@ test('details: tabs, pause/resume, run now, edit keeps the stored expression, du
     // details sheet is still rendering (CI, 2026-10-13: "reading 'height' of null").
     const row = page.locator('#sched-detail .sx-rel', { hasText: label });
     await expect(row).toBeVisible();
-    const bb = await row.boundingBox();
-    expect(bb!.height, label + ' height').toBeGreaterThanOrEqual(40);
+    // Polled: a live re-render between the visibility check and the read
+    // detaches the row, and boundingBox() then reads null (CI, 2026-10-15).
+    await expect.poll(async () => (await row.boundingBox())?.height ?? 0, { message: label + ' height' }).toBeGreaterThanOrEqual(40);
   }
   await page.waitForTimeout(400);   // let the sheet finish sliding in
   await page.screenshot({ path: info.outputPath('scheduler-details.png') });
