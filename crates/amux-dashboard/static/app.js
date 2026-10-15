@@ -14304,7 +14304,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1551';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1552';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16151,7 +16151,7 @@ function _psfRenderEntries(dirPath, data) {
     body.appendChild(back);
   }
   const sorted = _psfSortEntries(data.entries);
-  const psfOpts = { openDir: _psfLoad, openFile: _psfViewFile };
+  const psfOpts = { openDir: _psfLoad, openFile: _psfViewFile, singleClickOpens: true };
   for (const entry of sorted) body.appendChild(_feBuildRow(entry, dirPath, 0, '', psfOpts));
   if (!data.entries.length) {
     body.innerHTML = '<div style="padding:16px;color:var(--dim);text-align:center;font-size:0.82rem;">Empty folder</div>';
@@ -27804,9 +27804,16 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
   } else {
     // Desktop pointer: single click selects the row, double-click opens it in the
     // existing viewer, matching a familiar OS file manager.
-    row.title = 'Double-click to open \u00b7 \u2318/Ctrl-click or Shift-click to select several';
-    row.onclick = (ev) => _fselClick(row, ev || {});
-    row.ondblclick = () => openFile(entryPath);
+    // A host can keep single-click-to-open (the Split view's narrow preview
+    // panel always worked that way); selection there is Cmd/Ctrl/Shift-click
+    // and long-press, which the capture listener below handles for every list.
+    if (opts.singleClickOpens) {
+      row.onclick = () => openFile(entryPath);
+    } else {
+      row.title = 'Double-click to open';
+      row.onclick = (ev) => _fselClick(row, ev || {});
+      row.ondblclick = () => openFile(entryPath);
+    }
   }
   return row;
 }
