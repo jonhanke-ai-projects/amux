@@ -5,7 +5,7 @@
 # each before the verdicts ran, because the per-arm budgets alone add up past
 # 600s. tick_arm shrinks each arm's budget to what the tick has left before its
 # verdict reserve, and skips (and names) an arm with nothing left.
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d "${TMPDIR:-/tmp}/dl.XXXXXX")
