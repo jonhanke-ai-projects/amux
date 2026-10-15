@@ -44381,16 +44381,32 @@ const _idb = (() => {
         d.createObjectStore('files', { keyPath: 'path' });
       }
     };
-    req.onsuccess = () => { db = req.result; db.onversionchange = () => { db.close(); db = null; }; resolve(db); };
+    req.onsuccess = () => { db = req.result; db.onversionchange = () => { db.close(); db = null; }; db.onclose = () => { db = null; }; resolve(db); };
     req.onerror = () => reject(req.error);
     req.onblocked = () => { if (db) { db.close(); db = null; } };
   });
-  const _txw = (store, fn) => open().then(d => new Promise((resolve, reject) => {
+  // A CLOSED CONNECTION IS REOPENED, NOT REUSED (2026-10-15). iOS closes a
+  // suspended PWA's IndexedDB connection; this kept handing out the dead
+  // handle, so every transaction() threw InvalidStateError "The database
+  // connection is closing" and the outbox showed "Sync failed" with a message
+  // stuck on "Saved on this device" until the app was killed. `onclose` clears
+  // it when the browser says so; a transaction that still throws
+  // InvalidStateError never started, so drop the handle, reopen and run it once
+  // more. Each reopen is beaconed as kind=idb-reopened.
+  const withDb = fn => open().then(d => fn(d)).catch(e => {
+    if (!e || e.name !== 'InvalidStateError') throw e;
+    try { if (db) db.close(); } catch (_) {}
+    db = null;
+    try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+      body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reopened', error: String(e.message || e).slice(0, 160), measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+    return open().then(d => fn(d));
+  });
+  const _txw = (store, fn) => withDb(d => new Promise((resolve, reject) => {
     const tx = d.transaction(store, 'readwrite');
     tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
     fn(tx.objectStore(store));
   })).catch(() => {});
-  const transaction = (store, write) => open().then(d => new Promise((resolve, reject) => {
+  const transaction = (store, write) => withDb(d => new Promise((resolve, reject) => {
     const tx = d.transaction(store, 'readwrite');
     tx.oncomplete = () => resolve();
     tx.onabort = tx.onerror = () => reject(tx.error || new Error('Storage transaction aborted'));
@@ -44405,7 +44421,7 @@ const _idb = (() => {
     try { return await job(); }
     finally { const next = waitingSaves.shift(); if (next) next(); else activeSaves--; }
   };
-  const removeUpload = id => open().then(d => new Promise((resolve, reject) => {
+  const removeUpload = id => withDb(d => new Promise((resolve, reject) => {
     const tx = d.transaction(['uploads', 'uploadChunks'], 'readwrite');
     tx.oncomplete = () => resolve();
     tx.onabort = tx.onerror = () => reject(tx.error || new Error('File removal aborted'));
@@ -44443,31 +44459,31 @@ const _idb = (() => {
       request.onsuccess = () => { if (request.result) os.put({...request.result, ...patch}); };
     }),
     deleteUpload: id => removeUpload(id),
-    uploadChunk: (id, index) => open().then(d => new Promise((resolve, reject) => {
+    uploadChunk: (id, index) => withDb(d => new Promise((resolve, reject) => {
       const tx = d.transaction('uploadChunks', 'readonly');
       const request = tx.objectStore('uploadChunks').get([id, index]);
       tx.oncomplete = () => request.result ? resolve(request.result.bytes) : reject(new Error('Saved file chunk is missing'));
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('File read aborted'));
     })),
-    getUploads: () => open().then(d => new Promise((resolve, reject) => {
+    getUploads: () => withDb(d => new Promise((resolve, reject) => {
       const tx = d.transaction('uploads', 'readonly');
       const request = tx.objectStore('uploads').getAll();
       tx.oncomplete = () => resolve(request.result);
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
     })),
-    get: (key) => open().then(d => new Promise((resolve) => {
+    get: (key) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('kv', 'readonly');
       const req = tx.objectStore('kv').get(key);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
     })).catch(() => null),
-    del: (key) => open().then(d => {
+    del: (key) => withDb(d => {
       const tx = d.transaction('kv', 'readwrite');
       tx.objectStore('kv').delete(key);
     }).catch(() => {}),
     // Detail snapshots use the existing mirror and wait for the durable commit.
     putIssue: row => transaction('issues', os => os.put(row)),
-    getIssue: id => open().then(d => new Promise((resolve, reject) => {
+    getIssue: id => withDb(d => new Promise((resolve, reject) => {
       const tx = d.transaction('issues', 'readonly');
       const request = tx.objectStore('issues').get(id);
       tx.oncomplete = () => resolve(request.result || null);
@@ -44482,25 +44498,25 @@ const _idb = (() => {
       os.clear(); statuses.forEach((s, i) => os.put({ ...s, _pos: i }));
     }),
     // Read all items from a store
-    getAll: (store) => open().then(d => new Promise((resolve) => {
+    getAll: (store) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction(store, 'readonly');
       const req = tx.objectStore(store).getAll();
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => resolve([]);
     })).catch(() => []),
     // Files offline cache
-    setFile: (path, val) => open().then(d => {
+    setFile: (path, val) => withDb(d => {
       const tx = d.transaction('files', 'readwrite');
       tx.objectStore('files').put({ ...val, path, ts: Date.now() });
     }).catch(() => {}),
-    getFile: (path) => open().then(d => new Promise((resolve) => {
+    getFile: (path) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readonly');
       const req = tx.objectStore('files').get(path);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
     })).catch(() => null),
     // Bump a cached file's ts to now (last-opened) without rewriting its blob.
-    touchFile: (path) => open().then(d => new Promise((resolve) => {
+    touchFile: (path) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readwrite');
       const os = tx.objectStore('files');
       const g = os.get(path);
@@ -44508,7 +44524,7 @@ const _idb = (() => {
       g.onerror = () => resolve();
     })).catch(() => {}),
     // Evict cached files whose last-opened ts is older than maxAgeMs. Returns count.
-    pruneFiles: (maxAgeMs) => open().then(d => new Promise((resolve) => {
+    pruneFiles: (maxAgeMs) => withDb(d => new Promise((resolve) => {
       const cutoff = Date.now() - maxAgeMs;
       const tx = d.transaction('files', 'readwrite');
       const cur = tx.objectStore('files').openCursor();
@@ -44526,7 +44542,7 @@ const _idb = (() => {
     // survives a 30-day cutoff, and a phone can fill up long before anything
     // ages out. Eviction is oldest-LAST-OPENED first, so the files you actually
     // read on the phone are the ones that survive.
-    filesBytes: () => open().then(d => new Promise((resolve) => {
+    filesBytes: () => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readonly');
       const cur = tx.objectStore('files').openCursor();
       let total = 0;
@@ -44536,7 +44552,7 @@ const _idb = (() => {
       };
       cur.onerror = () => resolve(total);
     })).catch(() => 0),
-    trimFilesToBytes: (budget) => open().then(d => new Promise((resolve) => {
+    trimFilesToBytes: (budget) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readwrite');
       const req = tx.objectStore('files').getAll();
       req.onsuccess = () => {
@@ -44558,7 +44574,7 @@ const _idb = (() => {
     })).catch(() => ({ removed: 0, bytes: 0 })),
     // Paths of files (not dir listings) cached on THIS device — for the
     // "downloaded" indicator in the directory view.
-    cachedFilePaths: () => open().then(d => new Promise((resolve) => {
+    cachedFilePaths: () => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readonly');
       const cur = tx.objectStore('files').openCursor();
       const set = new Set();
@@ -44567,7 +44583,7 @@ const _idb = (() => {
       cur.onerror = () => resolve(set);
     })).catch(() => new Set()),
     // Count + byte size of downloaded file blobs (for the purge UI).
-    cacheStats: () => open().then(d => new Promise((resolve) => {
+    cacheStats: () => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readonly');
       const cur = tx.objectStore('files').openCursor();
       let count = 0, bytes = 0;
@@ -44579,7 +44595,7 @@ const _idb = (() => {
     })).catch(() => ({ count: 0, bytes: 0 })),
     deleteFile: (path) => _txw('files', os => os.delete(path)),
     // Purge only downloaded file blobs; keep dir listings (small, aid offline nav).
-    clearCachedFiles: () => open().then(d => new Promise((resolve) => {
+    clearCachedFiles: () => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readwrite');
       const cur = tx.objectStore('files').openCursor();
       let removed = 0;
