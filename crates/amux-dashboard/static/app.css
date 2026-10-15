@@ -2409,6 +2409,11 @@
     border-radius: 999px; padding: 1px 5px; font-size: 0.61rem;
     text-transform: capitalize; white-space: nowrap;
   }
+  .usage-provider-account {
+    color: var(--dim); font-size: 0.66rem; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .usage-provider-name, .usage-provider-plan { flex-shrink: 0; }
   .usage-provider-status {
     margin-left: auto; color: var(--dim); font-size: 0.69rem; white-space: nowrap;
   }

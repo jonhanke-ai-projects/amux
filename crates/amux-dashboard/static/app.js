@@ -47263,6 +47263,8 @@ async function loadUsage() {
         + ((openProviders.length ? openProviders.includes(provider.id) : constrained && constrained.id === provider.id) ? ' open' : '') + '>'
         + '<summary><span class="usage-provider-name">' + esc(provider.label || provider.id || 'Provider') + '</span>'
         + (provider.plan ? '<span class="usage-provider-plan">' + esc(String(provider.plan).replace(/_/g, ' ')) + '</span>' : '')
+        // Whose quota this is: Claude logins rotate across subscriptions.
+        + (provider.account ? '<span class="usage-provider-account" title="' + esc(provider.account) + '">' + esc(provider.account) + '</span>' : '')
         + '<span class="usage-provider-status">' + esc(status) + '</span></summary>'
         + '<div class="usage-provider-detail">' + detail
         + (provider.observed_at || provider.stale || pending ? usageRecoveryNote(provider) : '')
