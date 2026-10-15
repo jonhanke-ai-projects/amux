@@ -102,4 +102,6 @@ else
 fi
 
 say "BUILD $target from detached $REF worktree=$WORK (source checkout=$REPO)"
-AMUX_REPO="$WORK" AMUX_RS_ACTIVATION_REF="$REF" "$WORK/scripts/rust-auto-build.sh"
+# The builder's own authority check compares against this ref, so hand it the
+# ELECTED sha: passing $REF made it refuse every held-back green commit.
+AMUX_REPO="$WORK" AMUX_RS_ACTIVATION_REF="$target" "$WORK/scripts/rust-auto-build.sh"

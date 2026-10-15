@@ -31,7 +31,7 @@ mkdir -p "$AUTH/scripts"
 cat > "$AUTH/scripts/rust-auto-build.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'repo=%s sha=%s\n' "$AMUX_REPO" "$(git -C "$AMUX_REPO" rev-parse HEAD)" >> "$TRACE"
+printf 'repo=%s sha=%s authority=%s\n' "$AMUX_REPO" "$(git -C "$AMUX_REPO" rev-parse HEAD)" "$(git -C "$AMUX_REPO" rev-parse "$AMUX_RS_ACTIVATION_REF")" >> "$TRACE"
 EOF
 chmod +x "$AUTH/scripts/rust-auto-build.sh"
 (
@@ -109,6 +109,8 @@ echo "{\"commit_full\":\"$ELECTED\"}" > "$TMP/health.json"
 run_launcher
 expect grep -q "repo=$WORK sha=$GREEN" "$TRACE"
 expect grep -q "CI-GATE tip $PENDING is pending; activating newest green $GREEN .*verdict=ci_gate_held_back" "$LOG"
+# The builder must be told the ELECTED sha, or its own authority check refuses it.
+expect grep -q "sha=$GREEN authority=$GREEN" "$TRACE"
 # Once the tip goes green it is activated.
 echo "$PENDING green" >> "$VERDICTS"
 : > "$TRACE"
