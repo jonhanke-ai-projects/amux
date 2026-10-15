@@ -7,7 +7,7 @@
 # check_self_runs reads the schedule's run rows, its run logs and the fallback's
 # log, and adds a "self ..." constraint for each failing rule. Every input is a
 # fixture here: no cell reads the live database or logs.
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d "${TMPDIR:-/tmp}/self.XXXXXX")
