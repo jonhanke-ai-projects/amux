@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1548';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1549';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -60042,6 +60042,11 @@ async function _drawRememberRecent(force) {
   if (!d || !d.path || !d.api) return;
   const now = Date.now();
   let entry = d.recents.find(x => x.path === d.path);
+  // Already first in the list: a save only changes its picture and time, so
+  // the row is patched in place below. A full re-render on every autosave
+  // replaced the library under a pointer about to click a row (and reset its
+  // scroll), so a click on "In this folder" during autosave did nothing.
+  const wasFirst = !!entry && d.recents[0] === entry && entry.title === _drawTitleOf(d.path);
   if (!entry) { entry = { path: d.path }; d.recents.unshift(entry); }
   entry.title = _drawTitleOf(d.path);
   entry.ts = now;
@@ -60063,7 +60068,15 @@ async function _drawRememberRecent(force) {
       }
     } catch (e) {}
   }
-  if (d.libTab === 'drawings') _drawLibRender();
+  if (d.libTab === 'drawings') {
+    const row = wasFirst && document.querySelector('#draw-lib-body .draw-recent[data-path="' + CSS.escape(entry.path) + '"]');
+    if (row) {
+      const thumb = row.querySelector('.draw-recent-thumb');
+      if (thumb) thumb.innerHTML = entry.thumb ? '<img alt="" src="' + esc(entry.thumb) + '">' : '';
+      const when = row.querySelector('.draw-recent-when');
+      if (when) when.textContent = timeAgo(entry.ts / 1000);
+    } else _drawLibRender();
+  }
   if (d.recentsTimer) clearTimeout(d.recentsTimer);
   d.recentsTimer = setTimeout(_drawSaveRecents, 1500);
 }
