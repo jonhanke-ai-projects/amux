@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2977,
+  "n_considered": 3008,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3608,12 +3608,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_scopeVaultManage": {
-      "kind": "command._scopeVaultManage",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_scratchpadLoad": {
       "kind": "command._scratchpadLoad",
       "feedback_required": true,
@@ -4142,8 +4136,32 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_vaultDelete": {
+      "kind": "command._vaultDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vaultOfferRestart": {
+      "kind": "command._vaultOfferRestart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_vaultRemove": {
       "kind": "command._vaultRemove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vaultRestart": {
+      "kind": "command._vaultRestart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_vaultReveal": {
+      "kind": "command._vaultReveal",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4154,20 +4172,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_vaultSecretAdd": {
-      "kind": "command._vaultSecretAdd",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_vaultSecretRemove": {
-      "kind": "command._vaultSecretRemove",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_vaultSecretReplace": {
-      "kind": "command._vaultSecretReplace",
+    "_vaultSecretSave": {
+      "kind": "command._vaultSecretSave",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

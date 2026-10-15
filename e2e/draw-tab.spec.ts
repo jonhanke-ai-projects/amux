@@ -367,11 +367,13 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     await page.evaluate(p => (window as any)._drawOpen(p), a);
     await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-rect']);
     await addEl(page, 'alpha-new');
+    // The status already read "saved" from opening, so wait on the file itself.
+    await expect.poll(() => diskIds(a), { timeout: 15_000 }).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     await saved();
-    expect(await diskIds(a)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     await page.evaluate(p => (window as any)._drawOpen(p), b);
     await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond']);
     await addEl(page, 'beta-new');
+    await expect.poll(() => diskIds(b), { timeout: 15_000 }).toEqual(['beta-diamond', 'beta-new']);
     await saved();
     const aBytes = await readFile(a, 'utf8');
     let bBytes = await readFile(b, 'utf8');
@@ -741,3 +743,37 @@ for (const zoom of ['130', '80']) {
     expect(await page.evaluate(() => document.documentElement.style.zoom), 'the UI zoom comes back on leaving Draw').toBe(String(Number(zoom) / 100));
   });
 }
+
+// Every tab and device writes one recents file. A tab used to write only its
+// own list, so a drawing another tab had opened vanished from Recent (the
+// draw-realtime clients erased this file's Alpha entry in CI).
+test('Draw: saving recents keeps entries another tab wrote', async ({ page, request }, info) => {
+  test.setTimeout(90_000);
+  await withDrawPrefs(page, request, info, 'amux-draw-recents-', async dir => {
+    const mine = join(dir, 'Mine.excalidraw');
+    await writeFile(mine, sceneOf([{ id: 'mine-rect', type: 'rectangle', x: 0 }]));
+    await page.reload();
+    await openDraw(page);
+    await page.evaluate(p => (window as any)._drawOpen(p), mine);
+    await expect.poll(() => sceneIds(page)).toEqual(['mine-rect']);
+    await page.waitForFunction(() => !(window as unknown as Win)._draw.recentsTimer, null, { timeout: 10_000 });
+    // Another tab's write lands on disk after this tab loaded its list.
+    const other = join(dir, 'OtherTab.excalidraw');
+    await page.evaluate(async o => {
+      const path = (window as any)._drawRecentsPath();
+      const res = await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' }); const raw = res.ok ? await res.text() : ''; const cur = raw ? JSON.parse(raw) : { recents: [] };
+      cur.recents.unshift({ path: o, title: 'OtherTab', ts: Date.now() + 1 });
+      await fetch('/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, content: JSON.stringify(cur) }) });
+    }, other);
+    await page.evaluate(() => (window as any)._drawRememberRecent(true));
+    await page.waitForFunction(() => !(window as unknown as Win)._draw.recentsTimer, null, { timeout: 10_000 });
+    await expect.poll(() => page.evaluate(async () => {
+      const path = (window as any)._drawRecentsPath();
+      const res = await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' }); const raw = res.ok ? await res.text() : ''; const cur = raw ? JSON.parse(raw) : { recents: [] };
+      return cur.recents.map((x: any) => x.path);
+    })).toEqual(expect.arrayContaining([mine, other]));
+    await page.evaluate(() => (window as any)._drawLibRender());
+    await showDrawings(page);
+    await expect(page.locator(`.draw-recent[data-path="${other}"]`)).toHaveCount(1);
+  });
+});
