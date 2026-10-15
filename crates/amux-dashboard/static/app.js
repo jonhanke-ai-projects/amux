@@ -59331,7 +59331,20 @@ function _drawMount() {
   _drawRenderRoot();
   // The editor follows the amux theme.
   if (!d.themeObs) {
-    d.themeObs = new MutationObserver(() => { if (d.mounted) _drawRenderRoot(); _drawLibRender(); });
+    // Only a real light/dark switch re-renders. This watched EVERY body class
+    // change, and the shared press layer flips body classes on a press, so each
+    // tap re-rendered the library between pointerdown and click: when the new
+    // markup differed (a Recent "just now" ticking over, an entry merged from
+    // another tab) the row under the finger was replaced and no click fired
+    // (draw-tab.spec.ts "clicking a drawing", mobile and iOS, 2026-10-15).
+    d.themeDark = _drawIsDark();
+    d.themeObs = new MutationObserver(() => {
+      const dark = _drawIsDark();
+      if (dark === d.themeDark) return;
+      d.themeDark = dark;
+      if (d.mounted) _drawRenderRoot();
+      _drawLibRender();
+    });
     d.themeObs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
   }
   // Drop a drawing file to MERGE it into the canvas. Excalidraw's own drop
