@@ -89,6 +89,12 @@ pub(crate) fn title_due(now: i64, title_ts: i64, transcript_mtime: i64, refresh_
     transcript_mtime > title_ts && now - title_ts >= refresh_s
 }
 
+/// When the card's current title was last set or kept; 0 when there is none.
+pub(crate) fn title_stamp(meta: &serde_json::Map<String, Value>) -> i64 {
+    let has_title = !meta.get("task_summary").and_then(Value::as_str).unwrap_or("").trim().is_empty();
+    if has_title { meta.get("task_summary_ts").and_then(Value::as_i64).unwrap_or(0) } else { 0 }
+}
+
 pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
     let secs = env_u64("AMUX_TASK_TITLE_SECS", 60).max(1);
     super::spawn_periodic(JOB, secs, move || {
@@ -128,9 +134,11 @@ async fn tick(app: crate::api::AppState) {
         else {
             continue;
         };
-        let meta = sv::load_meta(&name);
-        let generated = meta.get("task_summary_source").and_then(Value::as_str) == Some("generated");
-        let ts = if generated { meta.get("task_summary_ts").and_then(Value::as_i64).unwrap_or(0) } else { 0 };
+        // The stamp of whatever title the card has, generated or hand-set:
+        // a KEEP re-stamps it either way. Reading only generated stamps made
+        // a hand-set title permanently due, so the same workers were kept
+        // every tick and the rest of the fleet starved (21 due, 0 progress).
+        let ts = title_stamp(&sv::load_meta(&name));
         if title_due(now, ts, mtime, refresh_s) {
             due.push((ts, name, path));
         }
@@ -177,6 +185,17 @@ mod tests {
         assert!(title_due(2000, 1000, 1500, 900), "transcript moved, title 1000s old");
         assert!(!title_due(1500, 1000, 1400, 900), "too soon");
         assert!(!title_due(5000, 1000, 900, 900), "nothing new since the title");
+    }
+
+    /// A hand-set title that the model kept is not due again next tick; the
+    /// first version starved the fleet on exactly this (21 due, no progress).
+    #[test]
+    fn a_kept_hand_set_title_counts_as_titled() {
+        let m = |v: Value| v.as_object().unwrap().clone();
+        assert_eq!(title_stamp(&m(json!({"task_summary":"Hand label","task_summary_ts":500}))), 500);
+        assert_eq!(title_stamp(&m(json!({"task_summary":"Gen","task_summary_ts":700,"task_summary_source":"generated"}))), 700);
+        assert_eq!(title_stamp(&m(json!({"task_summary":"","task_summary_ts":900}))), 0);
+        assert!(!title_due(1000, title_stamp(&m(json!({"task_summary":"Hand label","task_summary_ts":990}))), 995, 900));
     }
 
     #[test]
