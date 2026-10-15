@@ -9499,3 +9499,23 @@ details.settings-fold > summary::-webkit-details-marker { display: none; }
 details.settings-fold > summary::before { content: '\25B8'; font-size: 0.7em; color: var(--dim); transition: transform .15s; flex: 0 0 auto; }
 details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 @media (max-width: 600px) { details.settings-fold > summary { min-height: 44px; } }
+
+/* File-list multi-select (Files tab, Split view, Explore): one shared look. */
+.fe-row.fsel-selected, .explore-row.fsel-selected { background: rgba(88,166,255,0.16); box-shadow: inset 2px 0 0 var(--accent); }
+.fsel-mode .fe-row, .fsel-mode .explore-row { position: relative; }
+.fsel-mode .fe-row .fe-cell-name::before, .fsel-mode .explore-row::before {
+  content: ''; flex: 0 0 auto; width: 14px; height: 14px; margin-right: 8px; border: 1.5px solid var(--dim); border-radius: 3px; box-sizing: border-box; }
+.fsel-mode .fe-row.fsel-selected .fe-cell-name::before, .fsel-mode .explore-row.fsel-selected::before {
+  background: var(--accent); border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--card); }
+.fsel-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 9000;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 24px); box-sizing: border-box;
+  padding: 8px 10px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,0.28); }
+.fsel-bar .fsel-count { font-weight: 600; font-size: 0.85rem; padding: 0 6px; white-space: nowrap; }
+.fsel-bar .btn { min-height: 36px; font-size: 0.82rem; }
+.fsel-bar .fsel-danger { color: var(--red, #f85149); }
+.fsel-bar .fsel-close { min-width: 36px; }
+@media (max-width: 600px) {
+  .fsel-bar { left: 8px; right: 8px; transform: none; max-width: none; bottom: calc(8px + env(safe-area-inset-bottom)); }
+  .fsel-bar .btn { min-height: 44px; flex: 1 1 auto; }
+  .fsel-bar .fsel-count { flex: 1 0 100%; text-align: center; }
+}
