@@ -51,6 +51,9 @@ const dashboardAssets = [
   ['AMUX_E2E_DASHBOARD_CSS', '**/app.css', 'text/css'],
   ['AMUX_E2E_DASHBOARD_HTML', '**/', 'text/html'],
   ['AMUX_E2E_STATE_KERNEL', '**/state/kernel.js', 'text/javascript'],
+  // The kernel fetches the command registry at runtime; pin a candidate one
+  // alongside a candidate kernel when the handlers changed.
+  ['AMUX_E2E_CONTROL_REGISTRY', '**/state/control-registry.json', 'application/json'],
 ].flatMap(([env, route, contentType]) => {
   const source = process.env[env];
   if (!source) return [];

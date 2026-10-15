@@ -2,11 +2,12 @@
 // shared row builder, a bar of commands, and Delete acting on exactly the
 // selection. Real files in a temp dir; the Files tab drives it.
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 import { mkdtemp, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-test('click, Cmd-click, Shift-click and Cmd+A select; Delete removes exactly the selection', async ({ page, browserName }) => {
+test('click, Cmd-click, Shift-click and Cmd+A select; Delete removes exactly the selection', async ({ page, browserName }, info) => {
   test.skip(test.info().project.name !== 'desktop', 'pointer gestures; touch is the long-press path');
   const dir = await mkdtemp(join(tmpdir(), 'amux-fsel-'));
   try {
@@ -20,7 +21,8 @@ test('click, Cmd-click, Shift-click and Cmd+A select; Delete removes exactly the
     await page.evaluate((d) => (window as any).loadFiles(d), dir);
     const row = (n: string) => page.locator(`#files-body [data-path$="/${n}"]`);
     await row('a.txt').waitFor();
-    const sel = () => page.evaluate(() => [...(window as any)._fsel.paths].map((p: string) => p.split('/').pop()).sort());
+    // _fsel is a top-level const in app.js, not a window property.
+    const sel = () => page.evaluate(() => [...(globalThis as any).eval('_fsel').paths].map((p: string) => p.split('/').pop()).sort());
     const bar = page.locator('#fsel-bar');
     const mod = browserName === 'webkit' ? 'Meta' : 'ControlOrMeta';
 
@@ -45,6 +47,7 @@ test('click, Cmd-click, Shift-click and Cmd+A select; Delete removes exactly the
     await expect.poll(async () => (await readdir(dir)).sort()).toEqual(['a.txt', 'c.txt', 'e.txt', 'sub']);
     await expect(bar).toHaveCount(0);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    // Through cleanup(): a throwing finally would discard the test's own error.
+    await cleanup('remove temp folder', () => rm(dir, { recursive: true, force: true }), info);
   }
 });

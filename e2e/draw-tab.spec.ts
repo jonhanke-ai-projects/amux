@@ -325,6 +325,17 @@ async function showDrawings(page: Page) {
 async function clickRow(page: Page, sel: string) {
   await showDrawings(page);
   await page.locator(sel).scrollIntoViewIfNeeded();
+  // Tap once the list has stopped moving, as a person does. On iOS WebKit a
+  // tap that lands while the library is still settling from a scroll only
+  // stops the scroll and fires no click (draw-tab.spec.ts:356, iOS: the trace
+  // shows the tap on Beta with the list at scrollTop 303 and no handler run).
+  await page.waitForFunction(() => new Promise(done => {
+    const body = document.getElementById('draw-lib-body');
+    if (!body) return done(true);
+    let last = body.scrollTop, still = 0;
+    const tick = () => { const now = body.scrollTop; still = now === last ? still + 1 : 0; last = now; if (still >= 6) done(true); else requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }));
   await page.locator(sel).click();
   if (isPhone(page)) await expect(page.locator('#draw-lib')).not.toBeInViewport();
 }
@@ -775,5 +786,20 @@ test('Draw: saving recents keeps entries another tab wrote', async ({ page, requ
     await page.evaluate(() => (window as any)._drawLibRender());
     await showDrawings(page);
     await expect(page.locator(`.draw-recent[data-path="${other}"]`)).toHaveCount(1);
+    // A re-render keeps the library where the user scrolled it: a scrolled
+    // list used to jump back to the top under a tap (draw-tab.spec.ts:356, iOS).
+    const kept = await page.evaluate(async () => {
+      const body = document.getElementById('draw-lib-body')!;
+      body.style.maxHeight = '120px';                 // force a scrollable list
+      body.scrollTop = 40;
+      const before = body.scrollTop;
+      (window as any)._draw.recents.push({ path: '/tmp/force-rerender-' + Date.now() + '.excalidraw', title: 'z', ts: 1 });
+      await (window as any)._drawLibRender();
+      const after = body.scrollTop;
+      body.style.maxHeight = '';
+      return { before, after };
+    });
+    expect(kept.before, 'the list scrolled at all').toBeGreaterThan(0);
+    expect(kept.after, 'scroll kept across a re-render').toBe(kept.before);
   });
 });

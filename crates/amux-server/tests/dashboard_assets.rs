@@ -9,10 +9,13 @@
 //!    program is valid JavaScript. A parse check is not a content check, and no
 //!    amount of care substitutes for one that can fail (ethos rule 7).
 //!
-//! 2. VERSION SKEW. CLAUDE.md requires `APP_VER` (app.js) and `CACHE` (sw.js)
-//!    to be bumped together — a browser holding the cached script otherwise
-//!    never receives the fix. That rule has lived only in prose, so the one
-//!    thing every client-side deploy depends on was enforced by memory.
+//! 2. VERSION SKEW. A browser holding the cached script only refetches when
+//!    `APP_VER` (app.js) and `CACHE` (sw.js) move. Both are now DERIVED: the
+//!    source carries the `__AMUX_ASSET_VER__` placeholder and the server stamps
+//!    a content hash of static/ into it at serve time (amux-dashboard build.rs).
+//!    The test pins that the placeholder is what the source holds; the
+//!    substitution itself is pinned through the router in
+//!    `dashboard_asset_version.rs`.
 //!
 //! These read the SAME files `static_files.rs` embeds at compile time, so a
 //! green run is about the bytes that actually ship.
@@ -226,9 +229,6 @@ fn the_app_bundle_still_contains_an_app() {
     }
 }
 
-/// CLAUDE.md: "Client JS changes need APP_VER and the CACHE version bumped
-/// together, or a browser holding the cached script never receives the fix."
-/// Enforced here rather than remembered.
 /// A WORKER BRANCH IS ISOLATION, NOT DELIVERY (AF-495).
 ///
 /// From the 2026-09-04 Doron session. His worker was off main with nothing
@@ -276,18 +276,25 @@ fn the_branch_popover_does_not_read_isolation_as_delivery() {
     );
 }
 
+/// Both version declarations carry the derived-version placeholder. A hand-
+/// written literal here would pin the version: the server would stamp nothing,
+/// the SW cache name would stop moving on deploys, and every pair of dashboard
+/// PRs would conflict on the line again.
 #[test]
-fn app_ver_and_the_sw_cache_version_agree() {
+fn app_ver_and_the_sw_cache_version_are_derived() {
+    let placeholder = amux_dashboard::ASSET_VER_PLACEHOLDER;
     let app_ver = const_str(&asset("app.js"), "APP_VER")
-        .expect("app.js must declare `const APP_VER = '<version>'`");
+        .expect("app.js must declare `const APP_VER = '__AMUX_ASSET_VER__'`");
     let cache = const_str(&asset("sw.js"), "CACHE")
-        .expect("sw.js must declare `const CACHE = 'amux-v<version>'`");
-
-    let expected = format!("amux-v{app_ver}");
+        .expect("sw.js must declare `const CACHE = 'amux-v__AMUX_ASSET_VER__'`");
     assert_eq!(
-        cache, expected,
-        "APP_VER ({app_ver}) and the sw.js CACHE ({cache}) disagree. Bump BOTH: a client \
-         holding the cached script never receives a fix shipped under a stale cache key."
+        app_ver, placeholder,
+        "app.js APP_VER must be the placeholder the server stamps, not a hand-bumped literal"
+    );
+    assert_eq!(
+        cache,
+        format!("amux-v{placeholder}"),
+        "sw.js CACHE must be `amux-v` + the placeholder, so it moves with APP_VER on every deploy"
     );
 }
 

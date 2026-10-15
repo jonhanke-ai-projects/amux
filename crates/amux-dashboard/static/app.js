@@ -14304,7 +14304,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1565';   // bump together with the sw.js CACHE version
+const APP_VER = '__AMUX_ASSET_VER__';   // derived: the server stamps a content hash of static/ here (amux-dashboard build.rs)
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16151,7 +16151,7 @@ function _psfRenderEntries(dirPath, data) {
     body.appendChild(back);
   }
   const sorted = _psfSortEntries(data.entries);
-  const psfOpts = { openDir: _psfLoad, openFile: _psfViewFile };
+  const psfOpts = { openDir: _psfLoad, openFile: _psfViewFile, singleClickOpens: true };
   for (const entry of sorted) body.appendChild(_feBuildRow(entry, dirPath, 0, '', psfOpts));
   if (!data.entries.length) {
     body.innerHTML = '<div style="padding:16px;color:var(--dim);text-align:center;font-size:0.82rem;">Empty folder</div>';
@@ -27804,9 +27804,16 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
   } else {
     // Desktop pointer: single click selects the row, double-click opens it in the
     // existing viewer, matching a familiar OS file manager.
-    row.title = 'Double-click to open \u00b7 \u2318/Ctrl-click or Shift-click to select several';
-    row.onclick = (ev) => _fselClick(row, ev || {});
-    row.ondblclick = () => openFile(entryPath);
+    // A host can keep single-click-to-open (the Split view's narrow preview
+    // panel always worked that way); selection there is Cmd/Ctrl/Shift-click
+    // and long-press, which the capture listener below handles for every list.
+    if (opts.singleClickOpens) {
+      row.onclick = () => openFile(entryPath);
+    } else {
+      row.title = 'Double-click to open';
+      row.onclick = (ev) => _fselClick(row, ev || {});
+      row.ondblclick = () => openFile(entryPath);
+    }
   }
   return row;
 }
@@ -27995,9 +28002,11 @@ document.addEventListener('keydown', (e) => {
   const t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
   const root = _fsel.root && document.contains(_fsel.root) && _fsel.root.offsetParent ? _fsel.root : null;
-  if (e.key === 'Escape' && _fsel.paths.size) { _fselClear(); return; }
+  // Esc with a selection only clears it, as in Finder: it used to reach the
+  // worker view's own Esc handler too and close the whole view.
+  if (e.key === 'Escape' && _fsel.paths.size) { e.preventDefault(); e.stopImmediatePropagation(); _fselClear(); return; }
   if (root && (e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); _fselSelectAll(root); }
-});
+}, true);
 // Navigate to the parent of the current Files-tab folder (the "Up" action).
 function _filesUp() {
   const p = (_filesPath || '/').replace(/\/+$/, '');
@@ -60173,10 +60182,16 @@ function _drawLibRender() {
     + '</div>');
   if (fresh || body.dataset.dark !== String(_drawIsDark())) { body.dataset.dark = String(_drawIsDark()); for (const i of items) _drawLibThumb(i); }
 }
+// Replacing the content kept no scroll position, so every re-render of the
+// library (an autosave reorders Recent) jumped a scrolled list back to the
+// top, and a tap aimed at a row lower down landed on whatever moved under it
+// (draw-tab.spec.ts:356 on iOS, once Recent grew longer than the sheet).
 function _drawSetBody(body, html) {
   if (body._drawHtml === html) return false;
+  const top = body.scrollTop;
   body._drawHtml = html;
   body.innerHTML = html;
+  if (top) body.scrollTop = top;
   return true;
 }
 async function _drawLibThumb(item) {
@@ -60371,10 +60386,14 @@ async function _drawRenderDrawings(body, q) {
   // then replaced every row a moment later: a tap whose press and release
   // straddled that swap fired no click (draw-tab.spec.ts:356 on iOS).
   const keep = d.folderHtml || '<div class="draw-empty">Loading…</div>';
+  const top = body.scrollTop;
   if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
     + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
     + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
     _drawSetBody(document.getElementById('draw-folder-list'), keep);
+    // The folder rows arrive after the body swap; restore the scroll again
+    // now that the list is full height (it was clamped while they were absent).
+    if (top) body.scrollTop = top;
   }
   const dir = d.path ? _drawDirOf(d.path) : d.dir;
   try {
