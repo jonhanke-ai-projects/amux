@@ -347,13 +347,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;" id="crossgroup-default-note">Workers may message only workers in a shared group. Owner input remains permitted.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
-            <span style="font-size:0.85rem;">Auto-drain backlog for all workers</span>
+            <span style="font-size:0.85rem;">Refill To Do from Backlog, all workers</span>
             <label class="theme-toggle">
               <input type="checkbox" id="board-drain-default-checkbox" onchange="toggleBoardDrainDefault(this.checked)" checked>
               <span class="theme-track"><span class="theme-thumb"></span></span>
             </label>
           </div>
-          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Default ON: when To Do is empty, promote the oldest eligible Backlog card and keep driving it. Human-owned, triggered, epic, watch, and tripwire cards remain parked; a group or worker configuration can opt out.</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">The fleet-wide default for each worker’s “Refill To Do from Backlog” switch: when To Do is empty, the oldest Backlog card the worker can do moves into To Do. It only takes effect on workers whose “Board steers this worker” and “Start To Do cards when idle” are on. Human-owned, triggered, epic, watch and tripwire cards are never moved.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">Auto-answer resume dialog</span>
             <label class="theme-toggle">
