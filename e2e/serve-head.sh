@@ -97,6 +97,14 @@ export AMUX_ISOLATED=1
 
 dirty="$(git -C "$REPO" status --porcelain -- crates/ Cargo.toml Cargo.lock 2>/dev/null || true)"
 
+# CI builds the server ONCE per run (rust.yml `server-bin`) and hands every
+# e2e shard the binary. Each shard used to compile it itself, about 6 of a
+# shard's ~20 minutes, seven times over.
+if [ -n "${AMUX_E2E_SERVER_BIN:-}" ]; then
+  [ -x "$AMUX_E2E_SERVER_BIN" ] || { echo "[e2e] AMUX_E2E_SERVER_BIN is not an executable: $AMUX_E2E_SERVER_BIN" >&2; exit 1; }
+  echo "[e2e] SOURCE: prebuilt server $AMUX_E2E_SERVER_BIN (built once for this CI run)."
+  exec "$AMUX_E2E_SERVER_BIN"
+fi
 if [ "${AMUX_E2E_WORKING_TREE:-0}" = "1" ]; then
   echo "[e2e] SOURCE: the WORKING TREE at $REPO — NOT committed HEAD (AMUX_E2E_WORKING_TREE=1)."
   echo "[e2e] A peer mid-edit in this shared checkout can fail this run; that is the trade you asked for."

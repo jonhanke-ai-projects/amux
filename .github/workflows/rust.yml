@@ -285,6 +285,52 @@ jobs:
           SHARDS: ${{ needs.test-shards.result }}
         run: test "$SHARDS" = success
 
+  # Build the server ONCE and give every e2e shard the binary (seven shards
+  # each compiled it, ~6 min apiece, before running a single test). Built on
+  # ubuntu-latest (24.04), the same glibc as the noble Playwright image the
+  # shards run in.
+  server-bin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: server-bin
+      - name: Build the server the e2e shards boot
+        run: cargo build -p amux-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amux-server-bin
+          path: target/debug/amux-server
+          if-no-files-found: error
+          retention-days: 3
+
+  # The SPA static gates and client unit tests ran in EVERY e2e shard, seven
+  # times per run; they need no browser and no server, so they run once here.
+  spa-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm ci --ignore-scripts
+      - name: SPA static gate (no-undef kills the silent-dead-handler class)
+        # Two silent-dead-handler bugs shipped in one week (schedule delete,
+        # worker delete 2026-08-09): an undefined name in an async handler makes
+        # the click do nothing. This gate fails the build on that class.
+        run: bash scripts/spa-lint.sh
+      - name: Dashboard outage recovery contracts
+        run: node --test tests/dashboard-outage-recovery.mjs
+      - name: No assignment to an undeclared client-side global (AF-940)
+        run: node --test tests/spa-no-undeclared-global-assignment.test.mjs
+      - name: Dashboard client unit tests (e2e/*.test.mjs)
+        # These node:test suites used to ride inside Playwright, which loaded
+        # them and counted none of their results (AMUX-5373).
+        run: node --test e2e/*.test.mjs
+
   e2e-shards:
     # PR Full Gate tier (plan §CI tiers): the golden scenarios in a real
     # browser against the real server + real extracted dashboard.
@@ -298,15 +344,18 @@ jobs:
     defaults:
       run:
         shell: bash
+    needs: server-bin
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: amux-server-bin
+          path: ${{ runner.temp }}/server-bin
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       # AF-932. The `check` job installs tmux (above); this job never did.
@@ -321,7 +370,7 @@ jobs:
         # or the private HTTPS/tmux fixture tools. Install this smaller set.
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential pkg-config python3 tmux openssl lsof procps
+          apt-get install -y --no-install-recommends python3 tmux openssl lsof procps
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
       - name: Install locked packages and verify preinstalled browsers
@@ -346,32 +395,12 @@ jobs:
             await instance.close();
           }
           JS
-      - name: SPA static gate (no-undef kills the silent-dead-handler class)
-        # Two silent-dead-handler bugs shipped in one week (schedule delete,
-        # worker delete 2026-08-09): an undefined name in an async handler makes
-        # the click do nothing. This gate fails the build on that class.
-        run: bash scripts/spa-lint.sh
-      - name: Dashboard outage recovery contracts
-        run: node --test tests/dashboard-outage-recovery.mjs
-      - name: No assignment to an undeclared client-side global (AF-940)
-        run: node --test tests/spa-no-undeclared-global-assignment.test.mjs
-      - name: Dashboard client unit tests (e2e/*.test.mjs)
-        # These node:test suites used to ride inside Playwright, which loaded
-        # them and counted none of their results (AMUX-5373).
-        run: node --test e2e/*.test.mjs
-      # The CI checkout IS committed HEAD, so serve-head's worktree hop is
-      # pure duplicate work here — and worse: without these env vars the
-      # prebuild below went to ./target while serve-head defaulted to
-      # ~/.amux/rust-build-target, so CI paid a SECOND, uncached cold build
-      # inside the webServer boot on every run (the old step comment claimed
-      # the profile was "shared with webServer"; it stopped being true the
-      # day serve-head started setting CARGO_TARGET_DIR — AMUX-2961).
-      - name: Build server (the exact debug profile the webServer boots)
-        run: cargo build -p amux-server
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      - name: Use the server built once for this run
+        run: |
+          chmod +x "$RUNNER_TEMP/server-bin/amux-server"
+          echo "AMUX_E2E_SERVER_BIN=$RUNNER_TEMP/server-bin/amux-server" >> "$GITHUB_ENV"
       - name: Golden scenarios (desktop + mobile + ios-safari)
-        run: npx playwright test --config e2e/playwright.config.ts --workers=2 --shard=${{ matrix.shard }}/7 --global-timeout=1200000
+        run: npx playwright test --config e2e/playwright.config.ts --workers=2 --shard=${{ matrix.shard }}/12 --global-timeout=1200000
         env:
           AMUX_E2E_EVIDENCE_DIR: ci-results/shard-${{ matrix.shard }}
           AMUX_E2E_WORKING_TREE: '1'
@@ -399,7 +428,7 @@ jobs:
 
   # Preserve the e2e check name; a green subset cannot satisfy it.
   e2e:
-    needs: e2e-shards
+    needs: [e2e-shards, spa-gates]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -434,12 +463,13 @@ jobs:
         if: always()
         run: |
           set -o pipefail
-          node scripts/check-e2e-evidence.mjs ci-results ci-full/manifest.json 7 | tee e2e-verdict.json
+          node scripts/check-e2e-evidence.mjs ci-results ci-full/manifest.json 12 | tee e2e-verdict.json
       - name: Require successful setup and test jobs too
         if: always()
         env:
           SHARD_RESULT: ${{ needs.e2e-shards.result }}
-        run: test "$SHARD_RESULT" = success
+          GATES_RESULT: ${{ needs.spa-gates.result }}
+        run: test "$SHARD_RESULT" = success && test "$GATES_RESULT" = success
       - uses: actions/upload-artifact@v4
         if: always()
         with:
