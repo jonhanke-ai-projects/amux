@@ -391,7 +391,7 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
 
     // Recent drawings: click Alpha.
     await showDrawings(page);
-    await clickRow(page, '.draw-recent[data-path$="/Alpha.excalidraw"]');
+    await clickRow(page, `.draw-recent[data-path="${a}"]`);
     await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     expect(await page.evaluate(() => (window as unknown as Win)._draw.path)).toBe(a);
     await expect(page.locator('#draw-title')).toHaveValue('Alpha');
@@ -400,7 +400,7 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     expect(await readFile(a, 'utf8'), 'opening Alpha did not rewrite it').toBe(aBytes);
 
     // In this folder: click Beta.
-    await clickRow(page, '.draw-pop-file[data-path$="/Beta.excalidraw"]');
+    await clickRow(page, `.draw-pop-file[data-path="${b}"]`);
     await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond', 'beta-new']);
     expect(await readFile(a, 'utf8'), 'opening Beta left Alpha untouched').toBe(aBytes);
 
@@ -412,7 +412,7 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     await openDraw(page);
     await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond', 'beta-new']);
     await showDrawings(page);
-    await clickRow(page, '.draw-recent[data-path$="/Alpha.excalidraw"]');
+    await clickRow(page, `.draw-recent[data-path="${a}"]`);
     await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     expect(await readFile(b, 'utf8')).toBe(bBytes);
 
@@ -428,7 +428,7 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     await expect(page.locator('#draw-save-state')).toHaveAttribute('data-state', 'saving', { timeout: 5_000 });
     await addEl(page, 'alpha-pending', 'ellipse');
     bBytes = await readFile(b, 'utf8');
-    await clickRow(page, '.draw-pop-file[data-path$="/Beta.excalidraw"]');
+    await clickRow(page, `.draw-pop-file[data-path="${b}"]`);
     await expect.poll(() => sceneIds(page), { timeout: 15_000 }).toEqual(['beta-diamond', 'beta-new']);
     expect(await diskIds(a)).toEqual(['alpha-ell', 'alpha-inflight', 'alpha-new', 'alpha-pending', 'alpha-rect']);
     expect(await readFile(b, 'utf8')).toBe(bBytes);
