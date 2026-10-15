@@ -3684,7 +3684,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div id="mdai-badges" class="mdai-badges"></div>
     </div>
     <div class="mdai-actions">
-      <span class="mdai-split"><button id="mdai-run-btn" class="btn" onclick="_mdaiRun({show:true})" title="Run this node and everything it reads">&#9655; Run</button><button class="btn mdai-split-more" onclick="event.stopPropagation();_mdaiRunMenu(this)" aria-label="Run options">&#9662;</button></span>
+      <span class="mdai-split"><button id="mdai-run-btn" class="btn" data-repeatable onclick="_mdaiRun({show:true})" title="Run this node and everything it reads">&#9655; Run</button><button class="btn mdai-split-more" onclick="event.stopPropagation();_mdaiRunMenu(this)" aria-label="Run options">&#9662;</button></span>
       <button id="mdai-menu-btn" class="btn" onclick="event.stopPropagation();_mdaiMenu(this)" title="Copy, export, raw file, read aloud" aria-label="More actions">&#x22EF;</button>
       <button id="mdai-save-btn" class="btn" onclick="_mdaiSave()">Saved</button>
     </div>
