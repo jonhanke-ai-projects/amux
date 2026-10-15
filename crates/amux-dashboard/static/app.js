@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1549';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1550';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16126,26 +16126,12 @@ function _psfRenderEntries(dirPath, data) {
     body.appendChild(back);
   }
   const sorted = _psfSortEntries(data.entries);
-  for (const entry of sorted) {
-    const entryPath = dirPath.replace(/\/$/, '') + '/' + entry.name;
-    const row = document.createElement('div');
-    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
-    const icon = _fileTypeIcon(entry.name, entry.type);
-    const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
-    const dateStr = entry.modified ? timeAgo(entry.modified) : '';
-    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
-    const ep = entryPath.replace(/'/g, "\\'");
-    row.innerHTML =
-      `<div class="fe-cell-name">${icon}<span>${esc(entry.name)}${slash}</span></div>` +
-      `<div class="fe-cell-size">${sizeStr}</div>` +
-      `<div class="fe-cell-date">${dateStr}</div>` +
-      `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">&#x22EF;</button></div>`;
-    row.onclick = entry.type === 'dir' ? () => _psfLoad(entryPath) : () => _psfViewFile(entryPath);
-    body.appendChild(row);
-  }
+  const psfOpts = { openDir: _psfLoad, openFile: _psfViewFile };
+  for (const entry of sorted) body.appendChild(_feBuildRow(entry, dirPath, 0, '', psfOpts));
   if (!data.entries.length) {
     body.innerHTML = '<div style="padding:16px;color:var(--dim);text-align:center;font-size:0.82rem;">Empty folder</div>';
   }
+  _fselApply();
 }
 
 async function _psfLoad(dirPath) {
@@ -27753,12 +27739,22 @@ function _feHighlight(name, q) {
 }
 // Build one file-explorer row. Dirs get an expand chevron (inline accordion) AND
 // still navigate on row click; `depth` indents nested rows.
-function _feBuildRow(entry, parentPath, depth, q) {
+// One row builder for every file list (the Files tab and the Split view's
+// file panel; Explore stamps the same data-path/data-type on its rows), so the
+// shared multi-select below works the same everywhere. `opts.openDir` and
+// `opts.openFile` say what opening means in the hosting view.
+function _feBuildRow(entry, parentPath, depth, q, opts) {
+  opts = opts || {};
+  const openDir = opts.openDir || loadFiles;
+  const openFile = opts.openFile || openFilePreview;
   const entryPath = parentPath.replace(/\/$/, '') + '/' + entry.name;
   const row = document.createElement('div');
   row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
   row.dataset.depth = depth;
   row.dataset.path = entryPath;
+  row.dataset.type = entry.type === 'dir' ? 'dir' : 'file';
+  row._feOpts = opts;
+  if (_fsel.paths.has(entryPath)) row.classList.add('fsel-selected');
   const nameHtml = _feHighlight(entry.name, q);
   const icon = _fileTypeIcon(entry.name, entry.type);
   const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
@@ -27776,17 +27772,16 @@ function _feBuildRow(entry, parentPath, depth, q) {
     `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">⋯</button></div>`;
   if (entry.type === 'dir') {
     // Folders open on a single click on every device (fast, and mobile-friendly).
-    row.onclick = () => loadFiles(entryPath);
+    row.onclick = () => openDir(entryPath);
   } else if (_feTouchDevice()) {
     // Touch: a single tap opens the file. Mobile-first, no hover or double-tap.
-    row.onclick = () => openFilePreview(entryPath);
+    row.onclick = () => openFile(entryPath);
   } else {
     // Desktop pointer: single click selects the row, double-click opens it in the
-    // existing viewer, matching a familiar OS file manager. openFilePreview is
-    // unchanged; this only changes what gesture triggers it.
-    row.title = 'Double-click to open';
-    row.onclick = () => _feSelectRow(row);
-    row.ondblclick = () => openFilePreview(entryPath);
+    // existing viewer, matching a familiar OS file manager.
+    row.title = 'Double-click to open \u00b7 \u2318/Ctrl-click or Shift-click to select several';
+    row.onclick = (ev) => _fselClick(row, ev || {});
+    row.ondblclick = () => openFile(entryPath);
   }
   return row;
 }
@@ -27797,11 +27792,187 @@ function _feTouchDevice() {
 }
 // Single-selection highlight for the file list (desktop). Clears any prior
 // selection so exactly one row is highlighted, like a desktop file manager.
-function _feSelectRow(row) {
-  const body = document.getElementById('files-body');
-  if (body) body.querySelectorAll('.fe-row.fe-selected').forEach(r => r.classList.remove('fe-selected'));
-  row.classList.add('fe-selected');
+function _feSelectRow(row) { _fselClick(row, {}); }
+
+// ── Multi-select for file lists (Ethan, 2026-10-15: "make it so I can select
+// multiple files/dirs and have commands for applying across multiple ...
+// familiar to users"). Finder and Google Drive gestures: click selects one,
+// Cmd/Ctrl-click toggles, Shift-click selects a range, Cmd/Ctrl+A selects all,
+// Esc clears; on touch, long-press enters selection and taps then toggle. One
+// selection at a time, in whichever list it was made. A bar at the bottom
+// carries the commands: Copy paths, Download, Move to..., Delete.
+const _FSEL_ROOTS = '#files-body, #psf-body, #explore-body';
+const _fsel = { root: null, paths: new Set(), anchor: null, mode: false, suppressClick: false };
+function _fselRowsIn(root) { return root ? [...root.querySelectorAll('[data-path][data-type]')] : []; }
+function _fselClick(row, ev) {
+  const root = row.closest(_FSEL_ROOTS);
+  if (!root) return;
+  if (_fsel.root !== root) { _fsel.root = root; _fsel.paths.clear(); _fsel.anchor = null; }
+  const path = row.dataset.path;
+  if (ev.shiftKey && _fsel.anchor) {
+    const rows = _fselRowsIn(root).map(r => r.dataset.path);
+    const a = rows.indexOf(_fsel.anchor), b = rows.indexOf(path);
+    if (a >= 0 && b >= 0) {
+      if (!(ev.metaKey || ev.ctrlKey)) _fsel.paths.clear();
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) _fsel.paths.add(rows[i]);
+    }
+  } else if (ev.metaKey || ev.ctrlKey || _fsel.mode) {
+    _fsel.paths.has(path) ? _fsel.paths.delete(path) : _fsel.paths.add(path);
+    _fsel.anchor = path;
+  } else {
+    _fsel.paths.clear(); _fsel.paths.add(path); _fsel.anchor = path;
+  }
+  if (!_fsel.paths.size) _fsel.mode = false;
+  _fselApply();
 }
+function _fselClear() {
+  _fsel.paths.clear(); _fsel.anchor = null; _fsel.mode = false;
+  _fselApply();
+}
+function _fselSelectAll(root) {
+  _fsel.root = root; _fsel.paths = new Set(_fselRowsIn(root).map(r => r.dataset.path));
+  _fselApply();
+}
+// Re-applied after any list re-render, so a selection survives a refresh of
+// the rows that are still there and drops the ones that are gone.
+function _fselApply() {
+  document.querySelectorAll('.fsel-selected').forEach(r => r.classList.remove('fsel-selected'));
+  const root = _fsel.root && document.contains(_fsel.root) ? _fsel.root : null;
+  if (!root) { _fsel.paths.clear(); _fsel.mode = false; }
+  const present = new Set();
+  _fselRowsIn(root).forEach(r => { if (_fsel.paths.has(r.dataset.path)) { r.classList.add('fsel-selected'); present.add(r.dataset.path); } });
+  _fsel.paths = present;
+  document.querySelectorAll(_FSEL_ROOTS).forEach(el => el.classList.toggle('fsel-mode', el === root && (_fsel.mode || present.size > 1)));
+  _fselRenderBar();
+}
+function _fselSelected() {
+  const root = _fsel.root;
+  return _fselRowsIn(root).filter(r => _fsel.paths.has(r.dataset.path)).map(r => ({ path: r.dataset.path, type: r.dataset.type }));
+}
+function _fselRefreshView() {
+  const id = _fsel.root && _fsel.root.id;
+  if (id === 'files-body') _fileViewRefresh();
+  else if (id === 'psf-body') _psfLoad(_peekSplitPath || '/');
+  else if (id === 'explore-body') loadExplore(_explorePath);
+}
+function _fselRenderBar() {
+  let bar = document.getElementById('fsel-bar');
+  const n = _fsel.paths.size;
+  // One selected row is ordinary single selection: the bar appears from two,
+  // or as soon as touch selection mode is on.
+  if (!n || (n < 2 && !_fsel.mode)) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'fsel-bar'; bar.className = 'fsel-bar'; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Selected files');
+    document.body.appendChild(bar);
+  }
+  const files = _fselSelected().filter(e => e.type === 'file').length;
+  bar.innerHTML = '<span class="fsel-count">' + n + ' selected</span>'
+    + '<button class="btn" onclick="_fselCopyPaths()">Copy paths</button>'
+    + '<button class="btn" onclick="_fselDownload()"' + (files ? '' : ' disabled title="Folders cannot be downloaded"') + '>Download' + (files && files < n ? ' ' + files : '') + '</button>'
+    + '<button class="btn" onclick="_fselMove()">Move to\u2026</button>'
+    + '<button class="btn fsel-danger" onclick="_fselDelete()">Delete</button>'
+    + '<button class="btn fsel-close" onclick="_fselClear()" title="Clear selection (Esc)" aria-label="Clear selection">\u2715</button>';
+}
+function _fselBeacon(action, ok, failed) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'file-bulk-action', action, ok, failed, view: (_fsel.root && _fsel.root.id) || '', measured: true, n_considered: ok + failed, ver: APP_VER }) }).catch(() => {});
+  } catch (e) {}
+}
+// Run one request per item and report what actually happened, never a bare
+// "done": a partial failure names the items that failed and why.
+async function _fselEach(items, fn) {
+  const failed = [];
+  let ok = 0;
+  for (const it of items) {
+    try { const why = await fn(it); if (why) failed.push(it.path.split('/').pop() + ' (' + why + ')'); else ok++; }
+    catch (e) { failed.push(it.path.split('/').pop() + ' (' + e.message + ')'); }
+  }
+  return { ok, failed };
+}
+function _fselReport(verb, items, res) {
+  _fselBeacon(verb, res.ok, res.failed.length);
+  if (!res.failed.length) showToast(verb + ' ' + res.ok + ' item' + (res.ok === 1 ? '' : 's'));
+  else showToast(verb + ' ' + res.ok + ' of ' + items.length + '. Failed: ' + res.failed.slice(0, 3).join(', ') + (res.failed.length > 3 ? ' and ' + (res.failed.length - 3) + ' more' : ''));
+}
+async function _fselCopyPaths() {
+  const paths = _fselSelected().map(e => e.path);
+  try { await navigator.clipboard.writeText(paths.join('\n')); showToast('Copied ' + paths.length + ' paths'); _fselBeacon('copy_paths', paths.length, 0); }
+  catch (e) { showToast('Copy failed: ' + e.message); }
+}
+async function _fselDownload() {
+  const items = _fselSelected().filter(e => e.type === 'file');
+  const res = await _fselEach(items, async it => { await _downloadFileBytes(API + '/api/file/raw?path=' + encodeURIComponent(it.path), it.path.split('/').pop()); });
+  _fselReport('Downloaded', items, res);
+}
+async function _fselMove() {
+  const items = _fselSelected();
+  const here = items.length ? items[0].path.slice(0, items[0].path.lastIndexOf('/')) || '/' : '/';
+  const dest = (prompt('Move ' + items.length + ' item' + (items.length === 1 ? '' : 's') + ' to folder:', here) || '').trim();
+  if (!dest || dest === here) return;
+  const res = await _fselEach(items, async it => {
+    const r = await fetch(API + '/api/fs/rename', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ path: it.path, new_name: it.path.split('/').pop(), dest_dir: dest }) });
+    const d = await r.json().catch(() => ({}));
+    return r.ok && d.ok ? '' : (d.error || ('HTTP ' + r.status));
+  });
+  _fselReport('Moved', items, res);
+  _fselClear(); _fselRefreshView();
+}
+async function _fselDelete() {
+  const items = _fselSelected();
+  const names = items.slice(0, 5).map(e => e.path.split('/').pop() + (e.type === 'dir' ? '/' : '')).join('\n');
+  if (!confirm('Delete ' + items.length + ' item' + (items.length === 1 ? '' : 's') + '? This cannot be undone.\n\n' + names + (items.length > 5 ? '\n\u2026and ' + (items.length - 5) + ' more' : ''))) return;
+  const res = await _fselEach(items, async it => {
+    const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: it.path }) });
+    const d = await r.json().catch(() => ({}));
+    return r.ok ? '' : (d.error || ('HTTP ' + r.status));
+  });
+  _fselReport('Deleted', items, res);
+  _fselClear(); _fselRefreshView();
+}
+// Modifier clicks and touch selection mode reach every list, including the ones
+// whose rows open on a plain click (Split view, Explore): caught in capture so
+// the row's own open never runs for a selection gesture.
+document.addEventListener('click', (e) => {
+  const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+  if (!row || e.target.closest('button, a, input')) return;
+  if (_fsel.suppressClick) { _fsel.suppressClick = false; e.preventDefault(); e.stopPropagation(); return; }
+  const inMode = _fsel.mode && _fsel.root === row.closest(_FSEL_ROOTS);
+  if (!(e.metaKey || e.ctrlKey || e.shiftKey || inMode)) return;
+  e.preventDefault(); e.stopPropagation();
+  _fselClick(row, e);
+}, true);
+// Touch: a long-press starts selection mode with that row selected.
+(function () {
+  let timer = null, startX = 0, startY = 0;
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+    if (!row || e.target.closest('button, a, input')) return;
+    startX = e.clientX; startY = e.clientY;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      const root = row.closest(_FSEL_ROOTS);
+      if (_fsel.root !== root) { _fsel.root = root; _fsel.paths.clear(); }
+      _fsel.mode = true; _fsel.paths.add(row.dataset.path); _fsel.anchor = row.dataset.path;
+      _fsel.suppressClick = true;
+      try { navigator.vibrate && navigator.vibrate(10); } catch (err) {}
+      _fselApply();
+    }, 500);
+  }, true);
+  const cancel = (e) => { if (timer && (e.type !== 'pointermove' || Math.hypot(e.clientX - startX, e.clientY - startY) > 10)) { clearTimeout(timer); timer = null; } };
+  ['pointerup', 'pointercancel', 'pointermove'].forEach(t => document.addEventListener(t, cancel, true));
+})();
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  const root = _fsel.root && document.contains(_fsel.root) && _fsel.root.offsetParent ? _fsel.root : null;
+  if (e.key === 'Escape' && _fsel.paths.size) { _fselClear(); return; }
+  if (root && (e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); _fselSelectAll(root); }
+});
 // Navigate to the parent of the current Files-tab folder (the "Up" action).
 function _filesUp() {
   const p = (_filesPath || '/').replace(/\/+$/, '');
@@ -27839,7 +28010,8 @@ async function _feToggleExpand(btn) {
   const list = q ? (data.entries || []).filter(e => e.name.toLowerCase().includes(q)) : (data.entries || []);
   const entries = _filesSortEntries(list);
   let anchor = row;
-  for (const entry of entries) { const child = _feBuildRow(entry, dirPath, depth + 1, q); anchor.after(child); anchor = child; }
+  for (const entry of entries) { const child = _feBuildRow(entry, dirPath, depth + 1, q, row._feOpts); anchor.after(child); anchor = child; }
+  _fselApply();
   row.classList.add('fe-expanded'); btn.classList.add('open');
 }
 function _renderFilesEntries(body, path, data, cacheTs) {
@@ -27902,6 +28074,7 @@ function _renderFilesEntries(body, path, data, cacheTs) {
   body.ondragleave = () => body.classList.remove('files-drop-active');
   body.ondrop = e => { e.preventDefault(); body.classList.remove('files-drop-active'); if (e.dataTransfer.files.length) handleFilesUpload(e.dataTransfer.files); };
   _feMarkDownloaded();   // async: flag rows whose file is downloaded on this device
+  _fselApply();
 }
 
 // Add a green ⤓ badge to each file row that is DOWNLOADED (cached) on this
@@ -31157,6 +31330,9 @@ function _renderExploreEntries(body, path, data, cacheTs) {
     const entryPath = path.replace(/\/$/, '') + '/' + entry.name;
     const row = document.createElement('div');
     row.className = 'explore-row';
+    row.dataset.path = entryPath;
+    row.dataset.type = entry.type === 'dir' ? 'dir' : 'file';
+    if (_fsel.paths.has(entryPath)) row.classList.add('fsel-selected');
     const icon = entry.type === 'dir' ? '&#x1F4C2;' : '&#x1F4C4;';
     const displayName = entry.name + (entry.type === 'dir' ? '/' : '');
     const menuBtn = `<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showExploreMenu('${entryPath.replace(/'/g,"\\'")}',this,'${entry.type}')">⋯</button>`;
@@ -31170,6 +31346,7 @@ function _renderExploreEntries(body, path, data, cacheTs) {
     }
     body.appendChild(row);
   }
+  _fselApply();
 }
 function _exploreSearchFilter(q) {
   const body = document.getElementById('explore-body');

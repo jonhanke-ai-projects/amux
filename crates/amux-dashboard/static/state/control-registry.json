@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 3030,
+  "n_considered": 3045,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1478,18 +1478,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_feBuildRow": {
-      "kind": "command._feBuildRow",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_feToggleExpand": {
-      "kind": "command._feToggleExpand",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_fetchGitBranches": {
       "kind": "command._fetchGitBranches",
       "feedback_required": true,
@@ -1750,6 +1738,48 @@
     },
     "_fsSend": {
       "kind": "command._fsSend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselBeacon": {
+      "kind": "command._fselBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselCopyPaths": {
+      "kind": "command._fselCopyPaths",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselDelete": {
+      "kind": "command._fselDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselDownload": {
+      "kind": "command._fselDownload",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselMove": {
+      "kind": "command._fselMove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselRefreshView": {
+      "kind": "command._fselRefreshView",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselReport": {
+      "kind": "command._fselReport",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
