@@ -42,3 +42,20 @@ class Verify(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrivateKeyTransport(unittest.TestCase):
+    """deploy_control.sh sends the .p8 base64-encoded; systemd mangled the escaped-newline form."""
+
+    def test_base64_and_pem_forms_both_sign(self):
+        import base64
+        from unittest import mock
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+        env = {"APPLE_TEAM_ID": "T", "APPLE_KEY_ID": "K", "APPLE_BUNDLE_ID": "b"}
+        for form in (base64.b64encode(pem.encode()).decode(), pem.replace("\n", "\\n")):
+            with mock.patch.dict(os.environ, dict(env, APPLE_PRIVATE_KEY=form)):
+                self.assertEqual(apple.private_key().strip(), pem.strip())
+                self.assertGreater(len(apple.client_secret()), 100)

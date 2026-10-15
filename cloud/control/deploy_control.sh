@@ -71,8 +71,9 @@ if [[ -n "$STK" ]]; then
   WHS="$(cat "$WF" 2>/dev/null || true)"
   [[ -n "$WHS" ]] || { log "FATAL: the Stripe test webhook exists but its secret is not in $WF; delete the endpoint in Stripe and rerun"; exit 1; }
 fi
-# Sign in with Apple: the .p8 key file is multi-line, so it travels with escaped newlines.
-APK=""; if [[ -s "$HOME/.amux/cloud/apple-signin.p8" ]]; then APK="$(awk '{printf "%s\\n", $0}' "$HOME/.amux/cloud/apple-signin.p8")"; fi
+# Sign in with Apple: the .p8 key travels base64-encoded. Its PEM has spaces and newlines, and
+# systemd reads a backslash in an unquoted value as an escape, so '\\n' arrived as 'n'.
+APK=""; if [[ -s "$HOME/.amux/cloud/apple-signin.p8" ]]; then APK="$(base64 < "$HOME/.amux/cloud/apple-signin.p8" | tr -d '\n')"; fi
 GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=snapshot&label_selector=amux-golden&sort=created:desc' | python3 -c 'import json,sys;i=json.load(sys.stdin)["images"];print(i[0]["id"] if i else "")')}"
 {
   echo "CONTROL_DB=/var/lib/amux-control/control.db"

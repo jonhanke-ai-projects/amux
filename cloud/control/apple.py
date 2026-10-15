@@ -64,13 +64,23 @@ def verify_identity_token(token, audience=None, fetch_keys=None, now=None):
             "private_relay": truthy(claims.get("is_private_email"))}
 
 
+def private_key():
+    """APPLE_PRIVATE_KEY as the .p8 PEM, or base64 of it (how deploy_control.sh sends it: env files
+    cannot carry the PEM's spaces and newlines intact)."""
+    raw = os.environ["APPLE_PRIVATE_KEY"].strip()
+    if raw.startswith("-----"):
+        return raw.replace("\\n", "\n")
+    import base64
+    return base64.b64decode(raw).decode()
+
+
 def client_secret(now=None):
     """Apple's client secret: an ES256 JWT signed with our Sign in with Apple key, valid 10 minutes."""
     import jwt as pyjwt
     now = int(now or time.time())
     return pyjwt.encode({"iss": os.environ["APPLE_TEAM_ID"], "iat": now, "exp": now + 600, "aud": ISSUER,
                          "sub": os.environ["APPLE_BUNDLE_ID"]},
-                        os.environ["APPLE_PRIVATE_KEY"].replace("\\n", "\n"), algorithm="ES256",  # env files are one line
+                        private_key(), algorithm="ES256",
                         headers={"kid": os.environ["APPLE_KEY_ID"]})
 
 
