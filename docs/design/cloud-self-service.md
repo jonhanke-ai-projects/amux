@@ -28,7 +28,7 @@ section 7.1.
 | Part | What it is | Runs on | Depends on |
 |---|---|---|---|
 | **amux OSS** | The product. Free, MIT plus Commons Clause [exists] | The user's machine | Nothing of ours |
-| **amux Cloud** | Hosting: a control plane plus one server per customer | cloud.amux.io and `<slug>.amux.cloud` | The payment provider, Clerk, Hetzner, Cloudflare, Cloudflare R2. **No agents.** |
+| **amux Cloud** | Hosting: a control plane plus one server per customer | cloud.amux.io and `<slug>.amux.io` | The payment provider, Clerk, Hetzner, Cloudflare, Cloudflare R2. **No agents.** |
 | **amux Operator** | One worker that watches the business and improves it | Its own amux server | Read access to Cloud data; a narrow admin API |
 
 Billing, sign-in, provisioning, backups, updates, recovery, lifecycle actions
@@ -46,7 +46,7 @@ keep working with the Operator stopped or deleted.
 | D5 | **One account, at cloud.amux.io.** Clerk accounts with email code, Google, GitHub and Sign in with Apple. | Today Clerk lives on the gateway and passwords in `cloud/desktop/door.py`, so a customer would have two logins [exists]. Apple sign-in is required in the iOS app whenever other social sign-ins are offered (App Store guideline 4.8). |
 | D6 | **Checkout first, account second.** | One form; the success URL creates the account idempotently (J5). |
 | D7 | **EU servers only at launch.** | The cx line exists only in fsn1, nbg1 and hel1. In the US the cheapest 8 GB server is ccx13 at $50.99, about 5x (Hetzner pricing API, 2026-10-14). |
-| D8 | **Cloudflare proxies every customer host.** | Its edge certificate covers `*.amux.cloud` and Origin CA certificates have no rate limit, so Let's Encrypt limits never apply. It also hides server IPs. Free-plan limits: 100 MB per request (amux uploads chunk, `upq`), 100 s response timeout (SSE pings every 10 s). |
+| D8 | **Cloudflare proxies every customer host.** | Its edge certificate covers `*.amux.io` and Origin CA certificates have no rate limit, so Let's Encrypt limits never apply. It also hides server IPs. Free-plan limits: 100 MB per request (amux uploads chunk, `upq`), 100 s response timeout (SSE pings every 10 s). |
 | D9 | **Releases ship as signed binaries through a fleet agent, with canary and automatic rollback, before the first customer.** | `AMUX_UPDATES=source` compiles Rust on the box for 10 to 15 minutes [exists]; wrong on a customer machine. A broken update with no rollback is the likeliest way to need the founder. |
 | D10 | **The objective is owner cash flow after owner time and risk.** | Judged on retained contribution at 30 and 90 days and on measured owner minutes (section 9). |
 | D11 | **Stripe for payments, with Stripe Tax, Stripe Radar and automatic dispute evidence.** **[owner]** decided 2026-10-14. | Stripe is already set up and has true time travel for tests (test clocks). A US seller to EU consumers must register once for the EU's non-Union OSS scheme and file a quarterly return; Stripe Tax calculates and collects VAT, and returns are filed through Stripe's tax-filing integration ($50 a month assumed [H]). Disputes are answered automatically with evidence through the API (M20). All billing code sits in one `billing` module. |
@@ -65,7 +65,7 @@ cloud.amux.io  CONTROL PLANE (plain code)
   hcloud API, Cloudflare API, R2
         |                                          ^ read-only data, narrow admin API
         v                                          |
-<slug>.amux.cloud (Cloudflare proxy)         amux OPERATOR (its own server)
+<slug>.amux.io (Cloudflare proxy)         amux OPERATOR (its own server)
   Hetzner server per customer:               one worker, shell schedules, MDAI
   Caddy (Origin CA) -> door (control-plane token) -> amux-server
   fleet agent: heartbeat, signed releases, litestream to R2, restore drill
@@ -475,7 +475,7 @@ schedules were missed); first in `amux cloud` CLI help. Never in the iOS app.
 | J5 | Account | Nothing to fill in | Success URL reads the transaction from the provider API and, idempotently on its id, creates user, org and provision job (the webhook does the same; first wins); one-time sign-in token for the paying browser; `email_verified` false until email 1's link is clicked | < 5 s | Existing account: payment attaches. Late webhook: the success URL already did the work | T-ACC-1, T-ACC-2, T-ACC-4 |
 | J6 | Being built | Email 1 | Control plane sends it | < 10 s | Bounce shown on the progress page | T-MAIL-1 |
 | J7 | Provision | Progress page with real steps | Golden image, DNS, Origin CA certificate, backups configured, first backup written, health | < 3 min [H] | Capacity error: next EU location. Over 15 min: refund within the cap, email 2, card | T-PROV-1, T-PROV-3, T-PROV-4 |
-| J8 | Enter | `https://<slug>.amux.cloud`, signed in | 60-second token, `__Host-` cookie | < 2 s | Expired token: one bounce through the control plane | T-SSO-1 |
+| J8 | Enter | `https://<slug>.amux.io`, signed in | 60-second token, `__Host-` cookie | < 2 s | Expired token: one bounce through the control plane | T-SSO-1 |
 | J9 | Connect a model | First screen: "Sign in with Claude", "Sign in with ChatGPT", "Sign in with Google (Gemini)", paste an API key, or import from local amux | Section 8.4: the CLI's own login runs on the customer's server and the dashboard relays its link and code; or the key is saved on the customer's own origin after one validating call | < 1 min | A failed or expired login shows the CLI's message and a retry; an invalid key shows the provider's error and nothing is saved | T-KEY-1..3, T-CLI-1..6 |
 | J10 | First value | "Start with a template": code on a repo, inbox triage, research brief, nightly schedule | Worker created, first task sent | Paid to first reply < 5 min [H] | Failure: the cause from the worker log and a retry | T-FIRST-1 |
 | J11 | Invite a teammate | Team settings: email and scope | Section 8.2 | < 1 min to send | Section 8.2 | T-TEAM-1..6 |
@@ -604,9 +604,9 @@ tested by `e2e/multi-network-multiplayer.spec.ts` [exists].
 | Step | Behaviour |
 |---|---|
 | Join | Settings, "Add to my tailnet". Either a login link (amux-server runs `tailscale up --hostname amux-<slug>` and shows the URL Tailscale prints; the customer approves it in their own tailnet) or a pasted auth key (for tagged or pre-approved devices). Nothing about the customer's tailnet passes through our control plane |
-| Reach | `https://amux-<slug>.<tailnet>.ts.net` through `tailscale serve` with the tailnet's own certificate; the public `amux.cloud` URL keeps working |
+| Reach | `https://amux-<slug>.<tailnet>.ts.net` through `tailscale serve` with the tailnet's own certificate; the public `<slug>.amux.io` URL keeps working |
 | Who gets in | Tailscale identities map to amux members through the existing member scopes; the owner chooses whether tailnet users join automatically or must be invited (8.2) |
-| Tailnet only | An optional switch turns the public `amux.cloud` URL off. Updates, backups, heartbeats and lifecycle are outbound, so they keep working; the redirect shows the tailnet URL; support asks the customer to run diagnostics from their side |
+| Tailnet only | An optional switch turns the public `<slug>.amux.io` URL off. Updates, backups, heartbeats and lifecycle are outbound, so they keep working; the redirect shows the tailnet URL; support asks the customer to run diagnostics from their side |
 | SSH | Tailscale SSH stays off unless the customer turns it on |
 | Leave | "Remove from tailnet" runs `tailscale logout`; deleting the server (J18, 3.2) does the same first, so no stale node remains in the customer's tailnet |
 
@@ -763,8 +763,8 @@ Control-plane flags; each leaves customer servers and data untouched.
 |---|---|---|
 | O1 | Launch price | $39 Solo, $69 Team, $129 Max; reviewed on 90-day cohorts |
 | O2 | Payment provider | Decided: Stripe (D11) |
-| O3 | Existing $20 monthly and $200 annual Stripe subscribers and open "no credit card" trials (`site/pricing/index.html:239-275`, `:257`) | Count them in A0. Offer each a link to the new plan at their old price for 12 months; Stripe subscriptions end at period end. The owner approves that email (it goes to customers) |
-| O4 | Customer domain | `amux.cloud` behind Cloudflare |
+| O3 | Existing $20 monthly and $200 annual Stripe subscribers and open "no credit card" trials (`site/pricing/index.html:239-275`, `:257`) | Count them in A0. Offer each a link to the new plan at their old price for 12 months; Stripe subscriptions end at period end. The owner approves that email (it goes to customers). Draft: [cloud-o3-subscriber-email.md](cloud-o3-subscriber-email.md) |
+| O4 | Customer domain | Decided: `<name>.amux.io` behind Cloudflare (owner, 2026-10-14) |
 
 ## 12. Tests
 
@@ -877,7 +877,7 @@ Memories, journal, habits, CRM, Settings, Team presence, Self-update.
 | P1 | Stripe products from `plans.json`; Stripe Tax on with the EU non-Union OSS registration; tax-filing integration connected; Radar rules; dispute webhook | Test and live products match `plans.json`; registration number recorded |
 | P2 | Terms, privacy policy, data processing agreement, subprocessor list (Hetzner, Cloudflare, Clerk, Stripe, PostHog, Apple, Tailscale when used) | Pages live; linked from checkout |
 | P3 | Clerk production with email code, Google, GitHub and Apple; Apple Services ID and key; relay email domain registered; Clerk production configured with our own Apple Services ID and key (so our key can sign Apple's client secret for revocation); whether Clerk revokes Apple tokens on user deletion, recorded | T-ACC-3, T-IOS-4, T-DEL-2 |
-| P4 | `amux.cloud` on Cloudflare; Origin CA; Hetzner project with quota raised and abuse@ as contact; two payment methods on every provider | T-PROV-1; provider pages |
+| P4 | `amux.io` on Cloudflare; Origin CA; Hetzner project with quota raised and abuse@ as contact; two payment methods on every provider | T-PROV-1; provider pages |
 | P5 | Backups, restore drill and signed updates with rollback | T-OPS-1..4 green 7 days running |
 | P6 | Safe lifecycle in shadow mode | T-LIFE-1..6 |
 | P7 | Workspace invites through cloud.amux.io | T-TEAM-1..6 |
