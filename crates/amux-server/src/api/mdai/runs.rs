@@ -256,6 +256,12 @@ pub(crate) fn with_control<R>(ctl: Control, f: impl FnOnce() -> R) -> R {
     out
 }
 
+/// The control installed on this thread, so a worker thread that computes part
+/// of the same run (parallel upstream nodes) can install the same cancel flag.
+pub(crate) fn current_control() -> Control {
+    CONTROL.with(|c| c.borrow().clone())
+}
+
 /// Has the run on this thread been asked to stop?
 pub(crate) fn cancel_requested() -> bool {
     CONTROL.with(|c| {

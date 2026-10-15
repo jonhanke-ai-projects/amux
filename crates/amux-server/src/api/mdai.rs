@@ -1669,6 +1669,174 @@ struct RunCtx<'a> {
     /// The registered run this DAG belongs to, when it was started through the
     /// run registry: progress is published there and its cancel flag is read.
     active: Option<std::sync::Arc<runs::ActiveRun>>,
+    /// Most upstream `.mdai` nodes computed at once in this run
+    /// ([`mdai_parallel`]). 1 is the old serial walk.
+    parallel: usize,
+    /// Helper threads still free for this run: `parallel - 1` at the start,
+    /// shared by every level of the DAG so nesting never multiplies the bound.
+    slots: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Default for [`mdai_parallel`]: enough to cut a 20-window chain from ~28
+/// minutes to ~5 without starting twenty model processes at once.
+const MDAI_PARALLEL_DEFAULT: usize = 6;
+const MDAI_PARALLEL_MAX: usize = 32;
+
+/// How many upstream nodes one run computes concurrently: `AMUX_MDAI_PARALLEL`
+/// (1..=32, 1 restores the serial walk), else [`MDAI_PARALLEL_DEFAULT`].
+fn mdai_parallel() -> usize {
+    std::env::var("AMUX_MDAI_PARALLEL")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .map(|n| n.min(MDAI_PARALLEL_MAX))
+        .unwrap_or(MDAI_PARALLEL_DEFAULT)
+}
+
+/// Take up to `want` helper slots without blocking. Never waiting is what
+/// keeps nesting deadlock-free: a level that gets no slots runs its upstream
+/// nodes on its own thread.
+fn take_slots(slots: &std::sync::atomic::AtomicUsize, want: usize) -> usize {
+    use std::sync::atomic::Ordering::SeqCst;
+    let mut cur = slots.load(SeqCst);
+    loop {
+        let n = cur.min(want);
+        if n == 0 {
+            return 0;
+        }
+        match slots.compare_exchange(cur, cur - n, SeqCst, SeqCst) {
+            Ok(_) => return n,
+            Err(v) => cur = v,
+        }
+    }
+}
+
+/// Compute a node's upstream `.mdai` sources concurrently, before the serial
+/// pass in [`run_node`] assembles its prompt.
+///
+/// Each upstream node runs in its own child [`RunCtx`] (a snapshot of the
+/// memo, the same ancestor chain for cycle detection, the same registered run
+/// and cancel flag). Results merge back in DECLARED order, so `memo`, `order`
+/// and `calls` read as if the walk were serial. The serial pass then finds
+/// every prefetched node in the memo, so prompt sections are assembled in the
+/// declared source order whatever order the calls finished in.
+///
+/// Failure: after the first failed upstream node no new one is started; the
+/// ones already in flight finish (each still records its own row) and the
+/// error of the earliest-declared failed source is returned, which is the
+/// error the serial walk returned. Cancel reaches every worker through the
+/// thread's [`runs::Control`], so in-flight calls stop as they do serially.
+///
+/// Two siblings that share a deeper upstream node may both reach it; the
+/// per-node lock makes the second a cache hit, so it costs a cached run row
+/// and no second model call (a `fetch:` node in that position fetches twice).
+fn prefetch_upstream(ctx: &mut RunCtx, base: &Path, sources: &[Source]) -> Result<(), MdaiError> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+    if ctx.parallel < 2 {
+        return Ok(());
+    }
+    let mut jobs: Vec<PathBuf> = Vec::new();
+    for src in sources.iter().filter(|s| !s.path.starts_with("amux:")) {
+        // Any source that does not resolve: leave the whole node to the serial
+        // pass, which reports it exactly as before without running upstream
+        // work first.
+        let Ok(abs) = resolve_existing(&ctx.root_canon, base, &src.path) else {
+            return Ok(());
+        };
+        if !is_mdai(&abs) {
+            continue;
+        }
+        let Ok(c) = abs.canonicalize() else {
+            return Ok(());
+        };
+        // An ancestor is a cycle and a memo hit is already done: both are the
+        // serial pass's to handle.
+        if ctx.visiting.contains(&c) || ctx.memo.contains_key(&c) || jobs.contains(&c) {
+            continue;
+        }
+        jobs.push(c);
+    }
+    if jobs.len() < 2 {
+        return Ok(());
+    }
+
+    let t0 = std::time::Instant::now();
+    let helpers = take_slots(&ctx.slots, jobs.len().min(ctx.parallel) - 1);
+    let ctl = runs::current_control();
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    type Slot<'a> = Option<(RunCtx<'a>, Result<String, MdaiError>)>;
+    let results: std::sync::Mutex<Vec<Slot>> =
+        std::sync::Mutex::new((0..jobs.len()).map(|_| None).collect());
+    {
+        let parent: &RunCtx = ctx;
+        let work = || loop {
+            if stop.load(SeqCst)
+                || runs::cancel_requested()
+                || parent.active.as_ref().is_some_and(|a| a.cancelled())
+            {
+                return;
+            }
+            let i = next.fetch_add(1, SeqCst);
+            let Some(job) = jobs.get(i) else { return };
+            let mut child = RunCtx {
+                store: parent.store,
+                root_canon: parent.root_canon.clone(),
+                model: parent.model,
+                fetcher: parent.fetcher,
+                session: parent.session.clone(),
+                memo: parent.memo.clone(),
+                visiting: parent.visiting.clone(),
+                order: Vec::new(),
+                calls: 0,
+                active: parent.active.clone(),
+                parallel: parent.parallel,
+                slots: parent.slots.clone(),
+            };
+            let res = run_node(&mut child, job);
+            if res.is_err() {
+                stop.store(true, SeqCst);
+            }
+            results.lock().unwrap_or_else(|e| e.into_inner())[i] = Some((child, res));
+        };
+        std::thread::scope(|s| {
+            for _ in 0..helpers {
+                let ctl = ctl.clone();
+                let work = &work;
+                s.spawn(move || runs::with_control(ctl, work));
+            }
+            work();
+        });
+    }
+    ctx.slots.fetch_add(helpers, SeqCst);
+
+    let mut first_err: Option<MdaiError> = None;
+    let mut failed = 0usize;
+    let mut ran = 0usize;
+    for (child, res) in results.into_inner().unwrap_or_else(|e| e.into_inner()).into_iter().flatten() {
+        ran += 1;
+        ctx.calls += child.calls;
+        for node in child.order {
+            if !ctx.order.iter().any(|n| n.path == node.path) {
+                ctx.order.push(node);
+            }
+        }
+        for (k, v) in child.memo {
+            ctx.memo.entry(k).or_insert(v);
+        }
+        if let Err(e) = res {
+            failed += 1;
+            first_err.get_or_insert(e);
+        }
+    }
+    tracing::info!(target: "amux::mdai", verdict = "mdai_upstream_parallel", measured = true,
+        n_considered = jobs.len(), parallel = ctx.parallel, workers = helpers + 1, ran, failed,
+        wall_ms = t0.elapsed().as_millis() as i64,
+        "mdai upstream nodes computed concurrently");
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 fn now_secs() -> i64 {
@@ -2020,6 +2188,7 @@ fn run_node(ctx: &mut RunCtx, abs_path: &Path) -> Result<String, MdaiError> {
     let base = canon.parent().unwrap_or(&ctx.root_canon).to_path_buf();
 
     ctx.visiting.push(canon.clone());
+    prefetch_upstream(ctx, &base, &doc.sources)?;
     let mut blocks: Vec<String> = Vec::new();
     for src in &doc.sources {
         // AMUX-3294: an `amux:` source pulls LIVE amux data (currently messages)
@@ -2296,7 +2465,7 @@ pub fn run_dag_with(
     session: Option<&str>,
     fetcher: &dyn HttpFetcher,
 ) -> Result<RunResult, MdaiError> {
-    run_dag_inner(store, root, path, model, session, fetcher, None)
+    run_dag_inner(store, root, path, model, session, fetcher, None, mdai_parallel())
 }
 
 /// A run registered in [`runs`]: its progress is published, and its cancel
@@ -2312,7 +2481,7 @@ pub(crate) fn run_dag_registered(
     let ctl = runs::Control { cancel: Some(active.cancel.clone()), budget: None };
     let session = active.session.clone();
     runs::with_control(ctl, || {
-        run_dag_inner(store, root, path, model, session.as_deref(), fetcher, Some(active))
+        run_dag_inner(store, root, path, model, session.as_deref(), fetcher, Some(active), mdai_parallel())
     })
 }
 
@@ -2325,6 +2494,7 @@ fn run_dag_inner(
     session: Option<&str>,
     fetcher: &dyn HttpFetcher,
     active: Option<std::sync::Arc<runs::ActiveRun>>,
+    parallel: usize,
 ) -> Result<RunResult, MdaiError> {
     let root_canon = canon_root(root)?;
     let entry_abs = resolve_existing(&root_canon, &root_canon, path)?;
@@ -2344,6 +2514,8 @@ fn run_dag_inner(
         order: Vec::new(),
         calls: 0,
         active,
+        parallel: parallel.max(1),
+        slots: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(parallel.max(1) - 1)),
     };
     let output = run_node(&mut ctx, &entry_abs)?;
     let entry = ctx
@@ -3456,6 +3628,159 @@ mod tests {
         runs::finish(&active, runs::Outcome { status: 409, body: json!({}), finished_ms: 0 });
         assert!(matches!(err, MdaiError::Cancelled(_)));
         assert_eq!(run_rows(&store, "up.mdai")[0].0, "cancelled");
+    }
+
+    // ---- parallel upstream nodes ------------------------------------------
+
+    /// Reads `NAME=<n> DELAY=<ms> [FAIL]` from the prompt, sleeps in 10ms
+    /// steps while watching the run's cancel flag (as the real CLI helper
+    /// does), tracks peak concurrency and answers `result-of-<n>`.
+    #[derive(Default)]
+    struct ParModel {
+        in_flight: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+        calls: Mutex<Vec<String>>,
+        prompts: Mutex<HashMap<String, String>>,
+    }
+    impl ModelClient for ParModel {
+        fn complete(&self, _m: &str, prompt: &str) -> Result<String, String> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let field = |k: &str| {
+                prompt.split_whitespace().find_map(|w| w.strip_prefix(k)).map(|v| v.trim_end_matches('.').to_string())
+            };
+            let name = field("NAME=").unwrap_or_default();
+            let delay: u64 = field("DELAY=").and_then(|d| d.parse().ok()).unwrap_or(0);
+            self.calls.lock().unwrap().push(name.clone());
+            self.prompts.lock().unwrap().insert(name.clone(), prompt.to_string());
+            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+            self.peak.fetch_max(now, SeqCst);
+            let t0 = std::time::Instant::now();
+            let mut out = Ok(format!("result-of-{name}"));
+            while t0.elapsed() < std::time::Duration::from_millis(delay) {
+                if runs::cancel_requested() {
+                    out = Err(format!("claude call {MODEL_CANCELLED_MARKER}"));
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            self.in_flight.fetch_sub(1, SeqCst);
+            if out.is_ok() && prompt.contains("FAIL") {
+                return Err(format!("claude exited 1: upstream {name} broke"));
+            }
+            out
+        }
+    }
+
+    /// `down.mdai` reading `u0..u{n-1}.mdai`, each with its own delay.
+    fn fan_in(dir: &Path, delays: &[u64], fail: Option<usize>) {
+        let mut srcs = String::new();
+        for (i, d) in delays.iter().enumerate() {
+            let f = if fail == Some(i) { " FAIL" } else { "" };
+            write(dir, &format!("u{i}.mdai"), &format!("NAME=u{i} DELAY={d}{f}"));
+            srcs.push_str(&format!("- u{i}.mdai\n"));
+        }
+        write(dir, "down.mdai", &format!("---\nsources:\n{srcs}---\nNAME=down"));
+    }
+
+    fn run_par(dir: &Path, store: &Store, m: &ParModel, parallel: usize) -> Result<RunResult, MdaiError> {
+        run_dag_inner(store, dir, "down.mdai", m, None, &ReqwestFetcher, None, parallel)
+    }
+
+    #[test]
+    fn independent_upstream_nodes_run_concurrently_under_the_limit() {
+        let delay = 300u64;
+        let dir = tempfile::tempdir().unwrap();
+        let store = temp_store(dir.path());
+        fan_in(dir.path(), &[delay; 6], None);
+        let m = ParModel::default();
+        let t0 = std::time::Instant::now();
+        let r = run_par(dir.path(), &store, &m, 3).unwrap();
+        let took = t0.elapsed().as_millis() as u64;
+        eprintln!("parallel=3: 6 upstream x {delay}ms took {took}ms (serial would be {}ms)", 6 * delay);
+        // ceil(6/3) = 2 rounds of upstream; the downstream call has no delay.
+        assert!(took < 6 * delay * 3 / 4, "upstream ran serially: {took}ms");
+        assert!(took >= 2 * delay, "finished faster than the limit allows: {took}ms");
+        assert_eq!(m.peak.load(std::sync::atomic::Ordering::SeqCst), 3, "the limit bounds concurrent calls");
+        assert_eq!(r.nodes.len(), 7);
+        assert_eq!(r.output, "result-of-down");
+        // Every node still records its own run row with its own duration.
+        for i in 0..6 {
+            assert_eq!(run_rows(&store, &format!("u{i}.mdai")).len(), 1);
+        }
+        // An unchanged second run is all cache hits: hashing is per node.
+        let again = run_par(dir.path(), &store, &m, 3).unwrap();
+        assert!(again.nodes.iter().all(|n| n.cached));
+        assert_eq!(m.calls.lock().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn sections_follow_declared_order_when_upstream_finishes_in_reverse() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = temp_store(dir.path());
+        fan_in(dir.path(), &[400, 300, 200, 100], None);
+        let m = ParModel::default();
+        let r = run_par(dir.path(), &store, &m, 4).unwrap();
+        let calls = m.calls.lock().unwrap().clone();
+        assert_eq!(calls.last().map(String::as_str), Some("down"));
+        let prompt = m.prompts.lock().unwrap()["down"].clone();
+        let at: Vec<usize> = (0..4).map(|i| prompt.find(&format!("result-of-u{i}")).unwrap()).collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "prompt sections out of declared order: {at:?}");
+        let order: Vec<&str> = r.nodes.iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(order, ["u0.mdai", "u1.mdai", "u2.mdai", "u3.mdai", "down.mdai"]);
+        // Same prompt bytes as the serial walk, so the same inputs hash.
+        let serial_dir = tempfile::tempdir().unwrap();
+        fan_in(serial_dir.path(), &[0, 0, 0, 0], None);
+        let s = ParModel::default();
+        run_par(serial_dir.path(), &temp_store(serial_dir.path()), &s, 1).unwrap();
+        assert_eq!(prompt, s.prompts.lock().unwrap()["down"]);
+    }
+
+    #[test]
+    fn a_cancel_during_parallel_upstream_stops_every_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = temp_store(dir.path());
+        fan_in(dir.path(), &[5_000; 4], None);
+        let (active, _) = runs::begin("test/par-cancel.mdai", None);
+        let m = ParModel::default();
+        let flag = active.cancel.clone();
+        let t0 = std::time::Instant::now();
+        let err = std::thread::scope(|s| {
+            s.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            let ctl = runs::Control { cancel: Some(active.cancel.clone()), budget: None };
+            runs::with_control(ctl, || {
+                run_dag_inner(&store, dir.path(), "down.mdai", &m, None, &ReqwestFetcher, Some(active.clone()), 4)
+            })
+            .unwrap_err()
+        });
+        runs::finish(&active, runs::Outcome { status: 409, body: json!({}), finished_ms: 0 });
+        assert!(matches!(err, MdaiError::Cancelled(_)), "{err}");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2), "a worker ran out its call: {:?}", t0.elapsed());
+        assert!(!m.calls.lock().unwrap().contains(&"down".to_string()), "downstream must not run");
+        for i in 0..4 {
+            assert_eq!(run_rows(&store, &format!("u{i}.mdai"))[0].0, "cancelled", "u{i}");
+        }
+    }
+
+    #[test]
+    fn an_upstream_failure_fails_the_node_with_the_serial_error() {
+        let run = |parallel: usize| {
+            let dir = tempfile::tempdir().unwrap();
+            let store = temp_store(dir.path());
+            fan_in(dir.path(), &[50, 50, 50, 50], Some(2));
+            let m = ParModel::default();
+            let err = run_par(dir.path(), &store, &m, parallel).unwrap_err();
+            assert!(!m.calls.lock().unwrap().contains(&"down".to_string()), "downstream must not run");
+            let rows = run_rows(&store, "u2.mdai");
+            assert_eq!(rows.len(), 1, "the failed upstream ran once, not again in the serial pass");
+            assert_eq!(rows[0].0, "error");
+            err.to_string()
+        };
+        let parallel = run(4);
+        assert!(parallel.contains("upstream u2 broke"), "{parallel}");
+        assert_eq!(parallel, run(1), "same error as the serial walk");
     }
 
     #[test]
