@@ -294,6 +294,31 @@ def click_text(tab, pattern):
     return True
 
 
+_last_trace = {}
+
+
+def trace(target, tab, text):
+    """One line per distinct page the switch sees, for diagnosing a failed run."""
+    url = cdp("eval", tab, "location.href", check=False).splitlines()[-1:] or [""]
+    key = (url[0].split("?")[0], text[:120])
+    if _last_trace.get(tab) == key:
+        return
+    _last_trace[tab] = key
+    with open(LOG.replace(".log", "-trace.log"), "a") as f:
+        f.write(json.dumps({"ts": now().isoformat(timespec="seconds"), "target": target,
+                            "url": url[0][:160], "text": re.sub(r"\s+", " ", text)[:300]}) + "\n")
+
+
+def fill_email(tab, email):
+    """Type the address into an empty email field. Returns True if it typed."""
+    js = ('(() => { const i = document.querySelector("input[type=email]"); if (!i || i.value) return "skip";'
+          ' i.focus(); i.select(); return "ok" })()')
+    if cdp("eval", tab, js, check=False).splitlines()[-1:] != ["ok"]:
+        return False
+    cdp("type", tab, email)
+    return True
+
+
 def amux_get(path):
     url = subprocess.run(["amux", "url"], capture_output=True, text=True).stdout.strip()
     p = subprocess.run(["curl", "-sk", "--max-time", "20", url + path], capture_output=True, text=True)
@@ -367,6 +392,7 @@ def _switch(target, reason):
                         continue
                     steps.append("tab")
                 text = page_text(tab)
+                trace(target, tab, text)
                 if re.search(r"Authorize", text) and "Logged in as" in text:
                     if ("Logged in as " + target) in text:
                         if click_text(tab, r"^Authorize$"):
@@ -385,15 +411,25 @@ def _switch(target, reason):
                             link_used = True
                             steps.append("magic-link")
                 elif "Continue with email" in text:
+                    if steps.count("continue-email") >= 3:
+                        raise RuntimeError("login page did not advance after 3 email submissions")
+                    # "Switch account" clears the prefilled address.
+                    if fill_email(tab, target):
+                        steps.append("fill-email")
                     if click_text(tab, r"^Continue with email$"):
                         steps.append("continue-email")
+                        time.sleep(3)
             try:
                 proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 pass
+        except Exception as e:
+            steps.append("error: " + str(e)[:160])
         finally:
             if proc.poll() is None:
                 proc.kill()
+            if tab:
+                cdp("close", tab, check=False)
             cli_out = open(out_path, errors="replace").read() if os.path.exists(out_path) else ""
     after = cli_email()
     ok = after == target
