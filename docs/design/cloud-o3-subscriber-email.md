@@ -2,15 +2,20 @@
 
 Plan reference: [cloud-self-service.md](cloud-self-service.md) section O3 and P9.
 
-Status: **draft, not sent.** It goes to customers, so the owner approves the text and
+Status: **not needed today (no current subscribers); draft kept, not sent.** It goes to customers, so the owner approves the text and
 sends it. Nothing in the control plane sends it automatically.
 
 ## Who gets it
 
-Every active Stripe subscription on the old prices ($20 monthly, $200 annual), plus
-open "no credit card" trials. The count is not known yet: no Stripe key is on the
-build machine. With `STRIPE_TEST_SECRET_KEY` (or the live key, read-only) the
-control plane can list them; until then this section has no number.
+Nobody, as of 2026-10-15. Counted read-only against Mixpeek, Inc.'s live Stripe account
+(the key in the `mixpeek-ops-secrets` GKE secret):
+
+- Amux Cloud Pro Monthly ($20, `price_1TKPz7…`): no subscription ever.
+- Amux Cloud Pro Annual ($200, `price_1TKPzr…`): one, canceled. None active, trialing or past due.
+
+The query was checked against the same account's other products, which do have active
+subscriptions, so the zero is a real count. The draft below stays for the case where
+someone subscribes on the old prices before launch.
 
 ## The offer
 

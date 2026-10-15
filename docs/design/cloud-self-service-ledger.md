@@ -44,6 +44,8 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | Restore drills and deletion (2026-10-15) | Every drill heartbeat minted a backup token and re-created the bucket if missing, so a drill whose source was deleted re-created that customer's bucket and minted 31 tokens; the hourly sweep let a stuck drill live up to 105 minutes; token revocation read only the first page; an account deleted mid-provision left its bucket | Drills mint one `amux-drill-<id>` token without creating anything and revoke it at the end, cancel when the source is gone, and sweep every 5 minutes; revocation reads every page; deletion always plans the bucket step. After the fixes a journey passed in 133 s and Hetzner, R2 and the token list held nothing of ours |
 
+| O3 resolved by count (2026-10-15) | Read-only against the live Stripe account: no active, trialing or past-due subscription on either amux Cloud price (one canceled annual) | No email to send; the draft is kept in case someone subscribes before launch |
+
 ## Where the build departed from the plan, and why
 
 | Plan said | Built | Why |
@@ -57,6 +59,5 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | Ask | Why it blocks | Unblocks |
 |---|---|---|
-| A Stripe test-mode secret key in `~/.amux/server.env` as `STRIPE_TEST_SECRET_KEY` | Checkout, webhook and dunning tests against real Stripe test mode | The key present. Tried 2026-10-14: no saved profile and no Chrome session is signed in to Stripe; the login is the owner's |
+| A Stripe test-mode secret key in `~/.amux/server.env` as `STRIPE_TEST_SECRET_KEY` | Checkout, webhook and dunning tests against real Stripe test mode | The key present. GKE holds only live keys for Mixpeek, Inc.'s account (`mixpeek-engine-secrets`, `mixpeek-ops-secrets`), which would charge real cards; the test-mode key is in that account's dashboard, and no browser session here is signed in to Stripe |
 | Sign in with Apple enabled on the App ID, plus a Services ID and a Sign in with Apple key (P3) | The iOS sign-in on a device, and token revocation on deletion | The capability on, and the key in `server.env` as `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`. Tried 2026-10-14: Chrome lands on Apple's sign-in page and no profile holds an Apple login |
-| Offer to existing $20 and $200 tunnel subscribers (O3) | Rewriting /cloud and /pricing for the new product | A yes on the plan's recommendation (old price for 12 months) and on the drafted email, [cloud-o3-subscriber-email.md](cloud-o3-subscriber-email.md); the count needs a Stripe key |
