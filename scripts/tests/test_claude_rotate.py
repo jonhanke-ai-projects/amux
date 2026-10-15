@@ -9,6 +9,8 @@ spec = importlib.util.spec_from_file_location("cr", os.path.join(os.path.dirname
 cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
 NOW = dt.datetime(2026, 10, 15, 11, 30).astimezone()
 h = lambda hours: (NOW + dt.timedelta(hours=hours)).isoformat()
+# record() compares against the real clock.
+r = lambda hours: (dt.datetime.now().astimezone() + dt.timedelta(hours=hours)).isoformat()
 
 def acct(five, five_r, week, week_r):
     return {"five_hour": {"used_percentage": five, "resets_at": five_r}, "seven_day": {"used_percentage": week, "resets_at": week_r}}
@@ -63,6 +65,31 @@ class Policy(unittest.TestCase):
         self.assertEqual(out.getvalue().strip(), "joinmixpeek · 5h 12% · wk 90%")
         saved = cr.load(cr.ACCOUNTS, {})["accounts"]["ethan@joinmixpeek.com"]
         self.assertEqual(saved["seven_day"]["used_percentage"], 90)
+
+    def test_stale_lower_reading_does_not_regress(self):
+        setup({"a@x.com": acct(30, r(3), 59, r(50))}, current="a@x.com")
+        self.assertFalse(cr.record("a@x.com", 20, r(3), 39, r(50)))
+        saved = cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]
+        self.assertEqual(saved["seven_day"]["used_percentage"], 59)
+        self.assertEqual(saved["five_hour"]["used_percentage"], 30)
+        # Five-hour rose, weekly is stale: store the rise, keep the weekly.
+        self.assertTrue(cr.record("a@x.com", 35, r(3), 40, r(50)))
+        saved = cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]
+        self.assertEqual((saved["five_hour"]["used_percentage"], saved["seven_day"]["used_percentage"]), (35, 59))
+        self.assertTrue(cr.record("a@x.com", 36, r(3), 60, r(50)))
+        self.assertEqual(cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]["seven_day"]["used_percentage"], 60)
+
+    def test_other_accounts_window_is_rejected_from_statusline_only(self):
+        setup({"a@x.com": acct(30, r(3), 59, r(50))}, current="a@x.com")
+        self.assertFalse(cr.record("a@x.com", 10, r(2), 98, r(15)))
+        self.assertEqual(cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]["seven_day"]["used_percentage"], 59)
+        self.assertTrue(cr.record("a@x.com", 10, r(2), 98, r(15), source="usage-probe"))
+        self.assertEqual(cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]["seven_day"]["used_percentage"], 98)
+
+    def test_passed_reset_accepts_a_new_window(self):
+        setup({"a@x.com": acct(90, r(-1), 95, r(-2))}, current="a@x.com")
+        self.assertTrue(cr.record("a@x.com", 2, r(4), 1, r(166)))
+        self.assertEqual(cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]["seven_day"]["used_percentage"], 1)
 
     def test_statusline_ignores_readings_right_after_switch(self):
         setup({}, current="ethan@x.com")

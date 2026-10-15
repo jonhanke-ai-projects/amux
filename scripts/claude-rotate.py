@@ -131,17 +131,63 @@ def iso(epoch):
 
 # ---------------------------------------------------------------- readings
 
+def _reset(value):
+    try:
+        return dt.datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+
+
+def merge_window(known, used, reset, source, at=None):
+    """Fold one reading of a window into what is known for that account.
+
+    Returns (reading or None, why). Every session reports the numbers from
+    its own last API call, so an idle session keeps saying 39% after the
+    account reached 59%, and a session still holding the previous login says
+    98% under the new one. Inside one reset window usage only rises, so a
+    lower number is stale; a status line whose weekly reset differs from the
+    account's known, still-future reset belongs to another account. The
+    /usage probe and manual records are first-hand and may move a reset."""
+    at = at or now()
+    new = {"used_percentage": used, "resets_at": reset}
+    known = known or {}
+    k_reset, n_reset = _reset(known.get("resets_at")), _reset(reset)
+    if known.get("used_percentage") is None or k_reset is None or k_reset <= at or n_reset is None:
+        return new, "new_window"
+    if abs((k_reset - n_reset).total_seconds()) > 3600:
+        if source == "statusline":
+            return None, "other_account_window"
+        return new, "reset_moved"
+    if float(used) < float(known["used_percentage"]):
+        return dict(known), "stale_lower"
+    return new, "rose"
+
+
 def record(email, five=None, five_reset=None, week=None, week_reset=None, source="statusline"):
+    """Store one reading. Returns False when it was rejected as another
+    account's numbers or held nothing newer than what is known."""
     with locked(ACCOUNTS + ".lock"):
         data = load(ACCOUNTS, {"accounts": {}})
         acct = data["accounts"].setdefault(email, {})
+        changed = source != "statusline"
+        if week is not None:
+            merged, why = merge_window(acct.get("seven_day"), week, week_reset, source)
+            if merged is None:
+                log("claude_rotate_reading_rejected", account=email, source=source, reason=why,
+                    weekly=week, resets_at=week_reset, known_resets_at=acct["seven_day"].get("resets_at"))
+                return False
+            changed = changed or why != "stale_lower"
+            acct["seven_day"] = merged
+        if five is not None:
+            merged, why = merge_window(acct.get("five_hour"), five, five_reset, source)
+            changed = changed or why != "stale_lower"
+            acct["five_hour"] = merged
+        if not changed:
+            return False
         acct["observed_at"] = now().isoformat(timespec="seconds")
         acct["source"] = source
-        if five is not None:
-            acct["five_hour"] = {"used_percentage": five, "resets_at": five_reset}
-        if week is not None:
-            acct["seven_day"] = {"used_percentage": week, "resets_at": week_reset}
         save(ACCOUNTS, data)
+        return True
 
 
 REPORTERS = os.path.join(DIR, "reporters")
@@ -235,11 +281,12 @@ def cmd_statusline():
             fresh = False
         if not fresh:
             try:
-                record(email,
+                accepted = record(email,
                        five.get("used_percentage"), iso(five["resets_at"]) if five.get("resets_at") else None,
                        week.get("used_percentage"), iso(week["resets_at"]) if week.get("resets_at") else None)
                 open(stamp, "w").close()
-                trigger_if_exhausted(email, five, week)
+                if accepted:
+                    trigger_if_exhausted(email, five, week)
             except Exception as e:  # a status line must never fail the CLI
                 log("claude_rotate_record_failed", error=str(e)[:200])
     name = (email or "?").split("@")[-1].split(".")[0]
