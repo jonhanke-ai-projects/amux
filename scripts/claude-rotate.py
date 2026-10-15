@@ -613,7 +613,7 @@ def _switch(target, reason):
         proc = subprocess.Popen(["script", "-q", out_path, CLAUDE, "auth", "login", "--email", target],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 env=dict(os.environ, BROWSER=opener))
-        steps, tab, state, link_used, blank_since = [], None, None, False, None
+        steps, tab, state, link_used, blank_since, waiting_since = [], None, None, False, None, None
         try:
             deadline = started + SWITCH_TIMEOUT_S
             while time.time() < deadline:
@@ -652,7 +652,12 @@ def _switch(target, reason):
                     # /login). Read the code it shows in a helper tab and type
                     # it here instead.
                     if not link_used:
+                        waiting_since = waiting_since or time.time()
                         link = magic_link(target, started)
+                        if not link and time.time() - waiting_since > 75 and "resend" not in steps:
+                            # Forwarded mail sometimes never arrives; one more send.
+                            if click_text(tab, r"^(Resend email|Try sending again)$"):
+                                steps.append("resend")
                         if link:
                             code = code_from_link(link)
                             link_used = True
