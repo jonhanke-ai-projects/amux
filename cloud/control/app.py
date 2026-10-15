@@ -32,6 +32,16 @@ FAKE = os.environ.get("CONTROL_FAKE") == "1"
 # Real Hetzner and Cloudflare with the fake checkout page, until a Stripe key is configured. Anyone could
 # otherwise create servers for free, so in this mode /start needs the admin token (cookie or ?admin=).
 FAKE_BILLING = FAKE or os.environ.get("CONTROL_FAKE_BILLING") == "1"
+
+
+def payments_state():
+    """live, test or not live. A Stripe test key accepts card 4242, so test mode keeps checkout
+    admin-only: opening it would let anyone provision real servers at our cost (2026-10-15)."""
+    if FAKE_BILLING or PLANS["status"] != "approved":
+        return "not live"
+    if os.environ.get("STRIPE_SECRET_KEY", "").startswith(("sk_test_", "rk_test_")):
+        return "test"
+    return "live"
 COOKIE = "__Host-amux_cp" if PUBLIC.startswith("https://") else "amux_cp"
 SESSION_TTL = 7 * 86400
 
@@ -181,7 +191,7 @@ def r_health(h, _):
     h.json(200, {"ok": True, "measured": True, "fake": FAKE, "flags": {r["name"]: r["value"] for r in STORE.all("SELECT * FROM flags")},
                  "email": "configured" if emails.configured() else "not configured: mail is queued, not sent",
                  "prices": PLANS["status"],
-                 "payments": "live" if (not FAKE_BILLING and PLANS["status"] == "approved") else "not live",
+                 "payments": payments_state(),
                  "n_considered": STORE.one("SELECT COUNT(*) n FROM servers")["n"]})
 
 
@@ -244,7 +254,7 @@ def r_start(h, _):
                                 "servers are unaffected. Please try again shortly.</p>"))
     if PLANS["status"] != "approved" and not FAKE:
         return h.redirect(f"{SITE}/cloud/#notify")
-    if FAKE_BILLING and not FAKE and not is_admin(h):
+    if payments_state() != "live" and not FAKE and not is_admin(h):
         return h.send(403, page("Not open yet", "<h1>Not open yet</h1><p>Payments are not switched on. "
                                 f"<a href='{SITE}/cloud/#notify'>Get notified</a> when they are.</p>"))
     signup = new_id("su")
