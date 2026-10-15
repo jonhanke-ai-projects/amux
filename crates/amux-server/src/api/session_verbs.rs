@@ -6595,6 +6595,11 @@ pub(crate) fn ensure_fleet_tables(conn: &rusqlite::Connection) -> rusqlite::Resu
         "ALTER TABLE steering_queue ADD COLUMN delay_after_idle_s INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // Scheduled delivery (epoch seconds; 0 = none). See STEER_DUE_AT_SQL.
+    let _ = conn.execute(
+        "ALTER TABLE steering_queue ADD COLUMN deliver_at REAL NOT NULL DEFAULT 0",
+        [],
+    );
     let _ = conn.execute(
         "ALTER TABLE cmd_history ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
         [],
@@ -21104,30 +21109,38 @@ fn steer_no_signal(name: &str, age_s: f64, why: &'static str) -> SteerDelivery {
     SteerDelivery::OverdueMidTurn
 }
 
-fn format_delay_human(seconds: i64) -> String {
-    if seconds >= 3600 {
-        let h = seconds / 3600;
-        let m = (seconds % 3600) / 60;
-        if m > 0 {
-            format!("{h}h {m}m")
-        } else {
-            format!("{h}h")
-        }
-    } else if seconds >= 60 {
-        format!("{}m", seconds / 60)
-    } else {
-        format!("{seconds}s")
+/// When a queued row starts counting as queued: the time its sender scheduled
+/// it for, or when it was queued. A scheduled row is invisible to delivery,
+/// overdue forcing and stall alarms until then, and afterwards it behaves like
+/// a message queued at that moment: it waits for the next turn boundary.
+///
+/// This replaced `delay_after_idle_s` (Ethan, 2026-10-15: "test when I sent a
+/// queued message and delay it by x hours"). That gate measured idle time from
+/// `session.working`/`session.idle` events, and nothing has written either
+/// since the Python server was deleted on 2026-08-09, so a delayed message to
+/// any newer worker was held forever, and one to an older worker was not
+/// delayed at all.
+pub(crate) const STEER_DUE_AT_SQL: &str = "MAX(queued_at, COALESCE(deliver_at,0))";
+
+/// The `deliver_at` a POST or PATCH body asks for: `deliver_at` (epoch
+/// seconds) or `delay_s` from now. `delay_after_idle_s` is the old name the
+/// dashboard sent and reads as `delay_s`. `Some(0.0)` clears a schedule;
+/// `None` means the body did not mention one.
+pub(crate) fn steer_deliver_at_from(body: &Value, now: f64) -> Option<f64> {
+    if let Some(at) = body.get("deliver_at").and_then(|v| v.as_f64()) {
+        return Some(if at > now { at } else { 0.0 });
     }
+    let delay = body
+        .get("delay_s")
+        .or_else(|| body.get("delay_after_idle_s"))
+        .and_then(|v| v.as_f64())?;
+    Some(if delay > 0.0 { now + delay } else { 0.0 })
 }
 
-async fn idle_duration_s(state: &AppState, name: &str) -> f64 {
-    let Some(signals) = boundary_signals(state, Some(name)).await else {
-        return 0.0;
-    };
-    match signals.transitions.get(name) {
-        Some((st, ts)) if st == "idle" => (signals.now - ts).max(0.0),
-        _ => 0.0,
-    }
+fn format_local_time(epoch: f64) -> String {
+    chrono::DateTime::from_timestamp(epoch as i64, 0)
+        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| format!("{epoch:.0}"))
 }
 
 pub(crate) async fn steer_delivery_for(state: &AppState, name: &str, age_s: f64) -> SteerDelivery {
@@ -21743,21 +21756,23 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
     // (steer id, card, why) for rows whose premise expired — filled inside the
     // read scope, acted on outside it (the delete is a write).
     let expired: Vec<(String, String, String)>;
-    let queued: Vec<(String, String, String, f64, String, String, i64)> = {
+    let queued: Vec<(String, String, String, f64, String, String, f64)> = {
         let Ok(conn) = state.store.read() else {
             return 0;
         };
+        // A scheduled row is not in the queue's life until it is due.
         let Ok(mut stmt) = conn.prepare(
             "SELECT id, session, text, queued_at, COALESCE(guard,''), COALESCE(sender,''), \
                     COALESCE(precond_card,''), COALESCE(precond_rev,-1), \
-                    COALESCE(delay_after_idle_s,0) \
-             FROM steering_queue WHERE delivering_since IS NULL ORDER BY queued_at ASC",
+                    COALESCE(deliver_at,0) \
+             FROM steering_queue WHERE delivering_since IS NULL AND COALESCE(deliver_at,0) <= ?1 \
+             ORDER BY queued_at ASC",
         ) else {
             return 0;
         };
-        type QueuedRow = (String, String, String, f64, String, String, String, i64, i64);
+        type QueuedRow = (String, String, String, f64, String, String, String, i64, f64);
         let rows: Vec<QueuedRow> = stmt
-            .query_map([], |r| {
+            .query_map([now_f64()], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -21786,7 +21801,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         let mut stale: Vec<(String, String, String)> = Vec::new();
         let rows: Vec<_> = rows
             .into_iter()
-            .filter(|(id, _s, _t, _q, _g, _sd, card, rev, _delay)| {
+            .filter(|(id, _s, _t, _q, _g, _sd, card, rev, _deliver_at)| {
                 if card.is_empty() || *rev < 0 {
                     return true;
                 }
@@ -21818,7 +21833,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
             .collect();
         expired = stale;
         rows.into_iter()
-            .map(|(a, b, c, d, e, f, _, _, delay)| (a, b, c, d, e, f, delay))
+            .map(|(a, b, c, d, e, f, _, _, deliver_at)| (a, b, c, d, e, f, deliver_at))
             .collect::<Vec<_>>()
     };
     // NEVER SILENT, and OUTSIDE the read guard — the delete is a write and the
@@ -21877,7 +21892,10 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
     let mut lane_blocks: std::collections::HashMap<String, Option<&'static str>> =
         std::collections::HashMap::new();
     let mut delivered = 0usize;
-    for (id, session, text, queued_at, guard, sender, delay_after_idle_s) in queued {
+    for (id, session, text, queued_at, guard, sender, deliver_at) in queued {
+        // Ages count from when the row became due (STEER_DUE_AT_SQL); history
+        // keeps the real queued_at.
+        let due_at = queued_at.max(deliver_at);
         // A newly configured receive boundary also fences older queued input.
         // Preserve the report and refusal; do not deliver or silently erase it.
         if let Some(refusal) = queued_peer_input_refusal(&sender, &session) {
@@ -21982,7 +22000,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                     .is_some()
                     {
                         let now = now_f64();
-                        let delay_s = now - queued_at;
+                        let delay_s = now - due_at;
                         let became = status.unwrap_or_else(|| "gone".into());
                         // Two-fixes log signal: `became` + `delay_s` ARE the
                         // decision->delivery delta gtm-engine asked for, and the
@@ -22120,7 +22138,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
             // that outage from a dead lane, so a registered-but-stopped lane
             // keeps its queue. The grace window exists for the recreate/rename
             // race (rename-remap has its own path).
-            if let Some(dead) = steer_dead_letter_verdict(reason, now_f64() - queued_at) {
+            if let Some(dead) = steer_dead_letter_verdict(reason, now_f64() - due_at) {
                 let (id2, sess2, text2) = (id.clone(), session.clone(), text.clone());
                 let dead2 = dead.to_string();
                 let _ = state
@@ -22142,7 +22160,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                     .await;
                 tracing::warn!(
                     session = %session, id = %id, reason, sender = %sender,
-                    age_s = (now_f64() - queued_at) as i64,
+                    age_s = (now_f64() - due_at) as i64,
                     "dead-lettered a steering row — target permanently unroutable; \
                      the message is preserved in steering_history with outcome dead:{reason}"
                 );
@@ -22152,7 +22170,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                     "session.steer_dead_lettered",
                     Some(json!({
                         "id": id, "reason": reason, "sender": sender,
-                        "age_s": (now_f64() - queued_at) as i64,
+                        "age_s": (now_f64() - due_at) as i64,
                         "text_preview": text.chars().take(160).collect::<String>(),
                     })),
                     Some(format!("steerdead:{id}")),
@@ -22226,7 +22244,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                 continue;
             }
         }
-        let age = now_f64() - queued_at;
+        let age = now_f64() - due_at;
         let decision = steer_delivery_for(state, &session, age).await;
         let mid_turn = match decision {
             SteerDelivery::Hold if guard == "project-execution" && age >= steer_max_age_s() => {
@@ -22257,16 +22275,12 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
             SteerDelivery::OverdueMidTurn => true,
             SteerDelivery::AtBoundary => false,
         };
-        if !mid_turn && delay_after_idle_s > 0 {
-            let idle_dur = idle_duration_s(state, &session).await;
-            if idle_dur < delay_after_idle_s as f64 {
-                skip(
-                    &session,
-                    &id,
-                    "delay-after-idle (insufficient idle time)",
-                );
-                continue;
-            }
+        if deliver_at > 0.0 && first_in_window("steer_scheduled_due", &id, 3600.0) {
+            // The signal for this path: how late a scheduled message reached a
+            // delivery attempt. A gate that holds it forever never logs this.
+            tracing::info!(session = %session, delivery_id = %id, measured = true, n_considered = 1,
+                late_s = (now_f64() - deliver_at) as i64, mid_turn,
+                verdict = "steer_scheduled_due", "scheduled queued message is due and delivering");
         }
         // from_steering=true is still passed: it makes the callee REFUSE rather
         // than re-queue if the lane starts generating between this check and the
@@ -23026,18 +23040,19 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     // taking only `LIMIT 1` meant one undeliverable message froze the lane's
     // whole queue, which is how amux-rust accumulated 10 messages over 229
     // minutes while this function ran on every idle report and did nothing.
-    let rows: Vec<(String, String, f64, i64)> = state
+    // A scheduled row waits for its time (STEER_DUE_AT_SQL), boundary or not.
+    let rows: Vec<(String, String, f64, f64)> = state
         .store
         .read()
         .ok()
         .and_then(|conn| {
-            conn.prepare(
-                "SELECT id, text, queued_at, COALESCE(delay_after_idle_s,0) \
+            conn.prepare(&format!(
+                "SELECT id, text, {STEER_DUE_AT_SQL}, COALESCE(deliver_at,0) \
                  FROM steering_queue WHERE session=?1 AND delivering_since IS NULL \
-                 ORDER BY queued_at ASC",
-            )
+                 AND COALESCE(deliver_at,0) <= ?2 ORDER BY queued_at ASC",
+            ))
             .and_then(|mut st| {
-                st.query_map([&session_s], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                st.query_map(rusqlite::params![&session_s, now_f64()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
                     .map(|it| it.flatten().collect::<Vec<_>>())
             })
             .ok()
@@ -23080,11 +23095,11 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     let mut text = String::new();
     let mut sent = None;
     let mut was_mid_turn = false;
-    let idle_dur = idle_duration_s(state, session).await;
-    for (rid, rtext, queued_at, delay) in rows {
-        if delay > 0 && idle_dur < delay as f64 {
-            skip(session, &rid, "delay-after-idle (insufficient idle time)");
-            continue;
+    for (rid, rtext, queued_at, deliver_at) in rows {
+        if deliver_at > 0.0 && first_in_window("steer_scheduled_due", &rid, 3600.0) {
+            tracing::info!(session, delivery_id = %rid, measured = true, n_considered = 1,
+                late_s = (now_f64() - deliver_at) as i64, mid_turn = false,
+                verdict = "steer_scheduled_due", "scheduled queued message is due and delivering");
         }
         // This function is called BECAUSE the lane just reported idle, so the
         // boundary is not in question; the age still decides whether a lane
@@ -26316,19 +26331,15 @@ pub(crate) async fn steer_mutate(
             }
         };
         send_dedup_accept(state, name, &dedup_id, &msg_id).await;
-        let delay_s = body
-            .get("delay_after_idle_s")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0)
-            .max(0);
-        if delay_s > 0 {
+        let deliver_at = steer_deliver_at_from(body, now_f64()).unwrap_or(0.0);
+        if deliver_at > 0.0 {
             let id2 = msg_id.clone();
             let _ = state
                 .store
                 .write_async(move |conn| {
                     conn.execute(
-                        "UPDATE steering_queue SET delay_after_idle_s=?1 WHERE id=?2",
-                        rusqlite::params![delay_s, id2],
+                        "UPDATE steering_queue SET deliver_at=?1 WHERE id=?2",
+                        rusqlite::params![deliver_at, id2],
                     )?;
                     Ok(crate::db::WriteOutcome {
                         applied: true,
@@ -26367,7 +26378,7 @@ pub(crate) async fn steer_mutate(
         // AN IDLE LANE IS A BOUNDARY NOW, not at the next timer pass. Off the
         // request path: the response still says "queued", and the delivery
         // records itself exactly as an idle-hook drain does.
-        if blocked.is_none() && delay_s == 0 {
+        if blocked.is_none() && deliver_at == 0.0 {
             let (st, lane, id) = (state.clone(), name.to_string(), msg_id.clone());
             crate::db::interactions::spawn(async move {
                 steer_try_deliver_now(&st, &lane, &id).await;
@@ -26382,10 +26393,10 @@ pub(crate) async fn steer_mutate(
             // response stops CLAIMING a boundary is coming.
             "deliverable": blocked.is_none(),
             "blocked_reason": blocked,
-            "delay_after_idle_s": delay_s,
+            "deliver_at": (deliver_at > 0.0).then_some(deliver_at),
             "message": match blocked {
-                None => if delay_s > 0 {
-                    format!("queued — delivers to '{name}' after {delay_s}s of idle time")
+                None => if deliver_at > 0.0 {
+                    format!("queued — delivers to '{name}' at its first turn boundary after {}", format_local_time(deliver_at))
                 } else {
                     format!("queued — delivers to '{name}' at its next turn boundary")
                 },
@@ -26400,19 +26411,20 @@ pub(crate) async fn steer_mutate(
         if msg_id.is_empty() {
             return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'id'"}));
         }
-        let delay_s = body
-            .get("delay_after_idle_s")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0)
-            .max(0);
+        let Some(deliver_at) = steer_deliver_at_from(body, now_f64()) else {
+            return jresp(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "give 'delay_s' (seconds from now, 0 clears) or 'deliver_at' (epoch seconds)"}),
+            );
+        };
         let session = name.to_string();
         let id2 = msg_id.clone();
         let reply = state
             .store
             .write_async(move |conn| {
                 let changed = conn.execute(
-                    "UPDATE steering_queue SET delay_after_idle_s=?1 WHERE id=?2 AND session=?3",
-                    rusqlite::params![delay_s, id2, session],
+                    "UPDATE steering_queue SET deliver_at=?1, delay_after_idle_s=0 WHERE id=?2 AND session=?3",
+                    rusqlite::params![deliver_at, id2, session],
                 )?;
                 Ok(crate::db::WriteOutcome {
                     applied: changed > 0,
@@ -26424,7 +26436,7 @@ pub(crate) async fn steer_mutate(
             Ok(o) if o.applied => j200(json!({
                 "ok": true,
                 "id": msg_id,
-                "delay_after_idle_s": delay_s,
+                "deliver_at": (deliver_at > 0.0).then_some(deliver_at),
             })),
             Ok(_) => jresp(
                 StatusCode::NOT_FOUND,
@@ -28707,7 +28719,7 @@ pub(crate) async fn steer_history_verb(
     let mut out: Vec<Value> = vec![];
     if let Ok(mut stmt) = conn.prepare(
         "SELECT id, text, queued_at, COALESCE(guard,''), COALESCE(sender,''), \
-                COALESCE(delay_after_idle_s,0) FROM steering_queue \
+                COALESCE(deliver_at,0) FROM steering_queue \
          WHERE session=? ORDER BY queued_at ASC",
     ) {
         if let Ok(rows) = stmt.query_map([name], |r| {
@@ -28717,7 +28729,7 @@ pub(crate) async fn steer_history_verb(
                 "queued_at": r.get::<_, f64>(2)?,
                 "guard": r.get::<_, String>(3)?,
                 "sender": r.get::<_, String>(4)?,
-                "delay_after_idle_s": r.get::<_, i64>(5)?,
+                "deliver_at": Some(r.get::<_, f64>(5)?).filter(|t| *t > 0.0),
             }))
         }) {
             out = rows.flatten().collect();
@@ -28744,10 +28756,13 @@ pub(crate) async fn steer_history_verb(
     // deliverable=true, blocked_reason=None while the drain held it behind a
     // 53-minute turn with 5 background agents, so nothing distinguished waiting
     // from lost. Ask the drain's own decision, once, with the oldest row's age.
+    let due_at = |r: &Value| {
+        r["queued_at"].as_f64().unwrap_or(now).max(r["deliver_at"].as_f64().unwrap_or(0.0))
+    };
     let oldest_age = out
         .iter()
-        .filter_map(|r| r["queued_at"].as_f64())
-        .map(|q| now - q)
+        .map(|r| now - due_at(r))
+        .filter(|age| *age >= 0.0)
         .fold(0.0_f64, f64::max);
     let waiting_for = if out.is_empty() || blocked.is_some() {
         None
@@ -28760,24 +28775,18 @@ pub(crate) async fn steer_history_verb(
             _ => None,
         }
     };
-    let idle_dur = idle_duration_s(state, name).await;
     for row in out.iter_mut() {
-        let delay = row["delay_after_idle_s"].as_i64().unwrap_or(0);
-        let row_waiting = if delay > 0 && waiting_for.is_none() {
-            if idle_dur < delay as f64 {
-                let remaining = delay as f64 - idle_dur;
-                Some(format!(
-                    "the worker to be idle for {} (delayed delivery; {remaining:.0}s remaining)",
-                    format_delay_human(delay)
-                ))
-            } else {
-                None
-            }
+        let due = due_at(row);
+        let row_waiting = if due > now {
+            Some(format!(
+                "its scheduled time, {}: then it goes at the worker's next turn boundary",
+                format_local_time(due)
+            ))
         } else {
             waiting_for.map(str::to_owned)
         };
         row["waiting_for"] = json!(row_waiting);
-        let age = now - row["queued_at"].as_f64().unwrap_or(now);
+        let age = (now - due).max(0.0);
         row["age_s"] = json!(age as i64);
         row["overdue"] = json!(age >= max_age);
         let reason = row["blocked_reason"]
@@ -40512,7 +40521,7 @@ mod tests {
         };
         let mutate = body("pub(crate) async fn steer_mutate(");
         assert!(
-            mutate.contains("if blocked.is_none() && delay_s == 0 {")
+            mutate.contains("if blocked.is_none() && deliver_at == 0.0 {")
                 && mutate.contains("steer_try_deliver_now(&st, &lane, &id).await;"),
             "an enqueue must try the lane's boundary at once, not wait for the timer pass"
         );
@@ -40556,6 +40565,96 @@ mod tests {
     /// see a params list that binds the wrong variable, and this cannot see a
     /// path it does not exercise, so both are needed.
     ///
+    /// "Delay it by x hours" (Ethan, 2026-10-15): the delay is wall-clock time
+    /// from now. A cleared or past schedule is 0, and `delay_after_idle_s`, the
+    /// name the dashboard used to send, still reads as a delay from now.
+    #[test]
+    fn a_delay_is_a_clock_time_from_now() {
+        let now = 1_000.0;
+        assert_eq!(steer_deliver_at_from(&json!({"delay_s": 7200}), now), Some(8_200.0));
+        assert_eq!(steer_deliver_at_from(&json!({"delay_after_idle_s": 60}), now), Some(1_060.0));
+        assert_eq!(steer_deliver_at_from(&json!({"deliver_at": 5_000.0}), now), Some(5_000.0));
+        assert_eq!(steer_deliver_at_from(&json!({"delay_s": 0}), now), Some(0.0));
+        assert_eq!(steer_deliver_at_from(&json!({"deliver_at": 10.0}), now), Some(0.0));
+        assert_eq!(steer_deliver_at_from(&json!({"text": "hi"}), now), None);
+    }
+
+    /// The drain must not touch a scheduled row before its time, and must treat
+    /// it like any other row after. Driven through the void path (a stale board
+    /// pickup), the one exit reachable without a live terminal: before this
+    /// gate read `deliver_at`, both rows left the queue on the first tick.
+    #[tokio::test]
+    async fn a_scheduled_row_stays_queued_until_its_time_and_then_drains() {
+        use crate::runtime_jobs::board_drive::PICKUP_ANCHOR;
+        let (st, _dir) = state();
+        let now = now_f64();
+        let _ = st
+            .store
+            .write_async(move |conn| {
+                ensure_fleet_tables(conn)?;
+                conn.execute(
+                    "INSERT INTO issues (id, title, status, session, created, updated) \
+                     VALUES ('AMUX-9','t','done','lane-s',0,0)",
+                    [],
+                )?;
+                let stale = &format!("{PICKUP_ANCHOR}AMUX-9 — work it now.");
+                for (id, deliver_at) in [("later", now + 7200.0), ("due", now - 5.0)] {
+                    conn.execute(
+                        "INSERT INTO steering_queue(id, session, text, queued_at, guard, sender, deliver_at) \
+                         VALUES(?1,'lane-s',?2,?3,'board-drive','',?4)",
+                        rusqlite::params![id, stale, now - 600.0, deliver_at],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await;
+
+        steer_deliver_tick(&st).await;
+
+        let conn = st.store.read().unwrap();
+        let queued: Vec<String> = conn
+            .prepare("SELECT id FROM steering_queue WHERE session='lane-s' ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(queued, vec!["later".to_string()], "only the scheduled row is still waiting");
+        let hist_queued_at: f64 = conn
+            .query_row("SELECT queued_at FROM steering_history WHERE id='due'", [], |r| r.get(0))
+            .expect("the due row drained to history");
+        assert!((hist_queued_at - (now - 600.0)).abs() < 1.0, "history keeps when it was really queued");
+    }
+
+    /// The queue listing says when a scheduled row goes, and does not call a
+    /// message that is waiting for its own time old or overdue.
+    #[tokio::test]
+    async fn the_queue_listing_names_the_scheduled_time() {
+        let (st, _dir) = state();
+        let now = now_f64();
+        let _ = st
+            .store
+            .write_async(move |conn| {
+                ensure_fleet_tables(conn)?;
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at, deliver_at) \
+                     VALUES('s1','lane-l','later please',?1,?2)",
+                    rusqlite::params![now - 4000.0, now + 3600.0],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await;
+        let resp = steer_history_verb(&st, "lane-l", &[]).await;
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let rows: Value = serde_json::from_slice(&body).unwrap();
+        let row = &rows[0];
+        assert_eq!(row["id"], "s1");
+        assert!(row["deliver_at"].as_f64().unwrap() > now);
+        assert!(row["waiting_for"].as_str().unwrap_or("").starts_with("its scheduled time"), "{row}");
+        assert_eq!(row["age_s"], 0);
+        assert_eq!(row["overdue"], false);
+    }
+
     /// Uses the VOID path rather than plain delivery, because that is what is
     /// reachable here: with no live tmux, `steer_deliver_tick` correctly leaves
     /// an ordinary row queued, so a delivery-based test would assert on a row
