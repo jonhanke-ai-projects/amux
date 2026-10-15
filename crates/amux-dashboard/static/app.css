@@ -9560,3 +9560,5 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .board-activity-copy { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .board-activity-item .btn { min-height: 36px; padding: 4px 8px; font-size: 0.72rem; white-space: nowrap; }
 }
+/* The scheduled-delivery tag also clears the delay: a full touch target on a phone. */
+@media(max-width:600px) { .steer-delay-tag { min-height:44px; padding:0 12px !important; font-size:0.78rem !important; } }
