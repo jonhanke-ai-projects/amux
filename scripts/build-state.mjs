@@ -35,7 +35,13 @@ while(changed) {
   for(const [name,calls] of graph) if(!mutations.has(name) && [...calls].some(call=>mutations.has(call))) { mutations.add(name);changed=true; }
 }
 const controls=Object.fromEntries([...mutations].sort().map(name=>[name,{kind:'command.'+name,feedback_required:true,target:'control-or-request',queue_policy:'transport-declared'}]));
-const registry={measured:true,n_considered:functions.size,command_handlers:controls,
+// The committed file holds only what changes when a command handler does: one
+// sorted block per handler. Population counts (functions considered, handlers
+// declared) move on almost any app.js edit, so they are printed below instead
+// of committed; committing them made every pair of dashboard PRs conflict on
+// line 3. state/feedback.mjs fetches this file at runtime, so the kernel bundle
+// does not embed it either.
+const registry={command_handlers:controls,
   coverage_scope:'Static call graph of named functions. Dynamic event listeners and computed dispatch require browser observation.'};
 const json=JSON.stringify(registry,null,2)+'\n';
 if(process.argv.includes('--check')) {
