@@ -788,7 +788,7 @@ UI. A test that cannot run reports "not run" and fails the suite.
 | T-ACC-3 | Sign-in by email code, Google, GitHub and Apple each reach the server; billing-email link works |
 | T-ACC-4 | Success URL before webhook: one user, one job; another device refused until the email link |
 | T-MAIL-1..7 | Each email arrives in the test inbox with working links, including at an Apple relay address |
-| T-PROV-1 | Paid to ready under 3 minutes, with the first backup written |
+| T-PROV-1 | Paid to ready in about 3 minutes typically (a median, not a ceiling; owner decision 2026-10-15), with the first backup written and a "ready" email sent |
 | T-PROV-3 | Injected capacity error moves to the next EU location |
 | T-PROV-4 | Injected 15-minute failure refunds, emails and files a card |
 | T-CLI-1 | Claude sign-in: the dashboard shows Anthropic's link, a pasted code completes it, `claude auth status` reports signed in, and a Claude worker answers (nightly, with a test subscription token from `claude setup-token`) |

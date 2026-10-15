@@ -284,8 +284,8 @@ def r_progress(h, _):
         return h.redirect("/signin")
     h.send(200, page("Building your server", "<h1>Building your server</h1><p class=dim id=host></p><ol class=steps>"
                      "<li>Creating your server</li><li>Setting up its address</li><li>Starting amux and taking the "
-                     "first backup</li><li>Ready</li></ol><p id=msg class=dim>Usually about three minutes. While you "
-                     "wait: have an Anthropic or OpenAI key ready, or your Claude, ChatGPT or Google sign-in.</p>" + PROGRESS_JS))
+                     "first backup</li><li>Ready</li></ol><p id=msg class=dim>Usually about three minutes. You can close "
+                     "this page: we will email you when it is ready. While you wait: have an Anthropic or OpenAI key ready, or your Claude, ChatGPT or Google sign-in.</p>" + PROGRESS_JS))
 
 
 def r_me(h, _):

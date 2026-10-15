@@ -22,8 +22,11 @@ def render(template, p):
     T = {
         "being_built": ("Your amux server is being built",
                         f"Thanks for ordering amux Cloud.\n\nYour server, {host}, is being built now. It is usually ready "
-                        f"in about three minutes.\n\nWatch it here: {BASE}/progress\n\nConfirm this email address so you "
+                        f"in about three minutes, and we will email you when it is. You can close the page.\n\nWatch it here: {BASE}/progress\n\nConfirm this email address so you "
                         f"can sign in from other devices and invite teammates: {BASE}/verify"),
+        "server_ready": ("Your amux server is ready",
+                         f"Your server is ready: {host}\n\nOpen it and connect a model: sign in with Claude, ChatGPT or "
+                         f"Google, or paste an API key."),
         "provision_failed": ("We could not build your amux server",
                              "Your server did not come up within 15 minutes, so we stopped and removed it.\n\n" +
                              ("Your payment has been refunded." if p.get("refunded") else

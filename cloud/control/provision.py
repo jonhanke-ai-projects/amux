@@ -140,6 +140,11 @@ def mark_ready(store, server_id, now=None):
     store.run("UPDATE provision_jobs SET step='ready', status='done', updated_at=? WHERE server_id=? AND status!='done'",
               now, server_id)
     store.event("cloud.ready", srv["org_id"], server=server_id, ms_from_payment=int((now - srv["created_at"]) * 1000))
+    # Provisioning is usually about three minutes and Hetzner sometimes takes longer, so the customer
+    # can leave the progress page; this email brings them back (owner decision 2026-10-15: no warm pool).
+    org = store.one("SELECT email FROM orgs WHERE id=?", srv["org_id"])
+    if org and not srv.get("synthetic"):
+        store.enqueue_email(org["email"], "server_ready", dedupe=f"ready:{server_id}", slug=srv["slug"])
     return True
 
 

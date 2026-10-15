@@ -39,6 +39,20 @@ class Checkout(Base):
         self.assertEqual(len(self.store.all("SELECT * FROM provision_jobs")), 1)
         self.assertEqual([e["template"] for e in self.store.all("SELECT template FROM outbox")], ["being_built"])
 
+    def test_ready_server_emails_its_owner_once(self):
+        # Owner decision 2026-10-15: no warm pool, so a slow build is answered by an email when it is ready.
+        r = self.pay("cs_1", "a@example.com", "sub_1")
+        self.assertTrue(provision.mark_ready(self.store, r["server"]["id"], now=T0 + 180))
+        self.assertFalse(provision.mark_ready(self.store, r["server"]["id"], now=T0 + 181))
+        rows = self.store.all("SELECT to_addr, template FROM outbox WHERE template='server_ready'")
+        self.assertEqual([(x["to_addr"], x["template"]) for x in rows], [("a@example.com", "server_ready")])
+
+    def test_synthetic_ready_server_sends_no_email(self):
+        r = self.pay("cs_1", "a@example.com", "sub_1")
+        self.store.run("UPDATE servers SET synthetic=1 WHERE id=?", r["server"]["id"])
+        provision.mark_ready(self.store, r["server"]["id"], now=T0 + 180)
+        self.assertEqual(self.store.all("SELECT * FROM outbox WHERE template='server_ready'"), [])
+
     def test_T_PAY_1_replay_and_race_make_one_job(self):
         self.pay("cs_1", "a@example.com", "sub_1")
         accounts.complete_checkout(self.store, self.billing, "cs_1", now=T0 + 1)      # success URL again

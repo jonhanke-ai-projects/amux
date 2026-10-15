@@ -63,5 +63,5 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | Ask | Why it blocks | Unblocks |
 |---|---|---|
-| Paid-to-ready target versus Hetzner's restore spread (43 to 175 s measured) | T-PROV-1 misses 3 minutes on slow restores; nothing in our boot path can recover it (boot 11 s) | Either keep one spare ready server per plan (a warm pool, about $8 to $30 a month for Solo to Max) or accept the target as a median rather than a ceiling |
+| Paid-to-ready target versus Hetzner's restore spread (43 to 175 s measured) | T-PROV-1 misses 3 minutes on slow restores; nothing in our boot path can recover it (boot 11 s) | **Decided 2026-10-15 by the owner:** no warm pool. Three minutes is the typical time, not a ceiling. The progress page and the first email say the customer can leave, and a `server_ready` email goes to the owner of every non-synthetic server when it comes up |
 | Sign in with Apple on a real iPhone (T-ACC-3, iOS half) | The control plane side is proven; the app's native sheet only runs on a device signed into an Apple ID | A device run from Xcode, or a TestFlight build |
