@@ -60117,12 +60117,16 @@ async function _drawRenderDrawings(body, q) {
     + '<span class="draw-recent-thumb">' + (x.thumb ? '<img alt="" src="' + esc(x.thumb) + '">' : '') + '</span>'
     + '<span class="draw-recent-meta"><span class="draw-recent-title">' + esc(x.title || _drawTitleOf(x.path)) + '</span>'
     + '<span class="draw-recent-when">' + (x.ts ? esc(timeAgo(x.ts / 1000)) : '') + '</span></span></button>';
-  const prevList = document.getElementById('draw-folder-list');
-  const keep = prevList ? prevList.innerHTML : '<div class="draw-empty">Loading…</div>';
+  // The folder rows are restored from the last listing's own HTML and
+  // marked with it, so a listing that comes back unchanged is a no-op.
+  // Restoring a serialized copy left the mark off, and the unchanged listing
+  // then replaced every row a moment later: a tap whose press and release
+  // straddled that swap fired no click (draw-tab.spec.ts:356 on iOS).
+  const keep = d.folderHtml || '<div class="draw-empty">Loading…</div>';
   if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
     + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
     + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
-    document.getElementById('draw-folder-list').innerHTML = keep;
+    _drawSetBody(document.getElementById('draw-folder-list'), keep);
   }
   const dir = d.path ? _drawDirOf(d.path) : d.dir;
   try {
@@ -60135,6 +60139,7 @@ async function _drawRenderDrawings(body, q) {
       const p = dir.replace(/\/+$/, '') + '/' + e.name;
       return '<button class="draw-pop-row draw-pop-file' + (p === d.path ? ' current' : '') + '" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>';
     }).join('') : '<div class="draw-empty">No drawings in this folder yet.</div>';
+    if (!q) d.folderHtml = html;
     _drawSetBody(list, html);
   } catch (e) {}
 }
