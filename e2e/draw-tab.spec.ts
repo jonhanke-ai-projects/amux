@@ -761,7 +761,7 @@ test('Draw: saving recents keeps entries another tab wrote', async ({ page, requ
     const other = join(dir, 'OtherTab.excalidraw');
     await page.evaluate(async o => {
       const path = (window as any)._drawRecentsPath();
-      const cur = JSON.parse(await (await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' })).text());
+      const res = await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' }); const raw = res.ok ? await res.text() : ''; const cur = raw ? JSON.parse(raw) : { recents: [] };
       cur.recents.unshift({ path: o, title: 'OtherTab', ts: Date.now() + 1 });
       await fetch('/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, content: JSON.stringify(cur) }) });
     }, other);
@@ -769,7 +769,7 @@ test('Draw: saving recents keeps entries another tab wrote', async ({ page, requ
     await page.waitForFunction(() => !(window as unknown as Win)._draw.recentsTimer, null, { timeout: 10_000 });
     await expect.poll(() => page.evaluate(async () => {
       const path = (window as any)._drawRecentsPath();
-      const cur = JSON.parse(await (await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' })).text());
+      const res = await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' }); const raw = res.ok ? await res.text() : ''; const cur = raw ? JSON.parse(raw) : { recents: [] };
       return cur.recents.map((x: any) => x.path);
     })).toEqual(expect.arrayContaining([mine, other]));
     await page.evaluate(() => (window as any)._drawLibRender());
