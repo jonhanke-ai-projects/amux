@@ -23,13 +23,13 @@ tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
 # ONLY CI-GREEN COMMITS GO LIVE (Ethan, 2026-10-15: "make sure all the amux
 # shit goes thru cicd"). Until then this activated $REF's tip about a minute
 # after any push, while its CI was still running or already red. Now the target
-# is the newest first-parent commit of $REF whose push CI finished with every
-# check run passing. A tip that is pending or red leaves the last green image
+# is the newest first-parent commit of $REF whose required push workflows
+# (AMUX_CI_REQUIRED_WORKFLOWS, default rust,checks) all completed with success. A tip that is pending or red leaves the last green image
 # running; a commit that never had CI (an inner commit of a multi-commit push)
 # is passed over. Verdicts come from GitHub check runs through the App token;
 # final ones are cached per sha so a 60s timer costs about one API call while a
 # run is in flight. Opt out with AMUX_DEPLOY_CI_GATE=0.
-CI_CACHE="${AMUX_CI_VERDICT_CACHE:-$HOME/.amux/ci-verdicts}"
+CI_CACHE="${AMUX_CI_VERDICT_CACHE:-$HOME/.amux/ci-verdicts-v2}"  # v2: workflow-run verdicts; v1 judged check runs
 CI_DEPTH="${AMUX_CI_GATE_DEPTH:-40}"
 ci_verdict() {   # green | red | pending | none | unmeasured
   local sha="$1" cached
@@ -40,15 +40,31 @@ ci_verdict() {   # green | red | pending | none | unmeasured
   token=$(GH_TOKEN= "$HOME/.amux/github-app/get-token.sh" --min-remaining 300 2>/dev/null \
     | sed -n 's/^export GH_TOKEN=//p' | tr -d "'\"") || true
   [ -n "$token" ] || { echo unmeasured; return; }
+  # Judge by WORKFLOW RUNS, not check runs (2026-10-15): 6325024c7 went live
+  # with its rust run cancelled by the next push before any job started, so it
+  # had no failing check run and "every check run passed" was true of the
+  # checks workflow alone. Each required workflow must have completed with
+  # success; a cancelled or skipped one leaves the commit without a verdict
+  # (none), so the walk passes it over to an older, fully tested commit.
   v=$(curl -sf --max-time 15 -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/commits/$sha/check-runs?per_page=100" \
-    | python3 -c '
-import json,sys
-runs=json.load(sys.stdin)["check_runs"]
+      "https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/actions/runs?head_sha=$sha&event=push&per_page=100" \
+    | AMUX_CI_REQUIRED="${AMUX_CI_REQUIRED_WORKFLOWS:-rust,checks}" python3 -c '
+import json,os,sys
+runs=json.load(sys.stdin)["workflow_runs"]
+need=[w.strip() for w in os.environ["AMUX_CI_REQUIRED"].split(",") if w.strip()]
 if not runs: print("none"); raise SystemExit
-if any(r["status"]!="completed" for r in runs): print("pending"); raise SystemExit
-ok={"success","skipped","neutral"}
-print("green" if all(r["conclusion"] in ok for r in runs) else "red")' 2>/dev/null) || v=unmeasured
+states=[]
+for w in need:
+    mine=sorted([r for r in runs if r["name"]==w], key=lambda r: r["created_at"])
+    if not mine: states.append("none"); continue
+    r=mine[-1]
+    if r["status"]!="completed": states.append("pending")
+    elif r["conclusion"]=="success": states.append("green")
+    elif r["conclusion"] in ("cancelled","skipped","stale"): states.append("none")
+    else: states.append("red")
+for v in ("red","pending","none"):
+    if v in states: print(v); raise SystemExit
+print("green")' 2>/dev/null) || v=unmeasured
   # "none" is only final once the commit is old enough that CI would have started.
   if [ "$v" = green ] || [ "$v" = red ] || { [ "$v" = none ] && \
      [ $(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") )) -gt 3600 ]; }; then
