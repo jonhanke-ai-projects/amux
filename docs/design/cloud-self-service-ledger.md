@@ -42,6 +42,8 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | Scheduled journeys (2026-10-15) | Ubuntu's Node 18 is too old for Playwright; two runs failed at a check before the self-delete and leaked their servers until the Hetzner core quota refused the next; that quota error reached only the log; nothing set `servers.synthetic`, so releases could never leave stage 0 and each journey server got its own restore drill | Node 22 from NodeSource; the synthetic deletes its account whenever payment went through; a failed job keeps its last error and a provider limit alerts at once; a synthetic checkout flags its server and drills skip it (`b4318cb2`) |
 
+| Restore drills and deletion (2026-10-15) | Every drill heartbeat minted a backup token and re-created the bucket if missing, so a drill whose source was deleted re-created that customer's bucket and minted 31 tokens; the hourly sweep let a stuck drill live up to 105 minutes; token revocation read only the first page; an account deleted mid-provision left its bucket | Drills mint one `amux-drill-<id>` token without creating anything and revoke it at the end, cancel when the source is gone, and sweep every 5 minutes; revocation reads every page; deletion always plans the bucket step. After the fixes a journey passed in 133 s and Hetzner, R2 and the token list held nothing of ours |
+
 ## Where the build departed from the plan, and why
 
 | Plan said | Built | Why |
