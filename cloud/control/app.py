@@ -298,7 +298,13 @@ def r_me(h, _):
         out.append({"id": s["id"], "slug": s["slug"], "url": server_url(s), "status": s["status"], "plan": s["plan"],
                     "role": s["my_role"],
                     "step": "ready" if s["status"] == "ready" else s["step"]})
-    h.json(200, {"email": u["email"], "email_verified": bool(u["email_verified"]), "servers": out})
+    billing = None
+    if u["role"] == "owner":
+        # The J16 banner: a failed payment shows the owner how long service lasts and where to fix the card.
+        sub = STORE.one("SELECT * FROM subscriptions WHERE org_id=? ORDER BY updated_at DESC LIMIT 1", u["org_id"])
+        if sub:
+            billing = {"status": sub["status"], "failing_since": sub["failure_started_at"], "manage": "/billing"}
+    h.json(200, {"email": u["email"], "email_verified": bool(u["email_verified"]), "servers": out, "billing": billing})
 
 
 def r_go(h, path):

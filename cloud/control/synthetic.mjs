@@ -47,6 +47,27 @@ if (ADMIN && health.payments !== 'live') {
 const page = await ctx.newPage();
 let fake = false, doorUrl = null, rawDoor = null, paidAt = 0, handoffAt = 0;
 const capability = { passed: [], failed: [], not_run: NOT_RUN };
+// Stripe test mode only: the dunning check changes a subscription's card and billing cycle.
+const SK = process.env.STRIPE_SECRET_KEY || '';
+async function stripe(method, path, params = {}) {
+  const body = new URLSearchParams(params).toString();
+  const r = await fetch(`https://api.stripe.com/v1${path}${method === 'GET' && body ? '?' + body : ''}`,
+    { method, headers: { Authorization: `Bearer ${SK}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: method === 'GET' ? undefined : body });
+  const j = await r.json();
+  if (j.error && !params._allowError) throw new Error(`stripe ${path}: ${j.error.message}`);
+  return j;
+}
+async function billingStatus(want, ms = 90_000, also = () => true) {
+  const t = Date.now();
+  let last = null;
+  while (Date.now() - t < ms) {
+    last = (await (await page.request.get(`${CP}/api/me`)).json()).billing;
+    if (last && last.status === want && also(last)) return last;
+    await page.waitForTimeout(3000);
+  }
+  throw new Error(`billing never reached ${want}; last ${JSON.stringify(last)}`);
+}
 try {
   await step('open pricing link', async () => {
     await page.goto(`${CP}/?plan=solo&source=synthetic`);
@@ -122,8 +143,34 @@ try {
       const locked = [302, 303].includes(home.status()) && (to.includes('/_door/') || to.startsWith(CP) && to.includes('server='));
       check('door page lock', locked, `HTTP ${home.status()} to ${to.replace(/\?.*/, '')}`);
       await fresh.close();
-      if (capability.failed.length) throw new Error(`failed: ${capability.failed.join('; ')}`);
-      return `${capability.passed.length} passed, ${Object.keys(NOT_RUN).length} not run`;
+      if (!fake && SK.startsWith('sk_test_')) {
+        check('T-PAY-1 test checkout', true, 'Stripe test card to a ready server');
+        // T-DUN-1, the Stripe half: a real failed charge, then a fixed card. The 14 days of service and the
+        // snapshot that follow run on our own clock and are covered with an injected clock in test_lifecycle.py.
+        const cust = (await stripe('GET', '/customers', { email: EMAIL })).data[0];
+        const sub = (await stripe('GET', '/subscriptions', { customer: cust.id, status: 'active' })).data[0];
+        const bad = await stripe('POST', '/payment_methods/pm_card_chargeCustomerFail/attach', { customer: cust.id });
+        await stripe('POST', `/subscriptions/${sub.id}`, { default_payment_method: bad.id, billing_cycle_anchor: 'now',
+          proration_behavior: 'none', payment_behavior: 'allow_incomplete' });
+        // Stripe sends subscription.updated (past_due) a few seconds before invoice.payment_failed,
+        // which is what records when the failure started; wait for both.
+        const failing = await billingStatus('past_due', 90_000, b => !!b.failing_since);
+        check('T-DUN-1 failed charge seen', !!failing.failing_since, 'past_due with failing_since');
+        const good = await stripe('POST', '/payment_methods/pm_card_visa/attach', { customer: cust.id });
+        await stripe('POST', `/subscriptions/${sub.id}`, { default_payment_method: good.id });
+        const inv = (await stripe('GET', `/subscriptions/${sub.id}`)).latest_invoice;
+        await stripe('POST', `/invoices/${inv}/pay`, { payment_method: good.id });
+        const fixed = await billingStatus('active');
+        check('T-DUN-1 fixed card restores', fixed.failing_since === null, 'active, failure cleared');
+        delete capability.not_run['T-PAY-1'];
+        capability.not_run['T-PAY-1 EU tax and webhook replay'] = 'not automated yet';
+        capability.not_run['T-DUN-1 14 days then snapshot'] = 'injected clock in test_lifecycle.py, not a live run';
+      }
+      // T-PROV-1 is a speed target that depends on Hetzner's snapshot restore; it is reported in
+      // capability.run every time but does not by itself mark the journey broken.
+      const broken = capability.failed.filter(f => !f.startsWith('T-PROV-1'));
+      if (broken.length) throw new Error(`failed: ${broken.join('; ')}`);
+      return `${capability.passed.length} passed, ${Object.keys(capability.not_run).length} not run`;
     });
   }
   ok = true;
