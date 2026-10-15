@@ -5350,7 +5350,7 @@ fn steering_with_transport(
         "SELECT id, session, text, queued_at, COALESCE(guard,''),
         (SELECT substr(msg_id,7) FROM send_dedup d WHERE d.session=steering_queue.session
           AND d.receipt_id=steering_queue.id AND d.msg_id LIKE 'steer:%' LIMIT 1),
-        COALESCE(delay_after_idle_s,0)
+        COALESCE(deliver_at,0)
         FROM steering_queue ORDER BY queued_at ASC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -5361,11 +5361,11 @@ fn steering_with_transport(
             r.get::<_, f64>(3)?,
             r.get::<_, String>(4)?,
             r.get::<_, Option<String>>(5)?,
-            r.get::<_, i64>(6)?,
+            r.get::<_, f64>(6)?,
         ))
     })?;
     for row in rows {
-        let (id, session, text, queued_at, guard, transport_id, delay_after_idle_s) = row?;
+        let (id, session, text, queued_at, guard, transport_id, deliver_at) = row?;
         let system = crate::api::session_verbs::steer_guard_is_system(&guard);
         let held = crate::api::projects::steering_delivery_hold(conn, &session, &id)
             .unwrap_or_else(|_| Some("project_delivery_identity_unavailable".into()));
@@ -5374,7 +5374,7 @@ fn steering_with_transport(
             .or_default()
             .push(json!({"id":id,"text":text,"queued_at":queued_at,
             "guard":guard,"system":system,"transport_id":transport_id,"blocked_reason":held,
-            "delay_after_idle_s":delay_after_idle_s}));
+            "deliver_at":(deliver_at > 0.0).then_some(deliver_at)}));
     }
     Ok(steering)
 }

@@ -12634,11 +12634,11 @@ function _steeringRender() {
   const row = m => {
     const ago = timeAgo(m.queued_at);
     const sysTag = m.system ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(148,163,184,0.15);color:var(--dim);margin-right:6px;">SYSTEM${m.guard ? ' · ' + esc(m.guard) : ''}</span>` : '';
-    const hasDelay = m.delay_after_idle_s > 0 && !m.system;
-    const delayTag = hasDelay ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(99,102,241,0.15);color:var(--accent,#6366f1);margin-right:6px;cursor:pointer;" onclick="_steeringSetDelay('${m.id}',0)" title="Click to remove delay">DELAYED ${_formatDelay(m.delay_after_idle_s)} idle ✕</span>` : '';
+    const hasDelay = m.deliver_at > Date.now() / 1000 && !m.system;
+    const delayTag = hasDelay ? `<button type="button" class="steer-delay-tag" style="font-size:0.68rem;font-weight:600;padding:1px 6px;border:0;border-radius:3px;background:rgba(99,102,241,0.15);color:var(--accent,#6366f1);margin-right:6px;cursor:pointer;" onclick="_steeringSetDelay('${m.id}',0)" title="Delivered at the worker's first turn boundary after ${esc(new Date(m.deliver_at * 1000).toLocaleString())}. Click to remove the delay.">${esc(_steerDeliverLabel(m.deliver_at))} ✕</button>` : '';
     const pendTag = m.pending ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${m.error ? 'Needs review' : online ? 'Awaiting server' : 'Saved offline'}</span>` : '';
     const dis = m.pending ? 'disabled style="opacity:0.5;font-size:0.7rem;padding:2px 8px;"' : 'style="font-size:0.7rem;padding:2px 8px;"';
-    const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery until idle">⏱</button>` : '';
+    const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery" aria-label="Delay delivery">⏱</button>` : '';
     return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid ${hasDelay ? 'rgba(99,102,241,0.25)' : m.pending ? 'rgba(210,153,34,0.45)' : 'var(--border)'};border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
       <div style="flex:1;min-width:0;">
         ${(sysTag || delayTag || pendTag) ? `<div style="margin-bottom:4px;">${sysTag}${delayTag}${pendTag}</div>` : ''}
@@ -12714,24 +12714,31 @@ function _steeringUpdateBadge() {
   else { badge.textContent = ''; badge.classList.remove('has-count'); }
 }
 
+// "Delivers 6:15 PM", with the day when it is not today.
+function _steerDeliverLabel(at) {
+  const d = new Date(at * 1000), now = new Date();
+  const time = d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+  if (d.toDateString() === now.toDateString()) return 'Delivers ' + time;
+  return 'Delivers ' + d.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'}) + ' ' + time;
+}
+// Schedule (delaySecs > 0) or clear (0) a queued message's delivery time. The
+// row is updated in place from the server's answer, so the tag appears now
+// rather than at the next session poll.
 async function _steeringSetDelay(msgId, delaySecs) {
   if (!peekSession) return;
+  const forSess = peekSession;
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(forSess) + '/steer', {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: msgId, delay_after_idle_s: delaySecs})
+      body: JSON.stringify({id: msgId, delay_s: delaySecs})
     });
-    if (r.ok) {
-      const sess = sessions.find(s => s.name === peekSession);
-      if (sess && sess._steerQueue) {
-        const row = sess._steerQueue.find(m => m.id === msgId);
-        if (row) row.delay_after_idle_s = delaySecs;
-      }
-      _steeringRender();
-      if (delaySecs > 0) showToast('Delay set: delivers after ' + _formatDelay(delaySecs) + ' idle');
-      else showToast('Delay removed');
-    }
-  } catch(e) {}
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast(r.status === 404 ? 'Already delivered' : 'Could not change the delay: ' + (d.error || r.status)); fetchSessions(); return; }
+    const row = (sessions.find(s => s.name === forSess)?.steering || []).find(m => m.id === msgId);
+    if (row) row.deliver_at = d.deliver_at || null;
+    if (peekSession === forSess) _steeringRender();
+    showToast(d.deliver_at ? _steerDeliverLabel(d.deliver_at) + ', at the worker\'s next pause after that' : 'Delay removed: delivers at the next pause');
+  } catch(e) { showToast('Could not change the delay'); }
 }
 function _steeringDelayPrompt(msgId) {
   const bg = document.createElement('div');
@@ -12739,35 +12746,34 @@ function _steeringDelayPrompt(msgId) {
   bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:400;display:flex;align-items:center;justify-content:center;';
   const box = document.createElement('div');
   box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:340px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,0.4);';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-label', 'Delay delivery');
   box.innerHTML = `<div style="font-weight:600;margin-bottom:12px;">Delay delivery</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:0.85rem;">
-      <label style="color:var(--dim);white-space:nowrap;">Deliver after idle for</label>
-      <input id="steer-dp-val" type="number" min="1" value="2" style="width:56px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:0.85rem;text-align:center;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85rem;">
+      <label for="steer-dp-val" style="color:var(--dim);white-space:nowrap;">Deliver in</label>
+      <input id="steer-dp-val" type="number" min="1" step="1" inputmode="numeric" value="2" style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:16px;text-align:center;">
       <select id="steer-dp-unit" style="padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:0.85rem;">
         <option value="60">min</option>
         <option value="3600" selected>hours</option>
       </select>
     </div>
+    <div id="steer-dp-when" style="font-size:0.78rem;color:var(--dim);margin-bottom:16px;"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" id="steer-dp-cancel" style="font-size:0.82rem;">Cancel</button>
       <button class="btn primary" id="steer-dp-set" style="font-size:0.82rem;">Set delay</button>
     </div>`;
   bg.appendChild(box);
   document.body.appendChild(bg);
+  const val = box.querySelector('#steer-dp-val'), unit = box.querySelector('#steer-dp-unit');
+  const secs = () => Math.max(1, Math.round(Number(val.value) || 0)) * (parseInt(unit.value) || 3600);
+  // Say the clock time before it is set, so "2 hours" is never a guess.
+  const preview = () => { box.querySelector('#steer-dp-when').textContent = _steerDeliverLabel(Date.now() / 1000 + secs()) + ', then at the worker\'s next pause.'; };
+  val.oninput = unit.onchange = preview; preview();
   box.querySelector('#steer-dp-cancel').onclick = () => bg.remove();
-  box.querySelector('#steer-dp-set').onclick = () => {
-    const v = parseInt(box.querySelector('#steer-dp-val').value) || 1;
-    const u = parseInt(box.querySelector('#steer-dp-unit').value) || 3600;
-    bg.remove();
-    _steeringSetDelay(msgId, v * u);
-  };
+  box.querySelector('#steer-dp-set').onclick = () => { const s = secs(); bg.remove(); _steeringSetDelay(msgId, s); };
+  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') bg.remove(); };
+  setTimeout(() => val.select(), 0);
   bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
-}
-
-function _formatDelay(s) {
-  if (s >= 3600) { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60); return m ? h+'h '+m+'m' : h+'h'; }
-  if (s >= 60) return Math.floor(s/60) + 'm';
-  return s + 's';
 }
 
 async function _steeringSendNow(msgId) {
@@ -20472,7 +20478,7 @@ async function steerSession(name, text, identity = {}, opts = {}) {
   identity.msg_id = crypto.randomUUID();
   try {
     const payload = {text, record_history:true, msg_id:identity.msg_id};
-    if (opts.delay_after_idle_s > 0) payload.delay_after_idle_s = opts.delay_after_idle_s;
+    if (opts.delay_s > 0) payload.delay_s = opts.delay_s;
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify(payload)
