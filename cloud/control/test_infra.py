@@ -100,3 +100,20 @@ class S3Signing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeletionPlansTheBucket(unittest.TestCase):
+    """2026-10-15: an account deleted while its server was provisioning left that server's bucket,
+    because the plan was made before the bucket existed."""
+
+    def test_bucket_step_without_a_recorded_bucket(self):
+        import tempfile, deletion
+        from store import Store
+        st = Store(os.path.join(tempfile.mkdtemp(), "d.db"))
+        st.run("INSERT INTO orgs(id,email,created_at) VALUES('o','a@example.com',1)")
+        st.run("INSERT INTO servers(id,org_id,slug,plan,status,fleet_secret,created_at,hetzner_id) "
+               "VALUES('srv_0123456789abcdef','o','alice','solo','provisioning','x',1,7)")
+        user = {"id": "u", "org_id": "o", "role": "owner"}
+        buckets = [s["ref"] for s in deletion.plan_steps(st, user) if s["kind"] == "bucket"]
+        self.assertEqual(buckets, [infra.bucket_name("alice", "srv_0123456789abcdef")])
+        self.assertEqual(buckets, ["amux-alice-abcdef"])

@@ -145,7 +145,7 @@ class Infra:
         customer's backups unreadable to another.
         """
         acct = os.environ["CF_ACCOUNT_ID"]
-        bucket = f"amux-{slug}-{server_id[-6:]}".lower()
+        bucket = bucket_name(slug, server_id)
         if create_bucket:
             try:
                 _call(f"{CF}/accounts/{acct}/r2/buckets", self.cf, "POST", {"name": bucket, "locationHint": "weur"})
@@ -264,6 +264,11 @@ class Infra:
             "hostnames": [f"{hostname}.{self.domain}"], "requested_validity": days,
             "request_type": "origin-ecc", "csr": csr_pem})
         return r["result"]["certificate"]
+
+
+def bucket_name(slug, server_id):
+    """One server's R2 bucket. Deterministic, so deletion can find a bucket created after it planned."""
+    return f"amux-{slug}-{server_id[-6:]}".lower()
 
 
 class S3:

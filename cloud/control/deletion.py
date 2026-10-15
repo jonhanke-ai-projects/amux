@@ -8,6 +8,7 @@ until it succeeds, and the receipt lists every step once all are done.
 """
 import json, time
 
+from infra import bucket_name
 from store import new_id
 
 
@@ -20,8 +21,10 @@ def plan_steps(store, user):
                 steps.append({"kind": "server", "ref": srv["hetzner_id"], "label": f"server {srv['slug']}"})
             if srv["dns_record_id"]:
                 steps.append({"kind": "dns", "ref": srv["dns_record_id"], "label": f"address {srv['slug']}.amux.io"})
-            if srv["backup_bucket"]:
-                steps.append({"kind": "bucket", "ref": srv["backup_bucket"], "label": f"backups of {srv['slug']}"})
+            # Always: a provisioning server can get its bucket after this plan is made (a synthetic
+            # account deleted mid-provision left one, 2026-10-15). Deleting a missing bucket is a no-op.
+            steps.append({"kind": "bucket", "ref": srv["backup_bucket"] or bucket_name(srv["slug"], srv["id"]),
+                          "label": f"backups of {srv['slug']}"})
             for a in store.all("SELECT snapshot_id FROM lifecycle_actions WHERE server_id=? AND snapshot_id IS NOT NULL",
                                srv["id"]):
                 steps.append({"kind": "snapshot", "ref": a["snapshot_id"], "label": f"snapshot of {srv['slug']}"})
