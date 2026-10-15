@@ -9525,3 +9525,38 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .fsel-bar .btn { min-height: 44px; flex: 1 1 auto; }
   .fsel-bar .fsel-count { flex: 1 0 100%; text-align: center; }
 }
+
+/* Phone tops for Email, Connectors, Scheduler and Board (Ethan, 2026-10-14:
+   "do the same for the other mobile pages", after the MDAI header): the page's
+   content starts on the first screen. Explanations fold behind a control,
+   chip rows scroll sideways on one line, text buttons become icons. */
+.email-about-btn { display: none; }
+@media (max-width: 600px) {
+  #email-view .email-about-btn { display: inline-flex; min-width: 44px; justify-content: center; }
+  #email-view .email-head .btn { min-height: 40px; padding: 6px 10px; font-size: 0.8rem; }
+  #email-view:not(.email-about-open) .email-about,
+  #email-view:not(.email-about-open) #email-themes { display: none; }
+  #email-subtabs, #email-folders { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  #email-subtabs::-webkit-scrollbar, #email-folders::-webkit-scrollbar { display: none; }
+  #email-subtabs > *, #email-folders > * { flex: 0 0 auto; }
+
+  .cx-intro { display: none; }
+  .cx-titlebar { align-items: center; flex-wrap: nowrap; margin-bottom: 10px; }
+  .cx-titlebar .cx-h1 { font-size: 1.05rem; white-space: nowrap; }
+  .cx-add-noun { display: none; }
+  .cx-actions .btn { white-space: nowrap; }
+  .cx-actions { flex-wrap: nowrap; }
+  .cx-actions .btn { min-height: 40px; padding: 6px 10px; font-size: 0.8rem; }
+
+  .sx-head { padding: 10px 12px 4px; flex-wrap: nowrap; }
+  .sx-head-title { flex-wrap: nowrap; gap: 8px; }
+  .sx-summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.75rem; min-width: 0; }
+  .sx-new { min-width: 44px; min-height: 44px; padding: 0 12px; font-size: 1.2rem; }
+  .sx-new .sx-new-text { display: none; }
+
+  #board-view .board-page-heading p { display: none; }
+  .board-activity { padding: 4px 2px; margin-bottom: 4px; }
+  .board-activity-item { flex-basis: 85%; padding: 6px 10px; align-items: center; }
+  .board-activity-copy { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .board-activity-item .btn { min-height: 36px; padding: 4px 8px; font-size: 0.72rem; white-space: nowrap; }
+}
