@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1548';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1549';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -60042,6 +60042,11 @@ async function _drawRememberRecent(force) {
   if (!d || !d.path || !d.api) return;
   const now = Date.now();
   let entry = d.recents.find(x => x.path === d.path);
+  // Already first in the list: a save only changes its picture and time, so
+  // the row is patched in place below. A full re-render on every autosave
+  // replaced the library under a pointer about to click a row (and reset its
+  // scroll), so a click on "In this folder" during autosave did nothing.
+  const wasFirst = !!entry && d.recents[0] === entry && entry.title === _drawTitleOf(d.path);
   if (!entry) { entry = { path: d.path }; d.recents.unshift(entry); }
   entry.title = _drawTitleOf(d.path);
   entry.ts = now;
@@ -60063,7 +60068,15 @@ async function _drawRememberRecent(force) {
       }
     } catch (e) {}
   }
-  if (d.libTab === 'drawings') _drawLibRender();
+  if (d.libTab === 'drawings') {
+    const row = wasFirst && document.querySelector('#draw-lib-body .draw-recent[data-path="' + CSS.escape(entry.path) + '"]');
+    if (row) {
+      const thumb = row.querySelector('.draw-recent-thumb');
+      if (thumb) thumb.innerHTML = entry.thumb ? '<img alt="" src="' + esc(entry.thumb) + '">' : '';
+      const when = row.querySelector('.draw-recent-when');
+      if (when) when.textContent = timeAgo(entry.ts / 1000);
+    } else _drawLibRender();
+  }
   if (d.recentsTimer) clearTimeout(d.recentsTimer);
   d.recentsTimer = setTimeout(_drawSaveRecents, 1500);
 }
@@ -60104,12 +60117,16 @@ async function _drawRenderDrawings(body, q) {
     + '<span class="draw-recent-thumb">' + (x.thumb ? '<img alt="" src="' + esc(x.thumb) + '">' : '') + '</span>'
     + '<span class="draw-recent-meta"><span class="draw-recent-title">' + esc(x.title || _drawTitleOf(x.path)) + '</span>'
     + '<span class="draw-recent-when">' + (x.ts ? esc(timeAgo(x.ts / 1000)) : '') + '</span></span></button>';
-  const prevList = document.getElementById('draw-folder-list');
-  const keep = prevList ? prevList.innerHTML : '<div class="draw-empty">Loading…</div>';
+  // The folder rows are restored from the last listing's own HTML and
+  // marked with it, so a listing that comes back unchanged is a no-op.
+  // Restoring a serialized copy left the mark off, and the unchanged listing
+  // then replaced every row a moment later: a tap whose press and release
+  // straddled that swap fired no click (draw-tab.spec.ts:356 on iOS).
+  const keep = d.folderHtml || '<div class="draw-empty">Loading…</div>';
   if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
     + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
     + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
-    document.getElementById('draw-folder-list').innerHTML = keep;
+    _drawSetBody(document.getElementById('draw-folder-list'), keep);
   }
   const dir = d.path ? _drawDirOf(d.path) : d.dir;
   try {
@@ -60122,6 +60139,7 @@ async function _drawRenderDrawings(body, q) {
       const p = dir.replace(/\/+$/, '') + '/' + e.name;
       return '<button class="draw-pop-row draw-pop-file' + (p === d.path ? ' current' : '') + '" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>';
     }).join('') : '<div class="draw-empty">No drawings in this folder yet.</div>';
+    if (!q) d.folderHtml = html;
     _drawSetBody(list, html);
   } catch (e) {}
 }

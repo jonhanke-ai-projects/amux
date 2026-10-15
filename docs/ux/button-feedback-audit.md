@@ -188,8 +188,8 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:2266 | Show in Files | `_drawOpenInFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2258 | Send to worker | `_drawOpenSend` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:59671 | … | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:60103 | + | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:60123 | … | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:60116 | + | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:60140 | … | `_drawPopOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2273 | Load disk version | `_drawResolveConflict` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2274 | Keep mine | `_drawResolveConflict` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:59675 | Save here | `_drawSaveInDir` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
@@ -1052,11 +1052,11 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js:54806 | b | `_dpPick` | addEventListener |
 | app.js:54754 | "prev"]') | `_dpShiftMonth` | addEventListener |
 | app.js:54755 | "next"]') | `_dpShiftMonth` | addEventListener |
-| app.js:60232 | Color  | `_drawPenColor` | onclick |
+| app.js:60250 | Color  | `_drawPenColor` | onclick |
 | index.html:2293 | Pen | `_drawPenTool` | onclick |
 | index.html:2294 | Eraser | `_drawPenTool` | onclick |
 | index.html:2295 | Laser pointer | `_drawPenTool` | onclick |
-| app.js:60234 | Thickness  | `_drawPenWidth` | onclick |
+| app.js:60252 | Thickness  | `_drawPenWidth` | onclick |
 | index.html:2239 | Import files | `_drawPickImport` | onclick |
 | index.html:2260 | Export | `_drawToggleExportMenu` | onclick |
 | index.html:2282 | Lock | `_drawToggleLock` | onclick |
