@@ -736,7 +736,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | div | `openSchedDetail` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | + New schedule | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Edit schedule | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | + New schedule | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | New schedule | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Edit | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | + Team | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | + Invite | `openTeamInvite` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
@@ -969,6 +969,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Close | `` | onclick |
 | index.html | Close | `` | onclick |
 | index.html | Dismiss | `` | onclick |
+| index.html | How this inbox is ranked | `` | onclick |
 | index.html | Reload | `` | onclick |
 | index.html | Sign out | `` | onclick |
 | index.html | Upload files | `` | onclick |
@@ -1012,7 +1013,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | video-overlay | `_closeVideo` | onclick |
 | app.js | Column actions | `_colMenu` | onclick |
 | index.html | Commits | `_commitsBack` | onclick |
-| index.html | ＋ Add connector | `_connAddToggle` | onclick |
+| index.html | Add connector | `_connAddToggle` | onclick |
 | app.js | Close | `_connClose` | onclick |
 | app.js | ; h += | `_connOpen` | onclick |
 | app.js | … | `_connSetFilter` | onclick |
