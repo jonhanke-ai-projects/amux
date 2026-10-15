@@ -714,6 +714,38 @@ struct ListSnapshot {
     runtime_epoch: u64,
     /// `registry_fingerprint()` at build start — see that function.
     registry: u64,
+    /// When the build finished and `json` was published, and how long it took.
+    /// Freshness counts from `published`, for at least `build_s`: see
+    /// [`snapshot_fresh`].
+    published: f64,
+    build_s: f64,
+}
+
+/// Whether a published fleet snapshot may still be served.
+///
+/// RCA hog 20261015-182512: amux-server-rs at 344% CPU on two ticks. The
+/// snapshot's age used to count from build START against a 2s TTL, while a
+/// build took 2-4s (36 workers of tmux captures, transcript tails, git), so
+/// every snapshot was already expired when it was published and the next
+/// request started another build; and each worker status report (25.7/min)
+/// zeroed the stamp as well. The single builder therefore ran back to back.
+/// Counting from publication and for at least as long as the build took caps
+/// the builder at about half the time whatever the poll or report rate; a
+/// status is at most one build interval staler than before. Structural
+/// changes (membership, isolation) still clear `json` and rebuild at once.
+fn snapshot_fresh(now: f64, published: f64, build_s: f64, ttl: f64) -> bool {
+    now - published < ttl.max(build_s)
+}
+
+/// At most one `sessions_build_exceeds_ttl` WARN a minute.
+fn build_slow_first_in_minute() -> bool {
+    static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = chrono::Utc::now().timestamp();
+    let last = LAST.load(std::sync::atomic::Ordering::Relaxed);
+    now - last >= 60
+        && LAST
+            .compare_exchange(last, now, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed)
+            .is_ok()
 }
 
 fn build_array_cache() -> &'static std::sync::Mutex<ListSnapshot> {
@@ -726,6 +758,8 @@ fn build_array_cache() -> &'static std::sync::Mutex<ListSnapshot> {
             epoch: 0,
             runtime_epoch: 0,
             registry: 0,
+            published: 0.0,
+            build_s: 0.0,
         })
     })
 }
@@ -842,10 +876,9 @@ pub fn invalidate_sessions_cache() {
 /// isolation may not. A structural invalidation still uses
 /// [`invalidate_sessions_cache`] and clears the snapshot.
 pub fn invalidate_sessions_runtime_cache() {
+    // Recorded, not acted on: a report no longer forces a rebuild (see
+    // snapshot_fresh). The next build after the freshness window carries it.
     SESSIONS_RUNTIME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if let Ok(mut c) = build_array_cache().lock() {
-        c.stamp = 0.0;
-    }
 }
 
 /// Git branch cache: dir -> (branch, epoch). Branches change on the scale of
@@ -3681,15 +3714,13 @@ fn announce_sticky_runtime_claim(session: &str, observed_card: &str, suppressed:
 pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<String> {
     let store_key = std::sync::Arc::downgrade(store);
     let ttl = env_secs("AMUX_SESSIONS_CACHE_TTL_S", 2.0);
-    let now = chrono::Utc::now().timestamp() as f64;
+    let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
     let epoch_now = SESSIONS_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
-    let runtime_epoch_now = SESSIONS_RUNTIME_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
     if let Ok(c) = build_array_cache().lock() {
-        if now - c.stamp < ttl
+        if snapshot_fresh(now, c.published, c.build_s, ttl)
             && c.store.ptr_eq(&store_key)
             && !c.json.is_empty()
             && c.epoch == epoch_now
-            && c.runtime_epoch == runtime_epoch_now
         {
             // Substrate guard (AMUX-2960): a fresh-looking snapshot whose
             // worker SET no longer matches the registry on disk means an
@@ -3838,11 +3869,10 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
     // Double-check under the flight lock: the previous holder may have just
     // refreshed, and rebuilding immediately would waste its work.
     if let Ok(c) = build_array_cache().lock() {
-        if now - c.stamp < ttl
+        if snapshot_fresh(chrono::Utc::now().timestamp_millis() as f64 / 1000.0, c.published, c.build_s, ttl)
             && c.store.ptr_eq(&store_key)
             && !c.json.is_empty()
             && c.epoch == epoch_now
-            && c.runtime_epoch == runtime_epoch_now
             && registry_fingerprint().is_some_and(|f| c.registry == f)
         {
             return Ok(c.json.clone());
@@ -3874,6 +3904,19 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
             // an unwrap because an unwrap here would be a panic in the request
             // path if the verdict ever gained a fourth state.
             if let (Ok(mut c), Some(registry)) = (build_array_cache().lock(), registry_start) {
+                let published = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+                let build_s = (published - now).max(0.0);
+                // Status reports that landed since the previous snapshot: each
+                // one used to force a rebuild on its own.
+                let reports_since_last = runtime_epoch_start.saturating_sub(c.runtime_epoch);
+                if build_s > ttl && build_slow_first_in_minute() {
+                    tracing::warn!(
+                        target: "amux::sessions",
+                        verdict = "sessions_build_exceeds_ttl", measured = true, n_considered = 1,
+                        build_ms = (build_s * 1000.0) as u64, ttl_s = ttl, reports_since_last,
+                        "fleet snapshot build outlasted its TTL; the next build waits as long as this one took"
+                    );
+                }
                 *c = ListSnapshot {
                     store: store_key,
                     stamp: now,
@@ -3881,6 +3924,8 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
                     epoch: epoch_start,
                     runtime_epoch: runtime_epoch_start,
                     registry,
+                    published,
+                    build_s,
                 };
             }
         }
@@ -9606,6 +9651,22 @@ Checked, nothing of mine was at risk, no action needed from you.
     /// because a static footer never repaints and the pane was never read. The
     /// footer marker is now read for idle-reported lanes; the stale-pane rule
     /// for every other claim is untouched.
+    /// RCA hog 20261015-182512: a 3s build against a 2s TTL counted from build
+    /// start was expired on publication, so the builder ran back to back. From
+    /// publication, and for at least the build's own duration, it rests at
+    /// least as long as it works.
+    #[test]
+    fn a_snapshot_stays_fresh_for_as_long_as_it_took_to_build() {
+        // A quick build: the TTL governs.
+        assert!(snapshot_fresh(101.5, 100.0, 0.3, 2.0));
+        assert!(!snapshot_fresh(102.1, 100.0, 0.3, 2.0));
+        // A slow build: fresh for its own duration after publication.
+        assert!(snapshot_fresh(103.5, 100.0, 4.0, 2.0));
+        assert!(!snapshot_fresh(104.1, 100.0, 4.0, 2.0));
+        // Never published: stale.
+        assert!(!snapshot_fresh(100.0, 0.0, 0.0, 2.0));
+    }
+
     #[test]
     fn shells_that_only_sleep_are_waiting_and_a_real_child_is_work() {
         let roots = vec![("lfv".to_string(), "100".to_string()), ("busy".to_string(), "200".to_string())];
