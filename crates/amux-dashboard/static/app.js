@@ -29935,12 +29935,18 @@ async function _mdaiRun(opts) {
     } else {
       _mdaiActive = d.run || { running: true };
       if (d.joined) showToast('Already running: following that run');
+      if (_mdaiCancelPending) {
+        _mdaiCancelPending = false;
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+          body: JSON.stringify({ kind: 'mdai-cancel-deferred', verdict: 'sent_after_start', measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+        _mdaiCancelSend();
+      }
       _mdaiPoll(node);
     }
   } catch (e) {
     _mdaiRunning = false;
     _mdaiRunError = (e && e.message) || 'run failed';
-  } finally { _mdaiStarting = false; }
+  } finally { _mdaiStarting = false; _mdaiCancelPending = false; }
   if (_mdaiCur === node) _mdaiRender();
 }
 function _mdaiStopPoll() { clearTimeout(_mdaiPollT); _mdaiPollT = null; }
@@ -29968,9 +29974,21 @@ async function _mdaiPoll(node) {
   if (activeView === 'mdai') { _mdaiListData = null; }
   try { window._clientDebug && window._clientDebug('mdai-run', { ok: !_mdaiRunError, measured: true }); } catch (e) {}
 }
+let _mdaiCancelPending = false;
 async function _mdaiCancel() {
   if (!_mdaiCur || !_mdaiRunning) return;
   if (!confirm('Stop this run? The model call in progress is stopped and the run is recorded as cancelled.')) return;
+  // Stop shows the moment Run is clicked, before the server has the run. A
+  // cancel sent then found "nothing is running" and the run went ahead, so
+  // it waits for the start to land and is sent from there.
+  if (_mdaiStarting) {
+    _mdaiCancelPending = true;
+    showToast('Stopping…');
+    return;
+  }
+  await _mdaiCancelSend();
+}
+async function _mdaiCancelSend() {
   const { r, d } = await _mdaiJson('/api/files/mdai/cancel', 'POST', { path: _mdaiCur.abs }).catch(() => ({ r: null, d: {} }));
   if (!r || !r.ok) { showToast((d && d.error) || 'Could not stop the run'); return; }
   showToast('Stopping…');
