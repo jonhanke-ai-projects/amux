@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 3008,
+  "n_considered": 3029,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2144,12 +2144,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiAddSource": {
-      "kind": "command._mdaiAddSource",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_mdaiConnectPicker": {
       "kind": "command._mdaiConnectPicker",
       "feedback_required": true,
@@ -2174,12 +2168,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiDirSortBy": {
-      "kind": "command._mdaiDirSortBy",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_mdaiDoConnect": {
       "kind": "command._mdaiDoConnect",
       "feedback_required": true,
@@ -2198,20 +2186,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiNav": {
-      "kind": "command._mdaiNav",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_mdaiNewFile": {
       "kind": "command._mdaiNewFile",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_mdaiNewFolder": {
-      "kind": "command._mdaiNewFolder",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2222,14 +2198,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiRemoveSource": {
-      "kind": "command._mdaiRemoveSource",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_mdaiRenderDir": {
-      "kind": "command._mdaiRenderDir",
+    "_mdaiPutDoc": {
+      "kind": "command._mdaiPutDoc",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2252,32 +2222,26 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiSavePrompt": {
-      "kind": "command._mdaiSavePrompt",
+    "_mdaiSaveDoc": {
+      "kind": "command._mdaiSaveDoc",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiSaveSettings": {
+      "kind": "command._mdaiSaveSettings",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiSaveSources": {
+      "kind": "command._mdaiSaveSources",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
     "_mdaiSetModel": {
       "kind": "command._mdaiSetModel",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_mdaiTabLoad": {
-      "kind": "command._mdaiTabLoad",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_mdaiWriteFile": {
-      "kind": "command._mdaiWriteFile",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_mdaiWriteText": {
-      "kind": "command._mdaiWriteText",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4678,12 +4642,6 @@
     },
     "closeExplore": {
       "kind": "command.closeExplore",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "closeMdaiNode": {
-      "kind": "command.closeMdaiNode",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

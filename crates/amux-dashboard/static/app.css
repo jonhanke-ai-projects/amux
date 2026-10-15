@@ -9435,14 +9435,56 @@ body.light #mdai-overlay.mdai-detail { background: var(--bg); }
   .mdai-run > span.mdai-v-empty { display: none; }
   .mdai-run.mdai-run-h { display: none; }
 }
-/* MDAI directory list on a phone: same treatment as Scratchpad (no sideways
-   scroll wrapper here), so drop Size and keep Name, Modified and the menu. */
+/* MDAI pages, 2026-10-14 rework: a node list, a create form and details tabs
+   whose every field is a control (the server owns the file format). */
+#mdai-list-page { flex-direction: column; flex: 1; min-height: 0; }
+.mdai-list-body { display: flex; flex-direction: column; gap: 8px; }
+.mdai-rootline { margin: -4px 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdai-tr { grid-template-columns: minmax(0, 3fr) minmax(0, 1.3fr) minmax(0, 0.9fr) 0.6fr 0.5fr minmax(0, 1.2fr); min-height: 44px; box-sizing: border-box; }
+.mdai-tr .mdai-td { overflow: hidden; text-overflow: ellipsis; }
+.mdai-dot.run { background: var(--accent); animation: mdai-pulse 1.2s ease-in-out infinite; }
+.mdai-dot.warn { background: #d29922; }
+@keyframes mdai-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .mdai-dot.run { animation: none; } }
+.mdai-form-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.mdai-form-row > * { min-width: 0; }
+.mdai-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+.mdai-seg button { background: none; border: none; color: var(--dim); padding: 6px 14px; font-size: 0.8rem; cursor: pointer; min-height: 32px; }
+.mdai-seg button + button { border-left: 1px solid var(--border); }
+.mdai-seg button.active { background: var(--accent); color: var(--on-accent, #fff); font-weight: 600; }
+.mdai-src-list { display: flex; flex-direction: column; gap: 10px; }
+.mdai-src-none { font-size: 0.8rem; color: var(--dim); padding: 4px 0; }
+.mdai-msg-bounds { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.mdai-fetch > summary { cursor: pointer; list-style: revert; padding: 2px 0; }
+.mdai-fetch[open] { gap: 10px; }
+.mdai-fetch-grid { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; }
+.mdai-fetch-grid .mdai-lbl:only-child { grid-column: 1 / -1; }
+.mdai-field-err { font-size: 0.8rem; margin-top: -6px; }
+.mdai-runbanner { display: flex; align-items: center; gap: 10px; border: 1px solid var(--accent); background: rgba(88,166,255,0.08); border-radius: 8px; padding: 8px 10px 8px 12px; font-size: 0.8rem; }
+.mdai-runbanner .mdai-spin { color: var(--accent); flex: 0 0 auto; }
+.mdai-rb-txt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.mdai-run-live { cursor: default; background: rgba(88,166,255,0.06); }
+.mdai-instr-preview { min-height: 120px; }
+.mdai-src textarea.input, #mdai-new-title, .mdai-settings .input { font-family: inherit; font-size: 0.84rem; }
+#mdai-instr-ta { min-height: 240px; }
 @media (max-width: 600px) {
-  #mdai-view .fe-row, #mdai-view .fe-col-headers, #mdai-view .fe-back-row {
-    min-width: 0; grid-template-columns: minmax(0,1fr) 84px 44px;
-  }
-  #mdai-view .fe-cell-size { display: none; }
-  #mdai-view .fe-menu-btn { min-width: 44px; min-height: 44px; }
+  .mdai-btn-lbl { display: none; }
+  .mdai-list-head .btn { min-height: 44px; min-width: 44px; }
+  .mdai-tr { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 10px 12px; }
+  .mdai-tr.mdai-th { display: none; }
+  .mdai-tr .mdai-td[data-l="Last run"]:empty { display: none; }
+  .mdai-tr .mdai-td-node { flex: 0 0 100%; }
+  .mdai-tr .mdai-td { font-size: 0.74rem; }
+  .mdai-tr .mdai-td[data-l="Sources"], .mdai-tr .mdai-td[data-l="Runs"] { display: none; }
+  .mdai-td::before { content: none; }
+  .mdai-form-row, .mdai-fetch-grid { grid-template-columns: 1fr; }
+  .mdai-msg-bounds { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .mdai-seg button { min-height: 44px; padding: 0 16px; }
+  .mdai-src .btn, .mdai-add-row .btn, .mdai-row-end .btn, .mdai-runbanner .btn { min-height: 44px; }
+  .mdai-add-row .btn { flex: 1 1 auto; }
+  .mdai-lbl .input, .mdai-lbl select { min-height: 44px; }
+  .mdai-check input[type=checkbox] { width: 22px; height: 22px; }
+  .mdai-fetch > summary { min-height: 44px; display: flex; align-items: center; gap: 6px; }
 }
 
 /* Settings folds (Ethan, 2026-10-14): a section label that opens its body.

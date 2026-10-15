@@ -1108,49 +1108,41 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- MDAI view: global list of every .mdai computed node (global-only: a top-bar
      tab in ALL_TABS/switchView, never in the per-worker peek overlay). -->
 <div id="mdai-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
-  <!-- List page: the MDAI folder as a directory (same view as Files and Scratchpad) -->
-  <div id="mdai-list-page" style="display:flex;flex-direction:column;flex:1;min-height:0;">
-    <div class="fe-toolbar">
-      <div class="fe-breadcrumb sp-dir" id="mdai-dir" title=""></div>
-      <span id="mdai-count" class="mdai-dim" style="white-space:nowrap;"></span>
-      <button class="fe-tb-btn" onclick="_mdaiCreatePage({ dir: _mdaiDirPath })" title="Create a new .mdai node in this folder">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 6.6 7 7.9 8.3 8.4 7 8.9 6.5 10.2 6 8.9 4.7 8.4 6 7.9Z" fill="currentColor"/></svg>
-        <span>New .mdai</span>
-      </button>
-      <button class="fe-tb-btn" onclick="_mdaiNewFolder()" title="Create a subfolder">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3a1 1 0 011-1h2.6l1.2 1.5h4.2a1 1 0 011 1V10a1 1 0 01-1 1h-8a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/></svg>
-        <span>New Folder</span>
-      </button>
-      <button class="fe-tb-btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Refresh">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-        <span>Refresh</span>
-      </button>
+  <!-- List page: every .mdai node under the MDAI folder, with its last run -->
+  <div id="mdai-list-page" class="mdai-page-wrap" style="display:flex">
+    <div class="mdai-list-head">
+      <div class="mdai-list-titles"><h2 class="mdai-h">MDAI</h2><span id="mdai-count" class="mdai-dim"></span></div>
+      <input class="input mdai-search" id="mdai-search" type="search" placeholder="Search nodes" aria-label="Search MDAI nodes" oninput="_mdaiListSearch(this.value)" autocomplete="off">
+      <button class="btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Refresh" aria-label="Refresh">&#8635;<span class="mdai-btn-lbl"> Refresh</span></button>
+      <button class="btn primary" id="mdai-new-btn" onclick="_mdaiCreatePage()">+ New MDAI</button>
     </div>
-    <div class="fe-col-headers" id="mdai-col-headers" style="display:none;">
-      <div class="fe-cell-name fe-col-hdr" onclick="_mdaiDirSortBy('name')">Name <span id="mdai-sort-name"></span></div>
-      <div class="fe-cell-size fe-col-hdr" onclick="_mdaiDirSortBy('size')">Size <span id="mdai-sort-size"></span></div>
-      <div class="fe-cell-date fe-col-hdr" onclick="_mdaiDirSortBy('modified')">Modified <span id="mdai-sort-modified"></span></div>
-      <div class="fe-cell-actions"></div>
-    </div>
-    <div id="mdai-breadcrumb" class="fe-breadcrumb" style="padding:0 12px;font-size:0.78rem;display:none;"></div>
-    <div id="mdai-list" class="fe-body" style="flex:1;overflow-y:auto;min-height:0;"></div>
+    <div class="mdai-dim mdai-rootline">Folder <span id="mdai-dir" class="mdai-code"></span></div>
+    <div id="mdai-list" class="mdai-list-body"></div>
   </div>
-  <!-- Create page -->
+  <!-- Create page: every field of a node, as controls -->
   <div id="mdai-create-page" class="mdai-page-wrap" style="display:none">
     <div class="mdai-create">
-      <div class="mdai-list-head"><button class="btn" onclick="_mdaiCreateCancel()">&#8249; All nodes</button><h2 class="mdai-h">New .mdai</h2></div>
-      <label class="mdai-lbl">Name<input class="input" id="mdai-new-name" placeholder="Workstreams" autocomplete="off"
-        onkeydown="if(event.key==='Enter')_mdaiCreateSubmit(false)"><span class="mdai-hint">Saved as <b>&lt;name&gt;.mdai</b></span></label>
-      <label class="mdai-lbl">Folder<span class="mdai-folder"><span id="mdai-new-root" class="mdai-dim"></span><input class="input" id="mdai-new-folder" placeholder="(top level)"></span></label>
+      <div class="mdai-list-head"><button class="btn" onclick="_mdaiCreateCancel()">&#8249; All nodes</button><h2 class="mdai-h">New MDAI</h2></div>
+      <div class="mdai-form-row">
+        <label class="mdai-lbl">Name<input class="input" id="mdai-new-name" placeholder="Workstreams" autocomplete="off"
+          onkeydown="if(event.key==='Enter')_mdaiCreateSubmit(false)"><span class="mdai-hint">Saved as <b>&lt;name&gt;.mdai</b></span></label>
+        <label class="mdai-lbl">Folder<span class="mdai-folder"><span id="mdai-new-root" class="mdai-dim"></span><input class="input" id="mdai-new-folder" placeholder="(top level)" autocomplete="off"></span></label>
+      </div>
+      <label class="mdai-lbl">Title <span class="mdai-hint">optional, shown in the list</span><input class="input" id="mdai-new-title" maxlength="200" autocomplete="off"></label>
       <fieldset class="mdai-fs"><legend>Sources</legend>
-        <label class="mdai-check"><input type="checkbox" id="mdai-new-msgs" checked> Amux messages
-          <select class="input" id="mdai-new-days" aria-label="How far back"><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="all">All time</option></select></label>
-        <label class="mdai-lbl">Files or folders <span class="mdai-dim">(one per line, relative to the node's folder)</span><textarea class="input" id="mdai-new-paths" rows="2" placeholder="notes/&#10;docs/plan.md"></textarea></label>
-        <label class="mdai-lbl" id="mdai-new-upstream-row">Other .mdai nodes <span class="mdai-dim">(their output becomes a source)</span><select class="input" id="mdai-new-upstream" multiple></select></label>
+        <div class="mdai-hint">What the model reads on every run: your amux message history, files and folders, or other MDAI nodes' output.</div>
+        <div id="new-sources" class="mdai-src-list"></div>
       </fieldset>
-      <label class="mdai-lbl">Model<select class="input" id="mdai-new-model"><option value="">Default</option><option value="haiku">haiku</option><option value="sonnet">sonnet</option><option value="opus">opus</option></select></label>
-      <label class="mdai-lbl">Instruction<span class="mdai-hint">What the model should write from the sources. Markdown.</span>
-        <textarea class="input mdai-code" id="mdai-new-body" rows="14" spellcheck="false" placeholder="# Weekly brief&#10;&#10;Summarize what changed this week and what needs attention next."></textarea></label>
+      <div class="mdai-form-row">
+        <label class="mdai-lbl">Model<select class="input" id="mdai-new-model" onchange="_mdaiModelPick(this,'mdai-new-model-custom')"></select>
+          <input class="input" id="mdai-new-model-custom" placeholder="model id, e.g. claude-sonnet-4-6" style="display:none" autocomplete="off"></label>
+        <label class="mdai-lbl">Timeout per model call (s)<input class="input" type="number" min="30" max="3600" inputmode="numeric" id="mdai-new-timeout" placeholder="900"></label>
+      </div>
+      <label class="mdai-check"><input type="checkbox" id="mdai-new-refresh"> Run when its page is opened <span class="mdai-hint">Off by default: runs only when you press Run.</span></label>
+      <div class="mdai-lbl">Instruction<span class="mdai-hint">What the model should write from the sources. Markdown.</span>
+        <div class="mdai-seg" role="group" aria-label="Instruction view"><button type="button" data-mode="write" class="active" aria-pressed="true" onclick="_mdaiNewBodyMode('write')">Write</button><button type="button" data-mode="preview" aria-pressed="false" onclick="_mdaiNewBodyMode('preview')">Preview</button></div>
+        <textarea class="input mdai-code" id="mdai-new-body" rows="14" spellcheck="true" aria-label="Instruction" placeholder="# Weekly brief&#10;&#10;Summarize what changed this week and what needs attention next."></textarea>
+        <div id="mdai-new-preview" class="mdai-output md-content" style="display:none"></div></div>
       <div id="mdai-new-error" class="mdai-bad" role="alert"></div>
       <div class="mdai-row-end"><button class="btn" onclick="_mdaiCreateCancel()">Cancel</button>
         <button class="btn mdai-create-go" onclick="_mdaiCreateSubmit(false)">Create</button>
