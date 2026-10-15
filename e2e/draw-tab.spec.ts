@@ -367,11 +367,13 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     await page.evaluate(p => (window as any)._drawOpen(p), a);
     await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-rect']);
     await addEl(page, 'alpha-new');
+    // The status already read "saved" from opening, so wait on the file itself.
+    await expect.poll(() => diskIds(a), { timeout: 15_000 }).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     await saved();
-    expect(await diskIds(a)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     await page.evaluate(p => (window as any)._drawOpen(p), b);
     await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond']);
     await addEl(page, 'beta-new');
+    await expect.poll(() => diskIds(b), { timeout: 15_000 }).toEqual(['beta-diamond', 'beta-new']);
     await saved();
     const aBytes = await readFile(a, 'utf8');
     let bBytes = await readFile(b, 'utf8');
