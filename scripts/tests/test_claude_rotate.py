@@ -72,5 +72,21 @@ class Policy(unittest.TestCase):
         with redirect_stdout(io.StringIO()): cr.cmd_statusline()
         self.assertNotIn("ethan@x.com", cr.load(cr.ACCOUNTS, {"accounts": {}})["accounts"])
 
+    def test_live_trigger_fires_once_past_threshold(self):
+        calls = []
+        real = cr.subprocess.Popen
+        cr.subprocess.Popen = lambda *a, **k: calls.append(a)
+        try:
+            for f in ("last-trigger",):
+                try: os.remove(os.path.join(cr.DIR, f))
+                except OSError: pass
+            self.assertFalse(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 96}))
+            self.assertTrue(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 97.5}))
+            self.assertFalse(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 99}))
+            self.assertEqual(len(calls), 1)
+            self.assertIn("tick", calls[0][0])
+        finally:
+            cr.subprocess.Popen = real
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

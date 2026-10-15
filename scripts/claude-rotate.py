@@ -141,6 +141,28 @@ def record(email, five=None, five_reset=None, week=None, week_reset=None, source
         save(ACCOUNTS, data)
 
 
+def trigger_if_exhausted(email, five, week):
+    """Start a detached tick as soon as a live reading crosses the threshold.
+
+    The fleet can spend 1% of a week in a few minutes, so waiting for the
+    5-minute schedule overshoots. At most one trigger per 90 s; the switch
+    lock stops two switches running at once."""
+    used = max(float(five.get("used_percentage") or 0), float(week.get("used_percentage") or 0))
+    if SWITCH_AT - used >= MIN_HEADROOM:
+        return False
+    stamp = os.path.join(DIR, "last-trigger")
+    try:
+        if time.time() - os.path.getmtime(stamp) < 90:
+            return False
+    except OSError:
+        pass
+    open(stamp, "w").close()
+    log("claude_rotate_live_trigger", current=email, used=used)
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "tick"], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return True
+
+
 def cmd_statusline():
     try:
         payload = json.load(sys.stdin)
@@ -164,6 +186,7 @@ def cmd_statusline():
                        five.get("used_percentage"), iso(five["resets_at"]) if five.get("resets_at") else None,
                        week.get("used_percentage"), iso(week["resets_at"]) if week.get("resets_at") else None)
                 open(stamp, "w").close()
+                trigger_if_exhausted(email, five, week)
             except Exception as e:  # a status line must never fail the CLI
                 log("claude_rotate_record_failed", error=str(e)[:200])
     name = (email or "?").split("@")[-1].split(".")[0]
@@ -376,7 +399,7 @@ def _switch(target, reason):
         proc = subprocess.Popen(["script", "-q", out_path, CLAUDE, "auth", "login", "--email", target],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 env=dict(os.environ, BROWSER=opener))
-        steps, tab, state, link_used = [], None, None, False
+        steps, tab, state, link_used, blank_since = [], None, None, False, None
         try:
             deadline = started + SWITCH_TIMEOUT_S
             while time.time() < deadline:
@@ -391,8 +414,20 @@ def _switch(target, reason):
                     if tab is None:
                         continue
                     steps.append("tab")
+                    # A tab opened by `open -na` can list the URL yet sit on
+                    # about:blank; navigating it explicitly always loads.
+                    cdp("nav", tab, open(url_file).read(), check=False)
                 text = page_text(tab)
                 trace(target, tab, text)
+                if not text.strip():
+                    blank_since = blank_since or time.time()
+                    if time.time() - blank_since > 25 and steps.count("reload") < 3:
+                        # A tab opened by `open -na` can sit on about:blank.
+                        cdp("nav", tab, open(url_file).read(), check=False)
+                        steps.append("reload")
+                        blank_since = None
+                    continue
+                blank_since = None
                 if re.search(r"Authorize", text) and "Logged in as" in text:
                     if ("Logged in as " + target) in text:
                         if click_text(tab, r"^Authorize$"):
