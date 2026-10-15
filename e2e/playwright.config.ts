@@ -16,6 +16,23 @@ import { reapStaleTmp } from './tmp-reap';
 const SHARD_PLAN: { current: number; total: number; projects: Record<string, string[]> } | null =
   process.env.AMUX_E2E_PLAN ? JSON.parse(fs.readFileSync(process.env.AMUX_E2E_PLAN, 'utf8')) : null;
 
+// PULL REQUESTS ONLY: scripts/ci-affected.mjs selects the spec files a change
+// can affect. AMUX_E2E_SPECS (JSON list, relative to e2e/) scopes desktop and
+// mobile; AMUX_E2E_IOS_SPECS scopes ios-safari. Unset or empty means every
+// spec, which is every push to main and every local run. The same variables
+// reach the shard planner's --list and the e2e verdict's expected population,
+// so planning, execution and the "every planned test ran" check agree on one
+// selection, and the banner below names it on every run.
+const parseSpecList = (v: string | undefined): string[] | null => (v && v.trim() ? JSON.parse(v) : null);
+const SPEC_SELECTION: Record<string, string[] | null> = {
+  desktop: parseSpecList(process.env.AMUX_E2E_SPECS),
+  mobile: parseSpecList(process.env.AMUX_E2E_SPECS),
+  'ios-safari': parseSpecList(process.env.AMUX_E2E_IOS_SPECS),
+};
+const fileMatchers = (files: string[]): RegExp[] =>
+  files.map((f) => new RegExp('^' + path.join(__dirname, f).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'))
+    .concat(files.length ? [] : [/^$/]);
+
 // ONE SERVER AND ONE AMUX_HOME PER PROJECT — not one shared by all of them
 // (AF-46, measured 2026-08-13).
 //
@@ -127,10 +144,13 @@ const selected: string[] = (() => {
 
 for (const t of TARGETS) {
   const scoped = (t as { testMatch?: unknown }).testMatch;
+  const prSelection = SPEC_SELECTION[t.name];
   const running = selected.length === 0 || selected.includes(t.name);
   const what = scoped
     ? `SCOPED to ${String(scoped)} — it does NOT run the full suite`
-    : 'full suite';
+    : prSelection
+      ? `SCOPED by the PR selection (scripts/ci-affected.mjs) to ${prSelection.length} spec file(s); it does NOT run the full suite, which runs on every push to main`
+      : 'full suite';
   console.log(
     running
       ? `[e2e] target ${t.name}: ${what}.`
@@ -215,10 +235,13 @@ export default defineConfig({
   projects: TARGETS.map((t) => ({
     // A duration-balanced shard plan (scripts/e2e-plan.mjs) gives each project
     // the exact files this shard runs; a project with none matches nothing.
+    // The plan is computed from a --list taken under the same PR selection,
+    // so when both are present the plan is already inside the selection.
     ...(SHARD_PLAN
-      ? { testMatch: (SHARD_PLAN.projects[t.name] || []).map((f: string) => new RegExp('^' + path.join(__dirname, f).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'))
-          .concat(SHARD_PLAN.projects[t.name]?.length ? [] : [/^$/]) }
-      : {}),
+      ? { testMatch: fileMatchers(SHARD_PLAN.projects[t.name] || []) }
+      : SPEC_SELECTION[t.name]
+        ? { testMatch: fileMatchers(SPEC_SELECTION[t.name] as string[]) }
+        : {}),
     name: t.name,
     use: {
       ...t.use,

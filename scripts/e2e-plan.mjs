@@ -32,7 +32,13 @@ export function plan(unitCounts, durations, total) {
   const shards = Array.from({ length: total }, () => ({ seconds: 0, units: [] }));
   for (const [key, secs] of items) {
     let best = 0;
-    for (let i = 1; i < total; i++) if (shards[i].seconds < shards[best].seconds) best = i;
+    // Ties go to the shard with fewer units, so a PR plan of a few specs never
+    // leaves a shard empty while another holds two zero-second units (an empty
+    // shard has no population and fails the evidence check by design).
+    for (let i = 1; i < total; i++) {
+      const a = shards[i], b = shards[best];
+      if (a.seconds < b.seconds || (a.seconds === b.seconds && a.units.length < b.units.length)) best = i;
+    }
     shards[best].seconds += secs; shards[best].units.push(key);
   }
   return shards;

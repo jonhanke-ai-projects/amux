@@ -24,3 +24,11 @@ test('the plan is deterministic and balanced', () => {
   const secs = a.map(s => s.seconds), avg = secs.reduce((x, y) => x + y) / secs.length;
   assert.ok(Math.max(...secs) - avg <= 100, `slowest ${Math.max(...secs)} vs average ${avg}`);
 });
+
+// A PR plan can be a handful of units; equal seconds must still spread them,
+// because an empty shard has no population and fails the evidence check.
+test('ties go to the shard with fewer units, so no shard is left empty', () => {
+  const counts = new Map([['desktop|x.spec.ts', 1], ['mobile|x.spec.ts', 1], ['desktop|y.spec.ts', 1]]);
+  const shards = plan(counts, { 'desktop|x.spec.ts': 0, 'mobile|x.spec.ts': 0, 'desktop|y.spec.ts': 0 }, 3);
+  assert.deepEqual(shards.map(s => s.units.length), [1, 1, 1]);
+});
