@@ -18,7 +18,7 @@ todo.
 | 5 | Safe lifecycle in shadow mode, dunning, cancel, deletion, abuse, disputes | done except abuse isolation (M17) | 17 lifecycle tests, every one of 11 safety-rule mutations reddens a named test; account deletion with retried steps; dispute evidence |
 | 6 | Invites through cloud.amux.io; add to tailnet | done | door redeems invites against a real amux-server; `/api/tailnet/*`; tailnet-only switch refused without a tailnet |
 | 7 | iOS: Sign in with Apple and web sign-in | done, not yet on a device | app builds for the simulator; control-plane Apple verification tested with generated keys; no-purchase string scan; device test needs the Apple capability (P3) |
-| 8 | Journey every 6 hours, nightly capability suite, weekly report | journey scheduled and passing; capability checks partial | `amux-synthetic` timer on the control plane, every 6 hours and on every deploy. Each run records `capability.run`: T-PROV-1, T-SSO-1 (cookie scope, forged token) and the door locks pass; 9 checks report not run with what each needs (Stripe test key, Apple, test inbox, model and CLI test accounts, test tailnet). Checkout is still the fake one |
+| 8 | Journey every 6 hours, nightly capability suite, weekly report | journey on real Stripe test checkout, passing | Every 6 hours and on deploy: T-PAY-1, T-DUN-1 (Stripe half), T-PROV-1, T-SSO-1, door locks; last run 8 passed, paid to ready 145 s. Not run yet: EU tax display, webhook replay, model and CLI sign-ins, email, tailnet, team invites |
 | - | Portability: amux.yaml, export/import, `amux cloud move/pull/apply/login` | done | export from one real amux-server and import into another: every kind, idempotent re-import, schedules disabled, workers not started, secret-shaped values refused (5 tests) |
 
 ## Real infrastructure runs (2026-10-14)
@@ -46,6 +46,8 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | O3 resolved by count (2026-10-15) | Read-only against the live Stripe account: no active, trialing or past-due subscription on either amux Cloud price (one canceled annual) | No email to send; the draft is kept in case someone subscribes before launch |
 
+| Stripe test mode and Apple key (2026-10-15) | The owner added a test key and the Apple key. Found on the way: the key line had no trailing newline, so the next append glued onto it; a test key would have reported payments live and opened /start to the public (card 4242 provisions real servers); the first Stripe deploy stopped silently before restarting the service; the Apple PEM did not survive systemd's environment file | Appends check for a newline; payments has a third state, test, which keeps checkout admin-only; optional deploy lines cannot abort the deploy; the Apple key travels base64. Proven: a journey paid with a Stripe test card, Stripe's webhooks arrived, deletion cancelled the subscription in Stripe; T-DUN-1's Stripe half (failed charge seen as past_due with its start time, fixed card back to active); Apple answered `invalid_grant` to a bogus code signed with our key, so key, Key ID, team and bundle are accepted |
+
 ## Where the build departed from the plan, and why
 
 | Plan said | Built | Why |
@@ -59,5 +61,4 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | Ask | Why it blocks | Unblocks |
 |---|---|---|
-| A Stripe test-mode secret key in `~/.amux/server.env` as `STRIPE_TEST_SECRET_KEY` | Checkout, webhook and dunning tests against real Stripe test mode | The key present. GKE holds only live keys for Mixpeek, Inc.'s account (`mixpeek-engine-secrets`, `mixpeek-ops-secrets`), which would charge real cards; the test-mode key is in that account's dashboard, and no browser session here is signed in to Stripe |
-| Sign in with Apple enabled on the App ID, plus a Services ID and a Sign in with Apple key (P3) | The iOS sign-in on a device, and token revocation on deletion | The capability on, and the key in `server.env` as `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`. Tried 2026-10-14: Chrome lands on Apple's sign-in page and no profile holds an Apple login |
+| Sign in with Apple on a real iPhone (T-ACC-3, iOS half) | The control plane side is proven; the app's native sheet only runs on a device signed into an Apple ID | A device run from Xcode, or a TestFlight build |
