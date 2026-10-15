@@ -11575,21 +11575,56 @@ async function _scopeEditSave() {
   }
 }
 
-// Board automation is configuration, so expose the runtime's actual switches
-// beside gates/status availability instead of scattering one in a card menu
-// and hiding the other two as environment-variable trivia. Each switch writes
-// the worker layer; Inherit removes that override and immediately re-resolves
-// global -> group -> worker precedence on the server.
-const _WORKER_BOARD_CONFIGS = [
-  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own',
-    label: 'Backlog → To Do', note: 'Pull the oldest eligible backlog card when To Do is empty. On by default; parked and human-owned cards stay put.' },
-  { field: 'board_auto_pickup', value: 'auto_pickup', own: 'auto_pickup_own',
-    label: 'To Do → In Progress', note: 'Claim the next eligible To Do card when the worker is idle.' },
-  { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
-    label: 'Continue non-terminal work', note: 'Re-check actionable blocked work instead of stopping early.' },
-  { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
-    label: 'Pickup / continue master', note: 'Master switch for To Do pickup and non-terminal continuation.' },
+// What each switch really does, audited against the server 2026-10-15. The
+// board can only type into a worker when "Board steers this worker" (force
+// adherence) is on, and the drive skips a worker entirely when pickup is off,
+// so Continue and Backlog refill are children of both. The old separate
+// "Pickup / continue master" (CC_STANDING_ORDERS) is no longer shown: turning
+// a child on turns it on server-side. `value` is the worker's own setting;
+// `active` says whether it takes effect, and a row that is set but blocked by
+// its parent says so instead of looking like it works.
+const _BOARD_SWITCHES = [
+  { field: 'board_decompose', value: 'board_decompose', own: null, group: 'Your messages',
+    label: 'Plan my messages onto the board',
+    note: 'Each message you send this worker is also turned into board cards in the background. The message itself still reaches the worker right away.' },
+  { field: 'board_force_adherence', value: 'board_force_adherence', own: null, group: 'The board and this worker',
+    label: 'Board steers this worker',
+    note: 'Lets the board type into this worker: start cards, nudge and remind it. With planning on, a task-like message is held until it becomes cards, and the worker gets the cards instead. Off: the board only keeps records.' },
+  { field: 'board_auto_pickup', value: 'auto_pickup_raw', active: 'auto_pickup', own: 'auto_pickup_own', parents: ['board_force_adherence'],
+    label: 'Start To Do cards when idle',
+    note: 'When the worker goes idle it claims its next To Do card and starts on it.' },
+  { field: 'board_auto_continue', value: 'auto_continue_raw', active: 'auto_continue', own: 'auto_continue_own', parents: ['board_force_adherence', 'board_auto_pickup'],
+    label: 'Keep going on unfinished cards',
+    note: 'When nothing is ready to start, an idle worker is nudged to finish its blocked or in-progress cards.' },
+  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own', parents: ['board_force_adherence', 'board_auto_pickup'],
+    label: 'Refill To Do from Backlog',
+    note: 'When To Do is empty, the oldest Backlog card this worker can do moves into To Do, so it is started next.' },
 ];
+
+// Own setting, effective state and the reason a set switch is not in effect,
+// computed once for every surface that shows these switches.
+function _boardSwitchStates(s, pending) {
+  pending = pending || {};
+  const iso = !!(s && s.isolated);
+  const own = (c) => c.field in pending ? pending[c.field]
+    : (s[c.value] === undefined && c.active ? s[c.active] === true : s[c.value] === true);
+  const out = {};
+  for (const c of _BOARD_SWITCHES) {
+    const parentsOn = (c.parents || []).every(p => out[p] && out[p].effective);
+    const selfOn = own(c) && (!c.active || c.field in pending || s[c.active] === true || s[c.active] === undefined);
+    out[c.field] = { own: own(c), effective: !iso && selfOn && parentsOn };
+  }
+  const labelOf = (f) => (_BOARD_SWITCHES.find(x => x.field === f) || {}).label || f;
+  for (const c of _BOARD_SWITCHES) {
+    const st = out[c.field];
+    const blockedBy = (c.parents || []).find(p => !out[p].effective);
+    st.why = (st.own && !iso && !st.effective)
+      ? (blockedBy ? 'Not active until \u201c' + labelOf(blockedBy) + '\u201d is on.' : 'Not active: turn it off and on again to enable it.')
+      : '';
+  }
+  return out;
+}
+const _WORKER_BOARD_CONFIGS = _BOARD_SWITCHES;
 
 function _workerConfigurationRow(key, label, value, note, controls) {
   return '<div class="worker-config-row" data-worker-config="' + esc(key) + '">'
@@ -11768,14 +11803,17 @@ async function _workerExternalEmailSet(name, value) {
 function _workerBoardConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
   if (s.isolated) return '<p>Isolated mode: direct CLI messaging. Boards and harness automation are disabled.</p>';
+  const states = _boardSwitchStates(s);
   const rows = _WORKER_BOARD_CONFIGS.map(c => {
-    const on = s[c.value] !== false;
-    const own = !!s[c.own];
+    const on = states[c.field].own;
+    const own = !!(c.own && s[c.own]);
     return '<div class="worker-config-row">'
       + '<div class="worker-config-copy"><div class="worker-config-label">'
       + esc(c.label) + (own ? ' <span style="font-size:0.62rem;color:var(--accent);">worker override</span>'
                               : ' <span style="font-size:0.62rem;color:var(--dim);">inherited/default</span>')
-      + '</div><div class="worker-config-note">' + esc(c.note) + '</div></div><div class="worker-config-actions">'
+      + '</div><div class="worker-config-note">' + esc(c.note)
+      + (states[c.field].why ? '<span class="pbc-why" style="display:block;">' + esc(states[c.field].why) + '</span>' : '')
+      + '</div></div><div class="worker-config-actions">'
       + '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
       + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
       + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
@@ -11786,7 +11824,7 @@ function _workerBoardConfigurationsHTML(name) {
       + '</div></div>';
   }).join('');
   return '<div class="worker-config-grid worker-config-grid-board">'
-    + _workerConfigurationSection('task-lifecycle', 'Task lifecycle', 'Controls automatic backlog → To Do → In Progress and continuation until terminal. Status availability and Board gates below define transition requirements.', [rows])
+    + _workerConfigurationSection('task-lifecycle', 'Board and this worker', 'The same switches as the worker\u2019s Board tab. A switch that is on but held back by the one above it says so. Status availability and Board gates below define transition requirements.', [rows])
     + '</div>';
 }
 
@@ -13456,20 +13494,7 @@ function renderPeekIssues() {
 // configurations should be toggles on the worker details board tab contents").
 // Renders both the message-routing policy (decompose, force adherence) and the
 // task lifecycle automation (_WORKER_BOARD_CONFIGS) as toggle rows.
-const _PEEK_BOARD_ALL_CONFIGS = [
-  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own',
-    label: 'Auto-drain backlog', note: 'Pull the oldest eligible backlog card when To Do is empty.' },
-  { field: 'board_auto_pickup', value: 'auto_pickup', own: 'auto_pickup_own',
-    label: 'Auto-pickup', note: 'Claim the next To Do card when idle.' },
-  { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
-    label: 'Continue non-terminal', note: 'Re-check actionable blocked work.' },
-  { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
-    label: 'Pickup / continue master', note: 'Master switch for pickup and continuation.' },
-  { field: 'board_decompose', value: 'board_decompose', own: null,
-    label: 'Decompose onto board', note: 'Messages are planned onto the board in the background.' },
-  { field: 'board_force_adherence', value: 'board_force_adherence', own: null,
-    label: 'Force board adherence', note: 'Board drives this worker; messages become cards.' },
-];
+const _PEEK_BOARD_ALL_CONFIGS = _BOARD_SWITCHES;
 // A toggle being saved keeps the value the owner just set. Every board refresh
 // re-ran this render from `sessions`, which still held the OLD value until the
 // save and the session refetch came back, so an unchecked box flipped back
@@ -13488,22 +13513,22 @@ function _peekBoardPolicySync() {
   if (iso) {
     h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
   }
+  const states = _boardSwitchStates(s, _pbcPending);
+  let group = '';
   for (const c of _PEEK_BOARD_ALL_CONFIGS) {
-    const on = !iso && (c.field in _pbcPending ? _pbcPending[c.field] : s[c.value] !== false);
-    const own = c.own ? !!s[c.own] : false;
+    if (c.group && c.group !== group) { group = c.group; h += '<div class="pbc-group">' + esc(group) + '</div>'; }
+    const on = !iso && states[c.field].own;
+    const isOwn = c.own ? !!s[c.own] : false;
     const dis = iso ? ' disabled' : '';
-    // Checkbox FIRST, beside its own label (Ethan, 2026-10-04: "when I
-    // uncheck these they revert back"). It sat at the far right of its half
-    // of the two-column panel, which on a wide screen is directly left of the
-    // NEXT row's label: the box beside "Auto-pickup" was Auto-drain's, so the
-    // click changed a different setting and the one he meant never moved.
-    h += '<label class="pbc-row' + (iso ? ' pbc-disabled' : '') + '" data-field="' + esc(c.field) + '">'
+    const why = states[c.field].why;
+    h += '<label class="pbc-row' + (c.parents ? ' pbc-child' : '') + (iso ? ' pbc-disabled' : '') + (why ? ' pbc-blocked' : '') + '" data-field="' + esc(c.field) + '">'
       + '<input type="checkbox"' + (on ? ' checked' : '') + dis
       + ' onchange="togglePeekBoardPolicy(\'' + escJs(c.field) + '\',this.checked)">'
-      + '<span class="pbc-label">' + esc(c.label)
-      + (own ? ' <span class="pbc-own">override</span>' : '')
-      + '</span>'
-      + '</label>';
+      + '<span class="pbc-text"><span class="pbc-label">' + esc(c.label)
+      + (isOwn ? ' <span class="pbc-own" title="Set on this worker, overriding its group or global setting">override</span>' : '')
+      + '</span><span class="pbc-help">' + esc(c.note) + '</span>'
+      + (why ? '<span class="pbc-why">' + esc(why) + '</span>' : '')
+      + '</span></label>';
   }
   // Rebuild only when something changed: the panel was replaced on every board
   // refresh, several times a second, so a click could land on a box that was
@@ -13527,7 +13552,7 @@ async function togglePeekBoardPolicy(field, on) {
       // still overwrites this with the server's effective value.
       const c = _PEEK_BOARD_ALL_CONFIGS.find(x => x.field === field);
       const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
-      if (c && s) { s[c.value] = !!on; if (c.own) s[c.own] = true; }
+      if (c && s) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
     }
     await fetchSessions().catch(() => {});
   } finally {
@@ -14279,7 +14304,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1558';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1561';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}

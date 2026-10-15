@@ -638,8 +638,8 @@ fn all_worker_backlog_drain_is_a_persistent_settings_control() {
     }
     for needle in [
         "board-drain-default-checkbox",
-        "Auto-drain backlog for all workers",
-        "Default ON: when To Do is empty",
+        "Refill To Do from Backlog, all workers",
+        "It only takes effect on workers whose",
     ] {
         assert!(html.contains(needle), "worker settings lost `{needle}`");
     }
@@ -1317,7 +1317,7 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "Runtime & model",
         "Permissions & communication",
         "Display & advanced",
-        "Task lifecycle",
+        "Board and this worker",
         "_workerConfigurationRow('name'",
         "_workerConfigurationRow('provider'",
         "_workerConfigurationRow('model'",
@@ -1328,11 +1328,11 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "_scopeEditOpen(\\'",
         "skin: 'JSON object",
         "connectors: 'JSON object",
-        "Backlog → To Do",
-        "To Do → In Progress",
-        "Continue non-terminal work",
-        "Pickup / continue master",
-        "On by default; parked and human-owned cards stay put",
+        "Refill To Do from Backlog",
+        "Start To Do cards when idle",
+        "Keep going on unfinished cards",
+        "Board steers this worker",
+        "Plan my messages onto the board",
         "Status availability and Board gates below define transition requirements",
         "external_email_allowed",
         "Send external email without approval",
@@ -1343,7 +1343,8 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "auto_drain_backlog",
         "board_auto_pickup",
         "board_auto_continue",
-        "board_standing_orders",
+        "board_decompose",
+        "board_force_adherence",
     ] {
         assert!(
             app.contains(&format!("field: '{field}'")),
