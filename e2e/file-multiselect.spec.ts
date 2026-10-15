@@ -21,7 +21,8 @@ test('click, Cmd-click, Shift-click and Cmd+A select; Delete removes exactly the
     await page.evaluate((d) => (window as any).loadFiles(d), dir);
     const row = (n: string) => page.locator(`#files-body [data-path$="/${n}"]`);
     await row('a.txt').waitFor();
-    const sel = () => page.evaluate(() => [...(window as any)._fsel.paths].map((p: string) => p.split('/').pop()).sort());
+    // _fsel is a top-level const in app.js, not a window property.
+    const sel = () => page.evaluate(() => [...(globalThis as any).eval('_fsel').paths].map((p: string) => p.split('/').pop()).sort());
     const bar = page.locator('#fsel-bar');
     const mod = browserName === 'webkit' ? 'Meta' : 'ControlOrMeta';
 
