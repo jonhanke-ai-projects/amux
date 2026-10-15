@@ -49,6 +49,16 @@ async function fakeMessagesApi() {
 
 const PROMPT = '# Amux Workstream Reconstruction & Resumption\n\nAnalyze my complete Amux message history and reconstruct all the workstreams.\n\n## Final instruction\n\nStart with a **"Where I Left Off" dashboard**.\n';
 
+// The MDAI list is a directory view like Files: open the node's folder, then
+// open the node the way Files does (tap on touch, double-click with a mouse).
+async function openNodeFromList(page: Page, folder = 'team') {
+  await page.locator('#mdai-fe-body .fe-row.fe-dir', { hasText: folder }).click();
+  await expect(page.locator('#mdai-crumbs')).toContainText(folder);
+  const row = page.locator('#mdai-fe-body .fe-row:not(.fe-dir)');
+  await expect(row).toHaveCount(1);
+  if (await page.evaluate(() => (window as any)._feTouchDevice())) await row.click(); else await row.dblclick();
+  await expect(page.locator('#mdai-overlay')).toHaveClass(/active/);
+}
 const tab = (page: Page, t: string) => page.locator(`#mdai-overlay .mdai-tab[data-tab=${t}]`).click();
 // An unchanged node is served from its cache with no model call, which is the
 // engine working. A run that must reach the model changes the instruction
@@ -128,9 +138,12 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     // ---- Reload: every field reads back into its control ---------------------
     await page.reload();
     await page.evaluate(() => (window as any).switchView('mdai'));
-    await expect(page.locator('.mdai-tr[data-path]')).toHaveCount(1);
-    await expect(page.locator('.mdai-tr[data-path]')).toContainText('Where I left off');
-    await page.locator('.mdai-tr[data-path]').click();
+    // The list shows the folder, and inside it the node file, with the same
+    // columns as Files.
+    await expect(page.locator('#mdai-fe-body .fe-row.fe-dir', { hasText: 'team' })).toHaveCount(1);
+    await expect(page.locator('#mdai-view .fe-col-headers')).toContainText('Modified');
+    await openNodeFromList(page);
+    await expect(page.locator('#mdai-title')).toHaveText('Workstreams.mdai');
     await tab(page, 'settings');
     await expect(page.locator('#mdai-set-title')).toHaveValue('Where I left off');
     await expect(page.locator('#mdai-set-model')).toHaveValue('__custom');
@@ -194,7 +207,7 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await expect(page.locator('#mdai-body-ta')).toHaveValue(await fileText(file));
     await page.reload();
     await page.evaluate(() => (window as any).switchView('mdai'));
-    await page.locator('.mdai-tr[data-path]').click();
+    await openNodeFromList(page);
     // refresh: open now runs on open; let that first run land.
     await expect.poll(() => api.prompts.length, { timeout: 15_000 }).toBe(1);
     await expect(page.locator('#mdai-runbanner.mdai-runbanner')).toHaveCount(0, { timeout: 20_000 });
@@ -240,8 +253,7 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await expect(page.locator('#mdai-runbanner.mdai-runbanner')).toBeVisible();
     await page.reload();
     await page.evaluate(() => (window as any).switchView('mdai'));
-    await expect(page.locator('.mdai-tr[data-path]')).toContainText('Running');
-    await page.locator('.mdai-tr[data-path]').click();
+    await openNodeFromList(page);
     await expect(page.locator('#mdai-runbanner.mdai-runbanner')).toBeVisible();
     await expect(page.locator('#mdai-runbanner.mdai-runbanner')).toHaveCount(0, { timeout: 20_000 });
     await tab(page, 'runs');
