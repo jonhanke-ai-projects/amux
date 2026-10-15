@@ -100,11 +100,54 @@ $HOST {
 }
 CADDY
 ufw allow 22/tcp >/dev/null; ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; ufw --force enable >/dev/null
+# The synthetic customer (plan section 12): every 6 hours and after every deploy, a real
+# browser pays, waits for its server, enters through the door and deletes itself. Node and
+# Chromium are installed once; synthetic.mjs resolves playwright from /opt/amux/node_modules.
+# Ubuntu 24.04 ships Node 18 and Playwright needs 20 or newer (first scheduled run, 2026-10-15).
+if [[ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -lt 20 ]]; then
+  apt-get remove -y -qq nodejs npm >/dev/null 2>&1 || true
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+  apt-get install -y -qq nodejs >/dev/null
+fi
+# Checked on the browser, not on node_modules: a failed first install leaves node_modules behind.
+if ! ls /opt/amux/pw/chromium* >/dev/null 2>&1; then
+  (cd /opt/amux && npm install -s --no-audit --no-fund playwright@1 >/dev/null)
+  PLAYWRIGHT_BROWSERS_PATH=/opt/amux/pw /opt/amux/node_modules/.bin/playwright install --with-deps chromium >/dev/null
+fi
+echo "synthetic runtime: node $(node -v), $(ls -d /opt/amux/pw/chromium* | head -1)"
+install -d -o amux-control -g amux-control /var/lib/amux-control/synthetic
+cat > /etc/systemd/system/amux-synthetic.service <<UNIT
+[Unit]
+Description=amux Cloud synthetic customer (pays, waits for a server, enters, deletes itself)
+After=amux-control.service
+[Service]
+Type=oneshot
+User=amux-control
+EnvironmentFile=/etc/amux-control.env
+Environment=CONTROL_URL=https://$HOST PLAYWRIGHT_BROWSERS_PATH=/opt/amux/pw
+WorkingDirectory=/var/lib/amux-control/synthetic
+ExecStart=/usr/bin/node /opt/amux/cloud/control/synthetic.mjs
+TimeoutStartSec=25min
+UNIT
+cat > /etc/systemd/system/amux-synthetic.timer <<UNIT
+[Unit]
+Description=amux Cloud synthetic customer every 6 hours
+[Timer]
+OnCalendar=00/6:17
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
 systemctl daemon-reload
 systemctl enable amux-control >/dev/null 2>&1
 systemctl restart amux-control
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
+systemctl enable --now amux-synthetic.timer >/dev/null 2>&1
 REMOTE
+# Every deploy runs the journey once (plan section 12); its result lands in /api/admin/synthetic.
+for _ in $(seq 1 60); do curl -fsS "https://$HOST/health" >/dev/null 2>&1 && break; sleep 5; done
+"${SSH[@]}" systemctl start --no-block amux-synthetic.service
+log "synthetic customer started (journalctl -u amux-synthetic on the control plane)"
 for _ in $(seq 1 60); do curl -fsS "https://$HOST/health" >/dev/null 2>&1 && break; sleep 5; done
 log "health: $(curl -fsS "https://$HOST/health" || echo UNREACHABLE)"
 log "admin: https://$HOST/admin (token in ~/.amux/cloud/admin-token)"

@@ -18,7 +18,7 @@ todo.
 | 5 | Safe lifecycle in shadow mode, dunning, cancel, deletion, abuse, disputes | done except abuse isolation (M17) | 17 lifecycle tests, every one of 11 safety-rule mutations reddens a named test; account deletion with retried steps; dispute evidence |
 | 6 | Invites through cloud.amux.io; add to tailnet | done | door redeems invites against a real amux-server; `/api/tailnet/*`; tailnet-only switch refused without a tailnet |
 | 7 | iOS: Sign in with Apple and web sign-in | done, not yet on a device | app builds for the simulator; control-plane Apple verification tested with generated keys; no-purchase string scan; device test needs the Apple capability (P3) |
-| 8 | Journey every 6 hours, nightly capability suite, weekly report | journey passes on real infrastructure | Control plane deployed at cp-test.amux.io; `synthetic.mjs` runs against it with real Hetzner and Cloudflare and a fake checkout; `report.py` says "not measured" instead of zero |
+| 8 | Journey every 6 hours, nightly capability suite, weekly report | journey scheduled and passing; capability suite todo | `deploy_control.sh` installs Node 22 and Chromium on the control plane and an `amux-synthetic` timer (every 6 hours) and runs it on every deploy; first scheduled run passed all five steps in 2 min 4 s and recorded `synthetic.run ok`. Checkout is still the fake one until a Stripe test key exists |
 | - | Portability: amux.yaml, export/import, `amux cloud move/pull/apply/login` | done | export from one real amux-server and import into another: every kind, idempotent re-import, schedules disabled, workers not started, secret-shaped values refused (5 tests) |
 
 ## Real infrastructure runs (2026-10-14)
