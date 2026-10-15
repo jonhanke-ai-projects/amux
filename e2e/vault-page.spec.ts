@@ -65,7 +65,11 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
 
     // Reached the way an owner would: the Vault tab in the main tab bar.
     await page.locator('#tab-vault').click();
-    const vault = page.locator('#vault-overlay');
+    // A tab view like the others, not a dialog over the page.
+    const vault = page.locator('#vault-view');
+    await expect(vault).toBeVisible();
+    await expect(page.locator('#tab-vault')).toHaveClass(/active/);
+    await expect(page.locator('#vault-view [role=dialog], #vault-view .modal')).toHaveCount(0);
     await expect(vault.getByRole('heading', { name: 'Vault' })).toBeVisible();
     await expect(vault.getByRole('tab', { name: 'Secrets' })).toHaveAttribute('aria-selected', 'true');
     await expect(vault.locator('.vault-banner')).toContainText('Secure by design');
@@ -172,10 +176,10 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
 
     // Layout: no horizontal overflow, phone-size controls, both themes.
     const fit = await page.evaluate(() => {
-      const body = document.querySelector('#vault-overlay .modal-body') as HTMLElement;
-      const modal = document.querySelector('#vault-overlay .modal') as HTMLElement;
-      const r = modal.getBoundingClientRect();
-      return { over: body.scrollWidth - body.clientWidth, left: r.left, right: r.right, vw: innerWidth, check: (window as any)._uiComponentCheck(document.getElementById('vault-overlay')) };
+      const body = document.querySelector('#vault-view .vault-body') as HTMLElement;
+      const pageEl = document.querySelector('#vault-view .vault-page') as HTMLElement;
+      const r = pageEl.getBoundingClientRect();
+      return { over: Math.max(body.scrollWidth - body.clientWidth, document.documentElement.scrollWidth - innerWidth), left: r.left, right: r.right, vw: innerWidth, check: (window as any)._uiComponentCheck(document.getElementById('vault-view')) };
     });
     expect(fit.over, 'no horizontal scroll in the vault body').toBeLessThanOrEqual(1);
     expect(fit.left).toBeGreaterThanOrEqual(0);
@@ -193,15 +197,21 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await expect(page.locator('#vault-items')).not.toHaveText('Loading…');
 
     // API Keys moved here from Settings (b15e61d9): the tab borrows the
-    // settings section, returns it on close, and can borrow it again.
+    // settings section, returns it when you leave Vault, and can borrow it
+    // again on the next visit.
     for (let pass = 0; pass < 2; pass++) {
       if (pass) await page.locator('#tab-vault').click();
       await vault.getByRole('tab', { name: 'API Keys' }).click();
       await expect(page.locator('#vault-panel-apikeys #settings-anthropic-key')).toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(vault).toHaveCount(0);
+      await page.evaluate(() => (window as any).switchView('sessions'));
+      await expect(vault).toBeHidden();
       await expect(page.locator('#settings-moved-out #settings-apikeys-section')).toHaveCount(1);
     }
+    // The tab is remembered across a reload like every other view.
+    await page.locator('#tab-vault').click();
+    await page.reload();
+    await expect(page.locator('#vault-view')).toBeVisible();
+    await expect(page.locator('#tab-vault')).toHaveClass(/active/);
   } finally {
     await cleanup('remove vault fixtures', removeFixtures, info);
   }

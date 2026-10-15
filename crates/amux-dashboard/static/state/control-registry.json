@@ -3600,6 +3600,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_scopeVaultManage": {
+      "kind": "command._scopeVaultManage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_scratchpadLoad": {
       "kind": "command._scratchpadLoad",
       "feedback_required": true,
@@ -4680,6 +4686,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "closeVault": {
+      "kind": "command.closeVault",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "cmdHistoryAdd": {
       "kind": "command.cmdHistoryAdd",
       "feedback_required": true,
@@ -5090,6 +5102,12 @@
     },
     "openTeamInvite": {
       "kind": "command.openTeamInvite",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "openVault": {
+      "kind": "command.openVault",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
