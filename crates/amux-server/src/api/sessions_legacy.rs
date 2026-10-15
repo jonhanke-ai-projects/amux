@@ -3228,6 +3228,10 @@ fn claude_ai_title(name: &str, report: Option<&Value>) -> Option<String> {
     ai_title_from_file(&path)
 }
 
+fn task_title_is_generated(source: Option<&str>) -> bool {
+    source == Some("generated")
+}
+
 fn resolve_task_name_with(
     board_title: Option<&str>,
     board_fresh: bool,
@@ -5835,6 +5839,16 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             );
             v["task_name"] = json!(tname);
             v["task_source"] = json!(tsrc);
+            // A GENERATED title stands in for Claude Code's own ai-title on a
+            // named worker (session_verbs::spawn_task_title), so it ranks the
+            // same: above the board card. The board card a prompt creates is
+            // titled from the prompt, so ranking it first put the owner's last
+            // message back on the card (long-form-videos, 2026-10-14). A
+            // hand-set summary keeps its old place below the board.
+            if summary_fresh && task_title_is_generated(meta.get("task_summary_source").and_then(|v| v.as_str())) {
+                v["task_name"] = json!(summary);
+                v["task_source"] = json!("generated_title");
+            }
             if let Some(t) = claude_ai_title(&name, signals.reports.get(&name)) {
                 v["task_name"] = json!(t);
                 v["task_source"] = json!("claude_title");
@@ -10169,6 +10183,12 @@ mod discovery_race_tests {
 
 #[cfg(test)]
 mod picker_companion_tests {
+    #[test]
+    fn only_a_generated_summary_outranks_the_board_title() {
+        assert!(super::task_title_is_generated(Some("generated")));
+        assert!(!super::task_title_is_generated(None), "a hand-set summary keeps its place");
+    }
+
     #[test]
     fn claude_code_title_is_the_latest_ai_title_in_the_transcript() {
         let recs = vec![
