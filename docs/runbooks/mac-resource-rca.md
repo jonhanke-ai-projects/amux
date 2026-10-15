@@ -16,6 +16,29 @@ and the escalation. An arm with no time left prints `<arm> skipped: ...
 A tick that skips arms on a loaded machine has still measured and escalated;
 `skipped=none` is the normal reading.
 
+Every tick also checks itself (`check_self_runs`, in the system health
+section). It reads SCHED-465's run rows in `schedule_runs`, its run logs under
+`~/.amux/shell-runs/SCHED-465/`, and the launchd fallback's log, over the last
+24h, and prints one `mac-cleanup: self:` line. Each rule below that fails adds
+a `self ...` constraint, which escalates like any other class:
+
+| Rule | Default | Knob |
+|---|---|---|
+| runs in a row not ok (timed out, killed by a server restart, error) | 2 | `AMUX_CLEANUP_SELF_FAIL_STREAK` |
+| runs not ok in 24h | 4 | `AMUX_CLEANUP_SELF_FAIL_24H` |
+| slowest run over the tick's warning | 480s | `AMUX_CLEANUP_TICK_WARN_S` |
+| runs that skipped arms for lack of time | 3 | `AMUX_CLEANUP_SELF_SKIP_24H` |
+| fires that met a running tick and did no work (recorded ok) | 2 | `AMUX_CLEANUP_SELF_COLLIDE_24H` |
+| times the launchd fallback had to run it | 3 | `AMUX_CLEANUP_SELF_FALLBACK_24H` |
+| SCHED-465 disabled or missing | always | none |
+
+An unreadable history prints `verdict=self_unmeasured` and judges nothing.
+
+The fallback (`scripts/mac-cleanup-fallback.sh`, launchd every 15 minutes) runs
+the tick when its output is over 80 minutes old or unfinished. The window must
+stay longer than the hourly gap: at 45 minutes it ran a duplicate tick before
+most fires, and each scheduled fire then met the lock and did nothing.
+
 ## The system health section
 
 Beside disk and memory, every tick checks the rest of the machine. Each probe

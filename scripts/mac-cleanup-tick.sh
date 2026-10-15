@@ -501,6 +501,19 @@ CRASH_KEEP_DAYS=${AMUX_CLEANUP_CRASH_KEEP_DAYS:-30}
 LAUNCHD_LIST_CMD=${AMUX_CLEANUP_LAUNCHD_LIST_CMD:-launchctl list}
 NET_CMD=${AMUX_CLEANUP_NET_CMD:-net_reading}
 THERMAL_CMD=${AMUX_CLEANUP_THERMAL_CMD:-pmset -g therm}
+# The check reads its OWN record each tick: the scheduler's run rows, the full
+# run logs it keeps, and the launchd fallback's log. A check that only reports
+# the machine says nothing on the day it is the thing that broke (2026-10-14:
+# six runs in a row killed at 600s, and nothing anywhere said so).
+SELF_SCHED_ID=${AMUX_CLEANUP_SELF_SCHED_ID:-SCHED-465}
+SELF_DB=${AMUX_CLEANUP_SELF_DB:-${AMUX_HOME:-$HOME/.amux}/amux.db}
+SELF_RUNS_DIR=${AMUX_CLEANUP_SELF_RUNS_DIR:-${AMUX_HOME:-$HOME/.amux}/shell-runs/$SELF_SCHED_ID}
+SELF_FALLBACK_LOG=${AMUX_CLEANUP_SELF_FALLBACK_LOG:-$HOME/.amux/logs/mac-cleanup-fallback.log}
+SELF_FAIL_STREAK=${AMUX_CLEANUP_SELF_FAIL_STREAK:-2}   # runs in a row not ok
+SELF_FAIL_24H=${AMUX_CLEANUP_SELF_FAIL_24H:-4}         # runs not ok in 24h
+SELF_SKIP_24H=${AMUX_CLEANUP_SELF_SKIP_24H:-3}         # runs that skipped arms for lack of time
+SELF_FALLBACK_24H=${AMUX_CLEANUP_SELF_FALLBACK_24H:-3} # times launchd had to run it instead
+SELF_COLLIDE_24H=${AMUX_CLEANUP_SELF_COLLIDE_24H:-2}   # fires that found another tick running
 
 # ── pure decisions (no side effects, so the tests can exercise them) ──────────
 
@@ -1014,11 +1027,66 @@ check_thermal() {
   else echo "mac-cleanup: thermal: unmeasured"; fi
 }
 
+self_verdict() { HEALTH_VERDICTS=$(printf '%s\nself %s\n' "$HEALTH_VERDICTS" "$1"); }
+
+# Is this check itself working? Run rows (status, cause), run logs (finished,
+# elapsed, skipped arms) and fallback runs over the last 24h, plus whether the
+# schedule is still enabled. Each failing rule adds a "self ..." constraint, so it
+# escalates like any other class, with its own cooldown.
+check_self_runs() {
+  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 n_logs=0 n_unfin=0 n_skip=0 n_coll=0 since fb sum
+  if ! en=$(sqlite3 -readonly -cmd '.timeout 5000' "$SELF_DB" \
+      "SELECT enabled FROM schedules WHERE id='$SELF_SCHED_ID' AND deleted IS NULL" 2>/dev/null); then
+    echo "mac-cleanup: self: run history UNMEASURED ($SELF_DB unreadable), judged nothing about this check (verdict=self_unmeasured)"
+    return 0
+  fi
+  if [ "$en" != 1 ]; then
+    self_verdict "$SELF_SCHED_ID is $([ -z "$en" ] && echo missing || echo disabled): only the 15-minute launchd fallback runs this check now"
+  fi
+  rows=$(sqlite3 -readonly -separator '|' -cmd '.timeout 5000' "$SELF_DB" \
+    "SELECT status, replace(replace(COALESCE(note,''),'|',' '),char(10),' ') FROM schedule_runs WHERE schedule_id='$SELF_SCHED_ID' AND status NOT IN ('running','pending') AND ran_at >= CAST(strftime('%s','now') AS INTEGER) - 86400 ORDER BY ran_at DESC" 2>/dev/null)
+  while IFS='|' read -r st note; do
+    [ -n "$st" ] || continue
+    if [ "$st" = ok ]; then ok=$((ok+1)); instreak=0; continue; fi
+    bad=$((bad+1)); [ "$instreak" = 1 ] && streak=$((streak+1))
+    case "$note" in
+      *"timed out"*) note="killed at the scheduler's time limit" ;;
+      *"server restarted"*) note="killed by an amux server restart" ;;
+      *) note="${st}: ${note:0:60}" ;;
+    esac
+    causes=$(printf '%s\n%s' "$causes" "$note")
+  done <<< "$rows"
+  sum=$(printf '%s\n' "$causes" | grep . | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s%s x%d", s, $0, c; s="; "}')
+  # A log still being written belongs to this run (or a live one): skip the last 10 minutes.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    n_logs=$((n_logs+1))
+    # The scheduler records a fire that met a running tick as ok, and it did no work
+    # (2026-10-15: 5 of 19 "ok" runs, each blocked by a duplicate fallback tick).
+    if grep -aq '^mac-cleanup: previous tick still running' "$f" 2>/dev/null; then n_coll=$((n_coll+1)); continue; fi
+    line=$(grep -a '^mac-cleanup: done ' "$f" 2>/dev/null | tail -1)
+    if [ -z "$line" ]; then n_unfin=$((n_unfin+1)); continue; fi
+    el=${line#*elapsed=}; el=${el%%s *}
+    case "$el" in ''|*[!0-9]*) ;; *) [ "$el" -gt "$slowest" ] && slowest=$el ;; esac
+    case "$line" in *" skipped=none "*) ;; *" skipped="*) n_skip=$((n_skip+1)) ;; esac
+  done < <(find "$SELF_RUNS_DIR" -maxdepth 1 -type f -name '*.log' -mmin -1440 ! -mmin -10 2>/dev/null)
+  since=$(date -v-24H '+%F %T' 2>/dev/null || date -d '24 hours ago' '+%F %T' 2>/dev/null)
+  fb=$(awk -v s="$since" '/so launchd is$/ { if ($2" "$3 >= s) n++ } END { print n+0 }' "$SELF_FALLBACK_LOG" 2>/dev/null); fb=${fb:-0}
+  echo "mac-cleanup: self: $SELF_SCHED_ID last 24h: $((ok+bad)) finished runs, $ok ok, $bad not ok${sum:+ ($sum)}; newest $streak in a row not ok; $n_logs run log(s), $n_unfin killed before the done line, $n_coll found another tick running and did nothing, slowest ${slowest}s (warn ${TICK_WARN_S}s, killed at 600s), $n_skip skipped arms for lack of time; the launchd fallback ran it ${fb}x"
+  [ "$streak" -ge "$SELF_FAIL_STREAK" ] && self_verdict "$streak runs in a row of $SELF_SCHED_ID did not finish ok ($sum)"
+  [ "$bad" -ge "$SELF_FAIL_24H" ] && self_verdict "$bad of $((ok+bad)) runs of $SELF_SCHED_ID in 24h did not finish ok ($sum)"
+  [ "$slowest" -ge "$TICK_WARN_S" ] && self_verdict "the slowest run of $SELF_SCHED_ID in 24h took ${slowest}s, over the ${TICK_WARN_S}s warning (the scheduler kills it at 600s)"
+  [ "$n_skip" -ge "$SELF_SKIP_24H" ] && self_verdict "$n_skip runs of $SELF_SCHED_ID in 24h skipped cleanup arms for lack of time"
+  [ "$n_coll" -ge "$SELF_COLLIDE_24H" ] && self_verdict "$n_coll fires of $SELF_SCHED_ID in 24h found another tick holding the lock and did no work (the scheduler records them as ok)"
+  [ "$fb" -ge "$SELF_FALLBACK_24H" ] && self_verdict "the launchd fallback ran this check ${fb} times in 24h; it runs only when the scheduled run's output is stale or unfinished, so $SELF_SCHED_ID is not finishing on schedule"
+  return 0
+}
+
 system_health() { # <dry:0|1>
   HEALTH_VERDICTS=""; CPU_RESTARTED=0; TEST_ORPHANS_STOPPED=0; CRASH_PRUNED=0
   if [ "$HEALTH_PROBES" = off ]; then echo "mac-cleanup: system health: probes off (AMUX_CLEANUP_HEALTH_PROBES=off)"; return 0; fi
   check_cpu_hogs "$1"; reap_test_orphans "$1"; check_limits; check_crash_reports "$1"
-  check_launchd_failing; check_network; check_thermal
+  check_launchd_failing; check_network; check_thermal; check_self_runs
   HEALTH_VERDICTS=$(printf '%s\n' "$HEALTH_VERDICTS" | grep . || true)
 }
 
