@@ -67,12 +67,12 @@ STK="$(envv STRIPE_TEST_SECRET_KEY)"; WHS=""
 if [[ -n "$STK" ]]; then
   WF="$HOME/.amux/cloud/stripe-test-webhook-secret"
   NEW=$(STRIPE_TEST_SECRET_KEY="$STK" python3 "$HERE/stripe_setup.py" --control "https://$HOST")
-  [[ -n "$NEW" ]] && ( umask 077; printf '%s\n' "$NEW" > "$WF" )
+  if [[ -n "$NEW" ]]; then ( umask 077; printf '%s\n' "$NEW" > "$WF" ); fi
   WHS="$(cat "$WF" 2>/dev/null || true)"
   [[ -n "$WHS" ]] || { log "FATAL: the Stripe test webhook exists but its secret is not in $WF; delete the endpoint in Stripe and rerun"; exit 1; }
 fi
 # Sign in with Apple: the .p8 key file is multi-line, so it travels with escaped newlines.
-APK=""; [[ -s "$HOME/.amux/cloud/apple-signin.p8" ]] && APK="$(awk '{printf "%s\\n", $0}' "$HOME/.amux/cloud/apple-signin.p8")"
+APK=""; if [[ -s "$HOME/.amux/cloud/apple-signin.p8" ]]; then APK="$(awk '{printf "%s\\n", $0}' "$HOME/.amux/cloud/apple-signin.p8")"; fi
 GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=snapshot&label_selector=amux-golden&sort=created:desc' | python3 -c 'import json,sys;i=json.load(sys.stdin)["images"];print(i[0]["id"] if i else "")')}"
 {
   echo "CONTROL_DB=/var/lib/amux-control/control.db"
@@ -86,8 +86,10 @@ GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=sn
   else
     echo "CONTROL_FAKE_BILLING=${CONTROL_FAKE_BILLING:-1}"
   fi
-  for k in APPLE_TEAM_ID APPLE_KEY_ID APPLE_BUNDLE_ID; do v="$(envv $k)"; [[ -n "$v" ]] && echo "$k=$v"; done
-  [[ -n "$APK" ]] && echo "APPLE_PRIVATE_KEY=$APK"
+  # if, not &&: a missing optional value must not be this block's exit status. Under set -e and
+  # pipefail that aborted the first Stripe deploy after writing the env file and before the restart.
+  for k in APPLE_TEAM_ID APPLE_KEY_ID APPLE_BUNDLE_ID; do v="$(envv $k)"; if [[ -n "$v" ]]; then echo "$k=$v"; fi; done
+  if [[ -n "$APK" ]]; then echo "APPLE_PRIVATE_KEY=$APK"; fi
   echo "HCLOUD_TOKEN=$HC"
   echo "CLOUDFLARE_API_TOKEN=$CF"
   echo "CF_ZONE_ID=$ZID"
