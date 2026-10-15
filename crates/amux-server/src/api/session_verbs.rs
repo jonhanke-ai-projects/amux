@@ -7490,11 +7490,12 @@ fn spawn_task_title(session: &str, text: &str) {
     };
     let session = session.to_string();
     let text: String = redact_prompt_secrets(text).chars().take(2000).collect();
-    let previous = load_meta(&session)
-        .get("task_summary")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let meta = load_meta(&session);
+    let previous = current_task_title(
+        meta.get("task_summary").and_then(Value::as_str).unwrap_or(""),
+        meta.get("task_summary_ts").and_then(Value::as_i64).unwrap_or(0),
+        now_i64(),
+    );
     tokio::spawn(async move {
         let started = std::time::Instant::now();
         let model = super::mdai::resolve_model(None);
@@ -7512,13 +7513,31 @@ fn spawn_task_title(session: &str, text: &str) {
                     tracing::info!(session=%session, model_ms=ms, measured=true, n_considered=1,
                         verdict="task_title_generated", "worker card task title generated");
                 }
-                None => tracing::info!(session=%session, model_ms=ms, measured=true, n_considered=1,
-                    verdict="task_title_kept", "follow-up message; card task title unchanged"),
+                None => {
+                    // Same task: keep the title alive, or the card's 24h window
+                    // drops it mid-task and shows the last message again.
+                    update_meta(&session, &[("task_summary_ts", json!(now_i64()))]);
+                    tracing::info!(session=%session, model_ms=ms, measured=true, n_considered=1,
+                        verdict="task_title_kept", "follow-up message; card task title unchanged")
+                }
             },
             Err(error) => tracing::warn!(session=%session, model_ms=ms, %error, measured=false, n_considered=1,
                 verdict="task_title_failed", "could not generate the card task title; the last message shows instead"),
         }
     });
+}
+
+/// The title the model may KEEP: only one the card would still show (the same
+/// 24h rule as `summary_fresh` in sessions_legacy). A stale or hand-set summary
+/// offered as "current" made the model answer KEEP to every new prompt, so the
+/// card never got a title (amux's own meta held one from months earlier;
+/// Ethan, 2026-10-14: "we still dont have the claude task name in the card").
+fn current_task_title(summary: &str, ts: i64, now: i64) -> String {
+    if summary.trim().is_empty() || ts <= 0 || now - ts > 86_400 {
+        String::new()
+    } else {
+        summary.trim().to_string()
+    }
 }
 
 fn task_title_prompt(previous: &str, message: &str) -> String {
@@ -39818,6 +39837,9 @@ mod tests {
         assert_eq!(super::parse_task_title("Same", "Same"), None);
         assert_eq!(super::parse_task_title("", "x"), None);
         assert!(super::task_title_prompt("Old", "do X").contains("\"current_title\":\"Old\""));
+        assert_eq!(super::current_task_title("AMUX-2676 old", 1_786_350_072, 1_792_000_000), "", "a months-old summary is not current");
+        assert_eq!(super::current_task_title("Fresh task", 1_792_000_000 - 600, 1_792_000_000), "Fresh task");
+        assert_eq!(super::current_task_title("Unstamped", 0, 1_792_000_000), "", "an unstamped summary is not current");
     }
 
     #[tokio::test]
