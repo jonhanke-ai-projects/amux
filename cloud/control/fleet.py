@@ -31,7 +31,17 @@ def drill_heartbeat(store, infra, d, body, now=None):
     if body.get("drill_result"):
         return {"result": drill.report(store, infra, d["id"], body["drill_result"], now)}
     src = store.one("SELECT * FROM servers WHERE id=?", d["server_id"])
-    creds = dict(infra.backup_bucket(src["slug"], src["id"]), restic_password=src["restic_password"])
+    if not src or src["status"] != "ready" or not src["backup_bucket"]:
+        # The source was deleted mid-drill. Asking for its credentials re-created the deleted
+        # customer's bucket and minted a token every minute (2026-10-15); end the drill instead.
+        drill.finish(store, infra, d, "cancelled", "the source server is gone or has no backups", now or time.time())
+        return {"stop": True}
+    if d.get("creds"):
+        return {"restore_from": json.loads(d["creds"]), "commands": []}
+    # One read token per drill, never a new bucket; drill.finish revokes it by this name.
+    creds = dict(infra.backup_bucket(src["slug"], src["id"], token_name=f"amux-drill-{d['id']}", create_bucket=False),
+                 restic_password=src["restic_password"])
+    store.run("UPDATE drills SET creds=? WHERE id=?", json.dumps(creds), d["id"])
     return {"restore_from": creds, "commands": []}
 
 

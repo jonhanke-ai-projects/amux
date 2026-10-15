@@ -76,11 +76,16 @@ def finish(store, infra, d, result, detail, now):
         infra.delete_server(d["hetzner_id"])
     except Exception as e:
         detail += f" (drill server cleanup failed: {e}; the orphan report will list it)"
-    store.run("UPDATE drills SET result=?, detail=?, finished_at=? WHERE id=?", result, detail, now, d["id"])
+    try:
+        infra.revoke_tokens(f"amux-drill-{d['id']}")
+    except Exception as e:
+        detail += f" (drill token revocation failed: {e})"
+    store.run("UPDATE drills SET result=?, detail=?, finished_at=?, creds=NULL WHERE id=?", result, detail, now, d["id"])
     srv = store.one("SELECT * FROM servers WHERE id=?", d["server_id"])
     store.event("drill.finished", srv["org_id"] if srv else None, server=d["server_id"], result=result, detail=detail)
-    if result != "pass":
-        prev = store.all("SELECT result FROM drills WHERE server_id=? AND finished_at IS NOT NULL ORDER BY started_at DESC LIMIT 2",
+    if result == "fail":
+        prev = store.all("SELECT result FROM drills WHERE server_id=? AND finished_at IS NOT NULL AND result!='cancelled' "
+                         "ORDER BY started_at DESC LIMIT 2",
                          d["server_id"])
         if len(prev) == 2 and all(p["result"] != "pass" for p in prev):
             store.alert("restore_drill_failed", f"{srv['slug'] if srv else d['server_id']}: two restore drills failed in a row: {detail}")
@@ -92,7 +97,10 @@ def sweep(store, infra, golden_image, control_url, now=None):
     for d in store.all("SELECT * FROM drills WHERE finished_at IS NULL AND started_at<?", now - DRILL_TIMEOUT):
         finish(store, infra, d, "fail", "the drill server did not report within 45 minutes", now)
     started = 0
-    for srv in due(store, now)[:5]:                    # at most five drills an hour across the fleet
+    # At most five drills an hour across the fleet, counted from the table, so the sweep can run
+    # every few minutes and a stuck drill times out close to 45 minutes instead of up to 105.
+    recent = store.one("SELECT COUNT(*) n FROM drills WHERE started_at>?", now - 3600)["n"]
+    for srv in due(store, now)[:max(0, 5 - recent)]:
         start(store, infra, srv, golden_image, control_url, now)
         started += 1
     return started

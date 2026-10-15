@@ -166,3 +166,43 @@ class SyntheticServers(unittest.TestCase):
         err = self.store.one("SELECT error FROM provision_jobs WHERE server_id=?", srv["id"])["error"]
         self.assertIn("not ready within 15 minutes", err)
         self.assertIn("resource_limit_exceeded", err)
+
+
+class DrillCredentials(RestoreDrill):
+    """2026-10-15: every drill heartbeat minted a backup token, and a drill whose source was deleted
+    re-created the deleted customer's bucket each minute."""
+
+    def start_drill(self, at):
+        self.drill.sweep(self.store, self.infra, "golden", "https://cloud.example", now=at)
+        d = self.store.one("SELECT * FROM drills WHERE finished_at IS NULL")
+        return fleet.authenticate(self.store, d["id"], d["fleet_secret"])
+
+    def test_one_token_per_drill_revoked_at_the_end(self):
+        ds = self.start_drill(T0 + 10)
+        for i in range(5):
+            fleet.heartbeat(self.store, self.infra, fleet.authenticate(self.store, ds["id"], ds["fleet_secret"]), {}, now=T0 + 60 * (i + 1))
+        drill_tokens = [t for t in self.infra.tokens if t.startswith("amux-drill-")]
+        self.assertEqual(drill_tokens, [f"amux-drill-{ds['id']}"], "one token, however many heartbeats")
+        good = {"tables": {"board_items": 12, "schedules": 3}, "files_sha256": "abc", "files": 40}
+        fleet.heartbeat(self.store, self.infra, fleet.authenticate(self.store, ds["id"], ds["fleet_secret"]), {"drill_result": good}, now=T0 + 600)
+        self.assertNotIn(f"amux-drill-{ds['id']}", self.infra.tokens)
+        self.assertIsNone(self.store.one("SELECT creds FROM drills WHERE id=?", ds["id"])["creds"], "no secret kept after the drill")
+
+    def test_deleted_source_cancels_the_drill_without_recreating_its_bucket(self):
+        ds = self.start_drill(T0 + 10)
+        self.store.run("UPDATE servers SET status='deleted' WHERE id='srv1'")
+        self.infra.buckets = {}
+        r = fleet.heartbeat(self.store, self.infra, ds, {}, now=T0 + 60)
+        self.assertEqual(r, {"stop": True})
+        self.assertEqual(self.infra.buckets, {}, "the deleted customer's bucket is not re-created")
+        d = self.store.one("SELECT * FROM drills WHERE id=?", ds["id"])
+        self.assertEqual(d["result"], "cancelled")
+        self.assertNotIn(d["hetzner_id"], self.infra.servers)
+
+    def test_sweep_every_few_minutes_still_starts_at_most_five_an_hour(self):
+        for i in range(2, 9):
+            self.store.run("INSERT INTO servers(id,org_id,slug,plan,status,fleet_secret,created_at,backup_bucket,backup_fingerprint) "
+                           "VALUES(?,?,?,?,?,?,?,?,?)", f"srv{i}", "o", f"s{i}", "solo", "ready", "x", T0, f"b{i}", "{}")
+        for k in range(12):                           # an hour of 5-minute sweeps
+            self.drill.sweep(self.store, self.infra, "golden", "x", now=T0 + 10 + 300 * k)
+        self.assertEqual(self.store.one("SELECT COUNT(*) n FROM drills")["n"], 5)

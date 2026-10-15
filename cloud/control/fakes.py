@@ -116,10 +116,12 @@ class FakeInfra:
     def delete_dns(self, record_id):
         self.dns.pop(record_id, None)
 
-    def backup_bucket(self, slug, server_id):
+    def backup_bucket(self, slug, server_id, token_name=None, create_bucket=True):
         b = f"amux-{slug}-{server_id[-6:]}"
         self.buckets = getattr(self, "buckets", {})
-        self.buckets[b] = {"token_scope": b}
+        if create_bucket:
+            self.buckets[b] = {"token_scope": b}
+        self.tokens = getattr(self, "tokens", []) + [token_name or f"amux-backup-{b}"]
         return {"endpoint": "https://fake.r2.example", "bucket": b, "access_key_id": f"ak-{b}",
                 "secret_access_key": f"sk-{b}"}
 
@@ -137,6 +139,11 @@ class FakeInfra:
 
     def unisolate(self, server_id):
         getattr(self, "isolated", {}).pop(server_id, None)
+
+    def revoke_tokens(self, name):
+        before = getattr(self, "tokens", [])
+        self.tokens = [t for t in before if t != name]
+        return len(before) - len(self.tokens)
 
     def delete_bucket(self, bucket):
         getattr(self, "buckets", {}).pop(bucket, None)

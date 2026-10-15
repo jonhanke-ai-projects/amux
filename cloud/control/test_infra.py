@@ -64,6 +64,21 @@ class DeleteBucket(unittest.TestCase):
         self.assertNotIn("amux-purge-b1", [t["name"] for t in cf.tokens])
 
 
+class RevokeTokens(unittest.TestCase):
+    def test_every_page_is_searched(self):
+        pages = {1: [{"id": f"o{i}", "name": "owner-token"} for i in range(50)],
+                 2: [{"id": "d1", "name": "amux-drill-x"}, {"id": "d2", "name": "amux-drill-x"}]}
+        deleted = []
+        def call(url, token, method="GET", body=None, **kw):
+            if method == "DELETE":
+                deleted.append(url.rsplit("/", 1)[1]); return {}
+            page = int(infra.urllib.parse.parse_qs(infra.urllib.parse.urlparse(url).query)["page"][0])
+            return {"result": pages[page], "result_info": {"page": page, "total_pages": 2}}
+        with mock.patch.object(infra, "_call", call):
+            self.assertEqual(infra.Infra("", "tok", "").revoke_tokens("amux-drill-x"), 2)
+        self.assertEqual(deleted, ["d1", "d2"])
+
+
 class S3Signing(unittest.TestCase):
     def test_signature_is_stable_and_scoped(self):
         s3 = infra.S3("acct.r2.cloudflarestorage.com", "KEY", "SECRET")

@@ -873,7 +873,7 @@ def main():
     refund = accounts.provisioning_refund(BILLING)
     loop("provision", 5 if FAKE else 15, lambda: provision.tick(STORE, INFRA, PLANS, golden, PUBLIC, refund=refund))
     loop("lifecycle", 3600, lambda: lifecycle.sweep(STORE, BILLING, INFRA))
-    loop("restore-drill", 3600, lambda: drill.sweep(STORE, INFRA, golden, PUBLIC))
+    loop("restore-drill", 300, lambda: drill.sweep(STORE, INFRA, golden, PUBLIC))
     loop("weekly-report", 3600, weekly_report_tick)
     loop("nudges", 3600, lambda: nudges.sweep(STORE))
     loop("resize", 30, lambda: nudges.resize_tick(STORE, INFRA, PLANS))

@@ -137,7 +137,7 @@ class Infra:
             if e.code != 404:
                 raise
 
-    def backup_bucket(self, slug, server_id):
+    def backup_bucket(self, slug, server_id, token_name=None, create_bucket=True):
         """An R2 bucket for this server alone, and S3 credentials that can touch only that bucket.
 
         Needs CF_ACCOUNT_ID and a control-plane token allowed to create R2 buckets and user API
@@ -146,18 +146,19 @@ class Infra:
         """
         acct = os.environ["CF_ACCOUNT_ID"]
         bucket = f"amux-{slug}-{server_id[-6:]}".lower()
-        try:
-            _call(f"{CF}/accounts/{acct}/r2/buckets", self.cf, "POST", {"name": bucket, "locationHint": "weur"})
-        except InfraError as e:
-            if e.code != 409:
-                raise
+        if create_bucket:
+            try:
+                _call(f"{CF}/accounts/{acct}/r2/buckets", self.cf, "POST", {"name": bucket, "locationHint": "weur"})
+            except InfraError as e:
+                if e.code != 409:
+                    raise
         groups = _call(f"{CF}/user/tokens/permission_groups", self.cf)["result"]
         want = {"Workers R2 Storage Bucket Item Write", "Workers R2 Storage Bucket Item Read"}
         ids = [{"id": g["id"]} for g in groups if g["name"] in want]
         if len(ids) != 2:
             raise InfraError(500, f"R2 permission groups not found: {sorted(want)}")
         tok = _call(f"{CF}/user/tokens", self.cf, "POST", {
-            "name": f"amux-backup-{bucket}",
+            "name": token_name or f"amux-backup-{bucket}",
             "policies": [{"effect": "allow", "permission_groups": ids,
                           "resources": {f"com.cloudflare.edge.r2.bucket.{acct}_default_{bucket}": "*"}}]})["result"]
         return {"endpoint": f"https://{acct}.r2.cloudflarestorage.com", "bucket": bucket,
@@ -222,16 +223,21 @@ class Infra:
                 _call(f"{CF}/accounts/{acct}/r2/buckets/{bucket}", self.cf, "DELETE")
             elif e.code != 404:
                 raise
-        self._revoke_tokens(f"amux-backup-{bucket}")
+        self.revoke_tokens(f"amux-backup-{bucket}")
 
-    def _revoke_tokens(self, name):
+    def revoke_tokens(self, name):
         """Delete every user API token with this exact name. Returns how many went."""
-        n = 0
-        for t in _call(f"{CF}/user/tokens?per_page=50", self.cf)["result"]:
-            if t.get("name") == name:
-                _call(f"{CF}/user/tokens/{t['id']}", self.cf, "DELETE")
-                n += 1
-        return n
+        # Every page: the account holds the owner's own tokens too, and a drill leak reached 31 of ours.
+        ids, page = [], 1
+        while True:
+            r = _call(f"{CF}/user/tokens?per_page=50&page={page}", self.cf)
+            ids += [t["id"] for t in r["result"] if t.get("name") == name]
+            if page >= (r.get("result_info") or {}).get("total_pages", 1):
+                break
+            page += 1
+        for tid in ids:
+            _call(f"{CF}/user/tokens/{tid}", self.cf, "DELETE")
+        return len(ids)
 
     def _empty_bucket(self, acct, bucket):
         purge = f"amux-purge-{bucket}"
@@ -250,7 +256,7 @@ class Infra:
                 s3.delete_keys(bucket, keys)
             raise InfraError(500, f"bucket {bucket} still not empty after 200 passes")
         finally:
-            self._revoke_tokens(purge)
+            self.revoke_tokens(purge)
 
     def origin_certificate(self, hostname, csr_pem, days=5475):
         """Cloudflare Origin CA certificate for one host. The server made the key and sends only the CSR."""

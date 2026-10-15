@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS resizes (
   detail TEXT, finished_at REAL);
 CREATE TABLE IF NOT EXISTS drills (
   id TEXT PRIMARY KEY, server_id TEXT NOT NULL, hetzner_id INTEGER, fleet_secret TEXT NOT NULL, started_at REAL NOT NULL,
-  expected TEXT, result TEXT, detail TEXT, finished_at REAL);
+  expected TEXT, result TEXT, detail TEXT, finished_at REAL, creds TEXT);
 CREATE TABLE IF NOT EXISTS device_codes (
   device_code TEXT PRIMARY KEY, user_code TEXT UNIQUE NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
   user_id TEXT, state TEXT NOT NULL DEFAULT 'pending');
@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 # alters an existing table, so each is added here when missing (append only; never rename or drop).
 ADDED_COLUMNS = [
     ("servers", "synthetic", "INTEGER NOT NULL DEFAULT 0"),
+    ("drills", "creds", "TEXT"),
     ("servers", "backup_bucket", "TEXT"),
     ("servers", "restic_password", "TEXT"),
     ("servers", "tailnet_url", "TEXT"),
