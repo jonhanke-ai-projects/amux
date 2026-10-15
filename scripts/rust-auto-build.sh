@@ -79,6 +79,29 @@ sync_bash_cli() {
   rm -f "$tmp"
 }
 
+# THE LAUNCHER SHIPS THROUGH THE SAME GATE. launchd runs a COPY of
+# scripts/rust-auto-build-authority.sh that only install.sh wrote, so a change
+# to how commits are elected (the CI gate, 2026-10-15) never reached the timer.
+# Replace an existing regular-file copy by rename when the elected bytes differ;
+# the running launcher finishes on the inode it started with.
+sync_authority_launcher() {
+  local sha="$1" dest tmp
+  dest="${AMUX_AUTHORITY_INSTALL:-$HOME/.amux/bin/amux-build-authority}"
+  [ -f "$dest" ] && [ ! -L "$dest" ] && [ -w "$(dirname "$dest")" ] || return 0
+  tmp="$(mktemp "$(dirname "$dest")/.authority.XXXXXX")" || return 0
+  if ! git -C "$REPO" show "${sha}:scripts/rust-auto-build-authority.sh" > "$tmp" 2>/dev/null || ! bash -n "$tmp" 2>/dev/null; then
+    echo "== $(date '+%F %T') AUTHORITY LAUNCHER SYNC SKIPPED sha=$sha verdict=authority_launcher_invalid" >> "$LOG"
+    rm -f "$tmp"; return 0
+  fi
+  if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return 0; fi
+  if chmod 0755 "$tmp" && mv -f "$tmp" "$dest"; then
+    echo "== $(date '+%F %T') AUTHORITY LAUNCHER SYNCED sha=$sha dest=$dest verdict=authority_launcher_synced" >> "$LOG"
+  else
+    rm -f "$tmp"
+    echo "== $(date '+%F %T') AUTHORITY LAUNCHER SYNC FAILED sha=$sha verdict=authority_launcher_sync_failed" >> "$LOG"
+  fi
+}
+
 # Existing worker helpers also ship on authorized ticks without a Rust rebuild.
 # Replace only existing regular files: no settings changes or isolated-worker
 # hook enrollment. Read exact elected bytes, validate and verify the rename.
@@ -260,6 +283,7 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" != "1" ] \
     exit 0
   fi
   sync_bash_cli "$built_sha"
+  sync_authority_launcher "$built_sha"
   sync_observed_edits_hooks "$built_sha"
   # ADOPTION COOLDOWN: batch rapid commits from multiple lanes into fewer
   # rebuilds. Each self-adoption kills all SSE connections (6-12s of

@@ -755,6 +755,7 @@ jobs:
           python3 scripts/test-cargo-budget.py
           ./scripts/test-build-activation-authority.sh
           ./scripts/test-build-activation-launcher.sh
+          ./scripts/test-authority-launcher-sync.sh
           # A replacement is complete and signed before its one visible rename;
           # persistent listener loss makes the external watchdog reload only the
           # exact configured launch agent.

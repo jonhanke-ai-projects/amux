@@ -17,8 +17,73 @@ say() { echo "== !! ACTIVATION AUTHORITY $*" >> "$LOG"; }
 refuse() { say "REFUSED — $*"; exit 0; }
 
 [ -n "$REPO" ] || refuse "AMUX_AUTHORITY_REPO is unset; no checkout may choose the live image"
-target=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
+tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
   || refuse "cannot resolve $REF in $REPO; refusing an unmeasured activation"
+
+# ONLY CI-GREEN COMMITS GO LIVE (Ethan, 2026-10-15: "make sure all the amux
+# shit goes thru cicd"). Until then this activated $REF's tip about a minute
+# after any push, while its CI was still running or already red. Now the target
+# is the newest first-parent commit of $REF whose push CI finished with every
+# check run passing. A tip that is pending or red leaves the last green image
+# running; a commit that never had CI (an inner commit of a multi-commit push)
+# is passed over. Verdicts come from GitHub check runs through the App token;
+# final ones are cached per sha so a 60s timer costs about one API call while a
+# run is in flight. Opt out with AMUX_DEPLOY_CI_GATE=0.
+CI_CACHE="${AMUX_CI_VERDICT_CACHE:-$HOME/.amux/ci-verdicts}"
+CI_DEPTH="${AMUX_CI_GATE_DEPTH:-40}"
+ci_verdict() {   # green | red | pending | none | unmeasured
+  local sha="$1" cached
+  if [ -n "${AMUX_CI_VERDICT_CMD:-}" ]; then "$AMUX_CI_VERDICT_CMD" "$sha"; return; fi
+  cached=$(cat "$CI_CACHE/$sha" 2>/dev/null || true)
+  case "$cached" in green|red|none) echo "$cached"; return ;; esac
+  local token v
+  token=$(GH_TOKEN= "$HOME/.amux/github-app/get-token.sh" --min-remaining 300 2>/dev/null \
+    | sed -n 's/^export GH_TOKEN=//p' | tr -d "'\"") || true
+  [ -n "$token" ] || { echo unmeasured; return; }
+  v=$(curl -sf --max-time 15 -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/commits/$sha/check-runs?per_page=100" \
+    | python3 -c '
+import json,sys
+runs=json.load(sys.stdin)["check_runs"]
+if not runs: print("none"); raise SystemExit
+if any(r["status"]!="completed" for r in runs): print("pending"); raise SystemExit
+ok={"success","skipped","neutral"}
+print("green" if all(r["conclusion"] in ok for r in runs) else "red")' 2>/dev/null) || v=unmeasured
+  # "none" is only final once the commit is old enough that CI would have started.
+  if [ "$v" = green ] || [ "$v" = red ] || { [ "$v" = none ] && \
+     [ $(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") )) -gt 3600 ]; }; then
+    mkdir -p "$CI_CACHE" && echo "$v" > "$CI_CACHE/$sha"
+  fi
+  echo "$v"
+}
+
+target="$tip"
+if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
+  target=""; tip_state=""; passed=0
+  for sha in $(git -C "$REPO" rev-list --first-parent -n "$CI_DEPTH" "$tip"); do
+    v=$(ci_verdict "$sha")
+    [ -n "$tip_state" ] || tip_state="$v"
+    if [ "$v" = green ]; then target="$sha"; break; fi
+    if [ "$v" = unmeasured ]; then
+      refuse "CI-GATE unmeasured for $sha (no App token or GitHub unreachable); keeping the live image verdict=ci_gate_unmeasured"
+    fi
+    passed=$((passed + 1))
+  done
+  [ -n "$target" ] || refuse "CI-GATE no green commit in the last $CI_DEPTH of $REF (tip $tip is $tip_state); keeping the live image verdict=ci_gate_no_green"
+  if [ "$target" != "$tip" ]; then
+    # NEVER ROLL BACK. If the live image already contains the newest green
+    # commit, holding it is the gate's whole effect: activating the older green
+    # commit would run an old binary over a newer schema (migrations only go
+    # forward) and undo work nobody asked to undo.
+    live=$(curl -sk --max-time 4 "${AMUX_RS_HEALTH_URL:-https://localhost:${AMUX_RS_PORT:-8824}/api/health}" 2>/dev/null \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("commit_full") or d.get("commit") or "").replace("-dirty",""))' 2>/dev/null || true)
+    if [ -n "$live" ] && live_full=$(git -C "$REPO" rev-parse --verify -q "${live}^{commit}" 2>/dev/null) \
+       && [ "$live_full" != "$target" ] && git -C "$REPO" merge-base --is-ancestor "$target" "$live_full"; then
+      refuse "CI-GATE tip $tip is $tip_state; newest green $target is older than the live image $live_full, holding it rather than rolling back verdict=ci_gate_no_rollback"
+    fi
+    say "CI-GATE tip $tip is $tip_state; activating newest green $target ($passed newer commit(s) not yet green) verdict=ci_gate_held_back"
+  fi
+fi
 
 if [ -e "$WORK" ]; then
   [ -f "$MARKER" ] || refuse "$WORK exists without this launcher's marker"
