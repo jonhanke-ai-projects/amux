@@ -18,7 +18,7 @@ DRILL_TIMEOUT = 45 * 60
 
 def due(store, now):
     out = []
-    for s in store.all("SELECT * FROM servers WHERE status='ready' AND backup_bucket IS NOT NULL AND backup_fingerprint IS NOT NULL"):
+    for s in store.all("SELECT * FROM servers WHERE status='ready' AND synthetic=0 AND backup_bucket IS NOT NULL AND backup_fingerprint IS NOT NULL"):
         last = store.one("SELECT MAX(started_at) t FROM drills WHERE server_id=?", s["id"])["t"]
         if not last or now - last >= WEEK:
             out.append(s)

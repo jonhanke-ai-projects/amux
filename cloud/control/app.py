@@ -751,6 +751,11 @@ def r_admin(h, path):
         run = json.loads(h.body() or b"{}")
         STORE.event("synthetic.run", ok=bool(run.get("ok")), fake=bool(run.get("fake")), ms=run.get("ms"),
                     failed=[s["name"] for s in run.get("steps", []) if not s.get("ok")])
+        cap = run.get("capability") or {}
+        if cap:
+            # Plan section 12: a check that cannot run is reported as not run, never as passed.
+            STORE.event("capability.run", passed=cap.get("passed", []), failed=cap.get("failed", []),
+                        not_run=cap.get("not_run", {}), complete=not cap.get("failed") and not cap.get("not_run"))
         if not run.get("ok"):
             last = STORE.all("SELECT props FROM events WHERE name='synthetic.run' ORDER BY ts DESC LIMIT 2")
             if len(last) == 2 and not any(json.loads(r["props"]).get("ok") for r in last):

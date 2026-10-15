@@ -46,9 +46,13 @@ def start(store, org_id, subscription_id, plan, email, location=None, now=None, 
     if existing:
         return existing
     sid = new_id("srv")
-    store.run("INSERT INTO servers(id,org_id,subscription_id,slug,plan,location,status,fleet_secret,created_at) "
-              "VALUES(?,?,?,?,?,?,?,?,?)", sid, org_id, subscription_id, make_slug(store, email, taken), plan,
-              location, "provisioning", new_secret(), now)
+    # The synthetic customer's servers are stage 0 for releases and are skipped by restore drills;
+    # nothing set this flag before 2026-10-15, so a release could never leave stage 0.
+    org = store.one("SELECT source FROM orgs WHERE id=?", org_id)
+    synthetic = 1 if org and org["source"] == "synthetic" else 0
+    store.run("INSERT INTO servers(id,org_id,subscription_id,slug,plan,location,status,fleet_secret,created_at,synthetic) "
+              "VALUES(?,?,?,?,?,?,?,?,?,?)", sid, org_id, subscription_id, make_slug(store, email, taken), plan,
+              location, "provisioning", new_secret(), now, synthetic)
     store.run("INSERT INTO provision_jobs(id,server_id,step,status,started_at,updated_at) VALUES(?,?,?,?,?,?)",
               new_id("job"), sid, "create", "pending", now, now)
     store.event("cloud.provision_started", org_id, server=sid, plan=plan)
@@ -85,7 +89,11 @@ def tick(store, infra, plans, golden_image, control_url, now=None, refund=None):
         except Exception as e:
             store.run("UPDATE provision_jobs SET attempts=attempts+1, error=?, updated_at=? WHERE id=?",
                       str(e)[:500], now, job["id"])
-            store.event("cloud.provision_retry", job["org_id"], job=job["id"], step=job["step"], error=str(e)[:200])
+            store.event("cloud.provision_retry", job["org_id"], job=job["id"], server=job["server_id"],
+                        step=job["step"], error=str(e)[:200])
+            if "resource_limit_exceeded" in str(e) and "resource_limit_exceeded" not in (job.get("error") or ""):
+                # A provider quota does not clear by retrying; say so now, not after the 15-minute timeout.
+                store.alert("provider_limit", f"Hetzner refused a new server: {str(e)[:200]}")
     return touched
 
 
@@ -137,6 +145,8 @@ def mark_ready(store, server_id, now=None):
 
 def fail(store, infra, job, why, now, refund=None):
     """M1 escalation: the half-built server never held customer data, so it is removed outright."""
+    if job.get("error"):
+        why = f"{why}; last error: {job['error'][:300]}"      # keep the cause, not only the timeout
     store.run("UPDATE provision_jobs SET status='failed', error=?, updated_at=? WHERE id=?", why, now, job["id"])
     store.run("UPDATE servers SET status='failed' WHERE id=?", job["server_id"])
     srv = store.one("SELECT * FROM servers WHERE id=?", job["server_id"])

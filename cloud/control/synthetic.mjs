@@ -14,6 +14,14 @@ const CP = (process.env.CONTROL_URL || 'https://cloud.amux.io').replace(/\/$/, '
 const EMAIL = process.env.SYNTH_EMAIL || `synthetic+${Date.now()}@amux.io`;
 const ADMIN = process.env.CONTROL_ADMIN_TOKEN;
 const steps = [];
+// Plan section 12 checks that need something only the owner holds. Listed every run, so the
+// report shows the gap instead of a green suite that never tried them.
+const NOT_RUN = {
+  'T-PAY-1': 'STRIPE_TEST_SECRET_KEY', 'T-ACC-3': 'Apple key and test Google/GitHub accounts',
+  'T-MAIL-1..7': 'outbound email and a test inbox', 'T-CLI-1': 'a Claude test subscription token',
+  'T-CLI-2': 'a ChatGPT test account', 'T-CLI-3': 'a Google test account', 'T-TS-1..5': 'a test tailnet auth key',
+  'T-KEY-1..3': 'test model API keys', 'T-TEAM-1..2': 'a test inbox for the invitee',
+};
 const t0 = Date.now();
 let ok = false;
 
@@ -37,7 +45,8 @@ if (ADMIN && health.payments !== 'live') {
   await ctx.addCookies([{ name: 'amux_admin', value: ADMIN, url: CP }]);
 }
 const page = await ctx.newPage();
-let fake = false, doorUrl = null;
+let fake = false, doorUrl = null, rawDoor = null, paidAt = 0, handoffAt = 0;
+const capability = { passed: [], failed: [], not_run: NOT_RUN };
 try {
   await step('open pricing link', async () => {
     await page.goto(`${CP}/?plan=solo&source=synthetic`);
@@ -48,6 +57,7 @@ try {
     if (fake) {
       await page.fill('input[name=email]', EMAIL);
       await Promise.all([page.waitForURL(/\/progress/, { timeout: 60_000 }), page.click('#pay')]);
+      paidAt = Date.now();
       return 'fake checkout';
     }
     await page.fill('input[name=email]', EMAIL);
@@ -63,13 +73,15 @@ try {
       await page.fill('#billingName', 'Synthetic Customer');
     }
     await Promise.all([page.waitForURL(/\/progress/, { timeout: 120_000 }), page.click('button[type=submit]')]);
+    paidAt = Date.now();
     return process.env.SYNTH_COUPON ? 'coupon' : 'test card';
   });
   await step('server ready and door hand-off', async () => {
     doorUrl = await new Promise((resolve, reject) => {
-      page.on('request', r => { if (r.url().includes('/_door/enter')) resolve(r.url().replace(/t=.*/, 't=<token>')); });
+      page.on('request', r => { if (r.url().includes('/_door/enter')) { rawDoor = r.url(); resolve(r.url().replace(/t=.*/, 't=<token>')); } });
       setTimeout(() => reject(new Error('no door hand-off within 15 minutes')), fakeInfra ? 20_000 : 15 * 60_000);
     });
+    handoffAt = Date.now();
     return doorUrl;
   });
   if (!fakeInfra) {
@@ -82,19 +94,53 @@ try {
       if (api !== 200) throw new Error(`/api/sessions through the door returned ${api}`);
       return new URL(page.url()).host;
     });
-    await step('delete the synthetic account', async () => {
-      const r = await page.request.post(`${CP}/api/account/delete`, { data: { confirm: 'delete' } });
-      if (r.status() !== 202) throw new Error(`delete returned ${r.status()}`);
-      return 'deletion started';
+    await step('capability checks', async () => {
+      const check = (id, ok, detail) => (ok ? capability.passed : capability.failed).push(detail ? `${id}: ${detail}` : id);
+      const host = new URL(page.url()).host;
+      check('T-PROV-1', paidAt > 0 && handoffAt - paidAt < 180_000, `paid to ready in ${Math.round((handoffAt - paidAt) / 1000)} s`);
+      // T-SSO-1: the door cookie must not be readable by any other customer's host.
+      const cookies = await ctx.cookies(`https://${host}/`);
+      const loose = cookies.filter(c => c.domain.startsWith('.') || c.domain !== host).map(c => `${c.name}@${c.domain}`);
+      check('T-SSO-1 cookie scope', cookies.length > 0 && loose.length === 0, loose.length ? `shared: ${loose.join(',')}` : `${cookies.length} host-only`);
+      // T-SSO-1: a real token re-addressed to another server fails its signature.
+      const t = new URL(rawDoor).searchParams.get('t');
+      const [payload, mac] = t.split('.');
+      const claims = JSON.parse(Buffer.from(payload, 'base64url').toString());
+      const forged = Buffer.from(JSON.stringify({ ...claims, aud: 'someone-else' })).toString('base64url') + '.' + mac;
+      const fresh = await browser.newContext();
+      const r = await fresh.request.get(`https://${host}/_door/enter?t=${forged}`, { maxRedirects: 0 });
+      check('T-SSO-1 forged token', r.status() === 401, `HTTP ${r.status()}`);
+      // Locks: no cookie, no API; the dashboard sends a stranger to the door.
+      const api = await fresh.request.get(`https://${host}/api/sessions`, { maxRedirects: 0 });
+      check('door API lock', api.status() === 401, `HTTP ${api.status()}`);
+      // A stranger's page load is sent to sign in: on a Cloud server that is the control plane
+      // (?server=<slug>), elsewhere the door's own page. Sent as a browser navigation, since the
+      // door answers API-shaped requests with a JSON 401 instead.
+      const home = await fresh.request.get(`https://${host}/`, { maxRedirects: 0,
+        headers: { Accept: 'text/html', 'Sec-Fetch-Mode': 'navigate' } });
+      const to = home.headers().location || '';
+      const locked = [302, 303].includes(home.status()) && (to.includes('/_door/') || to.startsWith(CP) && to.includes('server='));
+      check('door page lock', locked, `HTTP ${home.status()} to ${to.replace(/\?.*/, '')}`);
+      await fresh.close();
+      if (capability.failed.length) throw new Error(`failed: ${capability.failed.join('; ')}`);
+      return `${capability.passed.length} passed, ${Object.keys(NOT_RUN).length} not run`;
     });
   }
   ok = true;
 } catch (e) {
   await page.screenshot({ path: `synthetic-failure-${Date.now()}.png` }).catch(() => {});
-} finally {
-  await browser.close();
 }
-const run = { ok, fake: fakeInfra, fake_checkout: fake, ms: Date.now() - t0, steps };
+// Always, once payment went through: a failed step must not leave a paid server running. Two
+// runs leaked their servers this way and filled the Hetzner core quota (2026-10-15).
+if (paidAt && !fakeInfra) {
+  await step('delete the synthetic account', async () => {
+    const r = await page.request.post(`${CP}/api/account/delete`, { data: { confirm: 'delete' } });
+    if (r.status() !== 202) throw new Error(`delete returned ${r.status()}`);
+    return 'deletion started';
+  }).catch(() => { ok = false; });
+}
+await browser.close();
+const run = { ok, fake: fakeInfra, fake_checkout: fake, ms: Date.now() - t0, steps, capability };
 console.log(JSON.stringify(run, null, 1));
 if (ADMIN) {
   const r = await fetch(`${CP}/api/admin/synthetic`, { method: 'POST', headers: { Authorization: `Bearer ${ADMIN}`, 'Content-Type': 'application/json' },

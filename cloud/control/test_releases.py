@@ -128,3 +128,41 @@ class RestoreDrill(unittest.TestCase):
         d = self.store.one("SELECT * FROM drills")
         self.assertEqual(d["result"], "fail")
         self.assertIn("did not report", d["detail"])
+
+
+class SyntheticServers(unittest.TestCase):
+    """Found on the real control plane, 2026-10-15: nothing set servers.synthetic, so releases could
+    never leave stage 0, and every journey server got a restore drill of its own."""
+
+    def setUp(self):
+        import provision
+        self.provision = provision
+        self.store = Store(os.path.join(tempfile.mkdtemp(), "s.db"))
+
+    def org(self, oid, source):
+        self.store.run("INSERT INTO orgs(id,email,source,created_at) VALUES(?,?,?,?)", oid, f"{oid}@example.com", source, T0)
+
+    def test_synthetic_checkout_marks_the_server(self):
+        self.org("syn", "synthetic")
+        self.org("cust", "homepage")
+        self.assertEqual(self.provision.start(self.store, "syn", "sub1", "solo", "syn@example.com", now=T0)["synthetic"], 1)
+        self.assertEqual(self.provision.start(self.store, "cust", "sub2", "solo", "cust@example.com", now=T0)["synthetic"], 0)
+
+    def test_drills_skip_synthetic_servers(self):
+        import drill
+        self.org("syn", "synthetic")
+        srv = self.provision.start(self.store, "syn", "sub1", "solo", "syn@example.com", now=T0)
+        self.store.run("UPDATE servers SET status='ready', backup_bucket='b', backup_fingerprint='{}' WHERE id=?", srv["id"])
+        self.assertEqual(drill.due(self.store, T0 + 10), [])
+        self.store.run("UPDATE servers SET synthetic=0 WHERE id=?", srv["id"])
+        self.assertEqual(len(drill.due(self.store, T0 + 10)), 1)
+
+    def test_failed_job_keeps_its_last_error(self):
+        self.org("cust", "homepage")
+        srv = self.provision.start(self.store, "cust", "sub1", "solo", "cust@example.com", now=T0)
+        self.store.run("UPDATE provision_jobs SET error='403: resource_limit_exceeded' WHERE server_id=?", srv["id"])
+        job = self.store.one("SELECT j.*, s.org_id FROM provision_jobs j JOIN servers s ON s.id=j.server_id WHERE j.server_id=?", srv["id"])
+        self.provision.fail(self.store, FakeInfra(), job, "not ready within 15 minutes", T0 + 901)
+        err = self.store.one("SELECT error FROM provision_jobs WHERE server_id=?", srv["id"])["error"]
+        self.assertIn("not ready within 15 minutes", err)
+        self.assertIn("resource_limit_exceeded", err)
