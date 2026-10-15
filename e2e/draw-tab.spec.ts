@@ -325,6 +325,17 @@ async function showDrawings(page: Page) {
 async function clickRow(page: Page, sel: string) {
   await showDrawings(page);
   await page.locator(sel).scrollIntoViewIfNeeded();
+  // Tap once the list has stopped moving, as a person does. On iOS WebKit a
+  // tap that lands while the library is still settling from a scroll only
+  // stops the scroll and fires no click (draw-tab.spec.ts:356, iOS: the trace
+  // shows the tap on Beta with the list at scrollTop 303 and no handler run).
+  await page.waitForFunction(() => new Promise(done => {
+    const body = document.getElementById('draw-lib-body');
+    if (!body) return done(true);
+    let last = body.scrollTop, still = 0;
+    const tick = () => { const now = body.scrollTop; still = now === last ? still + 1 : 0; last = now; if (still >= 6) done(true); else requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }));
   await page.locator(sel).click();
   if (isPhone(page)) await expect(page.locator('#draw-lib')).not.toBeInViewport();
 }
