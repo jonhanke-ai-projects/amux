@@ -5839,9 +5839,22 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                 // The owner's own latest message is not a board claim: it is
                 // what this worker was last asked to do, so it names the task
                 // better than the role description (amux-helper, 2026-09-25).
+                let meta = load_meta(&name);
+                let generated = meta["task_summary"].as_str().unwrap_or("").to_string();
+                let generated_ts = meta["task_summary_ts"].as_i64().unwrap_or(0);
+                let generated_fresh = !generated.is_empty()
+                    && generated_ts > 0
+                    && now - generated_ts <= 86400
+                    && task_title_is_generated(meta.get("task_summary_source").and_then(|v| v.as_str()));
                 if let Some(t) = claude_ai_title(&name, signals.reports.get(&name)) {
                     v["task_name"] = json!(t);
                     v["task_source"] = json!("claude_title");
+                } else if generated_fresh {
+                    // A display label from the worker's own conversation
+                    // (runtime_jobs::task_titles); never sent to the worker.
+                    v["task_name"] = json!(generated);
+                    v["task_source"] = json!("generated_title");
+                    v["task_updated"] = json!(generated_ts);
                 } else if let Some(m) = recent_owner_messages.get(&name) {
                     v["task_name"] = json!(m);
                     v["task_source"] = json!("message");
