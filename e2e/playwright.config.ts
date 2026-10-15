@@ -301,6 +301,9 @@ export default defineConfig({
       // Without this the e2e server would write into the developer's real
       // ~/.claude/commands, because the server runs with the real $HOME.
       CLAUDE_CONFIG_DIR: path.join(homes[t.name], 'claude-config'),
+      // The vault's master key goes to a 0600 file in the throwaway home, never
+      // into the developer's login Keychain (vault_secrets.rs keystore_is_file).
+      AMUX_VAULT_KEYSTORE: 'file',
     },
   })),
 });

@@ -1930,8 +1930,20 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/vault/secrets/audit",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/vault/secrets/{id}",
-        methods: &["PUT", "DELETE"],
+        methods: &["PUT", "PATCH", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/vault/secrets/{id}/reveal",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/vault/secrets/{id}/access",
+        methods: &["GET"],
     },
     RouteEntry {
         path: "/api/chat-delegate",
