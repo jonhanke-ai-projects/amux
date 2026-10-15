@@ -118,6 +118,7 @@ async fn tick(app: crate::api::AppState) {
     let per_tick = env_u64("AMUX_TASK_TITLE_PER_TICK", 3) as usize;
     let mut due: Vec<(i64, String, std::path::PathBuf)> = Vec::new();
     let mut considered = 0usize;
+    let mut no_transcript = 0usize;
     for s in &sessions {
         let name = s["name"].as_str().unwrap_or("").to_string();
         if name.is_empty() || s["running"] != true || s["archived"] == true || s["provider"] != "claude" {
@@ -128,7 +129,10 @@ async fn tick(app: crate::api::AppState) {
             continue;
         }
         considered += 1;
-        let Some(path) = sv::session_jsonl_path(&name) else { continue };
+        let Some(path) = sv::session_jsonl_path(&name) else {
+            no_transcript += 1;
+            continue;
+        };
         let Some(mtime) = std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .ok()
@@ -171,9 +175,9 @@ async fn tick(app: crate::api::AppState) {
             }
         }
     }
-    if n_due > 0 {
+    if n_due > 0 || no_transcript > 0 {
         tracing::info!(measured = true, n_considered = considered, due = n_due, generated, kept, failed,
-            no_activity = empty, verdict = "task_title_refresh_tick", "card task titles refreshed");
+            no_activity = empty, no_transcript, verdict = "task_title_refresh_tick", "card task titles refreshed");
     }
 }
 
