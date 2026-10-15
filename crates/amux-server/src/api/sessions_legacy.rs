@@ -945,6 +945,70 @@ fn parse_list_sessions_line(l: &str) -> Option<(&str, Option<i64>, Option<i64>)>
 /// native provider is tool work. This avoids treating the provider process's
 /// mere existence as activity while keeping a long-running cargo/browser child
 /// authoritative when rollout writes are naturally quiet.
+/// Claude lanes whose Bash-tool shells are all just WAITING: every process
+/// below the shell wrappers Claude starts is a shell, `sleep`, `tail` or a
+/// similar idle helper, so nothing is being worked on.
+///
+/// Claude's footer counts "N shells" for any background Bash job, including an
+/// `until ...; do sleep 15; done` watch whose condition never comes. Read
+/// alone it kept long-form-videos labelled "Background job" for 16 hours on
+/// three dead watchers (Ethan, 2026-10-15: "background job is inaccurate here
+/// its not doing anything"), and held its queued messages as if mid-turn.
+/// A lane qualifies only when the measurement saw a `claude` process with at
+/// least one shell child under the pane root, and every process in those
+/// shells' trees is a waiter.
+fn claude_lanes_with_only_waiting_shells(
+    pane_roots: &[(String, String)],
+    ps_output: &str,
+) -> BTreeSet<String> {
+    const WAITERS: [&str; 10] = ["bash", "sh", "zsh", "dash", "sleep", "tail", "cat", "grep", "timeout", "wait"];
+    let base = |c: &str| Path::new(c).file_name().and_then(|n| n.to_str()).unwrap_or(c).trim_start_matches('-').to_string();
+    let mut children: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut comm_of: BTreeMap<String, String> = BTreeMap::new();
+    for line in ps_output.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (f.next(), f.next()) else { continue };
+        let _state = f.next();
+        let comm = base(f.next().unwrap_or(""));
+        children.entry(ppid.to_string()).or_default().push((pid.to_string(), comm.clone()));
+        comm_of.insert(pid.to_string(), comm);
+    }
+    let mut out = BTreeSet::new();
+    for (session, root) in pane_roots {
+        // Find the claude process under the pane root (breadth-first, bounded).
+        let mut queue = vec![root.clone()];
+        let mut claude = None;
+        let mut seen = 0;
+        while let Some(pid) = queue.pop() {
+            seen += 1;
+            if seen > 256 { break; }
+            if comm_of.get(&pid).is_some_and(|c| c == "claude") { claude = Some(pid); break; }
+            if let Some(k) = children.get(&pid) { queue.extend(k.iter().map(|(p, _)| p.clone())); }
+        }
+        let Some(claude) = claude else { continue };
+        let shells: Vec<String> = children.get(&claude).map(|k| k.iter()
+            .filter(|(_, c)| matches!(c.as_str(), "bash" | "sh" | "zsh"))
+            .map(|(p, _)| p.clone()).collect()).unwrap_or_default();
+        if shells.is_empty() { continue; }
+        let mut all_waiting = true;
+        let mut stack = shells;
+        let mut n = 0;
+        while let Some(pid) = stack.pop() {
+            n += 1;
+            if n > 512 { all_waiting = false; break; }
+            if let Some(k) = children.get(&pid) {
+                for (p, c) in k {
+                    if !WAITERS.contains(&c.as_str()) { all_waiting = false; }
+                    stack.push(p.clone());
+                }
+            }
+            if !all_waiting { break; }
+        }
+        if all_waiting { out.insert(session.clone()); }
+    }
+    out
+}
+
 fn sessions_with_codex_tool_children(
     pane_roots: &[(String, String)],
     ps_output: &str,
@@ -1055,6 +1119,9 @@ pub struct FleetSignals {
     /// footer cannot vote, but a live tool child can.
     pub(crate) provider_child_activity: BTreeSet<String>,
     pub(crate) provider_children_measured: bool,
+    /// Claude lanes whose background shells are only waiting (see
+    /// [`claude_lanes_with_only_waiting_shells`]).
+    pub(crate) claude_waiting_shells: BTreeSet<String>,
     /// session name -> raw pane capture, for lanes that PAINTED recently.
     ///
     /// The only physical evidence in this struct: everything else is a claim
@@ -1244,6 +1311,7 @@ impl FleetSignals {
         // counts as shell-only only if EVERY pane is a shell.
         let mut shell_only = BTreeSet::new();
         let mut provider_child_activity = BTreeSet::new();
+        let mut claude_waiting_shells = BTreeSet::new();
         let mut provider_children_measured = false;
         // BOUNDED (AF-301) — was a bare `.output()`.
         let panes_probe = {
@@ -1373,6 +1441,7 @@ impl FleetSignals {
                         }
                     }
                     provider_child_activity = sessions_with_codex_tool_children(&pane_roots, out);
+                    claude_waiting_shells = claude_lanes_with_only_waiting_shells(&pane_roots, out);
                 }
                 None => tracing::warn!(
                     target: "amux::sessions",
@@ -1519,6 +1588,7 @@ impl FleetSignals {
             codex_turns,
             provider_child_activity,
             provider_children_measured,
+            claude_waiting_shells,
             panes: BTreeMap::new(),
             subagent_activity: scan_subagent_activity(),
             now: chrono::Utc::now().timestamp() as f64,
@@ -2444,6 +2514,26 @@ impl FleetSignals {
                     .filter(|raw| !raw.trim().is_empty())
             })
             .is_some_and(crate::api::session_verbs::provider_background_working);
+        // Shells that only wait are not work. Background AGENTS still count:
+        // only the footer's shell count is discounted, and only when the
+        // process tree was measured and every shell process is a waiter.
+        let raw_now = self.pane_of(name).or_else(|| self.panes.get(name).map(String::as_str)).unwrap_or("");
+        let shells_only_waiting = provider_background_working
+            && self.claude_waiting_shells.contains(name)
+            && !crate::backend::adapter::codex_pane_background_working(raw_now)
+            && !crate::backend::adapter::claude_background_wait_verdict(&crate::backend::adapter::strip_ansi(raw_now)).0;
+        if shells_only_waiting {
+            ex.insert("background_shells_waiting".into(), json!(true));
+            if crate::log_dedupe::first_this_bucket(
+                &format!("waiting-shells:{name}"),
+                crate::log_dedupe::hour_bucket(crate::config::now_f64()),
+            ) {
+                tracing::info!(session = %name, measured = true, n_considered = 1,
+                    verdict = "background_shells_only_waiting",
+                    "footer counts background shells but every process in them is waiting; not counted as work");
+            }
+        }
+        let provider_background_working = provider_background_working && !shells_only_waiting;
         ex.insert(
             "provider_background_working".into(),
             json!(provider_background_working),
@@ -5051,8 +5141,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // nudger said "off". `standing_orders` is the master switch's own
             // state, exposed so the SPA can show WHY a lane is quiet without
             // re-deriving the layering.
-            "auto_continue": crate::api::session_verbs::standing_orders_on(&name, "CC_AUTO_CONTINUE"),
-            "auto_continue_own": env.contains_key("CC_AUTO_CONTINUE"),
+            "auto_continue": crate::api::session_verbs::board_continue_on(&name),
+            "auto_continue_own": env.contains_key(crate::api::session_verbs::BOARD_CONTINUE_KEY) || env.contains_key("CC_AUTO_CONTINUE"),
             "auto_pickup": crate::api::session_verbs::standing_orders_on(&name, "CC_AUTO_PICKUP"),
             "auto_pickup_own": env.contains_key("CC_AUTO_PICKUP"),
             "standing_orders": crate::api::session_verbs::standing_orders_on(&name, "CC_STANDING_ORDERS"),
@@ -5238,7 +5328,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             row["worker_type"] = json!(worker_type);
             row["renderer"] = json!(worker_type.descriptor().renderer);
             row["auto_continue_raw"] = json!(crate::api::session_verbs::auto_continue_on(
-                crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_CONTINUE").as_deref()));
+                crate::api::session_verbs::scoped_setting_in(&home, &name, crate::api::session_verbs::BOARD_CONTINUE_KEY)
+                    .or_else(|| crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_CONTINUE")).as_deref()));
             row["auto_pickup_raw"] = json!(crate::api::session_verbs::auto_continue_on(
                 crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_PICKUP").as_deref()));
             row["standing_orders_raw"] = json!(crate::api::session_verbs::auto_continue_on(
@@ -7497,6 +7588,7 @@ pub(crate) mod tests {
             codex_turns: BTreeMap::new(),
             provider_child_activity: BTreeSet::new(),
             provider_children_measured: true,
+            claude_waiting_shells: BTreeSet::new(),
             panes: BTreeMap::new(),
             now: 1_000_000.0,
         }
@@ -9514,6 +9606,18 @@ Checked, nothing of mine was at risk, no action needed from you.
     /// because a static footer never repaints and the pane was never read. The
     /// footer marker is now read for idle-reported lanes; the stale-pane rule
     /// for every other claim is untouched.
+    #[test]
+    fn shells_that_only_sleep_are_waiting_and_a_real_child_is_work() {
+        let roots = vec![("lfv".to_string(), "100".to_string()), ("busy".to_string(), "200".to_string())];
+        let ps = "100 1 S /bin/sh\n101 100 S+ claude\n102 101 Ss /bin/bash\n103 102 S sleep\n104 101 S node\n\
+                  200 1 S /bin/sh\n201 200 S+ claude\n202 201 Ss /bin/bash\n203 202 R ffmpeg\n";
+        let w = super::claude_lanes_with_only_waiting_shells(&roots, ps);
+        assert!(w.contains("lfv"), "an until/sleep watcher is waiting, and an MCP node child is not a shell");
+        assert!(!w.contains("busy"), "a shell running ffmpeg is work");
+        let none = vec![("x".to_string(), "300".to_string())];
+        assert!(super::claude_lanes_with_only_waiting_shells(&none, "300 1 S /bin/sh\n301 300 S claude\n").is_empty(), "no shells: nothing to discount");
+    }
+
     #[test]
     fn an_idle_reported_lane_with_background_shells_is_not_idle() {
         let mut s = signals();
