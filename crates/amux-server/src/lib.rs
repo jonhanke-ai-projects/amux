@@ -627,6 +627,8 @@ async fn async_main() {
     // exists. If every worker in the fleet is dead, the cards still get filed
     // and wait. Noticing is infrastructure; fixing is work.
     drop(runtime_jobs::autofix::spawn(state.clone()));
+    // MDAI runs cut off by the restart that started this process resume here.
+    crate::api::mdai::resume_interrupted(state.store.clone());
     // AMUX-3579: enrol /api/board/commit-mentions, which had zero consumers.
     drop(runtime_jobs::commit_mention_notes::spawn(state.clone()));
     // AMUX-5238: close auto-captured intake cards on cited evidence and tag

@@ -339,3 +339,79 @@ mod tests {
         assert!(!request_cancel("t/cancel.mdai"), "nothing to cancel once finished");
     }
 }
+
+// ---- Surviving a server restart ------------------------------------------
+//
+// WHY (2026-10-15). Every commit to main restarts the server, and main moved
+// about every 15 minutes that day. A run lives on a thread of this process, so
+// a restart erased it without a trace: Priorities.mdai and
+// Fleet-Friction-Opportunities.mdai were cut off at 289s and again at 604s,
+// `/active` answered `last: null`, and nothing ran them again. A long chain
+// could not finish on a busy day at all.
+//
+// A run now writes a small journal file when it starts and removes it when it
+// ends, however it ends. A file still present at boot is a run the restart cut
+// off; the boot resumes it (completed upstream nodes are cache hits, so only
+// the interrupted work repeats), up to RESUME_MAX attempts.
+
+/// Attempts after the first before a run that keeps being cut off is dropped.
+pub(crate) const RESUME_MAX: u32 = 3;
+
+fn journal_dir() -> std::path::PathBuf {
+    crate::config::amux_home().join("mdai").join("inflight")
+}
+
+fn journal_path(key: &str) -> std::path::PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    journal_dir().join(format!("{:016x}.json", h.finish()))
+}
+
+/// Record that `key` is running (attempt 0 is the first try).
+pub(crate) fn journal_start(key: &str, session: Option<&str>, attempt: u32) {
+    let dir = journal_dir();
+    let body = json!({ "key": key, "session": session, "attempt": attempt, "started_ms": now_ms() });
+    let res = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(journal_path(key), body.to_string()));
+    if let Err(e) = res {
+        tracing::warn!(target: "amux::mdai", path = key, error = %e, verdict = "mdai_run_journal_write_failed",
+            measured = true, n_considered = 1, "could not record the run; a restart would lose it");
+    }
+}
+
+/// The run for `key` ended (finished, failed or cancelled): forget it.
+pub(crate) fn journal_clear(key: &str) {
+    let _ = std::fs::remove_file(journal_path(key));
+}
+
+/// Runs a previous process started and never ended: (key, session, attempt).
+pub(crate) fn journal_pending() -> Vec<(String, Option<String>, u32)> {
+    let Ok(rd) = std::fs::read_dir(journal_dir()) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        let parsed = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        match parsed.as_ref().and_then(|v| v["key"].as_str().map(|k| (k.to_string(), v))) {
+            Some((key, v)) => out.push((key, v["session"].as_str().map(str::to_string),
+                v["attempt"].as_u64().unwrap_or(0) as u32)),
+            None => { let _ = std::fs::remove_file(&p); }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[cfg(test)]
+mod restart_journal_tests {
+    use super::*;
+
+    #[test]
+    fn a_started_run_is_pending_until_it_ends() {
+        let key = format!("journal-test-{}.mdai", now_ms());
+        journal_start(&key, Some("owner"), 1);
+        let found = journal_pending().into_iter().find(|(k, _, _)| *k == key);
+        assert_eq!(found, Some((key.clone(), Some("owner".to_string()), 1)), "a run in flight is journaled");
+        journal_clear(&key);
+        assert!(journal_pending().iter().all(|(k, _, _)| *k != key), "an ended run leaves no journal entry");
+    }
+}

@@ -2749,16 +2749,53 @@ fn spawn_run(store: std::sync::Arc<Store>, active: std::sync::Arc<runs::ActiveRu
                     runs::Outcome { status: e.status().as_u16(), body: e.body(), finished_ms: now_secs() * 1000 }
                 }
             };
+            runs::journal_clear(&a.key);
             runs::finish(&a, outcome);
         });
     if let Err(e) = spawned {
         tracing::warn!(target: "amux::mdai", path = %active.key, error = %e,
             verdict = "mdai_run_spawn_failed", "could not start the mdai run thread");
+        runs::journal_clear(&active.key);
         runs::finish(&active, runs::Outcome {
             status: 500,
             body: json!({"error": format!("could not start the run: {e}")}),
             finished_ms: now_secs() * 1000,
         });
+    }
+}
+
+/// At boot: resume every run a restart cut off (see `runs` "Surviving a server
+/// restart"). Runs on its own thread after a short pause so the server is up.
+pub(crate) fn resume_interrupted(store: std::sync::Arc<Store>) {
+    let pending = runs::journal_pending();
+    if pending.is_empty() {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("mdai-resume".into()).spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(15));
+        let n = pending.len();
+        for (key, session, attempt) in pending {
+            if attempt >= runs::RESUME_MAX {
+                tracing::warn!(target: "amux::mdai", path = %key, attempt, verdict = "mdai_run_dropped_after_restarts",
+                    measured = true, n_considered = n,
+                    "mdai run was cut off by a restart too many times; not resuming it");
+                runs::journal_clear(&key);
+                continue;
+            }
+            let (active, joined) = runs::begin(&key, session.clone());
+            if joined {
+                continue;
+            }
+            tracing::warn!(target: "amux::mdai", path = %key, attempt = attempt + 1, verdict = "mdai_run_resumed_after_restart",
+                measured = true, n_considered = n,
+                "mdai run was cut off by a server restart; resuming it (finished upstream nodes are cached)");
+            runs::journal_start(&key, session.as_deref(), attempt + 1);
+            spawn_run(store.clone(), active);
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(target: "amux::mdai", error = %e, verdict = "mdai_resume_spawn_failed",
+            "could not start the thread that resumes interrupted mdai runs");
     }
 }
 
@@ -2793,10 +2830,11 @@ async fn run(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
         }
     };
-    let (active, joined) = runs::begin(&key, session);
+    let (active, joined) = runs::begin(&key, session.clone());
     if !joined {
         tracing::info!(target: "amux::mdai", path = %key, wait, verdict = "mdai_run_started",
             measured = true, n_considered = 1, "mdai run started");
+        runs::journal_start(&key, session.as_deref(), 0);
         spawn_run(state.store.clone(), active.clone());
     }
     if !wait {
