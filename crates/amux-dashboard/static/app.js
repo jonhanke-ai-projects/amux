@@ -1,39 +1,53 @@
-// ── localStorage write guard (disk RCA 2026-10-14) ──────────────────────────
+// ── localStorage write guard (disk RCA 2026-10-14, 2026-10-15) ──────────────
 // WebKit keeps localStorage in SQLite and appends every write to its WAL, which
 // it does not shrink while the app runs. The dashboard rewrote its caches on
 // every poll (sessions ~880KB, schedules ~850KB, message history ~780KB, board
 // ~360KB, the page itself ~310KB), and the macOS app's localStorage WAL reached
 // 13.7G, with an older install's at 57.9G. So: an identical value is never
-// rewritten, and a cache key (`*_cache`, `amux_app_html`) is written at most
-// once per 30s, its latest value flushed when the page hides. Counts are
-// beaconed as kind=localstorage-writes.
+// rewritten, and a cache key (`*_cache`, `amux_app_html`) or ANY value over
+// 16KB is written at most once per 5 min, its latest value flushed when the
+// page hides and returned by getItem meanwhile. The first version throttled
+// only by key name at 30s: on 2026-10-15 the app still wrote 172M chars per 10
+// min (amux_cmd_history 1.1MB, amux_interactions_v2 290KB rewritten whole on
+// every change) and its WAL reached 11G in 26h. Counts and the top keys by
+// bytes are beaconed as kind=localstorage-writes.
 (function () {
   try {
-    const ls = window.localStorage, P = Storage.prototype, set = P.setItem;
-    const st = window._lsWrites = { written: 0, written_bytes: 0, skipped_identical: 0, deferred: 0 };
+    const ls = window.localStorage, P = Storage.prototype, set = P.setItem, get = P.getItem;
+    const st = window._lsWrites = { written: 0, written_bytes: 0, skipped_identical: 0, deferred: 0, by_key: {} };
     const last = {}, pending = {};
-    const throttled = k => /_cache$/.test(k) || k === 'amux_app_html';
-    function flush() { for (const k in pending) { const v = pending[k]; delete pending[k]; last[k] = Date.now(); try { set.call(ls, k, v); st.written++; st.written_bytes += v.length; } catch (e) {} } }
+    const THROTTLE_MS = 300000, BIG = 16384;
+    const throttled = (k, v) => /_cache$/.test(k) || k === 'amux_app_html' || v.length > BIG;
+    const count = (k, v) => { st.written++; st.written_bytes += v.length; st.by_key[k] = (st.by_key[k] || 0) + v.length; };
+    function flush() { for (const k in pending) { const v = pending[k]; delete pending[k]; last[k] = Date.now(); try { set.call(ls, k, v); count(k, v); } catch (e) {} } }
+    P.getItem = function (k) {
+      if (this === ls && String(k) in pending) return pending[String(k)];
+      return get.call(this, k);
+    };
+    const remove = P.removeItem;
+    P.removeItem = function (k) { if (this === ls) delete pending[String(k)]; return remove.call(this, k); };
     P.setItem = function (k, v) {
       if (this !== ls) return set.call(this, k, v);
       k = String(k); v = String(v);
-      if (throttled(k)) {
+      if (throttled(k, v)) {
         const now = Date.now();
-        if (last[k] && now - last[k] < 30000) { if (!(k in pending)) st.deferred++; pending[k] = v; return; }
+        if (last[k] && now - last[k] < THROTTLE_MS) { if (!(k in pending)) st.deferred++; pending[k] = v; return; }
         last[k] = now; delete pending[k];
       }
-      try { if (ls.getItem(k) === v) { st.skipped_identical++; return; } } catch (e) {}
-      st.written++; st.written_bytes += v.length;
+      try { if (get.call(ls, k) === v) { st.skipped_identical++; return; } } catch (e) {}
+      count(k, v);
       return set.call(this, k, v);
     };
-    setInterval(flush, 30000);
+    setInterval(flush, THROTTLE_MS);
     addEventListener('pagehide', flush);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
     setInterval(() => {
       if (!st.written && !st.skipped_identical && !st.deferred) return;
+      const top = Object.entries(st.by_key).sort((a, b) => b[1] - a[1]).slice(0, 5);
       try { fetch('/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
-        body: JSON.stringify(Object.assign({ kind: 'localstorage-writes', measured: true, n_considered: st.written + st.skipped_identical + st.deferred, window_s: 600 }, st)) }).catch(() => {}); } catch (e) {}
-      st.written = st.written_bytes = st.skipped_identical = st.deferred = 0;
+        body: JSON.stringify({ kind: 'localstorage-writes', measured: true, n_considered: st.written + st.skipped_identical + st.deferred, window_s: 600,
+          written: st.written, written_bytes: st.written_bytes, skipped_identical: st.skipped_identical, deferred: st.deferred, top_keys: top }) }).catch(() => {}); } catch (e) {}
+      st.written = st.written_bytes = st.skipped_identical = st.deferred = 0; st.by_key = {};
     }, 600000);
   } catch (e) {}
 })();
