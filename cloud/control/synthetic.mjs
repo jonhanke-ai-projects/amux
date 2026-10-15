@@ -9,6 +9,7 @@
 // In CONTROL_FAKE mode the fake checkout page is used and the run stops at the door hand-off,
 // because there is no real server behind it.
 import { chromium } from 'playwright';
+import { createHmac } from 'node:crypto';
 
 const CP = (process.env.CONTROL_URL || 'https://cloud.amux.io').replace(/\/$/, '');
 const EMAIL = process.env.SYNTH_EMAIL || `synthetic+${Date.now()}@amux.io`;
@@ -148,6 +149,23 @@ try {
         // T-DUN-1, the Stripe half: a real failed charge, then a fixed card. The 14 days of service and the
         // snapshot that follow run on our own clock and are covered with an injected clock in test_lifecycle.py.
         const cust = (await stripe('GET', '/customers', { email: EMAIL })).data[0];
+        // T-PAY-1, EU half: Stripe Tax prices a Solo month for a Berlin customer. Needs an EU registration;
+        // test mode carries an OSS one (2026-10-15), live registration is the owner's.
+        const calc = await stripe('POST', '/tax/calculations', { currency: 'usd', 'line_items[0][amount]': '3900',
+          'line_items[0][reference]': 'solo', 'customer_details[address][country]': 'DE',
+          'customer_details[address][postal_code]': '10115', 'customer_details[address_source]': 'billing' });
+        check('T-PAY-1 EU tax', calc.tax_amount_exclusive > 0, `DE customer: ${calc.tax_amount_exclusive} cents tax on 3900`);
+        // T-PAY-1, replay half: Stripe redelivers events; the same checkout event a second time must not
+        // start a second server.
+        const events = (await stripe('GET', '/events', { type: 'checkout.session.completed', limit: '20' })).data;
+        const ev = events.find(e => e.data.object.customer === cust.id);
+        const raw = JSON.stringify(ev), ts = Math.floor(Date.now() / 1000);
+        const sig = createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET || '').update(`${ts}.${raw}`).digest('hex');
+        const replay = await page.request.post(`${CP}/webhooks/stripe`, { data: raw,
+          headers: { 'Content-Type': 'application/json', 'Stripe-Signature': `t=${ts},v1=${sig}` } });
+        const servers = (await (await page.request.get(`${CP}/api/me`)).json()).servers;
+        check('T-PAY-1 webhook replay', replay.status() === 200 && servers.length === 1,
+          `HTTP ${replay.status()}, ${servers.length} server(s) after replay`);
         const sub = (await stripe('GET', '/subscriptions', { customer: cust.id, status: 'active' })).data[0];
         const bad = await stripe('POST', '/payment_methods/pm_card_chargeCustomerFail/attach', { customer: cust.id });
         await stripe('POST', `/subscriptions/${sub.id}`, { default_payment_method: bad.id, billing_cycle_anchor: 'now',
@@ -163,7 +181,6 @@ try {
         const fixed = await billingStatus('active');
         check('T-DUN-1 fixed card restores', fixed.failing_since === null, 'active, failure cleared');
         delete capability.not_run['T-PAY-1'];
-        capability.not_run['T-PAY-1 EU tax and webhook replay'] = 'not automated yet';
         capability.not_run['T-DUN-1 14 days then snapshot'] = 'injected clock in test_lifecycle.py, not a live run';
       }
       // T-PROV-1 is a speed target that depends on Hetzner's snapshot restore; it is reported in
