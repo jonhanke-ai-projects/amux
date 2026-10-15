@@ -157,6 +157,12 @@ def fail(store, infra, job, why, now, refund=None):
                 cleanup()
             except Exception as e:
                 store.event("cloud.provision_cleanup_failed", srv["org_id"], error=str(e)[:200])
+    if srv.get("synthetic"):
+        # The synthetic customer pays with a test card or a 100% coupon: no refund, no email, and no
+        # owner alert per server (it queued four $39 refunds on 2026-10-15). The journey's own
+        # synthetic_failing alert covers a broken path.
+        store.event("cloud.provision_failed", srv["org_id"], server=srv["id"], why=why, refunded=False, synthetic=True)
+        return
     refunded = refund(store, srv) if refund else None
     org = store.one("SELECT email FROM orgs WHERE id=?", srv["org_id"])
     if org:

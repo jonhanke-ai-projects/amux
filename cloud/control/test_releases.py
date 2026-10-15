@@ -206,3 +206,18 @@ class DrillCredentials(RestoreDrill):
         for k in range(12):                           # an hour of 5-minute sweeps
             self.drill.sweep(self.store, self.infra, "golden", "x", now=T0 + 10 + 300 * k)
         self.assertEqual(self.store.one("SELECT COUNT(*) n FROM drills")["n"], 5)
+
+
+class SyntheticFailure(unittest.TestCase):
+    def test_failed_synthetic_server_queues_no_refund_email_or_alert(self):
+        import provision
+        store = Store(os.path.join(tempfile.mkdtemp(), "f.db"))
+        store.run("INSERT INTO orgs(id,email,source,created_at) VALUES('syn','s@amux.io','synthetic',?)", T0)
+        srv = provision.start(store, "syn", "sub1", "solo", "s@amux.io", now=T0)
+        job = store.one("SELECT j.*, s.org_id FROM provision_jobs j JOIN servers s ON s.id=j.server_id WHERE j.server_id=?", srv["id"])
+        refunds = []
+        provision.fail(store, FakeInfra(), job, "not ready within 15 minutes", T0 + 901, refund=lambda st, sv: refunds.append(sv) or True)
+        self.assertEqual(refunds, [])
+        self.assertEqual(store.one("SELECT COUNT(*) n FROM alerts")["n"], 0)
+        self.assertEqual(store.one("SELECT COUNT(*) n FROM outbox")["n"], 0)
+        self.assertEqual(store.one("SELECT status FROM servers WHERE id=?", srv["id"])["status"], "failed")
