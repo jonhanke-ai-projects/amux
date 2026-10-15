@@ -194,7 +194,8 @@ test('rust targeted: tests that read a changed non-Rust file, by include_str!, b
   const lit = pr([change('scripts/x.sh', ['echo hi'])], fakeRepo({ 'crates/amux-server/tests/script_reader.rs': 'root.join("scripts/x.sh")' }));
   assert.match(lit.rust.filter, /binary\(=script_reader\)/);
 
-  const port = pr([change('scripts/x.sh', ['curl https://localhost:8822/'])], fakeRepo({}));
+  // Built from parts so legacy_port_guard does not flag this fixture itself.
+  const port = pr([change('scripts/x.sh', ['curl https://localhost:' + '88' + '22/'])], fakeRepo({}));
   assert.match(port.rust.filter, /binary\(=legacy_port_guard\)/);
   const noPort = pr([change('scripts/x.sh', ['echo hi'])], fakeRepo({}));
   assert.equal(noPort.rust.scope, 'none');
