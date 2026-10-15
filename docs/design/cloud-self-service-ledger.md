@@ -18,7 +18,7 @@ todo.
 | 5 | Safe lifecycle in shadow mode, dunning, cancel, deletion, abuse, disputes | done except abuse isolation (M17) | 17 lifecycle tests, every one of 11 safety-rule mutations reddens a named test; account deletion with retried steps; dispute evidence |
 | 6 | Invites through cloud.amux.io; add to tailnet | done | door redeems invites against a real amux-server; `/api/tailnet/*`; tailnet-only switch refused without a tailnet |
 | 7 | iOS: Sign in with Apple and web sign-in | done, not yet on a device | app builds for the simulator; control-plane Apple verification tested with generated keys; no-purchase string scan; device test needs the Apple capability (P3) |
-| 8 | Journey every 6 hours, nightly capability suite, weekly report | journey scheduled and passing; capability suite todo | `deploy_control.sh` installs Node 22 and Chromium on the control plane and an `amux-synthetic` timer (every 6 hours) and runs it on every deploy; first scheduled run passed all five steps in 2 min 4 s and recorded `synthetic.run ok`. Checkout is still the fake one until a Stripe test key exists |
+| 8 | Journey every 6 hours, nightly capability suite, weekly report | journey scheduled and passing; capability checks partial | `amux-synthetic` timer on the control plane, every 6 hours and on every deploy. Each run records `capability.run`: T-PROV-1, T-SSO-1 (cookie scope, forged token) and the door locks pass; 9 checks report not run with what each needs (Stripe test key, Apple, test inbox, model and CLI test accounts, test tailnet). Checkout is still the fake one |
 | - | Portability: amux.yaml, export/import, `amux cloud move/pull/apply/login` | done | export from one real amux-server and import into another: every kind, idempotent re-import, schedules disabled, workers not started, secret-shaped values refused (5 tests) |
 
 ## Real infrastructure runs (2026-10-14)
@@ -39,6 +39,8 @@ Approved spend: control plane cx23, image builds, up to $25/month of test server
 
 | Customer run 4 | **Passed end to end**: Origin certificate issued, first backup, ready, door hand-off and dashboard 2 min 32 s after payment (fake checkout, real Hetzner and Cloudflare) | A scoped control-plane token, `AMUX_CLOUD_CF_TOKEN` (R2 Edit, API Tokens Edit, DNS, SSL and Zone Read on amux.io only), created through the owner's signed-in Cloudflare dashboard over CDP |
 | Run 4 account deletion | Server, DNS, subscription and account went; the bucket retried forever because R2 refuses a non-empty bucket, and backup tokens were never revoked | `delete_bucket` empties through R2's S3 API with a one-hour bucket-scoped token, deletes, and revokes every `amux-backup-<bucket>` token; the stuck record then finished with every step done |
+
+| Scheduled journeys (2026-10-15) | Ubuntu's Node 18 is too old for Playwright; two runs failed at a check before the self-delete and leaked their servers until the Hetzner core quota refused the next; that quota error reached only the log; nothing set `servers.synthetic`, so releases could never leave stage 0 and each journey server got its own restore drill | Node 22 from NodeSource; the synthetic deletes its account whenever payment went through; a failed job keeps its last error and a provider limit alerts at once; a synthetic checkout flags its server and drills skip it (`b4318cb2`) |
 
 ## Where the build departed from the plan, and why
 
