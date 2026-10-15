@@ -30519,7 +30519,12 @@ function _mdaiBannerHtml() {
   const done = p.nodes_done ? ' · ' + p.nodes_done + ' node' + (p.nodes_done === 1 ? '' : 's') + ' done' : '';
   return '<div id="mdai-runbanner" class="mdai-runbanner" role="status"><span class="mdai-spin"></span><span class="mdai-rb-txt"><b>Running ' + (a ? _mdaiElapsed(a.elapsed_ms) : '') + '</b> · ' + what + done
     + (a && a.cancel_requested ? ' · <b>stopping…</b>' : '') + '</span>'
-    + '<button class="btn" id="mdai-stop-btn" onclick="_mdaiCancel()"' + (a && a.cancel_requested ? ' disabled' : '') + '>Stop</button></div>';
+    // data-repeatable (here and on #mdai-run-btn): the run owns its own guard
+    // (server single-flight, Run disabled while running). The shared press
+    // lock kept Run "busy" on the 202 of a run that was then stopped, and on a
+    // slow iOS runner swallowed the next Run as a double press
+    // (press_double_suppressed; mdai-pages.spec.ts provider-failure step).
+    + '<button class="btn" id="mdai-stop-btn" data-repeatable onclick="_mdaiCancel()"' + (a && a.cancel_requested ? ' disabled' : '') + '>Stop</button></div>';
 }
 function _mdaiRender() {
   if (!_mdaiCur) return;
