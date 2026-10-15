@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1549';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1550';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -34000,7 +34000,7 @@ function switchView(view) {
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
-    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'],
+    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -34026,6 +34026,7 @@ function switchView(view) {
   // Draw: load the editor lazily on first open; leaving flushes a pending
   // save and stops the on-disk change poll.
   if (view === 'draw') _drawEnter(); else _drawLeave();
+  if (view === 'vault') _vaultEnter(); else if (typeof _vaultLeave === 'function') _vaultLeave();
   if (view === 'sql') _sqlInit();
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
@@ -46290,20 +46291,21 @@ function _vaultProvisionedTo(i) {
     + (o ? ' · overridden for ' + o : '') + '</span>';
   return '<div class="vault-prov"><span>' + who + '</span>' + count + '</div>';
 }
-function openVault(tab, filter) {
-  if (typeof closeSettings === 'function') closeSettings();
-  let overlay = document.getElementById('vault-overlay');
-  if (!overlay) {
-    overlay = document.createElement('div');
-    overlay.id = 'vault-overlay'; overlay.className = 'modal-overlay active';
-    overlay.innerHTML = `<section class="modal vault-page" role="dialog" aria-modal="true" aria-labelledby="vault-title">
-      <header class="modal-header"><div><h3 id="vault-title">Vault</h3><p class="ui-help">Manage credentials and payment methods for your workers. Keep your secrets secure and scoped.</p></div><button class="modal-close" aria-label="Close vault" onclick="closeVault()">×</button></header>
+// Vault is a top-level view (switchView('vault')), like Draw or Scheduler:
+// the page renders into #vault-view once and stays; leaving the tab masks
+// any revealed value and closes its sub-dialogs.
+function _vaultEnsurePage() {
+  const view = document.getElementById('vault-view');
+  if (!view) return null;
+  if (!view.firstElementChild) {
+    view.innerHTML = `<section class="vault-page" aria-labelledby="vault-title">
+      <header class="vault-head"><h2 id="vault-title">Vault</h2><p class="ui-help">Manage credentials and payment methods for your workers. Keep your secrets secure and scoped.</p></header>
       <div class="vault-tabs" role="tablist" aria-label="Vault sections">
         <button class="vault-tab" role="tab" id="vault-tab-secrets" aria-controls="vault-panel-secrets" onclick="_vaultTab('secrets')">${_vaultIcon('key')}Secrets</button>
         <button class="vault-tab" role="tab" id="vault-tab-payments" aria-controls="vault-panel-payments" onclick="_vaultTab('payments')">${_vaultIcon('card')}Payment Methods</button>
         <button class="vault-tab" role="tab" id="vault-tab-apikeys" aria-controls="vault-panel-apikeys" onclick="_vaultTab('apikeys')">${_vaultIcon('key')}API Keys</button>
       </div>
-      <div class="modal-body">
+      <div class="vault-body">
         <div id="vault-panel-secrets" role="tabpanel" aria-labelledby="vault-tab-secrets">
           <div class="vault-banner" role="note">${_vaultIcon('shield')}<div><b>Secure by design</b><p>Secrets are encrypted and automatically injected as environment variables when workers launch. Values are never shown in logs.</p></div></div>
           <div id="vault-keystore-note"></div>
@@ -46329,23 +46331,39 @@ function openVault(tab, filter) {
         <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden></div>
       </div>
     </section>`;
-    overlay.onclick = event => { if (event.target === overlay) closeVault(); };
-    overlay.onkeydown = event => {
-      if (event.key === 'Escape') {
-        if (document.querySelector('.vault-menu')) { _vaultMenuClose(); event.preventDefault(); event.stopPropagation(); return; }
-        event.preventDefault(); event.stopPropagation(); closeVault(); return;
-      }
-      _vaultTrapTab(event, overlay);
+    view.onkeydown = event => {
+      if (event.key === 'Escape' && document.querySelector('.vault-menu')) { _vaultMenuClose(); event.preventDefault(); event.stopPropagation(); }
     };
-    document.body.appendChild(overlay);
   }
+  return view;
+}
+// Called by switchView on entering the tab.
+function _vaultEnter() {
+  if (!_vaultEnsurePage()) return;
+  _vaultTab(_vault.tab || 'secrets');
+  _vaultSecretsLoad();
+}
+// Called by switchView on leaving it.
+function _vaultLeave() {
+  if (!document.getElementById('vault-view')?.firstElementChild) return;
+  _vaultMaskAll();
+  _vaultApiKeysHome();
+  document.querySelectorAll('.vault-sub').forEach(el => el.remove());
+}
+// Open the Vault tab on a given section, optionally filtered to a worker or
+// group (the Scope tab's "Manage in Vault" link uses this).
+function openVault(tab, filter) {
+  if (typeof closeSettings === 'function') closeSettings();
   _vault.q = ''; _vault.scope = ''; _vault.group = ''; _vault.worker = ''; _vault.prov = null;
   if (filter && filter.group) _vault.group = String(filter.group).toLowerCase();
   if (filter && filter.worker) _vault.worker = filter.worker;
-  _vaultTab(['payments', 'apikeys'].includes(tab) ? tab : 'secrets');
-  overlay.querySelector('.modal-close').focus();
-  _vaultSecretsLoad();
+  _vault.tab = ['payments', 'apikeys'].includes(tab) ? tab : 'secrets';
+  const q = document.getElementById('vault-q'); if (q) q.value = '';
+  if (activeView !== 'vault') switchView('vault');
+  else _vaultEnter();
+  document.getElementById('vault-tab-' + _vault.tab)?.focus();
 }
+// Keyboard focus stays inside an open vault sub-dialog (edit, access, audit).
 function _vaultTrapTab(event, root) {
   if (event.key !== 'Tab') return;
   const controls = [...root.querySelectorAll('button:not(:disabled),input,select,textarea,[tabindex="0"]')].filter(el => el.getBoundingClientRect().height);
@@ -46354,12 +46372,10 @@ function _vaultTrapTab(event, root) {
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
+// Kept for callers that "close" the vault: leave for the Workers tab.
 function closeVault() {
-  _vaultMaskAll();
-  _vaultApiKeysHome();
-  document.querySelectorAll('.vault-sub').forEach(el => el.remove());
-  document.getElementById('vault-overlay')?.remove();
-  document.getElementById('settings-btn')?.focus();
+  if (activeView === 'vault') switchView('sessions');
+  else _vaultLeave();
 }
 function _vaultTab(name) {
   _vault.tab = name;
@@ -46583,7 +46599,7 @@ function _vaultSubClose(id) {
   if (!o) return;
   o.querySelectorAll('input[type=password],input[data-secret]').forEach(el => { el.value = ''; });
   o.remove();
-  document.querySelector('#vault-overlay .modal-close')?.focus();
+  document.getElementById('vault-tab-' + (_vault.tab || 'secrets'))?.focus();
 }
 // Add, Edit and Rotate share one dialog. Edit never shows the stored value:
 // leaving Value blank keeps it, typing one rotates (version + 1).
