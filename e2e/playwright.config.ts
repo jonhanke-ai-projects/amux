@@ -11,6 +11,11 @@ import * as os from 'os';
 import { E2E_ANTHROPIC_KEY } from './test-env';
 import { reapStaleTmp } from './tmp-reap';
 
+// CI: AMUX_E2E_PLAN names a shard plan from scripts/e2e-plan.mjs. Unset (any
+// local run) means every project runs every spec, exactly as before.
+const SHARD_PLAN: { current: number; total: number; projects: Record<string, string[]> } | null =
+  process.env.AMUX_E2E_PLAN ? JSON.parse(fs.readFileSync(process.env.AMUX_E2E_PLAN, 'utf8')) : null;
+
 // ONE SERVER AND ONE AMUX_HOME PER PROJECT — not one shared by all of them
 // (AF-46, measured 2026-08-13).
 //
@@ -208,6 +213,12 @@ export default defineConfig({
     serviceWorkers: 'block',
   },
   projects: TARGETS.map((t) => ({
+    // A duration-balanced shard plan (scripts/e2e-plan.mjs) gives each project
+    // the exact files this shard runs; a project with none matches nothing.
+    ...(SHARD_PLAN
+      ? { testMatch: (SHARD_PLAN.projects[t.name] || []).map((f: string) => new RegExp('^' + path.join(__dirname, f).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'))
+          .concat(SHARD_PLAN.projects[t.name]?.length ? [] : [/^$/]) }
+      : {}),
     name: t.name,
     use: {
       ...t.use,
