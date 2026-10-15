@@ -70,7 +70,7 @@ def client_secret(now=None):
     now = int(now or time.time())
     return pyjwt.encode({"iss": os.environ["APPLE_TEAM_ID"], "iat": now, "exp": now + 600, "aud": ISSUER,
                          "sub": os.environ["APPLE_BUNDLE_ID"]},
-                        os.environ["APPLE_PRIVATE_KEY"], algorithm="ES256",
+                        os.environ["APPLE_PRIVATE_KEY"].replace("\\n", "\n"), algorithm="ES256",  # env files are one line
                         headers={"kid": os.environ["APPLE_KEY_ID"]})
 
 
