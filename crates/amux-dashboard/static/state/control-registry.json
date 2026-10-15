@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 3030,
+  "n_considered": 3046,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1478,18 +1478,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_feBuildRow": {
-      "kind": "command._feBuildRow",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_feToggleExpand": {
-      "kind": "command._feToggleExpand",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_fetchGitBranches": {
       "kind": "command._fetchGitBranches",
       "feedback_required": true,
@@ -1750,6 +1738,48 @@
     },
     "_fsSend": {
       "kind": "command._fsSend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselBeacon": {
+      "kind": "command._fselBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselCopyPaths": {
+      "kind": "command._fselCopyPaths",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselDelete": {
+      "kind": "command._fselDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselDownload": {
+      "kind": "command._fselDownload",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselMove": {
+      "kind": "command._fselMove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselRefreshView": {
+      "kind": "command._fselRefreshView",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fselReport": {
+      "kind": "command._fselReport",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2150,12 +2180,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiCreateCancel": {
-      "kind": "command._mdaiCreateCancel",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_mdaiCreatePage": {
       "kind": "command._mdaiCreatePage",
       "feedback_required": true,
@@ -2186,12 +2210,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiListSearch": {
-      "kind": "command._mdaiListSearch",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_mdaiMenu": {
       "kind": "command._mdaiMenu",
       "feedback_required": true,
@@ -2204,12 +2222,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mdaiOpenDir": {
-      "kind": "command._mdaiOpenDir",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_mdaiOpenRaw": {
       "kind": "command._mdaiOpenRaw",
       "feedback_required": true,
@@ -2218,12 +2230,6 @@
     },
     "_mdaiPutDoc": {
       "kind": "command._mdaiPutDoc",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_mdaiRenderList": {
-      "kind": "command._mdaiRenderList",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2266,12 +2272,6 @@
     },
     "_mdaiSetModel": {
       "kind": "command._mdaiSetModel",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_mdaiTabLoad": {
-      "kind": "command._mdaiTabLoad",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4672,12 +4672,6 @@
     },
     "closeExplore": {
       "kind": "command.closeExplore",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "closeMdaiNode": {
-      "kind": "command.closeMdaiNode",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

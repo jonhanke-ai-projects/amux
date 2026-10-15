@@ -5051,8 +5051,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // nudger said "off". `standing_orders` is the master switch's own
             // state, exposed so the SPA can show WHY a lane is quiet without
             // re-deriving the layering.
-            "auto_continue": crate::api::session_verbs::standing_orders_on(&name, "CC_AUTO_CONTINUE"),
-            "auto_continue_own": env.contains_key("CC_AUTO_CONTINUE"),
+            "auto_continue": crate::api::session_verbs::board_continue_on(&name),
+            "auto_continue_own": env.contains_key(crate::api::session_verbs::BOARD_CONTINUE_KEY) || env.contains_key("CC_AUTO_CONTINUE"),
             "auto_pickup": crate::api::session_verbs::standing_orders_on(&name, "CC_AUTO_PICKUP"),
             "auto_pickup_own": env.contains_key("CC_AUTO_PICKUP"),
             "standing_orders": crate::api::session_verbs::standing_orders_on(&name, "CC_STANDING_ORDERS"),
@@ -5238,7 +5238,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             row["worker_type"] = json!(worker_type);
             row["renderer"] = json!(worker_type.descriptor().renderer);
             row["auto_continue_raw"] = json!(crate::api::session_verbs::auto_continue_on(
-                crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_CONTINUE").as_deref()));
+                crate::api::session_verbs::scoped_setting_in(&home, &name, crate::api::session_verbs::BOARD_CONTINUE_KEY)
+                    .or_else(|| crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_CONTINUE")).as_deref()));
             row["auto_pickup_raw"] = json!(crate::api::session_verbs::auto_continue_on(
                 crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_PICKUP").as_deref()));
             row["standing_orders_raw"] = json!(crate::api::session_verbs::auto_continue_on(
