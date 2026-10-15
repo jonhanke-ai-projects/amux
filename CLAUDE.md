@@ -84,7 +84,8 @@ Verify a hook by what it WROTE, not by the settings file.
 - **Bracket measurements with `/health`'s `build`** -- the builder swaps the binary on any commit.
   Use `commit` for "did source change?", `build` for "same process image?".
 - **Pre-fix specimen: `<your-sha>^`**, never `HEAD~1` (shared checkout).
-- **Client JS: bump `APP_VER` (app.js) + `CACHE` (sw.js) together.**
+- **Client version is derived; do not bump it.** app.js/sw.js hold `__AMUX_ASSET_VER__`;
+  the server stamps a content hash of `static/` (amux-dashboard `build.rs`) when serving.
 - Syntax gates: `cargo check --workspace`. Before push: `cargo clippy --workspace --all-targets -- -D warnings`.
   Tests: `scripts/test-contended.sh -p amux-server` (same args as `cargo test`, same exit status).
 - **Prefer offloading any of the above to remote hardware (see the remote-build convention below)
