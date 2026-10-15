@@ -55,6 +55,7 @@ class Policy(unittest.TestCase):
     def test_statusline_records_current_account_and_prints(self):
         setup({}, current="ethan@joinmixpeek.com")
         cr.save(cr.STATE, {"switched_at": 0})
+        cr.save(os.path.join(cr.DIR, "seen-login.json"), {"email": "ethan@joinmixpeek.com", "since": 0})
         payload = {"rate_limits": {"five_hour": {"used_percentage": 12.4, "resets_at": 1792090000},
                                    "seven_day": {"used_percentage": 90, "resets_at": 1792130400}}}
         sys.stdin = io.StringIO(json.dumps(payload)); out = io.StringIO()
@@ -87,6 +88,38 @@ class Policy(unittest.TestCase):
             self.assertIn("tick", calls[0][0])
         finally:
             cr.subprocess.Popen = real
+
+    def test_parse_usage_screen(self):
+        screen = """   Current session
+   ██████████████▍                                    29% used
+   Resets 4:20pm (America/New_York)
+   Current week (all models)
+   ████████████████████████████████████████████████▌  97% used
+   Resets Oct 16 at 3am (America/New_York)
+   Current week (Fable)
+                                                      0% used
+"""
+        at = dt.datetime(2026, 10, 15, 12, 30).astimezone()
+        got = cr.parse_usage(screen, at)
+        self.assertEqual(got["five_hour"]["used_percentage"], 29)
+        self.assertEqual(got["five_hour"]["resets_at"][:16], "2026-10-15T16:20")
+        self.assertEqual(got["seven_day"]["used_percentage"], 97)
+        self.assertEqual(got["seven_day"]["resets_at"][:16], "2026-10-16T03:00")
+
+    def test_parse_reset_time_only_rolls_to_tomorrow(self):
+        at = dt.datetime(2026, 10, 15, 23, 0).astimezone()
+        self.assertEqual(cr.parse_reset("Resets 1:10am (America/New_York)", at)[:16], "2026-10-16T01:10")
+
+    def test_new_login_restarts_settle_window(self):
+        setup({}, current="ethan@a.com")
+        cr.save(cr.STATE, {"switched_at": 0})
+        try: os.remove(os.path.join(cr.DIR, "seen-login.json"))
+        except OSError: pass
+        try: os.remove(os.path.join(cr.DIR, "last-record"))
+        except OSError: pass
+        sys.stdin = io.StringIO(json.dumps({"rate_limits": {"seven_day": {"used_percentage": 99, "resets_at": 1}}}))
+        with redirect_stdout(io.StringIO()): cr.cmd_statusline()
+        self.assertNotIn("ethan@a.com", cr.load(cr.ACCOUNTS, {"accounts": {}})["accounts"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -9,7 +9,8 @@ Subcommands:
   statusline     Claude Code status line command. Records the live rate_limits
                  reading under the logged-in account and prints a short line.
   pick [--json]  Rank accounts from the saved readings.
-  tick           Switch when the policy says so. Run every few minutes.
+  tick           Probe usage, then switch when the policy says so. Every few minutes.
+  probe          Read the logged-in account's usage from /usage in a temporary CLI.
   switch EMAIL   Log the CLI into EMAIL: `claude auth login --email` with the
                  browser page sent to the Chrome profile that holds the
                  accounts, email sign-in link read from the forwarded inbox.
@@ -54,6 +55,8 @@ SETTLE_S = int(os.environ.get("CLAUDE_ROTATE_SETTLE_S", "180"))
 MIN_SWITCH_GAP_S = int(os.environ.get("CLAUDE_ROTATE_MIN_GAP_S", "900"))
 CHROME_PROFILE = os.environ.get("CLAUDE_ROTATE_CHROME_PROFILE", "Profile 16")
 CLAUDE = os.environ.get("CLAUDE_ROTATE_CLAUDE", "claude")
+# The probe CLI starts here; it must be a folder the owner already trusts.
+PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, "Dev"))
 SWITCH_TIMEOUT_S = int(os.environ.get("CLAUDE_ROTATE_SWITCH_TIMEOUT_S", "240"))
 
 
@@ -141,6 +144,39 @@ def record(email, five=None, five_reset=None, week=None, week_reset=None, source
         save(ACCOUNTS, data)
 
 
+REPORTERS = os.path.join(DIR, "reporters")
+
+
+def note_reporter():
+    """Touch one file per calling CLI process, so `status` can say how many
+    sessions are feeding readings (a lone reporter makes readings lag)."""
+    try:
+        os.makedirs(REPORTERS, exist_ok=True)
+        path = os.path.join(REPORTERS, str(os.getppid()))
+        if not os.path.exists(path) or time.time() - os.path.getmtime(path) > 60:
+            open(path, "w").close()
+    except OSError:
+        pass
+
+
+def reporters(window_s=600):
+    try:
+        names = os.listdir(REPORTERS)
+    except OSError:
+        return 0
+    live = 0
+    for n in names:
+        p = os.path.join(REPORTERS, n)
+        try:
+            if time.time() - os.path.getmtime(p) <= window_s:
+                live += 1
+            elif time.time() - os.path.getmtime(p) > 86400:
+                os.remove(p)
+        except OSError:
+            pass
+    return live
+
+
 def trigger_if_exhausted(email, five, week):
     """Start a detached tick as soon as a live reading crosses the threshold.
 
@@ -163,16 +199,33 @@ def trigger_if_exhausted(email, five, week):
     return True
 
 
+def login_seen_since(email):
+    """When this login was first seen. The CLI changes account before the
+    switch records its time, and a worker's next status line still carries the
+    previous account's numbers, so the settle window starts at the first
+    sighting of a new email as well as at the recorded switch."""
+    path = os.path.join(DIR, "seen-login.json")
+    seen = load(path, {})
+    if seen.get("email") != email:
+        seen = {"email": email, "since": time.time()}
+        try:
+            save(path, seen)
+        except OSError:
+            pass
+    return float(seen.get("since") or 0)
+
+
 def cmd_statusline():
     try:
         payload = json.load(sys.stdin)
     except ValueError:
         payload = {}
     email = current_email()
+    note_reporter()
     limits = payload.get("rate_limits") or {}
     five, week = limits.get("five_hour") or {}, limits.get("seven_day") or {}
     state = load(STATE, {})
-    settled = time.time() - float(state.get("switched_at") or 0) >= SETTLE_S
+    settled = time.time() - max(float(state.get("switched_at") or 0), login_seen_since(email)) >= SETTLE_S
     if email and (five or week) and settled:
         # At most one write per account per 30 s across the whole fleet.
         stamp = os.path.join(DIR, "last-record")
@@ -265,10 +318,105 @@ def cmd_pick(argv):
             r["weekly_resets"], r["available_at"]))
 
 
+MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+
+
+def parse_reset(text, at=None):
+    """'Resets 4:20pm (America/New_York)' or 'Resets Oct 16 at 3am (...)'."""
+    at = at or now()
+    m = re.search(r"Resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2})\s+at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)", text)
+    if not m:
+        return None
+    mon, day, hour, minute, ampm = m.groups()
+    hour = int(hour) % 12 + (12 if ampm == "pm" else 0)
+    when = at.replace(hour=hour, minute=int(minute or 0), second=0, microsecond=0)
+    if mon:
+        when = when.replace(month=MONTHS[mon], day=int(day))
+        if when < at - dt.timedelta(days=1):
+            when = when.replace(year=when.year + 1)
+    elif when <= at:
+        when += dt.timedelta(days=1)
+    return when.isoformat()
+
+
+def parse_usage(screen, at=None):
+    """Read the five-hour and weekly windows from the CLI's /usage screen."""
+    lines = [l.strip() for l in screen.splitlines() if l.strip()]
+    out = {}
+    for key, label in (("five_hour", "Current session"), ("seven_day", "Current week (all models)")):
+        idx = next((i for i, l in enumerate(lines) if l.startswith(label)), None)
+        if idx is None:
+            continue
+        used = reset = None
+        for l in lines[idx + 1: idx + 4]:
+            m = re.search(r"(\d{1,3})% used", l)
+            if m and used is None:
+                used = int(m.group(1))
+            if l.startswith("Resets") and reset is None:
+                reset = parse_reset(l, at)
+        if used is not None:
+            out[key] = {"used_percentage": used, "resets_at": reset}
+    return out
+
+
+def tmux(*args):
+    return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=20)
+
+
+def probe():
+    """Read the logged-in account's usage from /usage in a temporary CLI
+    session. It sends no prompt, so it spends no quota, and it works whether
+    or not any worker is active."""
+    email = current_email()
+    name = "claude-rotate-probe-%d" % os.getpid()
+    cwd = PROBE_CWD
+    started = time.time()
+    tmux("new-session", "-d", "-s", name, "-x", "160", "-y", "60", "-c", cwd, CLAUDE)
+    try:
+        sent, screen = False, ""
+        while time.time() - started < 60:
+            time.sleep(1.5)
+            screen = tmux("capture-pane", "-p", "-t", name).stdout
+            if "trust this folder" in screen:
+                # Never answered on the owner's behalf: the probe needs a
+                # folder already trusted (CLAUDE_ROTATE_PROBE_CWD).
+                break
+            if not sent and "❯" in screen:
+                tmux("send-keys", "-t", name, "/usage", "Enter")
+                sent = True
+                continue
+            if sent and "Current week (all models)" in screen and re.search(
+                    r"Current week \(all models\)[\s\S]*?\d+% used", screen):
+                break
+        windows = parse_usage(screen)
+    finally:
+        tmux("kill-session", "-t", name)
+    elapsed = round(time.time() - started, 1)
+    if not email or "seven_day" not in windows:
+        log("claude_rotate_probe_failed", measured=False, why_unmeasured="no /usage screen parsed",
+            current=email, elapsed_s=elapsed, screen_tail=re.sub(r"\s+", " ", screen)[-200:])
+        return None
+    if current_email() != email:  # the login changed mid-probe; the reading is ambiguous
+        log("claude_rotate_probe_failed", measured=False, why_unmeasured="login changed during probe")
+        return None
+    five, week = windows.get("five_hour") or {}, windows["seven_day"]
+    record(email, five.get("used_percentage"), five.get("resets_at"),
+           week.get("used_percentage"), week.get("resets_at"), source="usage-probe")
+    log("claude_rotate_probe", measured=True, n_considered=1, current=email, elapsed_s=elapsed,
+        five_hour=five.get("used_percentage"), weekly=week.get("used_percentage"))
+    return windows
+
+
 def cmd_tick():
     if os.environ.get("CLAUDE_ROTATE_ENABLED", "1") == "0" or os.path.exists(os.path.join(DIR, "paused")):
         print(log("claude_rotate_paused", measured=False, why_unmeasured="paused"))
         return 0
+    if not os.path.exists(LOCK) or not _switch_running():
+        try:
+            probe()
+        except Exception as e:
+            log("claude_rotate_probe_failed", measured=False, why_unmeasured=str(e)[:200])
     current = current_email()
     rows = rank()
     state = load(STATE, {})
@@ -332,6 +480,67 @@ def trace(target, tab, text):
                             "url": url[0][:160], "text": re.sub(r"\s+", " ", text)[:300]}) + "\n")
 
 
+def profile_tab():
+    """A live tab in the Chrome profile that holds the accounts, reused across
+    switches. Tabs that `open -na` creates there can stay on about:blank and
+    refuse navigation, so one is opened once and its id kept in state.json."""
+    state = load(STATE, {})
+    listed = cdp("list", check=False)
+    tab = state.get("chrome_tab")
+    if tab and any(line.startswith(tab) for line in listed.splitlines()):
+        probe = cdp("eval", tab, "document.readyState", check=False).splitlines()[-1:]
+        if probe and probe[0] in ("complete", "interactive"):
+            return tab
+    before = {l.split()[0] for l in listed.splitlines() if l.strip()}
+    marker = "https://claude.ai/?amux-rotate=%d" % int(time.time())
+    subprocess.run(["open", "-na", "Google Chrome", "--args", "--profile-directory=" + CHROME_PROFILE, marker])
+    for _ in range(20):
+        time.sleep(1.5)
+        new = [l.split()[0] for l in cdp("list", check=False).splitlines()
+               if l.strip() and l.split()[0] not in before]
+        if new:
+            tab = new[0]
+            cdp("nav", tab, "https://claude.ai/", check=False)
+            state = load(STATE, {})
+            state["chrome_tab"] = tab
+            save(STATE, state)
+            log("claude_rotate_profile_tab", tab=tab)
+            return tab
+    raise RuntimeError("no tab appeared in Chrome profile " + CHROME_PROFILE)
+
+
+def code_from_link(link):
+    """Open the sign-in link in a throwaway tab and read its 6-digit code."""
+    opened = cdp("open", link, check=False)
+    m = re.search(r"Opened new tab: (\S+)", opened)
+    if not m:
+        return None
+    helper = m.group(1)
+    try:
+        for _ in range(10):
+            time.sleep(1.5)
+            found = cdp("eval", helper, '(document.body.innerText.match(/\\b\\d{6}\\b/) || [""])[0]',
+                        check=False).splitlines()[-1:]
+            if found and re.fullmatch(r"\d{6}", found[0]):
+                return found[0]
+        return None
+    finally:
+        cdp("close", helper, check=False)
+
+
+def enter_code(tab, code):
+    js = ('(() => { let i = document.querySelector("input[autocomplete=one-time-code]");'
+          ' if (!i) return "none"; i.focus(); i.select(); return "ok" })()')
+    if cdp("eval", tab, js, check=False).splitlines()[-1:] != ["ok"]:
+        if not click_text(tab, r"^Enter verification code$"):
+            return False
+        time.sleep(1.5)
+        if cdp("eval", tab, js, check=False).splitlines()[-1:] != ["ok"]:
+            return False
+    cdp("type", tab, code)
+    return click_text(tab, r"Verify")
+
+
 def fill_email(tab, email):
     """Type the address into an empty email field. Returns True if it typed."""
     js = ('(() => { const i = document.querySelector("input[type=email]"); if (!i || i.value) return "skip";'
@@ -372,6 +581,11 @@ def magic_link(email, since_epoch):
     return None
 
 
+def _switch_running():
+    with locked(LOCK, nowait=True) as got:
+        return not got
+
+
 def switch(target, reason="manual"):
     with locked(LOCK, nowait=True) as got:
         if not got:
@@ -390,8 +604,8 @@ def _switch(target, reason):
         url_file = os.path.join(tmp, "url")
         opener = os.path.join(tmp, "open.sh")
         with open(opener, "w") as f:
-            f.write('#!/bin/sh\nprintf %%s "$1" > %s\nexec open -na "Google Chrome" --args --profile-directory=%s "$1"\n'
-                    % (json.dumps(url_file), json.dumps(CHROME_PROFILE)))
+            # Only record the URL; the switch drives its own long-lived tab.
+            f.write('#!/bin/sh\nprintf %%s "$1" > %s\n' % json.dumps(url_file))
         os.chmod(opener, 0o700)
         out_path = os.path.join(tmp, "cli.log")
         # `script` gives the CLI the terminal it expects; the old login stays
@@ -409,20 +623,14 @@ def _switch(target, reason):
                 if tab is None:
                     if not os.path.exists(url_file):
                         continue
-                    st = urllib.parse.parse_qs(urllib.parse.urlparse(open(url_file).read()).query).get("state", [""])[0]
-                    tab = find_tab(st[:20]) if st else None
-                    if tab is None:
-                        continue
+                    tab = profile_tab()
                     steps.append("tab")
-                    # A tab opened by `open -na` can list the URL yet sit on
-                    # about:blank; navigating it explicitly always loads.
                     cdp("nav", tab, open(url_file).read(), check=False)
                 text = page_text(tab)
                 trace(target, tab, text)
                 if not text.strip():
                     blank_since = blank_since or time.time()
                     if time.time() - blank_since > 25 and steps.count("reload") < 3:
-                        # A tab opened by `open -na` can sit on about:blank.
                         cdp("nav", tab, open(url_file).read(), check=False)
                         steps.append("reload")
                         blank_since = None
@@ -439,12 +647,21 @@ def _switch(target, reason):
                     if click_text(tab, r"^Sign in here instead$"):
                         steps.append("sign-in-here")
                 elif "click the link sent to" in text or "verification code" in text.lower():
+                    # Opening the link in this tab drops the pending Claude Code
+                    # authorization ("Sign in here instead" lands on a bare
+                    # /login). Read the code it shows in a helper tab and type
+                    # it here instead.
                     if not link_used:
                         link = magic_link(target, started)
                         if link:
-                            cdp("nav", tab, link)
+                            code = code_from_link(link)
                             link_used = True
-                            steps.append("magic-link")
+                            steps.append("code" if code else "no-code")
+                            if code and enter_code(tab, code):
+                                steps.append("verify")
+                                time.sleep(4)
+                            elif not code:
+                                raise RuntimeError("sign-in link showed no verification code")
                 elif "Continue with email" in text:
                     if steps.count("continue-email") >= 3:
                         raise RuntimeError("login page did not advance after 3 email submissions")
@@ -463,8 +680,8 @@ def _switch(target, reason):
         finally:
             if proc.poll() is None:
                 proc.kill()
-            if tab:
-                cdp("close", tab, check=False)
+            if tab:  # park the reused tab so it holds no half-finished login
+                cdp("nav", tab, "https://claude.ai/", check=False)
             cli_out = open(out_path, errors="replace").read() if os.path.exists(out_path) else ""
     after = cli_email()
     ok = after == target
@@ -494,6 +711,8 @@ def main(argv):
         return 0
     if cmd == "tick":
         return cmd_tick()
+    if cmd == "probe":
+        return 0 if probe() else 1
     if cmd == "switch" and len(argv) == 3:
         return switch(argv[2])
     if cmd == "record" and len(argv) == 7:
@@ -504,7 +723,8 @@ def main(argv):
         state = load(STATE, {})
         email = current_email()
         cur = load(ACCOUNTS, {"accounts": {}})["accounts"].get(email, {})
-        print(json.dumps({"current": email, "reading": cur, "last_switch": state}, indent=2))
+        print(json.dumps({"current": email, "reading": cur, "last_switch": state,
+                          "reporters_last_10m": reporters()}, indent=2))
         return 0
     print(__doc__)
     return 2
