@@ -11575,21 +11575,56 @@ async function _scopeEditSave() {
   }
 }
 
-// Board automation is configuration, so expose the runtime's actual switches
-// beside gates/status availability instead of scattering one in a card menu
-// and hiding the other two as environment-variable trivia. Each switch writes
-// the worker layer; Inherit removes that override and immediately re-resolves
-// global -> group -> worker precedence on the server.
-const _WORKER_BOARD_CONFIGS = [
-  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own',
-    label: 'Backlog → To Do', note: 'Pull the oldest eligible backlog card when To Do is empty. On by default; parked and human-owned cards stay put.' },
-  { field: 'board_auto_pickup', value: 'auto_pickup', own: 'auto_pickup_own',
-    label: 'To Do → In Progress', note: 'Claim the next eligible To Do card when the worker is idle.' },
-  { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
-    label: 'Continue non-terminal work', note: 'Re-check actionable blocked work instead of stopping early.' },
-  { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
-    label: 'Pickup / continue master', note: 'Master switch for To Do pickup and non-terminal continuation.' },
+// What each switch really does, audited against the server 2026-10-15. The
+// board can only type into a worker when "Board steers this worker" (force
+// adherence) is on, and the drive skips a worker entirely when pickup is off,
+// so Continue and Backlog refill are children of both. The old separate
+// "Pickup / continue master" (CC_STANDING_ORDERS) is no longer shown: turning
+// a child on turns it on server-side. `value` is the worker's own setting;
+// `active` says whether it takes effect, and a row that is set but blocked by
+// its parent says so instead of looking like it works.
+const _BOARD_SWITCHES = [
+  { field: 'board_decompose', value: 'board_decompose', own: null, group: 'Your messages',
+    label: 'Plan my messages onto the board',
+    note: 'Each message you send this worker is also turned into board cards in the background. The message itself still reaches the worker right away.' },
+  { field: 'board_force_adherence', value: 'board_force_adherence', own: null, group: 'The board and this worker',
+    label: 'Board steers this worker',
+    note: 'Lets the board type into this worker: start cards, nudge and remind it. With planning on, a task-like message is held until it becomes cards, and the worker gets the cards instead. Off: the board only keeps records.' },
+  { field: 'board_auto_pickup', value: 'auto_pickup_raw', active: 'auto_pickup', own: 'auto_pickup_own', parents: ['board_force_adherence'],
+    label: 'Start To Do cards when idle',
+    note: 'When the worker goes idle it claims its next To Do card and starts on it.' },
+  { field: 'board_auto_continue', value: 'auto_continue_raw', active: 'auto_continue', own: 'auto_continue_own', parents: ['board_force_adherence', 'board_auto_pickup'],
+    label: 'Keep going on unfinished cards',
+    note: 'When nothing is ready to start, an idle worker is nudged to finish its blocked or in-progress cards.' },
+  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own', parents: ['board_force_adherence', 'board_auto_pickup'],
+    label: 'Refill To Do from Backlog',
+    note: 'When To Do is empty, the oldest Backlog card this worker can do moves into To Do, so it is started next.' },
 ];
+
+// Own setting, effective state and the reason a set switch is not in effect,
+// computed once for every surface that shows these switches.
+function _boardSwitchStates(s, pending) {
+  pending = pending || {};
+  const iso = !!(s && s.isolated);
+  const own = (c) => c.field in pending ? pending[c.field]
+    : (s[c.value] === undefined && c.active ? s[c.active] === true : s[c.value] === true);
+  const out = {};
+  for (const c of _BOARD_SWITCHES) {
+    const parentsOn = (c.parents || []).every(p => out[p] && out[p].effective);
+    const selfOn = own(c) && (!c.active || c.field in pending || s[c.active] === true || s[c.active] === undefined);
+    out[c.field] = { own: own(c), effective: !iso && selfOn && parentsOn };
+  }
+  const labelOf = (f) => (_BOARD_SWITCHES.find(x => x.field === f) || {}).label || f;
+  for (const c of _BOARD_SWITCHES) {
+    const st = out[c.field];
+    const blockedBy = (c.parents || []).find(p => !out[p].effective);
+    st.why = (st.own && !iso && !st.effective)
+      ? (blockedBy ? 'Not active until \u201c' + labelOf(blockedBy) + '\u201d is on.' : 'Not active: turn it off and on again to enable it.')
+      : '';
+  }
+  return out;
+}
+const _WORKER_BOARD_CONFIGS = _BOARD_SWITCHES;
 
 function _workerConfigurationRow(key, label, value, note, controls) {
   return '<div class="worker-config-row" data-worker-config="' + esc(key) + '">'
@@ -11768,14 +11803,17 @@ async function _workerExternalEmailSet(name, value) {
 function _workerBoardConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
   if (s.isolated) return '<p>Isolated mode: direct CLI messaging. Boards and harness automation are disabled.</p>';
+  const states = _boardSwitchStates(s);
   const rows = _WORKER_BOARD_CONFIGS.map(c => {
-    const on = s[c.value] !== false;
-    const own = !!s[c.own];
+    const on = states[c.field].own;
+    const own = !!(c.own && s[c.own]);
     return '<div class="worker-config-row">'
       + '<div class="worker-config-copy"><div class="worker-config-label">'
       + esc(c.label) + (own ? ' <span style="font-size:0.62rem;color:var(--accent);">worker override</span>'
                               : ' <span style="font-size:0.62rem;color:var(--dim);">inherited/default</span>')
-      + '</div><div class="worker-config-note">' + esc(c.note) + '</div></div><div class="worker-config-actions">'
+      + '</div><div class="worker-config-note">' + esc(c.note)
+      + (states[c.field].why ? '<span class="pbc-why" style="display:block;">' + esc(states[c.field].why) + '</span>' : '')
+      + '</div></div><div class="worker-config-actions">'
       + '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
       + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
       + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
@@ -11786,7 +11824,7 @@ function _workerBoardConfigurationsHTML(name) {
       + '</div></div>';
   }).join('');
   return '<div class="worker-config-grid worker-config-grid-board">'
-    + _workerConfigurationSection('task-lifecycle', 'Task lifecycle', 'Controls automatic backlog → To Do → In Progress and continuation until terminal. Status availability and Board gates below define transition requirements.', [rows])
+    + _workerConfigurationSection('task-lifecycle', 'Board and this worker', 'The same switches as the worker\u2019s Board tab. A switch that is on but held back by the one above it says so. Status availability and Board gates below define transition requirements.', [rows])
     + '</div>';
 }
 
@@ -13456,20 +13494,7 @@ function renderPeekIssues() {
 // configurations should be toggles on the worker details board tab contents").
 // Renders both the message-routing policy (decompose, force adherence) and the
 // task lifecycle automation (_WORKER_BOARD_CONFIGS) as toggle rows.
-const _PEEK_BOARD_ALL_CONFIGS = [
-  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own',
-    label: 'Auto-drain backlog', note: 'Pull the oldest eligible backlog card when To Do is empty.' },
-  { field: 'board_auto_pickup', value: 'auto_pickup', own: 'auto_pickup_own',
-    label: 'Auto-pickup', note: 'Claim the next To Do card when idle.' },
-  { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
-    label: 'Continue non-terminal', note: 'Re-check actionable blocked work.' },
-  { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
-    label: 'Pickup / continue master', note: 'Master switch for pickup and continuation.' },
-  { field: 'board_decompose', value: 'board_decompose', own: null,
-    label: 'Decompose onto board', note: 'Messages are planned onto the board in the background.' },
-  { field: 'board_force_adherence', value: 'board_force_adherence', own: null,
-    label: 'Force board adherence', note: 'Board drives this worker; messages become cards.' },
-];
+const _PEEK_BOARD_ALL_CONFIGS = _BOARD_SWITCHES;
 // A toggle being saved keeps the value the owner just set. Every board refresh
 // re-ran this render from `sessions`, which still held the OLD value until the
 // save and the session refetch came back, so an unchecked box flipped back
@@ -13488,22 +13513,22 @@ function _peekBoardPolicySync() {
   if (iso) {
     h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
   }
+  const states = _boardSwitchStates(s, _pbcPending);
+  let group = '';
   for (const c of _PEEK_BOARD_ALL_CONFIGS) {
-    const on = !iso && (c.field in _pbcPending ? _pbcPending[c.field] : s[c.value] !== false);
-    const own = c.own ? !!s[c.own] : false;
+    if (c.group && c.group !== group) { group = c.group; h += '<div class="pbc-group">' + esc(group) + '</div>'; }
+    const on = !iso && states[c.field].own;
+    const isOwn = c.own ? !!s[c.own] : false;
     const dis = iso ? ' disabled' : '';
-    // Checkbox FIRST, beside its own label (Ethan, 2026-10-04: "when I
-    // uncheck these they revert back"). It sat at the far right of its half
-    // of the two-column panel, which on a wide screen is directly left of the
-    // NEXT row's label: the box beside "Auto-pickup" was Auto-drain's, so the
-    // click changed a different setting and the one he meant never moved.
-    h += '<label class="pbc-row' + (iso ? ' pbc-disabled' : '') + '" data-field="' + esc(c.field) + '">'
+    const why = states[c.field].why;
+    h += '<label class="pbc-row' + (c.parents ? ' pbc-child' : '') + (iso ? ' pbc-disabled' : '') + (why ? ' pbc-blocked' : '') + '" data-field="' + esc(c.field) + '">'
       + '<input type="checkbox"' + (on ? ' checked' : '') + dis
       + ' onchange="togglePeekBoardPolicy(\'' + escJs(c.field) + '\',this.checked)">'
-      + '<span class="pbc-label">' + esc(c.label)
-      + (own ? ' <span class="pbc-own">override</span>' : '')
-      + '</span>'
-      + '</label>';
+      + '<span class="pbc-text"><span class="pbc-label">' + esc(c.label)
+      + (isOwn ? ' <span class="pbc-own" title="Set on this worker, overriding its group or global setting">override</span>' : '')
+      + '</span><span class="pbc-help">' + esc(c.note) + '</span>'
+      + (why ? '<span class="pbc-why">' + esc(why) + '</span>' : '')
+      + '</span></label>';
   }
   // Rebuild only when something changed: the panel was replaced on every board
   // refresh, several times a second, so a click could land on a box that was
@@ -13527,7 +13552,7 @@ async function togglePeekBoardPolicy(field, on) {
       // still overwrites this with the server's effective value.
       const c = _PEEK_BOARD_ALL_CONFIGS.find(x => x.field === field);
       const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
-      if (c && s) { s[c.value] = !!on; if (c.own) s[c.own] = true; }
+      if (c && s) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
     }
     await fetchSessions().catch(() => {});
   } finally {
@@ -14279,7 +14304,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1549';   // bump together with the sw.js CACHE version
+const APP_VER = '__AMUX_ASSET_VER__';   // derived: the server stamps a content hash of static/ here (amux-dashboard build.rs)
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16126,26 +16151,12 @@ function _psfRenderEntries(dirPath, data) {
     body.appendChild(back);
   }
   const sorted = _psfSortEntries(data.entries);
-  for (const entry of sorted) {
-    const entryPath = dirPath.replace(/\/$/, '') + '/' + entry.name;
-    const row = document.createElement('div');
-    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
-    const icon = _fileTypeIcon(entry.name, entry.type);
-    const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
-    const dateStr = entry.modified ? timeAgo(entry.modified) : '';
-    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
-    const ep = entryPath.replace(/'/g, "\\'");
-    row.innerHTML =
-      `<div class="fe-cell-name">${icon}<span>${esc(entry.name)}${slash}</span></div>` +
-      `<div class="fe-cell-size">${sizeStr}</div>` +
-      `<div class="fe-cell-date">${dateStr}</div>` +
-      `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">&#x22EF;</button></div>`;
-    row.onclick = entry.type === 'dir' ? () => _psfLoad(entryPath) : () => _psfViewFile(entryPath);
-    body.appendChild(row);
-  }
+  const psfOpts = { openDir: _psfLoad, openFile: _psfViewFile, singleClickOpens: true };
+  for (const entry of sorted) body.appendChild(_feBuildRow(entry, dirPath, 0, '', psfOpts));
   if (!data.entries.length) {
     body.innerHTML = '<div style="padding:16px;color:var(--dim);text-align:center;font-size:0.82rem;">Empty folder</div>';
   }
+  _fselApply();
 }
 
 async function _psfLoad(dirPath) {
@@ -27753,12 +27764,22 @@ function _feHighlight(name, q) {
 }
 // Build one file-explorer row. Dirs get an expand chevron (inline accordion) AND
 // still navigate on row click; `depth` indents nested rows.
-function _feBuildRow(entry, parentPath, depth, q) {
+// One row builder for every file list (the Files tab and the Split view's
+// file panel; Explore stamps the same data-path/data-type on its rows), so the
+// shared multi-select below works the same everywhere. `opts.openDir` and
+// `opts.openFile` say what opening means in the hosting view.
+function _feBuildRow(entry, parentPath, depth, q, opts) {
+  opts = opts || {};
+  const openDir = opts.openDir || loadFiles;
+  const openFile = opts.openFile || openFilePreview;
   const entryPath = parentPath.replace(/\/$/, '') + '/' + entry.name;
   const row = document.createElement('div');
   row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
   row.dataset.depth = depth;
   row.dataset.path = entryPath;
+  row.dataset.type = entry.type === 'dir' ? 'dir' : 'file';
+  row._feOpts = opts;
+  if (_fsel.paths.has(entryPath)) row.classList.add('fsel-selected');
   const nameHtml = _feHighlight(entry.name, q);
   const icon = _fileTypeIcon(entry.name, entry.type);
   const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
@@ -27776,17 +27797,23 @@ function _feBuildRow(entry, parentPath, depth, q) {
     `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">⋯</button></div>`;
   if (entry.type === 'dir') {
     // Folders open on a single click on every device (fast, and mobile-friendly).
-    row.onclick = () => loadFiles(entryPath);
+    row.onclick = () => openDir(entryPath);
   } else if (_feTouchDevice()) {
     // Touch: a single tap opens the file. Mobile-first, no hover or double-tap.
-    row.onclick = () => openFilePreview(entryPath);
+    row.onclick = () => openFile(entryPath);
   } else {
     // Desktop pointer: single click selects the row, double-click opens it in the
-    // existing viewer, matching a familiar OS file manager. openFilePreview is
-    // unchanged; this only changes what gesture triggers it.
-    row.title = 'Double-click to open';
-    row.onclick = () => _feSelectRow(row);
-    row.ondblclick = () => openFilePreview(entryPath);
+    // existing viewer, matching a familiar OS file manager.
+    // A host can keep single-click-to-open (the Split view's narrow preview
+    // panel always worked that way); selection there is Cmd/Ctrl/Shift-click
+    // and long-press, which the capture listener below handles for every list.
+    if (opts.singleClickOpens) {
+      row.onclick = () => openFile(entryPath);
+    } else {
+      row.title = 'Double-click to open';
+      row.onclick = (ev) => _fselClick(row, ev || {});
+      row.ondblclick = () => openFile(entryPath);
+    }
   }
   return row;
 }
@@ -27797,11 +27824,189 @@ function _feTouchDevice() {
 }
 // Single-selection highlight for the file list (desktop). Clears any prior
 // selection so exactly one row is highlighted, like a desktop file manager.
-function _feSelectRow(row) {
-  const body = document.getElementById('files-body');
-  if (body) body.querySelectorAll('.fe-row.fe-selected').forEach(r => r.classList.remove('fe-selected'));
-  row.classList.add('fe-selected');
+function _feSelectRow(row) { _fselClick(row, {}); }
+
+// ── Multi-select for file lists (Ethan, 2026-10-15: "make it so I can select
+// multiple files/dirs and have commands for applying across multiple ...
+// familiar to users"). Finder and Google Drive gestures: click selects one,
+// Cmd/Ctrl-click toggles, Shift-click selects a range, Cmd/Ctrl+A selects all,
+// Esc clears; on touch, long-press enters selection and taps then toggle. One
+// selection at a time, in whichever list it was made. A bar at the bottom
+// carries the commands: Copy paths, Download, Move to..., Delete.
+const _FSEL_ROOTS = '#files-body, #psf-body, #explore-body';
+const _fsel = { root: null, paths: new Set(), anchor: null, mode: false, suppressClick: false };
+function _fselRowsIn(root) { return root ? [...root.querySelectorAll('[data-path][data-type]')] : []; }
+function _fselClick(row, ev) {
+  const root = row.closest(_FSEL_ROOTS);
+  if (!root) return;
+  if (_fsel.root !== root) { _fsel.root = root; _fsel.paths.clear(); _fsel.anchor = null; }
+  const path = row.dataset.path;
+  if (ev.shiftKey && _fsel.anchor) {
+    const rows = _fselRowsIn(root).map(r => r.dataset.path);
+    const a = rows.indexOf(_fsel.anchor), b = rows.indexOf(path);
+    if (a >= 0 && b >= 0) {
+      if (!(ev.metaKey || ev.ctrlKey)) _fsel.paths.clear();
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) _fsel.paths.add(rows[i]);
+    }
+  } else if (ev.metaKey || ev.ctrlKey || _fsel.mode) {
+    _fsel.paths.has(path) ? _fsel.paths.delete(path) : _fsel.paths.add(path);
+    _fsel.anchor = path;
+  } else {
+    _fsel.paths.clear(); _fsel.paths.add(path); _fsel.anchor = path;
+  }
+  if (!_fsel.paths.size) _fsel.mode = false;
+  _fselApply();
 }
+function _fselClear() {
+  _fsel.paths.clear(); _fsel.anchor = null; _fsel.mode = false;
+  _fselApply();
+}
+function _fselSelectAll(root) {
+  _fsel.root = root; _fsel.paths = new Set(_fselRowsIn(root).map(r => r.dataset.path));
+  _fselApply();
+}
+// Re-applied after any list re-render, so a selection survives a refresh of
+// the rows that are still there and drops the ones that are gone.
+function _fselApply() {
+  document.querySelectorAll('.fsel-selected').forEach(r => r.classList.remove('fsel-selected'));
+  const root = _fsel.root && document.contains(_fsel.root) ? _fsel.root : null;
+  if (!root) { _fsel.paths.clear(); _fsel.mode = false; }
+  const present = new Set();
+  _fselRowsIn(root).forEach(r => { if (_fsel.paths.has(r.dataset.path)) { r.classList.add('fsel-selected'); present.add(r.dataset.path); } });
+  _fsel.paths = present;
+  document.querySelectorAll(_FSEL_ROOTS).forEach(el => el.classList.toggle('fsel-mode', el === root && (_fsel.mode || present.size > 1)));
+  _fselRenderBar();
+}
+function _fselSelected() {
+  const root = _fsel.root;
+  return _fselRowsIn(root).filter(r => _fsel.paths.has(r.dataset.path)).map(r => ({ path: r.dataset.path, type: r.dataset.type }));
+}
+function _fselRefreshView() {
+  const id = _fsel.root && _fsel.root.id;
+  if (id === 'files-body') _fileViewRefresh();
+  else if (id === 'psf-body') _psfLoad(_peekSplitPath || '/');
+  else if (id === 'explore-body') loadExplore(_explorePath);
+}
+function _fselRenderBar() {
+  let bar = document.getElementById('fsel-bar');
+  const n = _fsel.paths.size;
+  // One selected row is ordinary single selection: the bar appears from two,
+  // or as soon as touch selection mode is on.
+  if (!n || (n < 2 && !_fsel.mode)) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'fsel-bar'; bar.className = 'fsel-bar'; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Selected files');
+    document.body.appendChild(bar);
+  }
+  const files = _fselSelected().filter(e => e.type === 'file').length;
+  bar.innerHTML = '<span class="fsel-count">' + n + ' selected</span>'
+    + '<button class="btn" onclick="_fselCopyPaths()">Copy paths</button>'
+    + '<button class="btn" onclick="_fselDownload()"' + (files ? '' : ' disabled title="Folders cannot be downloaded"') + '>Download' + (files && files < n ? ' ' + files : '') + '</button>'
+    + '<button class="btn" onclick="_fselMove()">Move to\u2026</button>'
+    + '<button class="btn fsel-danger" onclick="_fselDelete()">Delete</button>'
+    + '<button class="btn fsel-close" onclick="_fselClear()" title="Clear selection (Esc)" aria-label="Clear selection">\u2715</button>';
+}
+function _fselBeacon(action, ok, failed) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'file-bulk-action', action, ok, failed, view: (_fsel.root && _fsel.root.id) || '', measured: true, n_considered: ok + failed, ver: APP_VER }) }).catch(() => {});
+  } catch (e) {}
+}
+// Run one request per item and report what actually happened, never a bare
+// "done": a partial failure names the items that failed and why.
+async function _fselEach(items, fn) {
+  const failed = [];
+  let ok = 0;
+  for (const it of items) {
+    try { const why = await fn(it); if (why) failed.push(it.path.split('/').pop() + ' (' + why + ')'); else ok++; }
+    catch (e) { failed.push(it.path.split('/').pop() + ' (' + e.message + ')'); }
+  }
+  return { ok, failed };
+}
+function _fselReport(verb, items, res) {
+  _fselBeacon(verb, res.ok, res.failed.length);
+  if (!res.failed.length) showToast(verb + ' ' + res.ok + ' item' + (res.ok === 1 ? '' : 's'));
+  else showToast(verb + ' ' + res.ok + ' of ' + items.length + '. Failed: ' + res.failed.slice(0, 3).join(', ') + (res.failed.length > 3 ? ' and ' + (res.failed.length - 3) + ' more' : ''));
+}
+async function _fselCopyPaths() {
+  const paths = _fselSelected().map(e => e.path);
+  try { await navigator.clipboard.writeText(paths.join('\n')); showToast('Copied ' + paths.length + ' paths'); _fselBeacon('copy_paths', paths.length, 0); }
+  catch (e) { showToast('Copy failed: ' + e.message); }
+}
+async function _fselDownload() {
+  const items = _fselSelected().filter(e => e.type === 'file');
+  const res = await _fselEach(items, async it => { await _downloadFileBytes(API + '/api/file/raw?path=' + encodeURIComponent(it.path), it.path.split('/').pop()); });
+  _fselReport('Downloaded', items, res);
+}
+async function _fselMove() {
+  const items = _fselSelected();
+  const here = items.length ? items[0].path.slice(0, items[0].path.lastIndexOf('/')) || '/' : '/';
+  const dest = (prompt('Move ' + items.length + ' item' + (items.length === 1 ? '' : 's') + ' to folder:', here) || '').trim();
+  if (!dest || dest === here) return;
+  const res = await _fselEach(items, async it => {
+    const r = await fetch(API + '/api/fs/rename', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ path: it.path, new_name: it.path.split('/').pop(), dest_dir: dest }) });
+    const d = await r.json().catch(() => ({}));
+    return r.ok && d.ok ? '' : (d.error || ('HTTP ' + r.status));
+  });
+  _fselReport('Moved', items, res);
+  _fselClear(); _fselRefreshView();
+}
+async function _fselDelete() {
+  const items = _fselSelected();
+  const names = items.slice(0, 5).map(e => e.path.split('/').pop() + (e.type === 'dir' ? '/' : '')).join('\n');
+  if (!confirm('Delete ' + items.length + ' item' + (items.length === 1 ? '' : 's') + '? This cannot be undone.\n\n' + names + (items.length > 5 ? '\n\u2026and ' + (items.length - 5) + ' more' : ''))) return;
+  const res = await _fselEach(items, async it => {
+    const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: it.path }) });
+    const d = await r.json().catch(() => ({}));
+    return r.ok ? '' : (d.error || ('HTTP ' + r.status));
+  });
+  _fselReport('Deleted', items, res);
+  _fselClear(); _fselRefreshView();
+}
+// Modifier clicks and touch selection mode reach every list, including the ones
+// whose rows open on a plain click (Split view, Explore): caught in capture so
+// the row's own open never runs for a selection gesture.
+document.addEventListener('click', (e) => {
+  const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+  if (!row || e.target.closest('button, a, input')) return;
+  if (_fsel.suppressClick) { _fsel.suppressClick = false; e.preventDefault(); e.stopPropagation(); return; }
+  const inMode = _fsel.mode && _fsel.root === row.closest(_FSEL_ROOTS);
+  if (!(e.metaKey || e.ctrlKey || e.shiftKey || inMode)) return;
+  e.preventDefault(); e.stopPropagation();
+  _fselClick(row, e);
+}, true);
+// Touch: a long-press starts selection mode with that row selected.
+(function () {
+  let timer = null, startX = 0, startY = 0;
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+    if (!row || e.target.closest('button, a, input')) return;
+    startX = e.clientX; startY = e.clientY;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      const root = row.closest(_FSEL_ROOTS);
+      if (_fsel.root !== root) { _fsel.root = root; _fsel.paths.clear(); }
+      _fsel.mode = true; _fsel.paths.add(row.dataset.path); _fsel.anchor = row.dataset.path;
+      _fsel.suppressClick = true;
+      try { navigator.vibrate && navigator.vibrate(10); } catch (err) {}
+      _fselApply();
+    }, 500);
+  }, true);
+  const cancel = (e) => { if (timer && (e.type !== 'pointermove' || Math.hypot(e.clientX - startX, e.clientY - startY) > 10)) { clearTimeout(timer); timer = null; } };
+  ['pointerup', 'pointercancel', 'pointermove'].forEach(t => document.addEventListener(t, cancel, true));
+})();
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  const root = _fsel.root && document.contains(_fsel.root) && _fsel.root.offsetParent ? _fsel.root : null;
+  // Esc with a selection only clears it, as in Finder: it used to reach the
+  // worker view's own Esc handler too and close the whole view.
+  if (e.key === 'Escape' && _fsel.paths.size) { e.preventDefault(); e.stopImmediatePropagation(); _fselClear(); return; }
+  if (root && (e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); _fselSelectAll(root); }
+}, true);
 // Navigate to the parent of the current Files-tab folder (the "Up" action).
 function _filesUp() {
   const p = (_filesPath || '/').replace(/\/+$/, '');
@@ -27839,7 +28044,8 @@ async function _feToggleExpand(btn) {
   const list = q ? (data.entries || []).filter(e => e.name.toLowerCase().includes(q)) : (data.entries || []);
   const entries = _filesSortEntries(list);
   let anchor = row;
-  for (const entry of entries) { const child = _feBuildRow(entry, dirPath, depth + 1, q); anchor.after(child); anchor = child; }
+  for (const entry of entries) { const child = _feBuildRow(entry, dirPath, depth + 1, q, row._feOpts); anchor.after(child); anchor = child; }
+  _fselApply();
   row.classList.add('fe-expanded'); btn.classList.add('open');
 }
 function _renderFilesEntries(body, path, data, cacheTs) {
@@ -27902,6 +28108,7 @@ function _renderFilesEntries(body, path, data, cacheTs) {
   body.ondragleave = () => body.classList.remove('files-drop-active');
   body.ondrop = e => { e.preventDefault(); body.classList.remove('files-drop-active'); if (e.dataTransfer.files.length) handleFilesUpload(e.dataTransfer.files); };
   _feMarkDownloaded();   // async: flag rows whose file is downloaded on this device
+  _fselApply();
 }
 
 // Add a green ⤓ badge to each file row that is DOWNLOADED (cached) on this
@@ -31157,6 +31364,9 @@ function _renderExploreEntries(body, path, data, cacheTs) {
     const entryPath = path.replace(/\/$/, '') + '/' + entry.name;
     const row = document.createElement('div');
     row.className = 'explore-row';
+    row.dataset.path = entryPath;
+    row.dataset.type = entry.type === 'dir' ? 'dir' : 'file';
+    if (_fsel.paths.has(entryPath)) row.classList.add('fsel-selected');
     const icon = entry.type === 'dir' ? '&#x1F4C2;' : '&#x1F4C4;';
     const displayName = entry.name + (entry.type === 'dir' ? '/' : '');
     const menuBtn = `<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showExploreMenu('${entryPath.replace(/'/g,"\\'")}',this,'${entry.type}')">⋯</button>`;
@@ -31170,6 +31380,7 @@ function _renderExploreEntries(body, path, data, cacheTs) {
     }
     body.appendChild(row);
   }
+  _fselApply();
 }
 function _exploreSearchFilter(q) {
   const body = document.getElementById('explore-body');
@@ -59925,10 +60136,16 @@ function _drawLibRender() {
     + '</div>');
   if (fresh || body.dataset.dark !== String(_drawIsDark())) { body.dataset.dark = String(_drawIsDark()); for (const i of items) _drawLibThumb(i); }
 }
+// Replacing the content kept no scroll position, so every re-render of the
+// library (an autosave reorders Recent) jumped a scrolled list back to the
+// top, and a tap aimed at a row lower down landed on whatever moved under it
+// (draw-tab.spec.ts:356 on iOS, once Recent grew longer than the sheet).
 function _drawSetBody(body, html) {
   if (body._drawHtml === html) return false;
+  const top = body.scrollTop;
   body._drawHtml = html;
   body.innerHTML = html;
+  if (top) body.scrollTop = top;
   return true;
 }
 async function _drawLibThumb(item) {
@@ -60123,10 +60340,14 @@ async function _drawRenderDrawings(body, q) {
   // then replaced every row a moment later: a tap whose press and release
   // straddled that swap fired no click (draw-tab.spec.ts:356 on iOS).
   const keep = d.folderHtml || '<div class="draw-empty">Loading…</div>';
+  const top = body.scrollTop;
   if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
     + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
     + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
     _drawSetBody(document.getElementById('draw-folder-list'), keep);
+    // The folder rows arrive after the body swap; restore the scroll again
+    // now that the list is full height (it was clamped while they were absent).
+    if (top) body.scrollTop = top;
   }
   const dir = d.path ? _drawDirOf(d.path) : d.dir;
   try {

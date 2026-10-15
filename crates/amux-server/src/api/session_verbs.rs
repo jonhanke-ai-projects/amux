@@ -5785,6 +5785,28 @@ pub fn standing_orders_on(lane: &str, key: &str) -> bool {
     standing_orders_on_in(&home(), lane, key)
 }
 
+/// The board's "Continue unfinished work" switch has its own key.
+///
+/// It used to write `CC_AUTO_CONTINUE`, which is also the legacy YOLO key
+/// (`yolo_enabled`): ticking Continue on a worker's Board tab silently made it
+/// auto-approve permission prompts, and turning YOLO off silently switched the
+/// board's Continue off (found 2026-10-15 auditing the Board tab toggles).
+/// Reads prefer the new key and fall back to the old one when it is unset, so
+/// a worker configured before the split keeps its behaviour.
+pub const BOARD_CONTINUE_KEY: &str = "CC_BOARD_CONTINUE";
+
+pub fn board_continue_on(lane: &str) -> bool {
+    board_continue_on_in(&home(), lane)
+}
+
+pub fn board_continue_on_in(home: &std::path::Path, lane: &str) -> bool {
+    if !auto_continue_on(scoped_setting_in(home, lane, "CC_STANDING_ORDERS").as_deref()) {
+        return false;
+    }
+    let v = scoped_setting_in(home, lane, BOARD_CONTINUE_KEY).or_else(|| scoped_setting_in(home, lane, "CC_AUTO_CONTINUE"));
+    auto_continue_on(v.as_deref())
+}
+
 /// Same, over an explicit home — see [`scoped_setting_in`] for why.
 pub fn standing_orders_on_in(home: &std::path::Path, lane: &str, key: &str) -> bool {
     if !auto_continue_on(scoped_setting_in(home, lane, "CC_STANDING_ORDERS").as_deref()) {
@@ -33490,8 +33512,8 @@ async fn config_patch_with_liveness(
         ("board_auto_pickup", "CC_AUTO_PICKUP", "To Do pickup"),
         (
             "board_auto_continue",
-            "CC_AUTO_CONTINUE",
-            "Non-terminal continuation",
+            BOARD_CONTINUE_KEY,
+            "Continue unfinished work",
         ),
         (
             "board_standing_orders",
@@ -33519,11 +33541,25 @@ async fn config_patch_with_liveness(
         } else {
             cfg.set(key, if py_truthy(v) { "1" } else { "0" });
         }
+        // Pickup and Continue live under the CC_STANDING_ORDERS master, which
+        // the Board tab no longer shows on its own: turning either ON turns the
+        // master on, so the switch the owner flips is the one that takes effect.
+        let master_raised = !inherit
+            && py_truthy(v)
+            && (key == "CC_AUTO_PICKUP" || key == BOARD_CONTINUE_KEY)
+            && !auto_continue_on(scoped_setting_in(&home(), name, "CC_STANDING_ORDERS").as_deref());
+        if master_raised {
+            cfg.set("CC_STANDING_ORDERS", "1");
+        }
         if let Err(e) = cfg.write(&f) {
             return jresp(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({"error": env_write_error(&f, &e)}),
             );
+        }
+        if master_raised {
+            tracing::info!(session = %name, key, measured = true, n_considered = 1,
+                verdict = "board_master_raised", "turning on a board drive switch also turned on CC_STANDING_ORDERS");
         }
         let effective = if key == crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY {
             crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(name)
@@ -33531,6 +33567,8 @@ async fn config_patch_with_liveness(
             super::board_lifecycle::enabled(name)
         } else if key == super::board_lifecycle::FORCE_ADHERENCE_KEY {
             super::board_lifecycle::force_adherence(name)
+        } else if key == BOARD_CONTINUE_KEY {
+            board_continue_on(name)
         } else {
             standing_orders_on(name, key)
         };
@@ -44258,7 +44296,14 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{v}");
-        assert_eq!(parse_env("probe").get("CC_AUTO_CONTINUE"), Some("1"));
+        // Its own key: the board's Continue never touches CC_AUTO_CONTINUE,
+        // which is also the legacy YOLO switch (yolo_enabled).
+        assert_eq!(parse_env("probe").get(BOARD_CONTINUE_KEY), Some("1"));
+        assert_eq!(parse_env("probe").get("CC_AUTO_CONTINUE"), None, "Continue must not turn on YOLO");
+        assert!(!is_yolo_enabled("", &parse_env("probe")));
+        // Turning a drive switch on raises the hidden master with it.
+        assert_eq!(parse_env("probe").get("CC_STANDING_ORDERS"), Some("1"));
+        assert_eq!(v["effective"], json!(true));
 
         let (st, v) = call(
             &app,
@@ -44271,8 +44316,8 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert_eq!(parse_env("probe").get("CC_STANDING_ORDERS"), Some("0"));
         assert_eq!(v["board_standing_orders"], json!(false));
 
-        // A child switch reports the resolved runtime truth while the master
-        // is off; removing the master override immediately restores it.
+        // Turning a child switch ON while the master is off raises the master,
+        // so the switch the owner flips is the one that takes effect.
         let (_, v) = call(
             &app,
             "PATCH",
@@ -44280,7 +44325,8 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             Some(json!({"board_auto_pickup": true})),
         )
         .await;
-        assert_eq!(v["effective"], json!(false));
+        assert_eq!(v["effective"], json!(true));
+        assert_eq!(parse_env("probe").get("CC_STANDING_ORDERS"), Some("1"));
         // Removing the standing_orders override restores the default (OFF).
         let (_, v) = call(
             &app,
@@ -44320,6 +44366,7 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         }
         assert_eq!(parse_env("probe").get("CC_AUTO_PICKUP"), None);
         assert_eq!(parse_env("probe").get("CC_AUTO_CONTINUE"), None);
+        assert_eq!(parse_env("probe").get(BOARD_CONTINUE_KEY), None);
 
         // External-email authorization is a first-class, immediately-applied
         // worker configuration. It writes the exact key the email gate reads,
@@ -47815,6 +47862,20 @@ mod composer_state_tests {
         assert!(HELD_DRAFT_BACKOFF_MS.len() >= 3);
         assert!(HELD_DRAFT_BACKOFF_MS.windows(2).all(|w| w[1] > w[0]));
         assert!(HELD_DRAFT_BACKOFF_MS.iter().sum::<u64>() <= 11_000);
+    }
+
+    #[test]
+    fn board_continue_reads_its_own_key_then_the_legacy_one_under_the_master() {
+        let d = tempfile::tempdir().unwrap();
+        let sessions = d.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let w = |env: &str| std::fs::write(sessions.join("lane.env"), env).unwrap();
+        w("CC_STANDING_ORDERS=1\nCC_AUTO_CONTINUE=1\n");
+        assert!(board_continue_on_in(d.path(), "lane"), "a pre-split worker keeps its Continue");
+        w("CC_STANDING_ORDERS=1\nCC_AUTO_CONTINUE=1\nCC_BOARD_CONTINUE=0\n");
+        assert!(!board_continue_on_in(d.path(), "lane"), "the new key wins over the legacy one");
+        w("CC_STANDING_ORDERS=0\nCC_BOARD_CONTINUE=1\n");
+        assert!(!board_continue_on_in(d.path(), "lane"), "the master still gates it");
     }
 
     /// MSG-72522's shape: recorded stuck, later submitted by a manual Enter; the

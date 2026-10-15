@@ -347,13 +347,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;" id="crossgroup-default-note">Workers may message only workers in a shared group. Owner input remains permitted.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
-            <span style="font-size:0.85rem;">Auto-drain backlog for all workers</span>
+            <span style="font-size:0.85rem;">Refill To Do from Backlog, all workers</span>
             <label class="theme-toggle">
               <input type="checkbox" id="board-drain-default-checkbox" onchange="toggleBoardDrainDefault(this.checked)" checked>
               <span class="theme-track"><span class="theme-thumb"></span></span>
             </label>
           </div>
-          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Default ON: when To Do is empty, promote the oldest eligible Backlog card and keep driving it. Human-owned, triggered, epic, watch, and tripwire cards remain parked; a group or worker configuration can opt out.</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">The fleet-wide default for each worker’s “Refill To Do from Backlog” switch: when To Do is empty, the oldest Backlog card the worker can do moves into To Do. It only takes effect on workers whose “Board steers this worker” and “Start To Do cards when idle” are on. Human-owned, triggered, epic, watch and tripwire cards are never moved.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">Auto-answer resume dialog</span>
             <label class="theme-toggle">
@@ -793,7 +793,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <h2>Scheduler</h2>
       <span id="sched-stats" class="sx-summary"></span>
     </div>
-    <button class="btn primary sx-new" onclick="openSchedModal()">+ New schedule</button>
+    <button class="btn primary sx-new" onclick="openSchedModal()" aria-label="New schedule">+<span class="sx-new-text"> New schedule</span></button>
   </div>
   <!-- Segmented filter: one pill per group, with counts. Rendered by
        _sxRenderPills so the counts come from the same predicate the groups use. -->
@@ -1190,12 +1190,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <div id="email-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div style="padding:12px 16px;">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <div class="email-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <div style="font-size:1.05rem;font-weight:700;">Email</div>
       <button class="btn" onclick="_emailLoad()">Refresh</button>
       <button class="btn" onclick="_emailThemesRefresh(this)" title="Re-infer what matters to you from your recent messages to amux">Re-learn priorities</button>
+      <button class="btn email-about-btn" onclick="document.getElementById('email-view').classList.toggle('email-about-open')" aria-label="How this inbox is ranked" title="How this inbox is ranked">&#9432;</button>
     </div>
-    <div style="font-size:0.75rem;color:var(--dim);line-height:1.5;margin:6px 0 10px;">
+    <div class="email-about" style="font-size:0.75rem;color:var(--dim);line-height:1.5;margin:6px 0 10px;">
       Ranked by what amux infers you care about, learned from the messages you send it and
       recomputed periodically with the <b>Meta-task model</b> from Settings. Scoring itself is
       arithmetic over those themes, so opening this costs nothing.
@@ -1218,11 +1219,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="cx-titlebar">
       <div>
         <div class="cx-h1">Your connections</div>
-        <div class="cx-dim">Manage your integrations and add new ones. Every worker shares these grants.</div>
+        <div class="cx-dim cx-intro">Manage your integrations and add new ones. Every worker shares these grants.</div>
       </div>
       <div class="cx-actions">
         <button class="btn" onclick="_connectorsTabLoad()">Refresh</button>
-        <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()">＋ Add connector</button>
+        <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()" aria-label="Add connector">＋ Add<span class="cx-add-noun"> connector</span></button>
       </div>
     </div>
     <!-- AMUX-3993: declare a connector without a rebuild. The registry is a const

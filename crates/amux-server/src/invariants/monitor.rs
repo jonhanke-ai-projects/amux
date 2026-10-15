@@ -3072,8 +3072,8 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
 /// fix against a file the server is not running.
 fn extract_caller_paths() -> Vec<checks::CallerPath> {
     let mut out = Vec::new();
-    if let Some(js) = amux_dashboard::DashboardAssets::get("app.js") {
-        let text = String::from_utf8_lossy(&js.data);
+    if let Some(js) = amux_dashboard::asset("app.js") {
+        let text = String::from_utf8_lossy(&js);
         out.extend(scan_js_calls(&text, "spa:app.js"));
     }
     // THE CLI HALF (AMUX-2917). CallerPath::source has documented
