@@ -2150,6 +2150,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiCreateCancel": {
+      "kind": "command._mdaiCreateCancel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiCreatePage": {
       "kind": "command._mdaiCreatePage",
       "feedback_required": true,
@@ -2180,6 +2186,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiListSearch": {
+      "kind": "command._mdaiListSearch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiMenu": {
       "kind": "command._mdaiMenu",
       "feedback_required": true,
@@ -2192,6 +2204,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiOpenDir": {
+      "kind": "command._mdaiOpenDir",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiOpenRaw": {
       "kind": "command._mdaiOpenRaw",
       "feedback_required": true,
@@ -2200,6 +2218,12 @@
     },
     "_mdaiPutDoc": {
       "kind": "command._mdaiPutDoc",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiRenderList": {
+      "kind": "command._mdaiRenderList",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2242,6 +2266,12 @@
     },
     "_mdaiSetModel": {
       "kind": "command._mdaiSetModel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiTabLoad": {
+      "kind": "command._mdaiTabLoad",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4642,6 +4672,12 @@
     },
     "closeExplore": {
       "kind": "command.closeExplore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "closeMdaiNode": {
+      "kind": "command.closeMdaiNode",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

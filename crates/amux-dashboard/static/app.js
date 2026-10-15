@@ -14279,7 +14279,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1549';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1555';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -29672,18 +29672,20 @@ function _mdaiShowPage(which) {
   if (C) C.style.display = which === 'create' ? '' : 'none';
 }
 function _mdaiListSearch(v) { _mdaiListFilter = v || ''; _mdaiRenderList(); }
-function _mdaiRowStatus(f) {
-  if (f.running) return { cls: 'run', label: 'Running ' + _mdaiElapsed(f.running.elapsed_ms) };
-  if (!f.last_run) return _mdaiStatusInfo(null);
-  return _mdaiStatusInfo(f.last_status, f.last_cached);
-}
-function _mdaiRenderList() {
+// The list is a directory view of the MDAI folder, the same rows and columns
+// as the Files tab (Ethan, 2026-10-15: "mdai list should just be file view like
+// other file viewers"). Only folders that hold a .mdai somewhere below them and
+// the .mdai files themselves are shown, since the folder also holds unrelated
+// files. Folders open in place; a .mdai opens its node page exactly as it does
+// from Files (openFilePreview routes .mdai to openMdaiNode).
+let _mdaiDir = '';             // folder shown, relative to the MDAI root ('' = root)
+let _mdaiDirGen = 0;
+function _mdaiOpenDir(rel) { _mdaiDir = (rel || '').replace(/^\/+|\/+$/g, ''); _mdaiRenderList(); }
+async function _mdaiRenderList() {
   const body = document.getElementById('mdai-list');
   if (!body || !_mdaiListData) return;
+  const gen = ++_mdaiDirGen;
   const all = _mdaiListData.files || [];
-  const q = _mdaiListFilter.trim().toLowerCase();
-  const files = all.filter(f => !q || (f.path + ' ' + (f.title || '') + ' ' + (f.model || '')).toLowerCase().includes(q))
-    .sort((a, b) => (b.running ? 1 : 0) - (a.running ? 1 : 0) || (b.last_run || b.mtime || 0) - (a.last_run || a.mtime || 0));
   const cnt = document.getElementById('mdai-count');
   if (cnt) cnt.textContent = all.length + (all.length === 1 ? ' node' : ' nodes');
   if (!all.length) {
@@ -29691,23 +29693,67 @@ function _mdaiRenderList() {
       + '<button class="btn primary" onclick="_mdaiCreatePage()">New MDAI</button></div>';
     return;
   }
-  if (!files.length) { body.innerHTML = '<div class="mdai-empty">No node matches "' + esc(q) + '".</div>'; return; }
-  body.innerHTML = '<div class="mdai-table" role="table" aria-label="MDAI nodes"><div class="mdai-tr mdai-th" role="row"><span>Node</span><span>Status</span><span>Model</span><span>Sources</span><span>Runs</span><span>Last run</span></div>'
-    + files.map(f => {
-      const name = f.path.split('/').pop();
-      const dir = f.path.slice(0, -name.length).replace(/\/$/, '');
-      const st = _mdaiRowStatus(f);
-      const title = f.title && f.title.trim() && f.title.trim() !== name.replace(/\.mdai$/i, '') ? f.title.trim() : '';
-      return '<div class="mdai-tr" role="row" tabindex="0" data-path="' + esc(f.path) + '" onclick="openMdaiNode(this.dataset.path)" onkeydown="if(event.key===\'Enter\')openMdaiNode(this.dataset.path)">'
-        + '<span class="mdai-td-node"><span class="mdai-ficon" aria-hidden="true">&#9672;</span><span class="mdai-td-names"><span class="mdai-td-name">' + esc(name) + '</span>'
-        + '<span class="mdai-td-sub">' + esc(title || (dir ? dir + '/' : 'top level')) + (f.parse_error ? ' · <span class="mdai-bad">does not parse</span>' : '') + '</span></span></span>'
-        + '<span class="mdai-td" data-l="Status"><span class="mdai-dot ' + st.cls + '"></span>' + esc(st.label) + '</span>'
-        + '<span class="mdai-td" data-l="Model">' + (f.model ? '<span class="mdai-pill model">' + esc(f.model) + '</span>' : '<span class="mdai-dim">default</span>') + '</span>'
-        + '<span class="mdai-td" data-l="Sources">' + (f.sources || 0) + '</span>'
-        + '<span class="mdai-td" data-l="Runs">' + (f.runs || 0) + '</span>'
-        + '<span class="mdai-td" data-l="Last run">' + (f.last_run ? timeAgo(f.last_run) + (f.last_dur_ms ? ' · ' + _mdaiDur(f.last_dur_ms) : '') : '—') + '</span></div>';
-    }).join('') + '</div>'
+  const root = _mdaiRoot(), rel = _mdaiDir, abs = rel ? root + '/' + rel : root;
+  // Folders worth showing: every directory prefix of a node path under `rel`.
+  const prefix = rel ? rel + '/' : '';
+  const dirsWithNodes = new Set(), nodeNames = new Set();
+  for (const f of all) {
+    if (!f.path.startsWith(prefix)) continue;
+    const rest = f.path.slice(prefix.length);
+    const i = rest.indexOf('/');
+    if (i < 0) nodeNames.add(rest); else dirsWithNodes.add(rest.slice(0, i));
+  }
+  let entries;
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(abs), { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    entries = (d.entries || []).filter(e => e.type === 'dir' ? dirsWithNodes.has(e.name) : nodeNames.has(e.name));
+  } catch (e) {
+    if (gen !== _mdaiDirGen) return;
+    // The listing failed: still show what the node scan knows, without sizes.
+    entries = [...dirsWithNodes].map(name => ({ name, type: 'dir' })).concat([...nodeNames].map(name => ({ name, type: 'file' })));
+  }
+  if (gen !== _mdaiDirGen) return;
+  const q = _mdaiListFilter.trim().toLowerCase();
+  if (q) entries = entries.filter(e => e.name.toLowerCase().includes(q));
+  entries = _filesSortEntries(entries);
+  const parts = rel ? rel.split('/') : [];
+  let crumbs = '<span class="fe-crumb" onclick="_mdaiOpenDir(\'\')">' + esc(root.split('/').pop() || root) + '</span>';
+  parts.forEach((part, i) => {
+    const to = parts.slice(0, i + 1).join('/');
+    crumbs += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="_mdaiOpenDir(' + _mdaiQ(to) + ')">' + esc(part) + '</span>';
+  });
+  body.innerHTML = '<div class="mdai-crumbs" id="mdai-crumbs">' + crumbs + '</div>'
+    + '<div class="fe-scroll mdai-fe"><div class="fe-col-headers" style="display:grid"><div class="fe-col-hdr">Name</div><div class="fe-col-hdr">Size</div><div class="fe-col-hdr">Modified</div><div class="fe-col-hdr-actions"></div></div>'
+    + '<div id="mdai-fe-body"></div></div>'
     + (_mdaiListData.truncated ? '<div class="mdai-hint">The folder scan was cut short, so this list may be incomplete.</div>' : '');
+  const list = document.getElementById('mdai-fe-body');
+  if (rel) {
+    const up = parts.slice(0, -1).join('/');
+    const back = document.createElement('div');
+    back.className = 'fe-back-row';
+    back.innerHTML = '<div class="fe-cell-name"><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>';
+    back.onclick = () => _mdaiOpenDir(up);
+    list.appendChild(back);
+  }
+  if (!entries.length) {
+    const msg = document.createElement('div');
+    msg.className = 'mdai-empty';
+    msg.textContent = q ? 'No node matches "' + q + '" in this folder.' : 'No MDAI nodes in this folder.';
+    list.appendChild(msg);
+    return;
+  }
+  for (const entry of entries) {
+    const row = _feBuildRow(entry, abs, 0, q);
+    if (entry.type === 'dir') {
+      // Folders navigate inside the MDAI view; no inline expand here.
+      row.querySelector('.fe-expand')?.replaceWith(Object.assign(document.createElement('span'), { className: 'fe-expand-spacer' }));
+      const to = (rel ? rel + '/' : '') + entry.name;
+      row.onclick = () => _mdaiOpenDir(to);
+    }
+    list.appendChild(row);
+  }
 }
 // ---- Create page ------------------------------------------------------------------
 function _mdaiCreatePage(opts) {

@@ -9495,3 +9495,7 @@ details.settings-fold > summary::-webkit-details-marker { display: none; }
 details.settings-fold > summary::before { content: '\25B8'; font-size: 0.7em; color: var(--dim); transition: transform .15s; flex: 0 0 auto; }
 details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 @media (max-width: 600px) { details.settings-fold > summary { min-height: 44px; } }
+
+/* MDAI list as a directory view (same rows as Files). */
+.mdai-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 4px 0 8px; font-size: 0.85rem; }
+.mdai-fe { border: 1px solid var(--border); border-radius: var(--radius-control, 8px); overflow-x: auto; }
