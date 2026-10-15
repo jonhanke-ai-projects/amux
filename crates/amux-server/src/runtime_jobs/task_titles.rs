@@ -89,10 +89,13 @@ pub(crate) fn title_due(now: i64, title_ts: i64, transcript_mtime: i64, refresh_
     transcript_mtime > title_ts && now - title_ts >= refresh_s
 }
 
-/// When the card's current title was last set or kept; 0 when there is none.
+/// When the card's title was last set, kept or attempted; 0 when never.
+/// An attempt that produced nothing counts, so one worker is not retried
+/// every tick.
 pub(crate) fn title_stamp(meta: &serde_json::Map<String, Value>) -> i64 {
     let has_title = !meta.get("task_summary").and_then(Value::as_str).unwrap_or("").trim().is_empty();
-    if has_title { meta.get("task_summary_ts").and_then(Value::as_i64).unwrap_or(0) } else { 0 }
+    let set = if has_title { meta.get("task_summary_ts").and_then(Value::as_i64).unwrap_or(0) } else { 0 };
+    set.max(meta.get("task_title_attempt_ts").and_then(Value::as_i64).unwrap_or(0))
 }
 
 pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
@@ -196,6 +199,8 @@ mod tests {
         assert_eq!(title_stamp(&m(json!({"task_summary":"Gen","task_summary_ts":700,"task_summary_source":"generated"}))), 700);
         assert_eq!(title_stamp(&m(json!({"task_summary":"","task_summary_ts":900}))), 0);
         assert!(!title_due(1000, title_stamp(&m(json!({"task_summary":"Hand label","task_summary_ts":990}))), 995, 900));
+        // An attempt that produced no title still spaces the retries.
+        assert_eq!(title_stamp(&m(json!({"task_summary":"Old","task_summary_ts":100,"task_title_attempt_ts":800}))), 800);
     }
 
     #[test]
