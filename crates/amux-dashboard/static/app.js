@@ -14304,7 +14304,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1553';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1563';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -60136,10 +60136,16 @@ function _drawLibRender() {
     + '</div>');
   if (fresh || body.dataset.dark !== String(_drawIsDark())) { body.dataset.dark = String(_drawIsDark()); for (const i of items) _drawLibThumb(i); }
 }
+// Replacing the content kept no scroll position, so every re-render of the
+// library (an autosave reorders Recent) jumped a scrolled list back to the
+// top, and a tap aimed at a row lower down landed on whatever moved under it
+// (draw-tab.spec.ts:356 on iOS, once Recent grew longer than the sheet).
 function _drawSetBody(body, html) {
   if (body._drawHtml === html) return false;
+  const top = body.scrollTop;
   body._drawHtml = html;
   body.innerHTML = html;
+  if (top) body.scrollTop = top;
   return true;
 }
 async function _drawLibThumb(item) {
@@ -60334,10 +60340,14 @@ async function _drawRenderDrawings(body, q) {
   // then replaced every row a moment later: a tap whose press and release
   // straddled that swap fired no click (draw-tab.spec.ts:356 on iOS).
   const keep = d.folderHtml || '<div class="draw-empty">Loading…</div>';
+  const top = body.scrollTop;
   if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
     + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
     + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
     _drawSetBody(document.getElementById('draw-folder-list'), keep);
+    // The folder rows arrive after the body swap; restore the scroll again
+    // now that the list is full height (it was clamped while they were absent).
+    if (top) body.scrollTop = top;
   }
   const dir = d.path ? _drawDirOf(d.path) : d.dir;
   try {
