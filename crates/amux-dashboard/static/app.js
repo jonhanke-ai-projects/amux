@@ -14304,7 +14304,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1562';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1563';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -28002,9 +28002,11 @@ document.addEventListener('keydown', (e) => {
   const t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
   const root = _fsel.root && document.contains(_fsel.root) && _fsel.root.offsetParent ? _fsel.root : null;
-  if (e.key === 'Escape' && _fsel.paths.size) { _fselClear(); return; }
+  // Esc with a selection only clears it, as in Finder: it used to reach the
+  // worker view's own Esc handler too and close the whole view.
+  if (e.key === 'Escape' && _fsel.paths.size) { e.preventDefault(); e.stopImmediatePropagation(); _fselClear(); return; }
   if (root && (e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); _fselSelectAll(root); }
-});
+}, true);
 // Navigate to the parent of the current Files-tab folder (the "Up" action).
 function _filesUp() {
   const p = (_filesPath || '/').replace(/\/+$/, '');
