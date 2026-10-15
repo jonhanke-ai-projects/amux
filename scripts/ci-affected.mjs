@@ -69,6 +69,8 @@ export const TREE_GUARDS = {
   no_gcp_cloud_provisioning: { prefixes: ['cloud/', '.github/workflows/', 'Makefile', 'install.sh'] },
   nudge_commands_exist: { prefixes: ['amux'] },
   dockerfile_build_inputs: { prefixes: ['cloud/docker/'] },
+  // Hashes every file under the dashboard's static/ (the derived APP_VER, #318).
+  dashboard_asset_version: { prefixes: ['crates/amux-dashboard/'] },
 };
 export const RUST_ONLY_WALKERS = [
   'dead_pub_api', 'kill_on_drop_guard', 'no_ollama_cli', 'schema_fixtures', 'runtime_tick_bracketing',
