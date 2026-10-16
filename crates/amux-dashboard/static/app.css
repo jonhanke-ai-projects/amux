@@ -9253,6 +9253,14 @@ button.cv-sec:hover { color:var(--text); }
 #draw-view.draw-live .draw-lib, #draw-view.draw-live .draw-head, #draw-view.draw-live .draw-status,
 #draw-view.draw-live .draw-snapbar, #draw-view.draw-live .draw-selbar, #draw-view.draw-live .draw-lib-scrim { display:none !important; }
 #draw-view:fullscreen { height:100%; }
+/* Excalidraw pads its toolbar by --sat (env(safe-area-inset-top)) because it
+   assumes it owns the top of the screen. Here it sits under amux's header,
+   which already clears the status bar, so on an iPhone PWA the inset counted
+   twice: the shape toolbar dropped by the status-bar height and its right end
+   slid under the lock/hand column (Ethan, 2026-10-16). Only live mode in real
+   fullscreen puts the canvas at the screen edge again. */
+.draw-host .excalidraw { --sat:0px; }
+#draw-view.draw-live:fullscreen .draw-host .excalidraw { --sat:env(safe-area-inset-top); }
 /* No page scroll behind the canvas (on <html>: body is not a scroll container,
    so the sticky header keeps its offset). */
 html.draw-active { overflow:hidden; }
@@ -9286,13 +9294,19 @@ html.draw-active { overflow:hidden; }
   .draw-pen-color { width:44px; height:44px; }
   .draw-pen-width, .draw-pen-tool { min-width:44px; }
   /* Excalidraw's phone UI owns the top and bottom edges (shape toolbar, menu,
-     undo) and a right-hand column, so the snap toggles are a column on the left. */
-  .draw-snapbar { top:50%; bottom:auto; left:max(6px, env(safe-area-inset-left)); transform:translateY(-50%); flex-direction:column; padding:3px; }
+     undo) and a right-hand column, so the snap toggles are a column on the left,
+     top-aligned with that right-hand column (80px under the canvas top) so the
+     two mirror each other instead of this one floating over the middle of the
+     drawing. */
+  .draw-snapbar { top:80px; bottom:auto; left:max(6px, env(safe-area-inset-left)); transform:none; flex-direction:column; padding:3px; }
   .draw-snap { min-width:44px; padding:0; justify-content:center; flex-direction:column; gap:1px; font-size:0.9rem; }
   .draw-snap-lbl { display:none; }
   .draw-snap-state { font-size:0.56rem; padding:1px 4px; }
   .draw-snap-fs { border-left:none; border-top:1px solid var(--border); border-radius:0 0 8px 8px; }
   .draw-main { padding-bottom:env(safe-area-inset-bottom); }
+  /* .draw-main already clears the home indicator; Excalidraw's own --sab would
+     lift its bottom bar a second time. */
+  .draw-host .excalidraw { --sab:0px; }
   .draw-selbar { top:auto; bottom:calc(76px + env(safe-area-inset-bottom)); right:var(--space-2); }
   .draw-selbar .btn { min-height:44px; }
   .draw-dir-pop { left:8px !important; right:8px; width:auto; }
