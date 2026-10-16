@@ -98,6 +98,38 @@ ci_verdict() {   # green | red | pending | none | unmeasured
   echo "$v"
 }
 
+# A gate that cannot measure cannot vouch for its own replacement either: the
+# installed launcher is refreshed only after an activation, so a launcher whose
+# CI judge broke could never be replaced by its fix (2026-10-16: 162e78e03
+# indented the judge's Python, every pass logged ci_gate_unmeasured for about
+# 2.5h, and the fix in 29fa4caf9 was installed by hand). When unmeasured, adopt
+# $REF's launcher if it differs from this file, parses, and passes the launcher
+# test from that same commit, run here with self-heal off so it cannot recurse.
+# One attempt per tip, so an unhealable state does not rerun the test every pass.
+self_heal_launcher() {
+  local self="${AMUX_AUTHORITY_SELF:-$0}" tried tmp tdir
+  [ "${AMUX_AUTHORITY_SELF_HEAL:-1}" = 1 ] || return 0
+  [ -f "$self" ] && [ ! -L "$self" ] && [ -w "$(dirname "$self")" ] || return 0
+  tried="${self}.heal-tried"
+  [ "$(cat "$tried" 2>/dev/null)" = "$tip" ] && return 0
+  tmp=$(mktemp "$(dirname "$self")/.authority-heal.XXXXXX") || return 0
+  if ! git -C "$REPO" show "$tip:scripts/rust-auto-build-authority.sh" > "$tmp" 2>/dev/null || ! bash -n "$tmp" 2>/dev/null \
+     || cmp -s "$tmp" "$self"; then
+    rm -f "$tmp"; return 0
+  fi
+  echo "$tip" > "$tried" 2>/dev/null || true
+  tdir=$(mktemp -d)
+  if git -C "$REPO" archive "$tip" scripts | tar -x -C "$tdir" 2>/dev/null \
+     && (cd "$tdir" && AMUX_AUTHORITY_SELF_HEAL=0 ${AMUX_AUTHORITY_HEAL_TEST_CMD:-bash scripts/test-build-activation-launcher.sh} >/dev/null 2>&1) \
+     && chmod 0755 "$tmp" && mv -f "$tmp" "$self"; then
+    say "LAUNCHER SELF-HEALED from $tip: the gate could not measure CI, and that commit's launcher passed its own test; the next pass runs it verdict=authority_launcher_self_healed"
+  else
+    rm -f "$tmp"
+    say "LAUNCHER SELF-HEAL REFUSED for $tip: its launcher did not pass its own test, kept this one verdict=authority_launcher_self_heal_refused"
+  fi
+  rm -rf "$tdir"
+}
+
 target="$tip"
 if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
   target=""; tip_state=""; passed=0
@@ -106,6 +138,7 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
     [ -n "$tip_state" ] || tip_state="$v"
     if [ "$v" = green ]; then target="$sha"; break; fi
     if [ "$v" = unmeasured ]; then
+      self_heal_launcher
       refuse "CI-GATE unmeasured for $sha (no App token or GitHub unreachable); keeping the live image verdict=ci_gate_unmeasured"
     fi
     passed=$((passed + 1))
