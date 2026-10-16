@@ -55,11 +55,22 @@ PY
     # backlog card alone is not dispatched and a red main holds every deploy.
     for status in todo backlog; do
       body=$(python3 -c "import json,sys; print(json.dumps({'title':sys.argv[1],'desc':sys.argv[2],'status':sys.argv[3],'session':'amux'}))" "$title" "$desc" "$status")
-      code=$(curl -sk --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Amux-Session: amux' -d "$body" "$U/api/board")
-      case "$code" in 2??) filed=$((filed + 1)); landed=1; break ;; *) echo "board refused a $status card: HTTP $code" >&2 ;; esac
+      resp=$(mktemp -t main-ci-card)
+      code=$(curl -sk --max-time 20 -o "$resp" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Amux-Session: amux' -d "$body" "$U/api/board")
+      # The refusal's reason, not just its status: 2026-10-16 13:23 two 400s
+      # were the lane's WIP gate ("blocked", holding 348 open cards), which a
+      # bare code could not say.
+      case "$code" in 2??) filed=$((filed + 1)); landed=1; rm -f "$resp"; break ;; *) echo "board refused a $status card: HTTP $code: $(head -c 240 "$resp" | tr '\n' ' ')" >&2 ;; esac
+      rm -f "$resp"
     done
     if [ "$status" = backlog ] || [ "$landed" = 0 ]; then
-      if printf 'Ask: main CI is red and holds every deploy. %s\n%s\nFix forward or revert the culprit.\n' "$title" "$url" | amux send amux --stdin >/dev/null 2>&1; then landed=1; else echo "could not message the amux lane either" >&2; fi
+      # One retry: the 13:23 fallback failed once and the same send from a bare
+      # environment went through minutes later. Its own error is kept this time.
+      for try in 1 2; do
+        if err=$(printf 'Ask: main CI is red and holds every deploy. %s\n%s\nFix forward or revert the culprit.\n' "$title" "$url" | amux send amux --stdin 2>&1 >/dev/null); then landed=1; break; fi
+        echo "could not message the amux lane (try $try): ${err:0:240}" >&2
+        [ "$try" = 1 ] && sleep 5
+      done
     fi
     [ "$landed" = 1 ] || refused=$((refused + 1))
   fi

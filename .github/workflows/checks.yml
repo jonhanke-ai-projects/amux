@@ -771,6 +771,7 @@ jobs:
           ./scripts/test-authority-launcher-sync.sh
           ./scripts/test-build-shell-run-defer.sh
           python3 scripts/test-claude-rotate.py
+          ./scripts/test-main-ci-watch.sh
           # A replacement is complete and signed before its one visible rename;
           # persistent listener loss makes the external watchdog reload only the
           # exact configured launch agent.
