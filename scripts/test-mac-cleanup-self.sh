@@ -91,6 +91,15 @@ addlog new2 1800 "mac-cleanup: done elapsed=481s purge=no skipped=none constrain
 out=$(probe)
 check "a recent slow run still escalates"             yes "$(has "$out" '^self the slowest run of SCHED-T in the last 6h took 481s')"
 
+echo "4c. GNU stat (the Linux CI runner): -f means --file-system, so the age read must try -c first"
+# The tick puts /usr/bin first on PATH, so on a Mac only a shell function can stand in
+# for GNU stat. 86d4bd589 read "stat -f %m" first and reddened CI with "File: unbound variable".
+gnu_stat() { case "$1" in -f) printf '  File: "%s"\n    ID: 0 Type: ext4\n' "${3:-}"; return 1 ;; -c) /usr/bin/perl -e 'print +(stat shift)[9], "\n"' "$3" ;; esac; }
+export -f gnu_stat
+out=$(stat() { gnu_stat "$@"; }; export -f stat; probe 2>&1 || true)
+check "an age read under GNU stat does not crash"     no  "$(has "$out" 'unbound variable')"
+check "and still judges the recent run"               yes "$(has "$out" 'slowest in the last 6h 481s')"
+
 echo "5. the fallback's own log"
 newdb 1 <<<"600|ok|"; newlogs
 for h in 1 2 3; do echo "mac-cleanup-fallback: $(stamp $((NOW-h*3600))) last tick output is 90m old (over 80m): the amux scheduler is not running SCHED-T, so launchd is" >> "$FB"; done

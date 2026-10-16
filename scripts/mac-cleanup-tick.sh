@@ -1112,7 +1112,7 @@ check_self_runs() {
     if [ -z "$line" ]; then n_unfin=$((n_unfin+1)); continue; fi
     el=${line#*elapsed=}; el=${el%%s *}
     case "$el" in ''|*[!0-9]*) ;; *)
-      fage=$(( $(date +%s) - $(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || date +%s) ))
+      fage=$(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || date +%s) ))   # GNU first (see the note above, line ~740)
       if [ "$el" -gt "$slowest" ]; then slowest=$el; slowest_age=$fage; fi
       if [ "$fage" -lt $(( SELF_SLOW_RECENT_MIN * 60 )) ] && [ "$el" -gt "$slow_recent" ]; then slow_recent=$el; fi ;;
     esac
