@@ -269,7 +269,10 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await page.screenshot({ path: info.outputPath('mdai-preview.png') });
 
     // ---- Reload mid-run: the run is found again, then finishes ------------------
-    api.mode.delayMs = 4000;
+    // Long enough to outlast a reload plus reopening the node on a slow iOS
+    // runner (4 s did not, 2026-10-16 run on 941fd8044); completion is awaited
+    // with a 20 s budget below.
+    api.mode.delayMs = 9000;
     await editInstruction(page);
     await page.locator('#mdai-run-btn').click();
     await expect(page.locator('#mdai-runbanner.mdai-runbanner')).toBeVisible();

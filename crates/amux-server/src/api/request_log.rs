@@ -2654,6 +2654,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: ANY,
     },
     RouteEntry {
+        path: "/api/fs/opened",
+        methods: ANY,
+    },
+    RouteEntry {
         path: "/api/ls",
         methods: ANY,
     },
