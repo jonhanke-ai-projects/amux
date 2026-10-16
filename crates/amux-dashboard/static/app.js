@@ -59452,7 +59452,7 @@ function _drawLeave() {
   _drawStopPoll();
   _drawRtLeave();
   if (_draw.saveTimer) { clearTimeout(_draw.saveTimer); _draw.saveTimer = null; }
-  if (_draw.mounted && _drawDirty()) _drawSave();
+  if (_draw.mounted && _drawDirty()) _drawSave({ background: true });
   _drawCloseMenus();
 }
 
@@ -59548,7 +59548,7 @@ function _drawMount() {
     }
   }
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && _draw && _draw.mounted && _drawDirty()) _drawSave();
+    if (document.hidden && _draw && _draw.mounted && _drawDirty()) _drawSave({ background: true });
   });
 }
 
@@ -59625,7 +59625,7 @@ function _drawOnChange(elements, appState, files) {
 function _drawScheduleSave() {
   const d = _draw;
   if (d.saveTimer) clearTimeout(d.saveTimer);
-  d.saveTimer = setTimeout(() => { d.saveTimer = null; _drawSave(); }, _DRAW_SAVE_DEBOUNCE_MS);
+  d.saveTimer = setTimeout(() => { d.saveTimer = null; _drawSave({ background: true }); }, _DRAW_SAVE_DEBOUNCE_MS);
 }
 
 function _drawSetStatus(status, msg) {
@@ -59651,7 +59651,12 @@ function _drawSetStatus(status, msg) {
 // Write the open drawing. Honest about failure: a refused or failed write
 // leaves the state "error" (or "conflict") with the server's reason, and is
 // beaconed; only a 2xx with an ETag back is "saved".
-async function _drawSave() {
+// background: the debounced autosave is the page's own write. Without the
+// flag the press layer bound it to the last control pressed within 5s and
+// disabled that control while it ran, so a quick second press of Live mode
+// landed on a disabled button (draw-tab.spec.ts live mode, ios-safari).
+async function _drawSave(opts) {
+  const background = !!(opts && opts.background);
   const d = _draw;
   if (!d || !d.api || !d.path || d.conflict) return false;
   // While a drawing opens, d.path already names the file being opened but the
@@ -59688,7 +59693,7 @@ async function _drawSave() {
     // replayed later would overwrite whatever was saved in between, and the
     // outbox's synthetic 202 must never read as "saved".
     const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(20000), _skipOutbox: true });
+      body: JSON.stringify(body), signal: AbortSignal.timeout(20000), _skipOutbox: true, _background: background });
     const res = await r.json().catch(() => ({}));
     if (path !== d.path) return false;   // switched drawings mid-save
     if (r.status === 409 && res.code === 'file_changed') {
@@ -60512,7 +60517,7 @@ async function _drawSaveRecents() {
     if (merged.length > d.recents.length) _drawBeacon('recents-merged', { measured: true, n_considered: disk.length, added: merged.length - d.recents.length });
     d.recents = merged;
     const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: _drawRecentsPath(), content: JSON.stringify({ recents: d.recents }) }), _skipOutbox: true });
+      body: JSON.stringify({ path: _drawRecentsPath(), content: JSON.stringify({ recents: d.recents }) }), _skipOutbox: true, _background: true });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     // No re-render here: entries merged in from another tab would shift the
     // list under a pointer that is about to click. They show on the next

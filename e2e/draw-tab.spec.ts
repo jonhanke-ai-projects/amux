@@ -520,6 +520,22 @@ test('Draw: live mode is zen mode inside the amux shell, and every exit restores
     await page.locator('#draw-penbar [aria-label="Exit live mode"]').click();
     await assertNormal('pen bar close');
 
+    // The autosave that follows a Live mode press is the page's own write. It
+    // used to be bound to that press and disable the button while it ran, so
+    // the next tap on WebKit hit a disabled button and live mode never started.
+    await page.evaluate(() => {
+      const b = document.getElementById('draw-live-btn') as HTMLButtonElement;
+      (window as any).__liveLocks = 0;
+      new MutationObserver(() => { if (b.disabled || b.dataset.pressLocked) (window as any).__liveLocks++; })
+        .observe(b, { attributes: true, attributeFilter: ['disabled', 'data-press-locked'] });
+    });
+    const saved = page.waitForResponse(r => r.request().method() === 'PUT' && r.url().endsWith('/api/file')
+      && String(JSON.parse(r.request().postData() || '{}').path || '').endsWith('Live.excalidraw'));
+    await page.evaluate(() => { const api = (window as unknown as Win)._draw.api; const els = api.getSceneElements();
+      api.updateScene({ elements: [...els, { ...els[0], id: 'live-dirty', x: 300, version: 2, versionNonce: 7 }] }); });
+    expect((await saved).ok()).toBe(true);
+    expect(await page.evaluate(() => (window as any).__liveLocks), 'autosave locked the Live mode button').toBe(0);
+
     // Exit 2: Excalidraw's own "Exit zen mode". Its phone layout has no such
     // button (zen exits there through the pen bar or Esc).
     if (!isPhone(page)) {
