@@ -71,6 +71,9 @@ export const TREE_GUARDS = {
   dockerfile_build_inputs: { prefixes: ['cloud/docker/'] },
   // Hashes every file under the dashboard's static/ (the derived APP_VER, #318).
   dashboard_asset_version: { prefixes: ['crates/amux-dashboard/'] },
+  // Runs the bash CLI at the repo root (`amux exec --help`, 2849df12); its
+  // read_dir is over a temp home.
+  cli_worker_name_guard: { prefixes: ['amux'] },
 };
 export const RUST_ONLY_WALKERS = [
   'dead_pub_api', 'kill_on_drop_guard', 'no_ollama_cli', 'schema_fixtures', 'runtime_tick_bracketing',
