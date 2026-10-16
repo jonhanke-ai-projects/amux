@@ -139,3 +139,31 @@ the fix did not hold. Without the id, that message can only say none was written
   `scripts/mac-cleanup-fallback.sh` every 15 minutes. It runs the committed tick
   when the last output is over 45 minutes old, and files one card per 24h
   saying the scheduler went quiet. Log: `~/.amux/logs/mac-cleanup-fallback.log`.
+
+## fseventsd: a volume for agent scratch
+
+fseventsd records every file change on a volume and grows over days of agent
+work (1.43 GB at 109% CPU on 2026-10-14). It is SIP-protected, so the tick can
+only report it. The remedy is to keep the churn off a volume fseventsd tracks.
+Measured 2026-10-16 over 30 minutes: about 110k changed files under
+`~/.amux/tmp` and `/private/tmp/claude-501` (40,670 from one lane's parallel
+build checkouts), 26 under `~/Dev/amux`. Agent scratch is the churn, not the
+project folders.
+
+`scripts/mac-agent-volume.sh` manages an APFS volume, `AgentScratch`, in the
+boot container. It shares the container's free space and opts out of both
+indexers: Spotlight with `mdutil -i off`, fseventsd with `.fseventsd/no_log`
+read at mount. `status` prints one line, `create` adds the volume and turns
+Spotlight off, `verify` exits 0 only when every opt-out is read back in place.
+Each tick prints that line as `mac-cleanup: agent volume:`.
+
+`.fseventsd` is created by macOS as root and readable only by root, so the
+`no_log` step is the owner's, once; `status` prints the exact command. It also
+makes `.fseventsd` searchable, so the marker is read rather than assumed.
+
+Pointing scratch at the volume comes after `verify` passes, and switches over
+each worker at its next restart: `CLAUDE_CODE_TMPDIR` for Claude Code's
+scratchpads, and the lane temp root for `~/.amux/tmp`. The cleanup tick has to
+reap the new location before either is switched. Moving `~/Dev` takes every
+lane down at once, so it is a planned-downtime decision, not a cleanup step.
+

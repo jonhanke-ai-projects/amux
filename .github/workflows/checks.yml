@@ -414,6 +414,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-self.sh
+      - name: the agent scratch volume reports each opt-out from what it can read
+        run: |
+          set -uo pipefail
+          ./scripts/test-mac-agent-volume.sh
       # AF-677. AF-346's ratchet (above) recorded 31 harnesses as unwired rather
       # than wiring them blind, because that decision belongs to each one's
       # owner (ethos rule 8). This is that decision, made for 28 of the 31:

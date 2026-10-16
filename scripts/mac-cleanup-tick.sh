@@ -505,6 +505,10 @@ THERMAL_CMD=${AMUX_CLEANUP_THERMAL_CMD:-pmset -g therm}
 # run logs it keeps, and the launchd fallback's log. A check that only reports
 # the machine says nothing on the day it is the thing that broke (2026-10-14:
 # six runs in a row killed at 600s, and nothing anywhere said so).
+# The agent-scratch volume fseventsd and Spotlight skip (scripts/mac-agent-volume.sh).
+# Reported each tick beside the fseventsd reading, so a reader sees whether the
+# remedy is in place without running anything. Committed bytes, as for the tick.
+AGENT_VOLUME_CMD=${AMUX_CLEANUP_AGENT_VOLUME_CMD:-agent_volume_status}
 SELF_SCHED_ID=${AMUX_CLEANUP_SELF_SCHED_ID:-SCHED-465}
 SELF_DB=${AMUX_CLEANUP_SELF_DB:-${AMUX_HOME:-$HOME/.amux}/amux.db}
 SELF_RUNS_DIR=${AMUX_CLEANUP_SELF_RUNS_DIR:-${AMUX_HOME:-$HOME/.amux}/shell-runs/$SELF_SCHED_ID}
@@ -1027,6 +1031,18 @@ check_thermal() {
   else echo "mac-cleanup: thermal: unmeasured"; fi
 }
 
+agent_volume_status() {
+  local f; f=$(mktemp "${TMPDIR:-/tmp}/agent-volume.XXXXXX") || return 1
+  git -C "${AMUX_REPO_DIR:-$HOME/Dev/amux}" show origin/main:scripts/mac-agent-volume.sh > "$f" 2>/dev/null \
+    && perl -e 'alarm 30; exec @ARGV' bash "$f" status; local rc=$?
+  rm -f -- "${f:?}"; return $rc
+}
+check_agent_volume() {
+  local out; out=$($AGENT_VOLUME_CMD 2>/dev/null)
+  if [ -z "$out" ]; then echo "mac-cleanup: agent volume: unmeasured (scripts/mac-agent-volume.sh gave nothing)"; return 0; fi
+  printf '%s\n' "$out" | sed 's/^agent-volume: /mac-cleanup: agent volume: /; s/^next/mac-cleanup:   agent volume next/'
+}
+
 self_verdict() { HEALTH_VERDICTS=$(printf '%s\nself %s\n' "$HEALTH_VERDICTS" "$1"); }
 
 # Is this check itself working? Run rows (status, cause), run logs (finished,
@@ -1086,7 +1102,7 @@ system_health() { # <dry:0|1>
   HEALTH_VERDICTS=""; CPU_RESTARTED=0; TEST_ORPHANS_STOPPED=0; CRASH_PRUNED=0
   if [ "$HEALTH_PROBES" = off ]; then echo "mac-cleanup: system health: probes off (AMUX_CLEANUP_HEALTH_PROBES=off)"; return 0; fi
   check_cpu_hogs "$1"; reap_test_orphans "$1"; check_limits; check_crash_reports "$1"
-  check_launchd_failing; check_network; check_thermal; check_self_runs
+  check_launchd_failing; check_network; check_thermal; check_agent_volume; check_self_runs
   HEALTH_VERDICTS=$(printf '%s\n' "$HEALTH_VERDICTS" | grep . || true)
 }
 
