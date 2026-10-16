@@ -8229,6 +8229,47 @@ async fn attach_prompt_qualifier(
     }
 }
 
+/// An owner message held back for the board (delivery='board', force adherence)
+/// whose intake ends WITHOUT a plan goes to its worker after all. Before this,
+/// capture turned off (or the lane turned isolated) between the hold and intake,
+/// so the row was cleared, no card was made, and the worker never saw it (Ethan,
+/// 2026-10-16: "inbound messages ... just go directly to the board (making it
+/// seem like the worker never received it)"; MSG-89740 to mixpeek-seo).
+/// Idempotent: the delivery id is keyed on the row, and only a cardless 'board'
+/// row is released.
+pub(crate) async fn release_held_message(state: &AppState, row_id: i64, session: &str, why: &str) -> bool {
+    use rusqlite::OptionalExtension;
+    let held = state.store.read().ok().and_then(|c| {
+        c.query_row(
+            "SELECT text, COALESCE(origin,'') FROM cmd_history WHERE id=?1 AND delivery='board' AND card_id IS NULL",
+            [row_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    });
+    let Some((text, origin)) = held else { return false };
+    if let Err(error) = enqueue_board_conversation(state, session, row_id, &text, &origin).await {
+        tracing::warn!(session, message_id = row_id, why, %error, measured = true, n_considered = 1,
+            verdict = "board_held_message_release_failed",
+            "a message held for the board got no plan and could not be handed to its worker");
+        return false;
+    }
+    let marked = state.store.write_async(move |c| {
+        c.execute("UPDATE cmd_history SET delivery='queued', submit_verdict='queued' WHERE id=?1 AND delivery='board'", [row_id])?;
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await;
+    if let Err(error) = marked {
+        tracing::warn!(session, message_id = row_id, %error, verdict = "board_held_message_release_unmarked",
+            "released to the worker, but the row still reads delivery=board");
+    }
+    tracing::info!(session, message_id = row_id, why, measured = true, n_considered = 1,
+        verdict = "board_held_message_released",
+        "a message held for the board got no plan, so it was handed to its worker instead of stranding");
+    true
+}
+
 /// Resume only explicitly pending message consequences. This does not deliver a
 /// command, insert history, or infer work from arbitrary old cardless messages.
 pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
@@ -8270,7 +8311,8 @@ pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
         match result {
             Ok(_) => {
                 tracing::info!(session=%cap_session, message_id=row_id, measured=true, n_considered=1,
-                verdict="isolated_capture_suppressed", "isolated input is not board work; pending intake cleared")
+                verdict="isolated_capture_suppressed", "isolated input is not board work; pending intake cleared");
+                release_held_message(state, row_id, &cap_session, "isolated").await;
             }
             Err(error) => tracing::warn!(session=%cap_session, message_id=row_id, %error,
                 verdict="isolated_capture_clear_failed", "could not clear isolated intake receipt; no intake executed"),
@@ -8297,8 +8339,11 @@ pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
             Ok(crate::db::WriteOutcome { applied:true, events:vec![] })
         }).await;
         match result {
-            Ok(_) => tracing::info!(session=%cap_session, message_id=row_id, measured=true, n_considered=1,
-                verdict="board_capture_off", "ledger: decompose onto board is off; message kept in Messages without a card"),
+            Ok(_) => {
+                tracing::info!(session=%cap_session, message_id=row_id, measured=true, n_considered=1,
+                    verdict="board_capture_off", "ledger: decompose onto board is off; message kept in Messages without a card");
+                release_held_message(state, row_id, &cap_session, "board_capture_off").await;
+            }
             Err(error) => tracing::warn!(session=%cap_session, message_id=row_id, %error, measured=false, n_considered=1,
                 verdict="board_capture_off_pending", "could not clear the capture receipt; it stays pending for recovery"),
         }
@@ -39716,6 +39761,39 @@ mod tests {
             );
             assert_eq!(child["messages"][0]["card_id"], json!(root));
         }
+    }
+
+    /// MSG-89740 (mixpeek-seo, 2026-10-15): an owner message held for the board
+    /// reached intake after "decompose onto board" was switched off. Intake made
+    /// no card and cleared the row, so the worker never saw it. It must be handed
+    /// to the worker instead, exactly once.
+    #[tokio::test]
+    async fn a_held_message_with_no_plan_goes_to_its_worker() {
+        let (st, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("seo.env"), "AMUX_COMMAND_LIFECYCLE=0\nAMUX_BOARD_FORCE_ADHERENCE=1\n").unwrap();
+        let id = cmd_hist_record_with_id(&st, "seo", "build the video understanding extension", "user", "", false,
+            DeliveryMeta::board(now_i64() * 1000)).await;
+        assert!(id > 0);
+        st.store.write_async(move |c| {
+            c.execute("UPDATE cmd_history SET capture_pending=1 WHERE id=?1", [id])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await.unwrap();
+        capture_recorded_message(&st, id).await;
+        let c = st.store.read().unwrap();
+        let (delivery, cards): (String, i64) = c.query_row(
+            "SELECT delivery, (SELECT COUNT(*) FROM issues) FROM cmd_history WHERE id=?1", [id],
+            |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(cards, 0, "capture is off: no card");
+        assert_eq!(delivery, "queued", "the held row is released, not left as board");
+        let queued: i64 = c.query_row(
+            "SELECT COUNT(*) FROM steering_queue WHERE session='seo' AND text LIKE '%video understanding%'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(queued, 1, "the owner's words are queued for the worker");
+        drop(c);
+        assert!(!release_held_message(&st, id, "seo", "again").await, "a released row is not released twice");
     }
 
     #[tokio::test]
