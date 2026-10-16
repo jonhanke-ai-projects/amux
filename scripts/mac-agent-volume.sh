@@ -26,6 +26,9 @@
 set -uo pipefail
 
 NAME=${AMUX_AGENT_VOLUME_NAME:-AgentScratch}
+# The path a person can run. Not $0: the tick runs a temporary copy of the
+# committed bytes, and a next step naming /var/folders/.../tmp.X is unrunnable.
+ME=${AMUX_AGENT_VOLUME_SELF:-${AMUX_REPO_DIR:-$HOME/Dev/amux}/scripts/mac-agent-volume.sh}
 MNT=${AMUX_AGENT_VOLUME_MOUNT:-/Volumes/$NAME}
 # Seams: the test stands these in so no cell touches a real disk.
 DISKUTIL=${AMUX_AGENT_VOLUME_DISKUTIL:-/usr/sbin/diskutil}
@@ -60,8 +63,8 @@ status_line() {
 }
 
 next_step() {
-  if ! volume_exists; then echo "next: $0 create"; return; fi
-  if ! is_mounted; then echo "next: $DISKUTIL mount \"$NAME\" (if it hangs, a password dialog for an earlier mount may be waiting on screen)"; return; fi
+  if ! volume_exists; then echo "next: $ME create"; return; fi
+  if ! is_mounted; then echo "next: $DISKUTIL mount \"$NAME\" (if it hangs, an authorization dialog may be open on screen: SecurityAgent is $(pgrep -x SecurityAgent >/dev/null 2>&1 && echo running || echo "not running"))"; return; fi
   [ "$(spotlight_state)" = off ] || echo "next: $SUDO_MDUTIL -i off \"$MNT\""
   case "$(fse_state)" in
     off) ;;
@@ -86,5 +89,5 @@ case "${1:-status}" in
     case "$line" in *"mounted=yes fseventsd=off spotlight=off"*) exit 0 ;; esac
     next_step; exit 1 ;;
   *)
-    echo "usage: $0 status|create|verify" >&2; exit 2 ;;
+    echo "usage: $ME status|create|verify" >&2; exit 2 ;;
 esac

@@ -40,6 +40,12 @@ echo "1. no volume: say so, and verify fails"
 reset; out=$(run status)
 check "it reports the volume missing"                 yes "$(has "$out" 'agent-volume: TestVol exists=no')"
 check "and names create as the next step"             yes "$(printf '%s' "$out" | grep -qE '^next: .*mac-agent-volume.sh create$' && echo yes || echo no)"
+# The tick runs a temporary copy of the committed bytes; the step must still name
+# the script a person can run, never the copy (found in the e2e run, 2026-10-16).
+cp "$S" "$FIX/tmp.copy"; out=$(AMUX_REPO_DIR=/the/repo AMUX_AGENT_VOLUME_NAME=TestVol AMUX_AGENT_VOLUME_MOUNT="$MNT" \
+  AMUX_AGENT_VOLUME_DISKUTIL="$FIX/diskutil" AMUX_AGENT_VOLUME_MDUTIL="$FIX/mdutil" bash "$FIX/tmp.copy" status 2>&1)
+check "run from a copy, it names the real script"     yes "$(has "$out" 'next: /the/repo/scripts/mac-agent-volume.sh create')"
+check "and never the copy"                            no  "$(has "$out" 'tmp.copy')"
 run verify >/dev/null; check "verify exits 1"         1   "$?"
 
 echo "2. create adds it to the boot container and turns Spotlight off, once"
@@ -74,6 +80,7 @@ echo "5. an unmounted volume is not reported as fine"
 rm -f "$ST/mounted"; out=$(run verify); rc=$?
 check "mounted=no is said"                            yes "$(has "$out" 'exists=yes mounted=no')"
 check "and verify exits 1"                            1   "$rc"
+check "the hang hint says whether a dialog is open"   yes "$(printf '%s' "$out" | grep -qE 'SecurityAgent is (running|not running)' && echo yes || echo no)"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-agent-volume — all checks passed"; exit 0; fi
