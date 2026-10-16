@@ -236,6 +236,10 @@ test('Vault: each secret and payment method shows a copyable id', async ({ page,
   await boot(page);
   const auth = { Authorization: `Bearer ${await token(page)}` };
   let secretId = '', itemId = '';
+  const removeIds = async () => {
+    if (secretId) await request.delete(`/api/vault/secrets/${secretId}`, { headers: auth });
+    if (itemId) await request.delete(`/api/vault/${itemId}`, { headers: auth });
+  };
   try {
     const s = await request.post('/api/vault/secrets', { headers: auth, data: { key, value: 'vid-canary-7f31', scope: 'global' } });
     expect(s.status(), await s.text()).toBeLessThan(300);
@@ -276,7 +280,6 @@ test('Vault: each secret and payment method shows a copyable id', async ({ page,
     expect(ib!.x + ib!.width).toBeLessThanOrEqual(vw);
     await page.screenshot({ path: info.outputPath('vault-ids.png') });
   } finally {
-    if (secretId) await request.delete(`/api/vault/secrets/${secretId}`, { headers: auth });
-    if (itemId) await request.delete(`/api/vault/${itemId}`, { headers: auth });
+    await cleanup('remove vault id fixtures', removeIds, info);
   }
 });
