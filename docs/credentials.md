@@ -60,7 +60,7 @@ grep -oE '^[A-Z0-9_]+=' ~/.amux/server.env | tr -d '=' | sort
 | `ELEVENLABS_API_KEY` | Voice synthesis. |
 | `LIGHTFIELD_API_KEY` | Lightfield. |
 | `POSTHOG_KEY`, `POSTHOG_HOST`, `POSTHOG_PERSONAL_API_KEY`, `AMUX_POSTHOG_KEY` | Analytics. The personal API key can read/write project config; the others are ingest. |
-| `AMUX_CLOUD_SMTP_PASSWORD` | Google app password for hello@amux.io. `cloud/control/deploy_control.sh` turns it into the control plane's `SMTP_URL` (smtp.gmail.com:587). Read from the worker's environment (a vault secret) or `server.env`. |
+| `AMUX_CLOUD_SMTP_PASSWORD` | Optional fallback. The cloud control plane sends as hello@amux.io with that account's Gmail OAuth grant (`~/.amux/gmail-tokens/hello@amux.io.json`), which `cloud/control/deploy_control.sh` ships as `GMAIL_OAUTH`. Without the grant, this Google app password becomes `SMTP_URL` (smtp.gmail.com:587). |
 
 ## Notifications
 
