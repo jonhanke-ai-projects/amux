@@ -21,7 +21,7 @@ def setup(accounts, current=None):
 
 class Policy(unittest.TestCase):
     def test_expiring_capacity_first(self):
-        setup({"run": acct(10, h(4), 29, h(57)), "join": acct(0, None, 89, h(15)), "use": acct(0, None, 100, h(104))})
+        setup({"run": acct(10, h(4), 29, h(57)), "join": acct(0, None, 70, h(15)), "use": acct(0, None, 100, h(104))})
         rows = cr.rank(NOW)
         self.assertEqual([r["email"] for r in rows], ["join", "run", "use"])
         self.assertEqual(cr.decide("run", rows, {}, NOW), ("join", "expiring_capacity_first"))
@@ -31,8 +31,13 @@ class Policy(unittest.TestCase):
         self.assertEqual(cr.decide("join", cr.rank(NOW), {"switched_at": time.time()}, NOW), ("run", "current_exhausted"))
 
     def test_no_flap_inside_gap(self):
-        setup({"run": acct(10, h(4), 29, h(57)), "join": acct(0, None, 89, h(15))})
+        setup({"run": acct(10, h(4), 29, h(57)), "join": acct(0, None, 70, h(15))})
         self.assertEqual(cr.decide("run", cr.rank(NOW), {"switched_at": time.time()}, NOW), (None, "recent_switch"))
+
+    def test_expiring_target_over_preempt_line_is_not_picked(self):
+        # It would be preempted on the next tick and flap straight back.
+        setup({"run": acct(10, h(4), 29, h(57)), "join": acct(0, None, 89, h(15))})
+        self.assertEqual(cr.decide("run", cr.rank(NOW), {}, NOW), (None, "current_is_best"))
 
     def test_reset_passed_counts_as_zero(self):
         setup({"amux": acct(0, None, 100, h(-1))})

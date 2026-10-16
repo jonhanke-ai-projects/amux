@@ -717,11 +717,19 @@ def amux_get(path):
     return json.loads(p.stdout or "null")
 
 
+_LINK_UNREADABLE_LOGGED = set()
+
+
 def magic_link(email, since_epoch):
+    unreadable = 0
     # in:anywhere: Gmail files some of these as spam, and a plain search skips spam.
     # 2026-10-16: every link to ethan@mixpeekvectors.com sat in spam, so 98 of 101
     # switches to it waited out the login page and failed.
-    msgs = amux_get("/api/email/search?q=%s&days=1&limit=20" % urllib.parse.quote("in:anywhere secure link to Claude")) or []
+    # to: as well, because spam piles up: on 2026-10-16 98 of the newest 100
+    # links were to mixpeekvectors, so a fresh link to another account could
+    # fall outside a newest-20 window across all accounts.
+    msgs = amux_get("/api/email/search?q=%s&days=1&limit=20" % urllib.parse.quote(
+        "in:anywhere to:%s secure link to Claude" % email)) or []
     for m in msgs:
         if (m.get("to") or "").lower() != email.lower():
             continue
@@ -737,10 +745,18 @@ def magic_link(email, since_epoch):
                 continue
         if sent < since_epoch - 5:
             continue
-        body = json.dumps(amux_get("/api/email/message/" + urllib.parse.quote(m["message_id"], safe="")))
-        found = re.findall(r"https://claude\.ai/magic-link#[A-Za-z0-9_\-:.]+", body)
+        msg = amux_get("/api/email/message/" + urllib.parse.quote(m["message_id"], safe=""))
+        if not msg or (isinstance(msg, dict) and msg.get("error")):
+            unreadable += 1
+            continue
+        found = re.findall(r"https://claude\.ai/magic-link#[A-Za-z0-9_\-:.]+", json.dumps(msg))
         if found:
             return found[0]
+    if unreadable and email not in _LINK_UNREADABLE_LOGGED:
+        # Search sees the email and the message endpoint cannot open it. That is
+        # what stalled the fleet on 2026-10-15/16 (spam-filed ids), so say so.
+        _LINK_UNREADABLE_LOGGED.add(email)
+        log("claude_rotate_link_unreadable", account=email, unreadable=unreadable)
     return None
 
 
