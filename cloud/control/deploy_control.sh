@@ -91,6 +91,13 @@ GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=sn
   # pipefail that aborted the first Stripe deploy after writing the env file and before the restart.
   for k in APPLE_TEAM_ID APPLE_KEY_ID APPLE_BUNDLE_ID; do v="$(envv $k)"; if [[ -n "$v" ]]; then echo "$k=$v"; fi; done
   if [[ -n "$APK" ]]; then echo "APPLE_PRIVATE_KEY=$APK"; fi
+  # Mail goes out as hello@amux.io through Google Workspace (amux.io's MX). Google refuses the
+  # account password over SMTP, so this is an app password: AMUX_CLOUD_SMTP_PASSWORD from the
+  # environment (a vault secret scoped to this worker arrives there) or server.env.
+  SMP="${AMUX_CLOUD_SMTP_PASSWORD:-$(envv AMUX_CLOUD_SMTP_PASSWORD)}"
+  if [[ -n "$SMP" ]]; then
+    echo "SMTP_URL=smtp://hello%40amux.io:$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1].replace(" ",""),safe=""))' "$SMP")@smtp.gmail.com:587"
+  fi
   echo "HCLOUD_TOKEN=$HC"
   echo "CLOUDFLARE_API_TOKEN=$CF"
   echo "CF_ZONE_ID=$ZID"

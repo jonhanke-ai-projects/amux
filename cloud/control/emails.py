@@ -92,6 +92,21 @@ def configured():
     return bool(os.environ.get("SMTP_URL"))
 
 
+# Mail queued for the synthetic customer and test fixtures, or queued so long ago that it is no
+# longer true ("your server is being built" a week later), is marked suppressed instead of sent.
+# The test control plane queued 50 such rows before SMTP existed; turning SMTP on must not send them.
+MAX_AGE_S = 2 * 86400
+
+
+def suppress_reason(row, now=None):
+    addr = (row["to_addr"] or "").lower()
+    if addr.startswith("synthetic+") or addr.endswith("@example.com") or "@" not in addr:
+        return "test address"
+    if (now or time.time()) - row["ts"] > MAX_AGE_S:
+        return "older than two days"
+    return None
+
+
 def drain(store, limit=20):
     """Send queued mail. Returns (sent, failed). Never raises; failures are recorded on the row."""
     url = os.environ.get("SMTP_URL")
@@ -99,6 +114,11 @@ def drain(store, limit=20):
         return 0, 0
     u = urllib.parse.urlparse(url)
     sent = failed = 0
+    for r in store.all("SELECT * FROM outbox WHERE sent_at IS NULL"):
+        why = suppress_reason(r)
+        if why:
+            store.run("UPDATE outbox SET sent_at=0, error=? WHERE id=?", f"suppressed: {why}", r["id"])
+            store.event("email.suppressed", template=r["template"], why=why)
     rows = store.all("SELECT * FROM outbox WHERE sent_at IS NULL AND (error IS NULL OR ts < ?) ORDER BY id LIMIT ?",
                      time.time() - 600, limit)
     if not rows:
