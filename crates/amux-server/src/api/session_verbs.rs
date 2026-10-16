@@ -52536,7 +52536,14 @@ mod amux4770_worktree_isolation_tests {
         assert!(block.contains("\"--no-track\", \"-b\", branch"));
         assert!(block.contains("verdict = \"worktree_branch_unavailable\""));
         assert!(block.contains("\"worktree\", \"add\", \"--detach\""), "detached fallback kept");
-        let app = include_str!("../../../amux-dashboard/static/app.js");
+        // Read at RUN time, not include_str!: a compile-time include made every
+        // test binary's bytes depend on static/, so a dashboard-only PR could
+        // not reuse main's compiled tests (rust.yml test-build cache).
+        let app = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../amux-dashboard/static/app.js"),
+        )
+        .expect("dashboard app.js is readable");
         assert!(
             app.contains("if (!worktreeEnabled) await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/git', {"),
             "with a worktree the create modal must not run `git checkout -b` in the main checkout"

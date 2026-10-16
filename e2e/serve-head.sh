@@ -52,11 +52,28 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 _scrubbed=""
 for _k in ${!AMUX_@}; do
   case "$_k" in
-    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_VAULT_KEYSTORE|AMUX_E2E_*) ;;
+    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_VAULT_KEYSTORE|AMUX_DASHBOARD_DIR|AMUX_E2E_*) ;;
     *) unset "$_k"; _scrubbed="$_scrubbed $_k" ;;
   esac
 done
 [ -n "$_scrubbed" ] && echo "[e2e] ENV: scrubbed fleet vars:$_scrubbed (a throwaway home must not inherit fleet toggles)"
+
+# WHICH DASHBOARD BYTES THIS SERVER SERVES. CI may boot a server binary main
+# compiled (rust.yml server-bin cache) for a PR that changed only the
+# dashboard; AMUX_DASHBOARD_DIR then points the server at the PR's static/
+# (crates/amux-dashboard/src/lib.rs). It is let through the scrub above, and
+# checked here, because a bad path would otherwise surface as a panic inside
+# the server rather than as this harness's own error. Unset: the binary's
+# embedded copy, as in production. Printed either way (AF-182: an output with
+# two states names the one it took).
+if [ -n "${AMUX_DASHBOARD_DIR:-}" ]; then
+  for _f in app.js sw.js index.html; do
+    [ -f "$AMUX_DASHBOARD_DIR/$_f" ] || { echo "[e2e] AMUX_DASHBOARD_DIR=$AMUX_DASHBOARD_DIR has no $_f; refusing to serve a partial dashboard" >&2; exit 1; }
+  done
+  echo "[e2e] DASHBOARD: served from AMUX_DASHBOARD_DIR=$AMUX_DASHBOARD_DIR, NOT the binary's embedded copy."
+else
+  echo "[e2e] DASHBOARD: the copy embedded in the server binary."
+fi
 
 # AEAB-52. THIS SCRIPT EXISTS TO PIN A SPECIFIC BUILD, so a server that hot-swaps
 # itself mid-suite is running a different binary from the one the suite chose.

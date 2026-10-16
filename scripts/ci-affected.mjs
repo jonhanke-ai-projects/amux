@@ -45,14 +45,18 @@ export const E2E_INFRA = [
   /^e2e\/teardown\.ts$/, /^e2e\/ci-evidence-reporter\.mjs$/, /^e2e\/lifecycle\/evidence[^/]*$/,
   /^e2e\/test-env\.ts$/, /^e2e\/tmp-reap\.ts$/, /^package(-lock)?\.json$/,
   /^\.github\/workflows\/rust\.yml$/, /^scripts\/e2e-plan\.mjs$/, /^scripts\/check-e2e-evidence\.mjs$/,
-  /^scripts\/ci-affected\.mjs$/,
+  /^scripts\/ci-affected\.mjs$/, /^scripts\/ci-rust-key\.mjs$/,
 ];
 
 // Rust compile inputs: any of these runs the whole Rust suite plus clippy.
+// scripts/ci-rust-key.mjs is here too: it decides whether a PR may reuse
+// main's compiled server and tests (rust.yml), so a change to it compiles
+// everything rather than trusting the key it is changing.
 export const RUST_FULL = [
   /^crates\/.*\.rs$/, /^crates\/[^/]+\/Cargo\.toml$/, /^Cargo\.(toml|lock)$/,
   /^crates\/[^/]+\/build\.rs$/, /^crates\/amux-server\/migrations\//,
   /^rust-toolchain(\.toml)?$/, /^\.cargo\//, /^\.github\/workflows\/rust\.yml$/,
+  /^scripts\/ci-rust-key\.mjs$/,
 ];
 
 // Integration tests that WALK the tree and read non-Rust files, keyed by the

@@ -3,7 +3,8 @@
 //! app.js and sw.js hold `__AMUX_ASSET_VER__` in source. Requested through the
 //! real router, both must come back with the placeholder replaced by the build
 //! hash, and that hash must be the one this test recomputes from `static/`
-//! with the same recipe as `crates/amux-dashboard/build.rs`. If the served
+//! with an independent copy of the recipe in `crates/amux-dashboard/src/version.rs`
+//! (which build.rs and the runtime override both compile). If the served
 //! bytes kept the placeholder, every deploy would reuse one SW cache name and
 //! no open page would ever reload onto new code.
 
@@ -58,9 +59,19 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Independent copy of build.rs's recipe, so a drift in either is caught.
+/// The directory the server is serving: `AMUX_DASHBOARD_DIR` when set (CI
+/// runs main's compiled tests against a PR's static/ that way), else the
+/// checkout's static/, which is what the binary embedded.
+fn served_root() -> PathBuf {
+    match std::env::var_os(amux_dashboard::DASHBOARD_DIR_ENV).filter(|v| !v.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../amux-dashboard/static"),
+    }
+}
+
+/// Independent copy of the version recipe, so a drift in either is caught.
 fn recompute_asset_version() -> String {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../amux-dashboard/static");
+    let root = served_root();
     let mut files = Vec::new();
     collect(&root, &mut files);
     let mut keyed: Vec<(String, PathBuf)> = files
@@ -96,13 +107,16 @@ fn recompute_asset_version() -> String {
 
 #[tokio::test]
 async fn served_app_js_and_sw_js_carry_the_build_hash() {
-    let ver = amux_dashboard::ASSET_VER;
+    let ver = amux_dashboard::asset_version();
     let placeholder = amux_dashboard::ASSET_VER_PLACEHOLDER;
     assert_eq!(
         ver,
         recompute_asset_version(),
-        "ASSET_VER must be the content hash of static/ (build.rs recipe)"
+        "the served version must be the content hash of the served static/ (version.rs recipe)"
     );
+    if amux_dashboard::dir_override().is_none() {
+        assert_eq!(ver, amux_dashboard::ASSET_VER, "no override: the embedded hash is served");
+    }
 
     let (status, ctype, app) = get("/app.js").await;
     assert_eq!(status, 200);
@@ -130,8 +144,8 @@ async fn served_app_js_and_sw_js_carry_the_build_hash() {
     // CONTROL: the raw embed really does hold the placeholder, so the two
     // assertions above prove a substitution happened rather than passing on
     // a file that never had the token.
-    let raw = amux_dashboard::DashboardAssets::get("app.js").unwrap();
-    assert!(String::from_utf8_lossy(&raw.data).contains(placeholder));
+    let raw = amux_dashboard::raw_asset("app.js").unwrap();
+    assert!(String::from_utf8_lossy(&raw).contains(placeholder));
 }
 
 /// The kernel no longer bundles the registry, so the registry must be served

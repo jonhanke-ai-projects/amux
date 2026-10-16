@@ -621,7 +621,7 @@ fn inject_bootstrap(
     let with_bootstrap = format!("{}{}{}", &html[..b], block, &html[e..]);
     // Client update adoption is the SSE ping's job, exactly like Python
     // (amux-server.py:65292): every ping carries `v` = the derived asset
-    // version, amux_dashboard::ASSET_VER (see sse.rs::ping_payload) and the SPA self-reloads on mismatch,
+    // version, amux_dashboard::asset_version() (see sse.rs::ping_payload) and the SPA self-reloads on mismatch,
     // rate-limited and SW-nudged. The earlier /health-polling banner is
     // deliberately GONE (Ethan 2026-08-09: "frontend clients should also
     // restart just like the python server") — a banner on backend-only

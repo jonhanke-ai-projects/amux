@@ -345,6 +345,14 @@ async fn async_main() {
     tracing::info!(port = cfg.port, db = %cfg.db_path.display(), pid = std::process::id(),
         commit = env!("AMUX_BUILD_COMMIT_FULL"), build = %running_build,
         self_adopted = std::env::var("AMUX_SELF_ADOPTED").is_ok(), "starting amux-rust");
+    // Resolve the dashboard source now, so an unreadable AMUX_DASHBOARD_DIR
+    // fails at startup instead of on the first page load, and say which
+    // bytes this process serves. Production never sets it (embedded).
+    if let Some(o) = amux_dashboard::dir_override() {
+        tracing::info!(verdict = "dashboard_assets_from_dir", dir = %o.dir.display(),
+            version = %o.version, embedded_version = amux_dashboard::ASSET_VER, measured = true,
+            n_considered = 1, "dashboard assets served from AMUX_DASHBOARD_DIR, not the embedded copy");
+    }
     let home = cfg.amux_home.canonicalize().unwrap_or(cfg.amux_home.clone());
     let temp = std::env::temp_dir()
         .canonicalize()
