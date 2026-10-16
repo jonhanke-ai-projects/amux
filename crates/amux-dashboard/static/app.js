@@ -41094,7 +41094,22 @@ function openSchedModal(editId, opts) {
     const body = overlay.querySelector('.sx-create-body');
     if (body) body.scrollTop = 0;
   });
-  setTimeout(() => { if (_sxModalOpen) document.getElementById('sched-title').focus(); }, 50);
+  // Focus the name field once the sheet is up, unless the owner already moved
+  // into another field of this form. This timer used to focus the title
+  // unconditionally 50ms after open: typing that started sooner (a fast tap
+  // into Message, an autofill, the scheduler e2e on CI) had its focus pulled
+  // away mid-entry, so the text landed in Name and Message stayed empty
+  // (scheduler-redesign.spec.ts:357, desktop run 38814804812, mobile run
+  // 38867620848). The skip is reported so a new path into it is visible.
+  setTimeout(() => {
+    if (!_sxModalOpen || gen !== _sxModalGen) return;
+    const a = document.activeElement;
+    if (a && a !== document.body && overlay.contains(a) && a.id !== 'sched-title') {
+      _sxModalBeacon('sched-form-focus-kept', { field: a.id || a.tagName });
+      return;
+    }
+    document.getElementById('sched-title').focus();
+  }, 50);
 }
 function duplicateSchedule(id) {
   const s = (schedules || []).find(x => x.id === id);
