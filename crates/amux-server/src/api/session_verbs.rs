@@ -39774,13 +39774,19 @@ mod tests {
         let sessions = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join("seo.env"), "AMUX_COMMAND_LIFECYCLE=0\nAMUX_BOARD_FORCE_ADHERENCE=1\n").unwrap();
-        let id = cmd_hist_record_with_id(&st, "seo", "build the video understanding extension", "user", "", false,
-            DeliveryMeta::board(now_i64() * 1000)).await;
-        assert!(id > 0);
+        // The held row exactly as the send path stores it. Inserted directly:
+        // cmd_hist_record_with_id also SPAWNS a capture for a 'board' row, and
+        // that task racing this call made the assertion timing-dependent (it
+        // failed on CI's runners, passed 15/15 here; rust run 38926900646).
+        let now_ms = now_i64() * 1000;
         st.store.write_async(move |c| {
-            c.execute("UPDATE cmd_history SET capture_pending=1 WHERE id=?1", [id])?;
+            c.execute("INSERT INTO cmd_history (text, type, session, ts, origin, delivery, queued_at, submit_verdict, capture_pending) \
+                       VALUES ('build the video understanding extension','user','seo',?1,'','board',?1,'accepted',1)", [now_ms])?;
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).await.unwrap();
+        let id = st.store.read().unwrap()
+            .query_row("SELECT MAX(id) FROM cmd_history WHERE session='seo'", [], |r| r.get::<_, i64>(0)).unwrap();
+        assert!(id > 0);
         capture_recorded_message(&st, id).await;
         let c = st.store.read().unwrap();
         let (delivery, cards): (String, i64) = c.query_row(

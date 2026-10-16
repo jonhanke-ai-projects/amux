@@ -58,6 +58,11 @@ MIN_HEADROOM = float(os.environ.get("CLAUDE_MIN_HEADROOM", "2"))
 # usable up to SWITCH_AT, so the last few percent of every account still get
 # spent, just not by the account the fleet is standing on.
 PREEMPT_AT = float(os.environ.get("CLAUDE_PREEMPT_AT", "85"))
+# A preempt target must sit this far under PREEMPT_AT in BOTH windows. On
+# 2026-10-16 joinmixpeek (5h 86%) preempted to mixpeek (5h 81%), which hit 85%
+# twenty minutes later and preempted straight back; both 5h windows reset at
+# 13:00, joinmixpeek ran out at 12:17 and the fleet stopped.
+PREEMPT_MARGIN = float(os.environ.get("CLAUDE_PREEMPT_MARGIN", "20"))
 # A worker already parked on Claude's limit prompt is resumed at most this often.
 RESUME_GAP_S = int(os.environ.get("CLAUDE_ROTATE_RESUME_GAP_S", "600"))
 # Readings arriving this soon after a switch may still describe the previous
@@ -348,6 +353,16 @@ FAIL_BACKOFF_N = int(os.environ.get("CLAUDE_ROTATE_FAIL_BACKOFF_N", "3"))
 FAIL_BACKOFF_S = int(os.environ.get("CLAUDE_ROTATE_FAIL_BACKOFF_S", str(6 * 3600)))
 
 
+def note_failure(times, steps, at_s=None):
+    """A target's recent failure times plus this one. An unreadable sign-in
+    link is not transient, so it skips the account for the whole window."""
+    at_s = at_s or time.time()
+    times = [t for t in times if at_s - float(t) < FAIL_BACKOFF_S] + [at_s]
+    if any("unreadable" in str(x) for x in steps):
+        times += [at_s] * max(0, FAIL_BACKOFF_N - len(times))
+    return times
+
+
 def backed_off(state, at_s=None):
     """Accounts with FAIL_BACKOFF_N failed switches inside FAIL_BACKOFF_S. Each
     failed switch costs ~4 minutes of a 5-minute tick and holds every deploy
@@ -357,6 +372,12 @@ def backed_off(state, at_s=None):
     fails = state.get("switch_failures") or {}
     return {e for e, ts in fails.items()
             if sum(1 for t in ts if at_s - float(t) < FAIL_BACKOFF_S) >= FAIL_BACKOFF_N}
+
+
+def cool(r):
+    """Fit for a switch nobody is forced into: the 5-hour window well under the
+    preempt line and the weekly one under it."""
+    return (r["five_hour"] or 0) < PREEMPT_AT - PREEMPT_MARGIN and (r["weekly"] or 0) < PREEMPT_AT
 
 
 def decide(current, rows, state, at=None):
@@ -378,7 +399,7 @@ def decide(current, rows, state, at=None):
     if cur is not None and cur["usable"]:
         peak = max(cur["five_hour"] or 0, cur["weekly"] or 0)
         roomier = next((r for r in rows if r["usable"] and r["email"] != current
-                        and r["headroom"] > cur["headroom"]), None)
+                        and r["headroom"] > cur["headroom"] and cool(r)), None)
         if peak >= PREEMPT_AT and roomier is not None:
             if time.time() - float(state.get("switched_at") or 0) < MIN_SWITCH_GAP_S:
                 return None, "recent_switch"
@@ -390,7 +411,7 @@ def decide(current, rows, state, at=None):
     since = time.time() - float(state.get("switched_at") or 0)
     if since < MIN_SWITCH_GAP_S:
         return None, "recent_switch"
-    if best["known"] and cur["weekly_resets"] and best["weekly_resets"] and best["weekly_resets"] < cur["weekly_resets"]:
+    if best["known"] and cool(best) and cur["weekly_resets"] and best["weekly_resets"] and best["weekly_resets"] < cur["weekly_resets"]:
         return best["email"], "expiring_capacity_first"
     return None, "current_is_fine"
 
@@ -521,7 +542,18 @@ def cmd_tick():
         return 0
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
               target=target, reason=reason, backed_off=skipped))
-    return switch(target, reason)
+    rc = switch(target, reason)
+    if rc == 0 or reason != "current_exhausted" or cli_email() != current:
+        return rc
+    # The current account is spent and that target failed: try the next one now
+    # rather than leaving the fleet stopped until the next tick.
+    rows = [dict(r, usable=False) if r["email"] == target else r for r in rows]
+    target2, reason2 = decide(current, rows, load(STATE, {}))
+    if not target2 or target2 == target:
+        return rc
+    print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
+              target=target2, reason=reason2, fallback_after=target))
+    return switch(target2, reason2)
 
 
 # ---------------------------------------------------------------- resuming
@@ -833,6 +865,10 @@ def _switch(target, reason):
                     if not link_used:
                         waiting_since = waiting_since or time.time()
                         link = magic_link(target, started)
+                        if not link and target in _LINK_UNREADABLE_LOGGED:
+                            # The email is there and cannot be opened; waiting
+                            # out the page only keeps the fleet on a spent account.
+                            raise RuntimeError("sign-in link unreadable")
                         if not link and time.time() - waiting_since > 75 and "resend" not in steps:
                             # Forwarded mail sometimes never arrives; one more send.
                             if click_text(tab, r"^(Resend email|Try sending again)$"):
@@ -882,7 +918,7 @@ def _switch(target, reason):
     tail = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x07\x1b]*(\x07|\x1b\\)?", "", cli_out)[-300:]
     state = load(STATE, {})
     fails = state.setdefault("switch_failures", {})
-    fails[target] = [t for t in fails.get(target, []) if time.time() - float(t) < FAIL_BACKOFF_S] + [time.time()]
+    fails[target] = note_failure(fails.get(target, []), steps)
     save(STATE, state)
     print(log("claude_rotate_switch_failed", measured=True, target=target, still=after, reason=reason,
               elapsed_s=elapsed, steps=steps, cli_tail=tail, recent_failures=len(fails[target]),
