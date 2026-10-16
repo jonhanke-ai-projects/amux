@@ -1482,6 +1482,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_feRecordOpen": {
+      "kind": "command._feRecordOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fetchGitBranches": {
       "kind": "command._fetchGitBranches",
       "feedback_required": true,

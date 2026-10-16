@@ -1570,7 +1570,7 @@
      never desync (the two-container version misaligned on iOS). */
   .fe-scroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
   .fe-col-headers {
-    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 92px 30px;
     padding: 0 4px; border-bottom: 2px solid var(--border); flex-shrink: 0;
     position: sticky; top: 0; z-index: 2;
     background: var(--card);
@@ -1585,7 +1585,7 @@
   .fe-sort-arrow { font-size: 0.65rem; opacity: 0.7; }
   .fe-col-hdr-actions { padding: 5px 4px; }
   .fe-row {
-    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 92px 30px;
     padding: 0 4px; border-bottom: 1px solid rgba(139,148,158,0.08);
     cursor: pointer; transition: background 0.08s;
     -webkit-tap-highlight-color: transparent;
@@ -1634,7 +1634,7 @@
   #lib-grid .lib-card:active { transform: scale(0.98); }
   #lib-grid .lib-card { transition: transform 0.08s; }
   .fe-back-row {
-    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 92px 30px;
     padding: 0 4px; border-bottom: 1px solid rgba(139,148,158,0.08);
     cursor: pointer;
   }
@@ -1643,7 +1643,7 @@
     /* Keep every column on mobile and let the table scroll sideways (standard
        mobile data-table UX) instead of hiding Size/Modified. min-width forces
        the horizontal overflow #fe-scroll then scrolls; header stays aligned. */
-    .fe-col-headers, .fe-row, .fe-back-row { min-width: 460px; }
+    .fe-col-headers, .fe-row, .fe-back-row { min-width: 552px; }
     .fe-cell-name { padding: 7px 8px; }
     .fe-cell-name span { font-size: 0.9rem; }
     .fe-menu-btn { opacity: 0.5; font-size: 1.1rem; }
@@ -8267,12 +8267,12 @@ body.light .bd-answer-head { color: #bc4c00; }
 /* Scratchpad rows carry two actions (copy, menu); the shared 30px column
    overflowed every row by 10px and pushed both off-screen. */
 #scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
-  grid-template-columns: minmax(0,1fr) 60px 92px 72px;
+  grid-template-columns: minmax(0,1fr) 60px 92px 92px 72px;
 }
 #scratchpad-view .fe-cell-actions { display:flex; gap:4px; justify-content:flex-end; align-items:center; }
 @media (max-width: 600px) {
   #scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
-    grid-template-columns: minmax(0,1fr) 92px 96px;
+    grid-template-columns: minmax(0,1fr) 76px 76px 88px;
   }
   #scratchpad-view .fe-cell-size { display:none; }
 }

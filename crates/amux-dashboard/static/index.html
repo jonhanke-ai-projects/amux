@@ -901,6 +901,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="fe-cell-name fe-col-hdr" onclick="_spSortBy('name')">Name <span id="sp-sort-name"></span></div>
     <div class="fe-cell-size fe-col-hdr" onclick="_spSortBy('size')">Size <span id="sp-sort-size"></span></div>
     <div class="fe-cell-date fe-col-hdr" onclick="_spSortBy('modified')">Modified <span id="sp-sort-modified"></span></div>
+    <div class="fe-cell-date fe-col-hdr" onclick="_spSortBy('opened')">Opened <span id="sp-sort-opened"></span></div>
     <div class="fe-cell-actions"></div>
   </div>
   <div id="sp-breadcrumb" class="fe-breadcrumb" style="padding:0 12px;font-size:0.78rem;display:none;"></div>
@@ -1078,6 +1079,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="fe-col-hdr" id="fe-hdr-name" data-sort-col="name" onclick="_filesSetSort('name')">Name</div>
       <div class="fe-col-hdr" id="fe-hdr-size" data-sort-col="size" onclick="_filesSetSort('size')">Size</div>
       <div class="fe-col-hdr" id="fe-hdr-modified" data-sort-col="modified" onclick="_filesSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" id="fe-hdr-opened" data-sort-col="opened" onclick="_filesSetSort('opened')" title="Last opened in amux">Opened</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
     <div id="files-body"></div>
@@ -2985,6 +2987,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="fe-col-hdr" onclick="_psfSetSort('name')">Name</div>
       <div class="fe-col-hdr" onclick="_psfSetSort('size')">Size</div>
       <div class="fe-col-hdr" onclick="_psfSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" onclick="_psfSetSort('opened')">Opened</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
     <div id="psf-body" class="peek-split-files-body"></div>

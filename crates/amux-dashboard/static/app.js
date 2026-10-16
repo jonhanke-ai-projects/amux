@@ -16203,18 +16203,10 @@ function _psfAcceptResponse(generation) {
   return false;
 }
 function _psfSortEntries(entries) {
-  return [...entries].sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    const { col, dir } = _psfSort;
-    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
-    if (col === 'modified') return dir * ((a.modified || 0) - (b.modified || 0));
-    return 0;
-  });
+  return [...entries].sort((a, b) => _feCompare(a, b, _psfSort));
 }
 function _psfSetSort(col) {
-  if (_psfSort.col === col) _psfSort.dir *= -1;
-  else { _psfSort.col = col; _psfSort.dir = 1; }
+  _feNextSort(_psfSort, col);
   _psfUpdateSortHeaders();
   if (_psfLastData) _psfRenderEntries(_psfLastData.dirPath, _psfLastData.data);
 }
@@ -26939,8 +26931,32 @@ async function _cacheStreamedImage(path, data) {
     _offlineBudgetEnforce();
   } catch (e) { console.warn('[files] could not save streamed image for offline', path, e); }
 }
+// The "Opened" column: tell the server this file was opened, then refresh the
+// cell in any listing showing it, so the time is right without a reload.
+function _feRecordOpen(path) {
+  if (!path) return;
+  fetch(API + '/api/fs/opened', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }), keepalive: true })
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d || !d.opened) return;
+      for (const row of document.querySelectorAll('[data-path]')) {
+        if (row.dataset.path !== path && row.dataset.path !== d.path) continue;
+        const cell = row.querySelector('.fe-cell-opened');
+        if (cell) cell.textContent = timeAgo(d.opened);
+      }
+      // Keep the cached Files listing in step, so a re-sort uses the new time.
+      const fl = _filesLastData;
+      if (fl && fl.data) {
+        const base = String(fl.data.path || fl.path || '').replace(/\/$/, '');
+        for (const e of fl.data.entries || []) if (base + '/' + e.name === d.path || base + '/' + e.name === path) e.opened = d.opened;
+      }
+    })
+    .catch(() => {});
+}
 async function openFilePreview(path, options = {}) {
   if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
+  if (!/\.mdai$/i.test(path || '') || options.raw) _feRecordOpen(path);
   // .mdai files open in the dedicated MDAI viewer (Ethan, AMUX-3317): it shows
   // the node's metadata (model / date / cached), lets you scroll the run
   // versions, and RUNS THE CHAIN on open — none of which the generic file body
@@ -27240,34 +27256,51 @@ let _exploreShowHidden = true;
 let _exploreLastData = null;  // last loaded dir data (for search re-filter)
 let _filesLastData = null;    // last loaded dir data for Files tab
 let _filesSort = { col: 'modified', dir: -1 }; // default: newest first (Ethan 2026-08-20); dirs still lead
+// The MDAI list keeps its own sort, most recently opened first (Ethan,
+// 2026-10-16: "make that the default for the mdai file list view").
+let _mdaiSort = { col: 'opened', dir: -1 };
 
-function _filesSortEntries(entries) {
-  return [...entries].sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1; // dirs always first
-    const { col, dir } = _filesSort;
-    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
-    if (col === 'modified') return dir * ((a.modified || 0) - (b.modified || 0));
-    return 0;
-  });
+// One comparator for every file table. Folders lead; a file never opened has
+// no "Opened" time and sorts after every opened one in either direction.
+function _feCompare(a, b, sort) {
+  if (a.type !== b.type) return a.type === 'dir' ? -1 : 1; // dirs always first
+  const { col, dir } = sort;
+  if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
+  if (col === 'modified') return dir * ((a.modified || 0) - (b.modified || 0));
+  if (col === 'opened') {
+    if (!a.opened || !b.opened) return (a.opened ? -1 : 0) + (b.opened ? 1 : 0) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    return dir * (a.opened - b.opened);
+  }
+  return 0;
+}
+function _filesSortEntries(entries, sort) {
+  return [...entries].sort((a, b) => _feCompare(a, b, sort || _filesSort));
 }
 
+// Times sort newest first on the first click; names and sizes ascending.
+function _feNextSort(sort, col) {
+  if (sort.col === col) sort.dir *= -1;
+  else { sort.col = col; sort.dir = (col === 'modified' || col === 'opened') ? -1 : 1; }
+}
 function _filesSetSort(col) {
-  if (_filesSort.col === col) _filesSort.dir *= -1;
-  else { _filesSort.col = col; _filesSort.dir = 1; }
+  _feNextSort(_filesSort, col);
   if (_filesLastData) {
     const { path, data, cacheTs } = _filesLastData;
     _renderFilesEntries(document.getElementById('files-body'), path, data, cacheTs);
   }
-  // The MDAI tab lists folders through the same view and sort.
-  if (typeof activeView !== 'undefined' && activeView === 'mdai' && document.getElementById('mdai-fe-body')) _mdaiRenderList();
+}
+function _mdaiSetSort(col) {
+  _feNextSort(_mdaiSort, col);
+  if (document.getElementById('mdai-fe-body')) _mdaiRenderList();
 }
 
 function _filesUpdateSortHeaders() {
-  const arrow = _filesSort.dir === 1 ? '↑' : '↓';
   document.querySelectorAll('#fe-col-headers [data-sort-col], #mdai-view [data-sort-col]').forEach(el => {
+    const sort = el.closest('#mdai-view') ? _mdaiSort : _filesSort;
+    const arrow = sort.dir === 1 ? '↑' : '↓';
     const col = el.dataset.sortCol;
-    const sorted = _filesSort.col === col;
+    const sorted = sort.col === col;
     el.classList.toggle('sorted', sorted);
     const existing = el.querySelector('.fe-sort-arrow');
     if (existing) existing.remove();
@@ -27883,7 +27916,7 @@ function _feCrumbsHtml(path, fnName) {
 function _feParentRow(onOpen) {
   const back = document.createElement('div');
   back.className = 'fe-back-row';
-  back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
+  back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div><div></div>`;
   back.onclick = onOpen;
   return back;
 }
@@ -27928,6 +27961,7 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
   const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
   const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
   const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+  const openedStr = entry.opened ? timeAgo(entry.opened) : '';
   const ep = entryPath.replace(/'/g, "\\'");
   const toggle = entry.type === 'dir'
     ? `<button class="fe-expand" title="Expand / collapse" onclick="event.stopPropagation();_feToggleExpand(this)">&#9656;</button>`
@@ -27937,6 +27971,7 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
     `<div class="fe-cell-name"${indentStyle}>${toggle}${icon}<span>${nameHtml}${slash}</span></div>` +
     `<div class="fe-cell-size">${sizeStr}</div>` +
     `<div class="fe-cell-date">${dateStr}</div>` +
+    `<div class="fe-cell-date fe-cell-opened">${openedStr}</div>` +
     `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">⋯</button></div>`;
   if (entry.type === 'dir') {
     // Folders open on a single click on every device (fast, and mobile-friendly).
@@ -28421,13 +28456,7 @@ let _spLoadGen = 0;
 let _spSort = { col: 'modified', dir: -1 };
 
 function _spSortEntries(entries) {
-  return [...entries].sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    const { col, dir } = _spSort;
-    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
-    return dir * ((a.modified || 0) - (b.modified || 0));
-  });
+  return [...entries].sort((a, b) => _feCompare(a, b, _spSort));
 }
 function _spSortBy(col) {
   if (_spSort.col === col) _spSort.dir *= -1;
@@ -28436,7 +28465,7 @@ function _spSortBy(col) {
   if (_spLastData) _spRender(_spLastData.path, _spLastData.data);
 }
 function _spUpdateSortHeaders() {
-  ['name','size','modified'].forEach(c => {
+  ['name','size','modified','opened'].forEach(c => {
     const el = document.getElementById('sp-sort-' + c);
     if (el) el.textContent = _spSort.col === c ? (_spSort.dir > 0 ? '▲' : '▼') : '';
   });
@@ -28492,7 +28521,7 @@ function _spRender(path, data) {
   if (path !== _SP_ROOT && data.parent) {
     const back = document.createElement('div');
     back.className = 'fe-back-row';
-    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div>';
+    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div><div></div>';
     back.onclick = () => { const p = path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); _spNav(i > 0 ? p.slice(0, i) : _SP_ROOT); };
     body.appendChild(back);
   }
@@ -28512,11 +28541,13 @@ function _spRender(path, data) {
     const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
     const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
     const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+    const openedStr = entry.opened ? timeAgo(entry.opened) : '';
     const epEsc = ep.replace(/'/g, "\\'");
     row.innerHTML =
       '<div class="fe-cell-name">' + icon + '<span>' + esc(entry.name) + slash + '</span></div>' +
       '<div class="fe-cell-size">' + sizeStr + '</div>' +
       '<div class="fe-cell-date">' + dateStr + '</div>' +
+      '<div class="fe-cell-date fe-cell-opened">' + openedStr + '</div>' +
       '<div class="fe-cell-actions">' + (entry.type === 'dir' ? '' : '<button class="fe-menu-btn sp-copy-btn" title="Copy to clipboard" onclick="event.stopPropagation();_spCopy(\'' + epEsc + '\')">⧉</button>') +
       '<button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
     if (entry.type === 'dir') {
@@ -30056,13 +30087,13 @@ async function _mdaiRenderList() {
   if (gen !== _mdaiDirGen) return;
   const q = _mdaiListFilter.trim().toLowerCase();
   if (q) entries = entries.filter(e => e.name.toLowerCase().includes(q));
-  entries = _filesSortEntries(entries);
+  entries = _filesSortEntries(entries, _mdaiSort);
   // The Files tab's own pieces: breadcrumb, sortable headers, parent row, empty
   // line and status bar (_feCrumbsHtml, _feParentRow, _feEmptyRow, _feStatusText).
   const parts = rel ? rel.split('/') : [];
-  const hdr = (col, label) => '<div class="fe-col-hdr" data-sort-col="' + col + '" onclick="_filesSetSort(\'' + col + '\')">' + label + '</div>';
+  const hdr = (col, label) => '<div class="fe-col-hdr" data-sort-col="' + col + '" onclick="_mdaiSetSort(\'' + col + '\')">' + label + '</div>';
   body.innerHTML = '<div id="mdai-breadcrumb" class="fe-breadcrumb">' + _feCrumbsHtml(abs, '_mdaiCrumb') + '</div>'
-    + '<div class="fe-scroll"><div class="fe-col-headers" style="display:grid">' + hdr('name', 'Name') + hdr('size', 'Size') + hdr('modified', 'Modified') + '<div class="fe-col-hdr-actions"></div></div>'
+    + '<div class="fe-scroll"><div class="fe-col-headers" style="display:grid">' + hdr('name', 'Name') + hdr('size', 'Size') + hdr('modified', 'Modified') + hdr('opened', 'Opened') + '<div class="fe-col-hdr-actions"></div></div>'
     + '<div id="mdai-fe-body"></div></div>'
     + '<div id="mdai-fe-status" class="fe-status">' + esc(_feStatusText(entries, q)) + '</div>'
     + (_mdaiListData.truncated ? '<div class="mdai-hint">The folder scan was cut short, so this list may be incomplete.</div>' : '');
@@ -30178,6 +30209,7 @@ async function _mdaiNewFile(dirOrOpts) {
 async function openMdaiNode(path, opts) {
   opts = opts || {};
   const abs = _mdaiAbs(path);
+  _feRecordOpen(abs);
   _mdaiStopPoll();
   _mdaiCur = { abs, rel: (path && path.charAt(0) !== '/') ? path : null, doc: null, model: null, sources: [], body: '', content: '', parseOk: true, mtime: null };
   _mdaiHist = []; _mdaiHistIdx = 0; _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = null;
@@ -33018,6 +33050,20 @@ document.addEventListener('keydown', (e) => {
       closeFilePreview();
     }
     return;
+  }
+
+  // The MDAI view: Escape goes back, as it does from any file (Ethan,
+  // 2026-10-16). A node page closes to the list through closeMdaiNode, which
+  // asks before dropping unsaved edits; the New MDAI page cancels. A source
+  // picker opened over the node closes first.
+  if (e.key === 'Escape' && !e.defaultPrevented) {
+    const picker = document.querySelector('.mdai-picker-overlay');
+    const node = document.getElementById('mdai-overlay');
+    const create = document.getElementById('mdai-create-page');
+    if (picker) { e.preventDefault(); picker.remove(); return; }
+    if (node && node.classList.contains('active')) { e.preventDefault(); closeMdaiNode(); return; }
+    if (typeof activeView !== 'undefined' && activeView === 'mdai' && create && create.style.display !== 'none'
+        && create.offsetParent !== null) { e.preventDefault(); _mdaiCreateCancel(); return; }
   }
 
   if (document.getElementById('grid-view').classList.contains('active')) {

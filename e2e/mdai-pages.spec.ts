@@ -344,7 +344,7 @@ const rowShape = (page: Page, sel: string) => page.locator(sel).first().evaluate
   [row.className.split(' ').filter(c => c !== 'fe-selected').sort().join(' ')]
     .concat([...row.children].map(c => c.className)).join(' | '));
 
-test('MDAI: the folder list is the Files file view (same breadcrumb, rows, sort, parent row, status)', async ({ page, request }, info) => {
+test('MDAI: the folder list is the Files file view (same breadcrumb, rows, headers, parent row, status)', async ({ page, request }, info) => {
   test.setTimeout(120_000);
   const dir = await mkdtemp(join(tmpdir(), 'amux-mdai-fv-'));
   await mkdir(join(dir, 'team'), { recursive: true });
@@ -376,10 +376,12 @@ test('MDAI: the folder list is the Files file view (same breadcrumb, rows, sort,
     const mdaiFileShape = await rowShape(page, '#mdai-fe-body .fe-row:not(.fe-dir)');
     const mdaiHeaders = await page.locator('#mdai-view .fe-col-headers > div').evaluateAll(els => els.map(e => e.className.replace(/\s*sorted/, '') + ':' + (e as HTMLElement).dataset.sortCol));
 
-    // One sort: a header click here sorts this list and marks the same column in Files.
+    // Its own sort, most recently opened first by default (Ethan, 2026-10-16);
+    // a header click here sorts this list and leaves the Files tab's sort alone.
+    await expect(page.locator('#mdai-view [data-sort-col=opened]')).toHaveClass(/sorted/);
     await page.locator('#mdai-view [data-sort-col=name]').click();
     await expect(page.locator('#mdai-view [data-sort-col=name]')).toHaveClass(/sorted/);
-    await expect(page.locator('#fe-hdr-name')).toHaveClass(/sorted/);
+    await expect(page.locator('#fe-hdr-name')).not.toHaveClass(/sorted/);
 
     // Into the subfolder and back through the shared parent row.
     await page.locator(mdaiDir, { hasText: 'team' }).click();
@@ -406,6 +408,73 @@ test('MDAI: the folder list is the Files file view (same breadcrumb, rows, sort,
     if (await page.evaluate(() => (window as any)._feTouchDevice())) await node.click(); else await node.dblclick();
     await expect(page.locator('#mdai-overlay')).toHaveClass(/active/);
     await expect(page.locator('#mdai-title')).toHaveText('Top.mdai');
+  } finally {
+    await cleanup('restore the MDAI folder pref', () => pref('mdai_root', prior), info);
+    await cleanup('remove temp folder', () => rm(dir, { recursive: true, force: true }), info);
+  }
+});
+
+// "Opened" column (Ethan, 2026-10-16): every file table shows when a file was
+// last opened, the MDAI list sorts by it by default, and Escape goes back from
+// an MDAI page the way it does from any file.
+test('MDAI: last opened sorts the list, shows in Files, and Escape goes back', async ({ page, request }, info) => {
+  test.setTimeout(120_000);
+  const dir = await mkdtemp(join(tmpdir(), 'amux-mdai-opened-'));
+  await writeFile(join(dir, 'Alpha.mdai'), '---\ntitle: Alpha\nrefresh: manual\n---\nSay hello.\n');
+  await writeFile(join(dir, 'Beta.mdai'), '---\ntitle: Beta\nrefresh: manual\n---\nSay hello.\n');
+  await page.goto('/');
+  const headers = await page.evaluate(() => ({ Authorization: 'Bearer ' + (window as any)._AMUX_AUTH_TOKEN }));
+  const pref = (key: string, value: string) => request.post('/api/prefs', { headers, data: { key, value } });
+  const prior = (await (await request.get('/api/prefs?key=mdai_root', { headers })).json()).value || '';
+  try {
+    expect((await pref('mdai_root', dir)).ok()).toBeTruthy();
+    // Beta was opened, Alpha never: Beta leads although Alpha sorts first by name.
+    const rec = await request.post('/api/fs/opened', { headers, data: { path: join(dir, 'Beta.mdai') } });
+    expect(rec.ok(), await rec.text()).toBeTruthy();
+    await page.reload();
+    await page.waitForFunction(() => typeof (window as any).openMdaiNode === 'function');
+    await page.evaluate(() => (window as any).switchView('mdai'));
+    const files = page.locator('#mdai-fe-body .fe-row:not(.fe-dir)');
+    await expect(files).toHaveCount(2);
+    await expect(files.nth(0)).toContainText('Beta.mdai');
+    await expect(files.nth(0).locator('.fe-cell-opened')).not.toHaveText('');
+    await expect(files.nth(1).locator('.fe-cell-opened')).toHaveText('');
+    await expect(page.locator('#mdai-view [data-sort-col=opened]')).toHaveClass(/sorted/);
+
+    // Opening Alpha records it; Escape closes the node page back to the list,
+    // which now leads with Alpha.
+    await page.evaluate(p => (window as any).openMdaiNode(p, { autorun: false }), join(dir, 'Alpha.mdai'));
+    await expect(page.locator('#mdai-overlay')).toHaveClass(/active/);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#mdai-overlay')).not.toHaveClass(/active/);
+    await expect(files.nth(0)).toContainText('Alpha.mdai');
+    await expect(files.nth(0).locator('.fe-cell-opened')).not.toHaveText('');
+
+    // Escape on the New MDAI page goes back to the list too.
+    await page.evaluate(() => (window as any)._mdaiCreatePage());
+    await expect(page.locator('#mdai-create-page')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#mdai-create-page')).toBeHidden();
+    await expect(page.locator('#mdai-list-page')).toBeVisible();
+
+    // Files shows the same column and keeps its own default sort (Modified).
+    await page.evaluate(d => { (window as any).switchView('files'); (window as any).loadFiles(d); }, dir);
+    await expect(page.locator('#fe-hdr-opened')).toHaveText(/Opened/);
+    await expect(page.locator('#fe-hdr-modified')).toHaveClass(/sorted/);
+    const alpha = page.locator('#files-body .fe-row', { hasText: 'Alpha.mdai' });
+    await expect(alpha.locator('.fe-cell-opened')).not.toHaveText('');
+    // Header and row tracks agree, and nothing spills past the viewport sideways
+    // except the table's own scroller.
+    const fit = await page.evaluate(() => {
+      const h = document.querySelector('#fe-col-headers') as HTMLElement, r = document.querySelector('#files-body .fe-row') as HTMLElement;
+      return { cols: getComputedStyle(h).gridTemplateColumns === getComputedStyle(r).gridTemplateColumns,
+               cells: r.children.length, headers: h.children.length,
+               overflow: document.documentElement.scrollWidth - window.innerWidth };
+    });
+    expect(fit.cols, 'header and row columns match').toBeTruthy();
+    expect(fit.cells).toBe(fit.headers);
+    expect(fit.overflow, 'no page-level horizontal overflow').toBeLessThanOrEqual(1);
+    await page.screenshot({ path: info.outputPath('files-opened-column.png') });
   } finally {
     await cleanup('restore the MDAI folder pref', () => pref('mdai_root', prior), info);
     await cleanup('remove temp folder', () => rm(dir, { recursive: true, force: true }), info);
