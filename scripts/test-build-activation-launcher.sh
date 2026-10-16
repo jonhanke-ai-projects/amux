@@ -141,7 +141,13 @@ expect grep -q "verdict=ci_gate_unmeasured" "$LOG"
 # the cache used to keep "red" forever and held a green commit back. This path
 # runs the real cache with only the GitHub call replaced.
 CACHE="$TMP/ci-cache"; FETCHED="$TMP/fetched"; : > "$FETCHED"
-printf '#!/usr/bin/env bash\nv=$(awk -v s="$1" '"'"'$1==s {print $2}'"'"' "%s" | tail -1); echo "${v:-green}"\n' "$FETCHED" > "$TMP/fetch"
+# The stub answers in GitHub's workflow-runs shape, so the shipped parser runs.
+cat > "$TMP/fetch" <<EOF
+#!/usr/bin/env bash
+v=\$(awk -v s="\$1" '\$1==s {print \$2}' "$FETCHED" | tail -1)
+case "\$v" in red) c=failure ;; *) c=success ;; esac
+printf '{"workflow_runs":[{"name":"rust","status":"completed","conclusion":"%s","created_at":"1"},{"name":"checks","status":"completed","conclusion":"success","created_at":"1"}]}' "\$c"
+EOF
 chmod +x "$TMP/fetch"
 run_cached() {
   AMUX_AUTHORITY_REPO="$STALE" AMUX_AUTHORITY_WORKTREE="$WORK" AMUX_AUTHORITY_MARKER="$MARKER" \
