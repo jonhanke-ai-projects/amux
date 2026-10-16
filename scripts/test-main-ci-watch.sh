@@ -21,19 +21,29 @@ cat > "$BIN/gh" <<'EOF'
 case "$*" in
   *workflows/rust.yml/runs*) printf '101\tfailure\tabc123def456\thttps://example/run/101\n' ;;
   *workflows/checks.yml/runs*) printf '' ;;
+  *runs/101/jobs*) printf '7\n' ;;
+  # "1) [ios-safari] " is 16 bytes and the filler 72, so the 3-byte "›" sits at
+  # bytes 89-91: a byte-counting cut at 90 splits it (the 13:31 failure).
+  *jobs/7/logs*) printf '2026-10-16T17:00:00.0000000Z   1) [ios-safari] e2e/draw-tab.spec.ts:460:5 Draw live mode is zen mode inside the amux sh\342\200\272 tail\n' ;;
   *) printf '' ;;
 esac
 EOF
 cat > "$BIN/curl" <<'EOF'
 #!/bin/sh
-out=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && { out=$2; shift; }; shift; done
+out=""; body=""; while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; -d) body=$2; shift ;; esac; shift; done
+# Parse the body strictly, as the board does: a lone surrogate is a 400.
+if ! printf '%s' "$body" | python3 -c 'import sys,json; json.loads(sys.stdin.buffer.read().decode("utf-8")); s=sys.stdin' 2>/dev/null \
+   || printf '%s' "$body" | grep -q '\\ud[89a-f]'; then
+  printf 'Failed to parse the request body as JSON: lone leading surrogate' > "$out"; printf 400; exit 0
+fi
+printf '%s' "$body" >> "$CARD_BODIES"
 printf '{"blocked":true,"error":"WIP limit: holding 348, limit 20"}' > "$out"; printf 400
 EOF
 cat > "$BIN/amux" <<'EOF'
 #!/bin/sh
 [ "$1" = url ] && { echo https://stub; exit 0; }
 n=$(cat "$AMUX_SEND_COUNT" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$AMUX_SEND_COUNT"
-cat > /dev/null
+t=$(cat); printf '%s' "$t" | grep -q "$(printf '\357\277\275')" || true
 [ "$n" -ge "${AMUX_SEND_OK_AT:-2}" ] && { echo "sent"; exit 0; }
 echo "send refused: lane busy (stub)" >&2; exit 1
 EOF
@@ -42,7 +52,7 @@ cat > "$BIN/sleep" <<'EOF'
 exit 0
 EOF
 chmod +x "$BIN"/* "$FIX/home/.amux/github-app/get-token.sh"
-run() { HOME="$FIX/home" PATH="$BIN:$PATH" MAIN_CI_WATCH_STATE="$FIX/state.json" AMUX_SEND_COUNT="$FIX/sends" \
+run() { HOME="$FIX/home" PATH="$BIN:$PATH" MAIN_CI_WATCH_STATE="$FIX/state.json" AMUX_SEND_COUNT="$FIX/sends" CARD_BODIES="$FIX/bodies" \
   AMUX_SEND_OK_AT="$1" bash "$HERE/main-ci-watch.sh" 2>&1; }
 
 echo "1. a refused card names its reason; a failed send is retried and lands"
@@ -52,6 +62,9 @@ check "the refusal body is printed"            yes "$(has "$out" 'HTTP 400: {"bl
 check "the first send's own error is kept"     yes "$(has "$out" 'could not message the amux lane (try 1): send refused: lane busy')"
 check "the retry lands, so nothing is lost"    yes "$(has "$out" '"alerts_not_delivered":0')"
 check "two sends were made"                    2   "$(cat "$FIX/sends")"
+
+check "the card body is valid JSON with the test name" yes "$(has "$(cat "$FIX/bodies" 2>/dev/null)" 'draw-tab.spec.ts:460:5 Draw live')"
+check "no lone surrogate reached the board"   no  "$(has "$out" 'lone leading surrogate')"
 
 echo "2. two failed sends report the alert as not delivered"
 rm -f "$FIX/state.json" "$FIX/sends"

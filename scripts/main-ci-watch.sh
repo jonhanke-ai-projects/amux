@@ -12,6 +12,11 @@ mkdir -p "$(dirname "$STATE")"; [ -f "$STATE" ] || echo '{}' > "$STATE"
 eval "$(~/.amux/github-app/get-token.sh --min-remaining 300)"
 U="$(amux url)"
 filed=0 considered=0 refused=0
+# Truncate by CHARACTERS and drop invalid bytes. `cut -c` counts bytes on macOS,
+# so a cut through a multi-byte character (the "›" in every Playwright test
+# name) left invalid UTF-8; json.dumps carried it as a lone surrogate and both
+# the board and `amux send` refused the body (SCHED-713, 2026-10-16 13:31).
+clean() { python3 -c 'import sys; print(sys.argv[1].encode("utf-8","surrogateescape").decode("utf-8","replace")[:int(sys.argv[2])])' "$1" "$2"; }
 for wf in rust.yml checks.yml; do
   row=$(gh api "repos/$REPO/actions/workflows/$wf/runs?branch=main&status=completed&per_page=1" \
         --jq '.workflow_runs[0] | [.id, .conclusion, .head_sha, .html_url] | @tsv') || continue
@@ -41,7 +46,8 @@ PY
   if [ -n "$green" ]; then
     commits=$(gh api "repos/$REPO/compare/$green...$sha" --jq '.commits[] | "\(.sha[0:9]) \(.commit.message | split("\n")[0])"' 2>/dev/null | tail -15 || true)
   fi
-  first=$(printf '%s\n' "$tests" | head -1 | cut -c1-90)
+  tests=$(clean "$tests" 3000); commits=$(clean "$commits" 3000)
+  first=$(clean "$(printf '%s\n' "$tests" | head -1)" 90)
   title="main CI red: ${wf%.yml} on ${sha:0:9}${first:+: $first}"
   desc=$(printf 'Run: %s\n\nFailing:\n%s\n\nCommits since the last green %s run (%s):\n%s\n\nPRs now run only affected tests (#317), so main is the full gate and the builder already deployed this commit. Fix forward or revert the culprit.' \
     "$url" "${tests:-see the run}" "${wf%.yml}" "${green:0:9}" "${commits:-unknown: no green run recorded yet}")
