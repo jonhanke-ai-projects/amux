@@ -96,6 +96,37 @@ class Policy(unittest.TestCase):
         self.assertTrue(cr.record("a@x.com", 2, r(4), 1, r(166)))
         self.assertEqual(cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]["seven_day"]["used_percentage"], 1)
 
+    def test_no_preempt_to_an_account_whose_5h_is_also_hot(self):
+        # 2026-10-16 12:05: mixpeek at 5h 85% preempted back to join at 86%.
+        setup({"mix": acct(86, h(1), 22, h(160)), "join": acct(81, h(1), 50, h(140))})
+        self.assertEqual(cr.decide("mix", cr.rank(NOW), {}, NOW), (None, "current_is_fine"))
+
+    def test_unreadable_link_backs_off_at_once(self):
+        t = time.time()
+        self.assertEqual(len(cr.note_failure([], ["tab", "continue-email"], t)), 1)
+        times = cr.note_failure([], ["tab", "error: sign-in link unreadable"], t)
+        self.assertIn("vec", cr.backed_off({"switch_failures": {"vec": times}}, t))
+
+    def test_preempt_goes_to_a_cool_account(self):
+        setup({"mix": acct(86, h(1), 22, h(160)), "join": acct(30, h(1), 50, h(140))})
+        self.assertEqual(cr.decide("mix", cr.rank(NOW), {}, NOW), ("join", "preempt_limit"))
+
+    def test_exhausted_tick_falls_back_to_the_next_account(self):
+        setup({"join": acct(100, h(1), 52, h(140)), "vec": acct(0, None, 80, h(100)),
+               "mix": acct(10, h(3), 30, h(160))}, current="join")
+        cr.save(cr.STATE, {})
+        calls, real = [], (cr.switch, cr.cli_email, cr.probe, cr.rank)
+        cr.switch = lambda t, r: calls.append(t) or (1 if t == "vec" else 0)
+        cr.cli_email = lambda: "join"
+        cr.probe = lambda: None
+        cr.rank = lambda at=None: real[3](NOW)
+        try:
+            with redirect_stdout(io.StringIO()):
+                cr.cmd_tick()
+        finally:
+            cr.switch, cr.cli_email, cr.probe, cr.rank = real
+        self.assertEqual(calls, ["vec", "mix"])
+
     def test_statusline_ignores_readings_right_after_switch(self):
         setup({}, current="ethan@x.com")
         cr.save(cr.STATE, {"switched_at": time.time()})
