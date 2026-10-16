@@ -24,7 +24,7 @@ test('an isolated worker shows all toggles disabled with the reason',()=>{
  const defs=app.slice(app.indexOf('const _BOARD_SWITCHES = ['),fnEnd('function _boardSwitchStates('));
  const ci=app.indexOf('const _PEEK_BOARD_ALL_CONFIGS');
  const snippet=defs+'\n'+app.slice(ci,fnEnd('function _peekBoardPolicySync('));
- const el={style:{},innerHTML:''};
+ const el={style:{},innerHTML:'',querySelector:()=>null};
  const doc={getElementById:()=>el};
  const run=(s)=>{
    el.innerHTML='';el.style.display='';
