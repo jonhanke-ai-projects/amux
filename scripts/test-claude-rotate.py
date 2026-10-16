@@ -71,6 +71,13 @@ two = {"switched_at": 0, "switch_failures": {"b": [nowt - 60, nowt - 400]}}
 expect(rot.decide("a", rows, two)[0] == "b", "two failures are not yet a backoff")
 expect(rot.backed_off(failed) == {"b"}, "backed_off names the account")
 
+# The soonest-expiring account is not picked when it is already over the
+# preempt line and another is under it: the next tick would switch back out.
+rows = [row("v", 0, 93, "2026-10-21T11:00:00-04:00"), row("j", 0, 27, "2026-10-23T02:59:00-04:00"),
+        row("m", 70, 18, "2026-10-23T08:00:00-04:00")]
+t, why = rot.decide("m", rows, old)
+expect(t == "j", f"an account over the preempt line is not a switch target, got {(t, why)}")
+
 # The sign-in link search covers spam (every link to one account landed there).
 seen = []
 rot.amux_get = lambda path: seen.append(path) or []

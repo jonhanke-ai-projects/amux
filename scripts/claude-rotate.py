@@ -365,7 +365,11 @@ def decide(current, rows, state, at=None):
     skip = backed_off(state) - {current}
     if skip:
         rows = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
-    best = next((r for r in rows if r["usable"]), None)
+    # A target already over the preempt line would be preempted on the next
+    # tick, so prefer accounts under it (2026-10-16: the soonest-expiring account
+    # sat at 93% weekly and was picked first, which would flap straight back).
+    under = [r for r in rows if r["usable"] and max(r["five_hour"] or 0, r["weekly"] or 0) < PREEMPT_AT]
+    best = next(iter(under), None) or next((r for r in rows if r["usable"]), None)
     cur = next((r for r in rows if r["email"] == current), None)
     if best is None:
         return None, "no_usable_account"
