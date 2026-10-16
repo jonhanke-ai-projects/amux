@@ -13538,9 +13538,14 @@ function _peekBoardPolicySync() {
   if (iso) {
     h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
   }
+  // The DOM is the truth for open/closed: `toggle` fires a task after the click,
+  // so a rebuild landing in between would otherwise read the old value and snap
+  // the panel shut (CI caught it on dd7d2b635). Only this worker's fold counts.
+  const curFold = el.querySelector('details.pbc-fold');
+  if (curFold && curFold.dataset.session === peekSession) _pbcFoldOpen[peekSession] = curFold.open;
   const states = _boardSwitchStates(s, _pbcPending);
   const nOn = iso ? 0 : _PEEK_BOARD_ALL_CONFIGS.filter(c => states[c.field].own).length;
-  h += '<details class="settings-fold pbc-fold"' + (_pbcFoldOpen[peekSession] ? ' open' : '')
+  h += '<details class="settings-fold pbc-fold" data-session="' + esc(peekSession) + '"' + (_pbcFoldOpen[peekSession] ? ' open' : '')
     + ' ontoggle="_pbcFoldOpen[\'' + q + '\']=this.open"><summary><span class="pbc-fold-title">Board settings</span>'
     + '<span class="ui-help">' + nOn + ' of ' + _PEEK_BOARD_ALL_CONFIGS.length + ' on</span></summary>';
   let group = '';
