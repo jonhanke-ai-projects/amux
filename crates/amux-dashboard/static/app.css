@@ -7829,6 +7829,9 @@ select.input { height:var(--control-height); }
 .vault-table tbody tr:last-child td { border-bottom: none; }
 .vault-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .vault-name code { font-weight: 700; color: var(--text); overflow-wrap: anywhere; }
+.vault-id { align-self: flex-start; font: 0.66rem/1.4 ui-monospace, monospace; color: var(--accent); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; cursor: pointer; letter-spacing: 0.02em; }
+.vault-id:hover, .vault-id:focus-visible { border-color: var(--accent); }
+@media (max-width: 600px) { .vault-id { min-height: 44px; padding: 0 10px; font-size: 0.74rem; } }
 .vault-value { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .vault-mask { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 1px; color: var(--dim); overflow-wrap: anywhere; min-width: 0; }
 .vault-mask:not(.revealed) { white-space: nowrap; overflow: hidden; }

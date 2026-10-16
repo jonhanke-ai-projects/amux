@@ -1025,6 +1025,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Copy | `_copyOwnerLink` | onclick |
 | app.js | ${id} | `_copySchedId` | onclick |
 | app.js | Copy | `_copyTextWithToast` | onclick |
+| app.js | Copy id  | `_copyTextWithToast` | onclick |
 | app.js | ${_csvEsc(h) \|\| | `_csvSortBy` | onclick |
 | index.html | Back to conversations | `_cvBack` | onclick |
 | index.html | button | `_cvToggleSec` | onclick |

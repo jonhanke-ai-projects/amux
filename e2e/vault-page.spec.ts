@@ -216,3 +216,67 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await cleanup('remove vault fixtures', removeFixtures, info);
   }
 });
+
+// Every Vault row shows its id and copies it on click (Ethan, 2026-10-16: "in
+// vault list make sure each has an id I can copy"). Both lists: a secret
+// (sec_…) and a payment method (vlt_…). The clipboard is captured in the page,
+// so the check is the same on every browser project, and it re-checks after a
+// re-render because the rows are rebuilt from a template.
+// Same file as the lifecycle test, so it runs after it in one worker: that test
+// asserts an empty vault first, and a parallel file's secret would break it.
+test('Vault: each secret and payment method shows a copyable id', async ({ page, request }, info) => {
+  test.setTimeout(90_000);
+  const suffix = info.project.name.replace(/[^a-z0-9]/gi, '').toUpperCase();
+  const key = `VID_${suffix}`;
+  await page.addInitScript(() => {
+    (window as any).__copied = [];
+    const w = (t: string) => { (window as any).__copied.push(t); return Promise.resolve(); };
+    try { Object.defineProperty(navigator, 'clipboard', { value: { writeText: w }, configurable: true }); } catch {}
+  });
+  await boot(page);
+  const auth = { Authorization: `Bearer ${await token(page)}` };
+  let secretId = '', itemId = '';
+  try {
+    const s = await request.post('/api/vault/secrets', { headers: auth, data: { key, value: 'vid-canary-7f31', scope: 'global' } });
+    expect(s.status(), await s.text()).toBeLessThan(300);
+    secretId = ((await s.json()).item || {}).id || (await s.json()).id;
+    expect(secretId).toMatch(/^sec_/);
+    const v = await request.post('/api/vault', { headers: auth, data: { name: `Card ${suffix}`, fields: { number: '4242424242424242', exp: '12/30', name: 'Test' } } });
+    expect(v.status(), await v.text()).toBeLessThan(300);
+    const vj = await v.json();
+    itemId = vj.id || (vj.item || {}).id;
+    expect(itemId).toMatch(/^vlt_/);
+
+    await page.reload();
+    await boot(page);
+    await page.locator('#tab-vault').click();
+
+    const secretBadge = page.locator('.vault-row', { hasText: key }).locator('.vault-id');
+    await expect(secretBadge).toHaveText(secretId);
+    const box = await secretBadge.boundingBox();
+    if (info.project.name !== 'desktop') expect(box!.height, 'touch target on a phone').toBeGreaterThanOrEqual(44);
+    await secretBadge.click();
+    await expect(page.locator('.vault-menu'), 'copying must not open the row menu').toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => (window as any).__copied.slice(-1)[0])).toBe(secretId);
+    await expect(page.getByText(`${secretId} copied`).first()).toBeVisible();
+
+    // A re-render rebuilds the rows; the id must survive it.
+    await page.evaluate(() => (window as any)._vaultRender());
+    await expect(page.locator('.vault-row', { hasText: key }).locator('.vault-id')).toHaveText(secretId);
+
+    await page.locator('#vault-tab-payments').click();
+    const itemBadge = page.locator(`.vault-item[data-id="${itemId}"] .vault-id`);
+    await expect(itemBadge).toHaveText(itemId);
+    await itemBadge.click();
+    await expect.poll(() => page.evaluate(() => (window as any).__copied.slice(-1)[0])).toBe(itemId);
+
+    // Fits a phone: the badge stays inside the viewport.
+    const vw = page.viewportSize()!.width;
+    const ib = await itemBadge.boundingBox();
+    expect(ib!.x + ib!.width).toBeLessThanOrEqual(vw);
+    await page.screenshot({ path: info.outputPath('vault-ids.png') });
+  } finally {
+    if (secretId) await request.delete(`/api/vault/secrets/${secretId}`, { headers: auth });
+    if (itemId) await request.delete(`/api/vault/${itemId}`, { headers: auth });
+  }
+});

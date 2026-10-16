@@ -46453,6 +46453,13 @@ function _offlineSettingsHTML() {
 // integrations/device). Switch the visible panel + active button, remember the
 // last tab, and reset the menu scroll so a new panel opens at the top.
 // ── Vault (vault.rs): cards workers use without reading, each with a limit ──
+// Every vault row shows its id and copies it on click (Ethan, 2026-10-16: "in vault
+// list make sure each has an id I can copy"). The id is what the API, `amux order`
+// and the audit log key on (sec_… for a secret, vlt_… for a payment method); the
+// env key name is not unique across scopes, so it cannot stand in for it.
+function _vaultIdBadge(id) {
+  return '<button type="button" class="vault-id" title="Id: click to copy" aria-label="Copy id ' + esc(id) + '" onclick="event.stopPropagation();_copyTextWithToast(\'' + escJs(id) + '\',\'' + escJs(id) + ' copied\')">' + esc(id) + '</button>';
+}
 async function _vaultLoad() {
   const el = document.getElementById('vault-items');
   if (!el) return;
@@ -46464,7 +46471,7 @@ async function _vaultLoad() {
     el.innerHTML = items.map(i => {
       const pending = i.status !== 'active';
       return '<div class="vault-item" data-id="' + esc(i.id) + '">'
-        + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> · ' + esc(i.brand) + ' ending ' + esc(i.last4) + ' · exp ' + esc(i.exp)
+        + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> ' + _vaultIdBadge(i.id) + ' · ' + esc(i.brand) + ' ending ' + esc(i.last4) + ' · exp ' + esc(i.exp)
         + (pending ? ' · <span class="vault-pending">added by ' + esc(i.created_by || 'a worker') + ', not active</span>' : '') + '</div>'
         + '<label class="connection-control">Approval needed above $'
         + '<input type="number" min="0" step="1" class="search-input vault-limit" value="' + esc(String(i.rules?.max_usd_without_approval ?? 100)) + '"></label>'
@@ -46817,7 +46824,7 @@ function _vaultRender() {
       const shown = Object.prototype.hasOwnProperty.call(_vault.revealed, i.id);
       const forWorker = _vault.worker && _vault.prov ? (effective.has(i.id) ? _vaultStateBadge(effective.get(i.id).state) : _vaultStateBadge('overridden')) : '';
       return '<tr class="vault-row" data-id="' + esc(i.id) + '">'
-        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
+        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
         + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="vault-val-' + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
         + '<button class="vault-icon-btn" aria-label="' + (shown ? 'Hide ' : 'Reveal ') + esc(i.key) + '" aria-pressed="' + shown + '" title="' + (shown ? 'Hide' : 'Reveal (recorded in the audit log)') + '" onclick="_vaultReveal(\'' + escJs(i.id) + '\')">' + _vaultIcon(shown ? 'eyeOff' : 'eye') + '</button></div></td>'
         + '<td data-label="Scope">' + _vaultChip(i.scope) + '</td>'
