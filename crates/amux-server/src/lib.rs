@@ -709,6 +709,19 @@ async fn async_main() {
     drop(runtime_jobs::contract_watch::spawn(state.clone()));
     // Contract rule 5 (AH-380): the server-owned land queue.
     drop(runtime_jobs::land_queue::spawn(state.clone()));
+    // Install the passive status observer BEFORE the listener binds, so a
+    // healthy /health implies the hook script is on disk. It used to arrive
+    // only on status_history's first tick (a spawn_blocking task), which can
+    // lose the race to /health: a server killed right after turning healthy
+    // left no native-status.py, and a provider hook firing while it was down
+    // had nothing to run (restart_persistence CI runs 38917609108,
+    // 38845948860: "python3: can't open file .../native-status.py"). The tick
+    // still repairs drift later; this makes the first install unconditional,
+    // including on servers where that job is disabled.
+    if let Err(error) = api::native_status::ensure_observer(&config::amux_home()) {
+        tracing::warn!(%error, measured = false, n_considered = 1, verdict = "native_status_observer_startup_install_failed",
+            "passive observer could not be installed at startup; status_history's tick will retry");
+    }
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));
