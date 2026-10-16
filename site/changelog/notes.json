@@ -1,5 +1,14 @@
 [
   {
+    "hash": "3c023400c0000000000000000000000000000000",
+    "short": "3c023400c",
+    "title": "Scheduler pauses a failing schedule when its assigned worker is gone",
+    "date": "2026-10-16",
+    "type": "feat",
+    "tags": ["scheduler", "reliability"],
+    "description": "If a scheduled task fires repeatedly but fails because its assigned worker session no longer exists, amux now automatically pauses that schedule rather than retrying indefinitely. The Scheduler tab shows a paused badge with the failure reason. Re-enable the schedule once you have restored or replaced the worker."
+  },
+  {
     "hash": "9bae682c0000000000000000000000000000000",
     "short": "9bae682c",
     "title": "Rotate verified CLI accounts automatically when one hits its usage limit",
