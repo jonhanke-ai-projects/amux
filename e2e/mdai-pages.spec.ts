@@ -195,6 +195,10 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await expect(page.locator('#mdai-fetch-url')).toHaveValue(api.url + '/data');
     await page.locator('#mdai-fetch-url').fill('');
     await expect(page.locator('#mdai-fetch-url')).toHaveValue('');
+    // Any render (graph reload, run poll) can land here; force one so the
+    // race is checked every run instead of when the timing happens to hit.
+    await page.evaluate(() => (window as any)._mdaiRender());
+    await expect(page.locator('#mdai-fetch-url')).toHaveValue('');
     await page.locator('#mdai-src-save').click();
     await expect.poll(() => fileText(file)).not.toContain('fetch:');
     await tab(page, 'edit');

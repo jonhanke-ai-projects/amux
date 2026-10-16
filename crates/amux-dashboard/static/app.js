@@ -30305,6 +30305,11 @@ async function _mdaiSaveDoc(patch, extra) {
 }
 async function _mdaiPutDoc(req) {
   _mdaiFormErr = null;
+  if (_mdaiKeptEdits.length) {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+      body: JSON.stringify({ kind: 'mdai-render-kept-edit', verdict: 'owner_edit_kept', fields: [...new Set(_mdaiKeptEdits)].join(','), measured: true, n_considered: _mdaiKeptEdits.length, ver: APP_VER }) }).catch(() => {});
+    _mdaiKeptEdits = [];
+  }
   if (_mdaiCur && _mdaiCur.readOnly) { showToast(_mdaiCur.readOnly); return false; }
   try {
     const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', req);
@@ -30317,19 +30322,9 @@ async function _mdaiPutDoc(req) {
     }
     _mdaiApplyDoc(d);
     _mdaiDraft = null; _mdaiBodyDraft = null;
-    // The graph reload lands after the save's own render. If the owner is
-    // already typing the next change, re-rendering would put the saved
-    // values back over it, so that render waits for the next one.
-    _mdaiLoadGraph().then(() => {
-      if (!_mdaiCur) return;
-      const el = document.activeElement;
-      if (el && el.closest && el.closest('#mdai-body') && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) {
-        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
-          body: JSON.stringify({ kind: 'mdai-render-deferred', verdict: 'owner_editing', field: el.id || el.tagName, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
-        return;
-      }
-      _mdaiRender();
-    });
+    // The graph reload lands after the save's own render, possibly while the
+    // owner is typing the next change; _mdaiRender keeps that typing.
+    _mdaiLoadGraph().then(() => { if (_mdaiCur) _mdaiRender(); });
     return true;
   } catch (e) { showToast('Could not save the node'); return false; }
 }
@@ -30566,11 +30561,46 @@ function _mdaiRender() {
   else if (_mdaiTab === 'runs') html += _mdaiRunsHtml();
   else if (_mdaiTab === 'settings') html += _mdaiSettingsHtml();
   else html += _mdaiPreviewHtml();
+  const kept = _mdaiTypedFields(el);
   el.innerHTML = html;
+  _mdaiRestoreTyped(el, kept);
   el.dataset.tab = _mdaiTab;
   if (_mdaiTab === 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiGutter(ta); }
   _mdaiRenderRunState();
   _mdaiRenderSide();
+}
+// A render rebuilds the form from the saved node, and renders arrive from
+// saves, graph reloads and run polls at any moment. A field the owner has
+// changed since it was drawn keeps the change when the value it was drawn
+// from is unchanged; a field whose saved value moved shows the new one.
+function _mdaiFieldState(f) {
+  if (f.type === 'checkbox' || f.type === 'radio') return { cur: String(f.checked), base: String(f.defaultChecked) };
+  if (f.tagName === 'SELECT') {
+    const d = Array.from(f.options).find(o => o.defaultSelected) || f.options[0];
+    return { cur: f.value, base: d ? d.value : '' };
+  }
+  return { cur: f.value, base: f.defaultValue };
+}
+let _mdaiKeptEdits = [];   // field ids a render kept; reported with the next save
+function _mdaiTypedFields(root) {
+  const kept = [];
+  root.querySelectorAll('input[id], textarea[id], select[id]').forEach(f => {
+    const st = _mdaiFieldState(f);
+    if (st.cur !== st.base) kept.push({ id: f.id, cur: st.cur, base: st.base, focused: document.activeElement === f });
+  });
+  return kept;
+}
+function _mdaiRestoreTyped(root, kept) {
+  kept.forEach(k => {
+    const f = document.getElementById(k.id);
+    if (!f || !root.contains(f) || _mdaiFieldState(f).base !== k.base) return;
+    if (f.type === 'checkbox' || f.type === 'radio') f.checked = k.cur === 'true'; else f.value = k.cur;
+    // A model picker set to "Other model id…" shows its custom field.
+    const custom = f.tagName === 'SELECT' && document.getElementById(f.id + '-custom');
+    if (custom) custom.style.display = f.value === '__custom' ? '' : 'none';
+    if (k.focused) { try { f.focus({ preventScroll: true }); } catch (e) {} }
+    _mdaiKeptEdits.push(k.id);
+  });
 }
 function _mdaiEditHtml() {
   const seg = (m, label) => '<button type="button" data-mode="' + m + '" class="' + (_mdaiEditMode === m ? 'active' : '') + '" aria-pressed="' + (_mdaiEditMode === m) + '" onclick="_mdaiSetEditMode(\'' + m + '\')">' + label + '</button>';
