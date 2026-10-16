@@ -9622,3 +9622,16 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 /* MDAI list renders through the Files tab's file view (fe-* classes); the
    breadcrumb is a flex item here, so it must not grow to fill the column. */
 #mdai-breadcrumb { flex: 0 0 auto; }
+
+/* Maps stopwatch for time trials (AMUX-6114). */
+.map-sw { position:absolute; left:max(10px, env(safe-area-inset-left)); bottom:calc(46px + env(safe-area-inset-bottom)); z-index:500; width:min(300px, calc(100% - 20px)); max-height:70%; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,0.18); padding:var(--space-3); box-sizing:border-box; }
+.map-sw-time { font:600 2.2rem/1.1 ui-monospace, monospace; font-variant-numeric:tabular-nums; }
+.map-sw-stats { display:flex; gap:var(--space-3); font-variant-numeric:tabular-nums; margin-top:2px; }
+.map-sw-gps { margin:4px 0 0; min-height:1em; }
+.map-sw-btns { display:flex; gap:var(--space-2); margin-top:var(--space-2); }
+.map-sw-btns .btn { flex:1; min-height:44px; }
+.map-sw-laps, .map-sw-past ol { margin:var(--space-2) 0 0; padding-left:1.4em; font-variant-numeric:tabular-nums; font-size:0.85rem; }
+.map-sw-past h4 { margin:var(--space-3) 0 0; font-size:0.8rem; color:var(--dim); font-weight:600; }
+.map-sw-past li { display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap; }
+.map-sw-past li .btn { min-height:32px; padding:2px 8px; font-size:0.78rem; }
+@media (max-width: 600px) { .map-sw-past li .btn { min-height:44px; } }

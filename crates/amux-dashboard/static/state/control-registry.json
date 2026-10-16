@@ -2160,6 +2160,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mapSwRoute": {
+      "kind": "command._mapSwRoute",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapSwStop": {
+      "kind": "command._mapSwStop",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mapTogglePins": {
       "kind": "command._mapTogglePins",
       "feedback_required": true,

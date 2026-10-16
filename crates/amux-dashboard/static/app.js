@@ -34477,7 +34477,7 @@ function switchView(view) {
   if (view === 'torrents') _torrentLoad(); else _torrentStopTimer();
   if (view === 'terminal') _termInit();
   if (view === 'graph') _graphInit();
-  if (view === 'map') { _mapLoad(); _mapInit(); }
+  if (view === 'map') { _mapLoad(); _mapInit(); if (_mapSwState()) _mapSwToggle(true); }
   if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); } // always refresh on tab switch
   if (view === 'cost') _costLoad();
   if (view === 'disk') _reclaimLoad(); else if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling();
@@ -34698,6 +34698,123 @@ let _mapServerLoaded = false; // true once we've synced from the server — guar
 let _mapEditingPin = null;
 let _mapEditingTag = null;
 
+// STOPWATCH FOR TIME TRIALS (AMUX-6114; Ethan, 2026-10-16: "add a stopwatch
+// thing to the maps tab and that fulfills our time trial use case"). Elapsed
+// time comes from timestamps, not a ticking counter, because iOS suspends the
+// page with the screen off. Distance comes from the phone's GPS points
+// (/api/map/location/points) inside the trial window: a fix worse than 50m or a
+// gap over 60s between fixes is not counted, so a tunnel never invents meters.
+// A running trial lives in localStorage so a reload or a reopened app resumes
+// it; a finished one is saved in the map document (`trials`), and its route is
+// the Location history view of its window.
+let _mapTrials = [];
+let _mapSwTick = null, _mapSwDistAt = 0, _mapSwDist = 0, _mapSwFixes = 0;
+function _mapSwState() { try { return JSON.parse(localStorage.getItem('amux_map_sw') || 'null'); } catch (e) { return null; } }
+function _mapSwSetState(v) { try { if (v) localStorage.setItem('amux_map_sw', JSON.stringify(v)); else localStorage.removeItem('amux_map_sw'); } catch (e) {} }
+function _mapSwFmt(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(x).padStart(2, '0');
+}
+function _mapSwPace(sec, m) { return m >= 50 ? _mapSwFmt(sec / (m / 1000)) + ' /km' : '\u2013 /km'; }
+function _mapSwHav(a, b) {
+  const r = 6371000, rad = Math.PI / 180, dl = (b.lat - a.lat) * rad, dn = (b.lon - a.lon) * rad;
+  const h = Math.sin(dl / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dn / 2) ** 2;
+  return 2 * r * Math.asin(Math.sqrt(h));
+}
+// Meters covered in [from, to] and the per-lap meters, from recorded fixes.
+async function _mapSwDistance(from, to, laps) {
+  const r = await fetch(API + '/api/map/location/points?from=' + Math.floor(from) + '&to=' + Math.ceil(to), { headers: _authHeaders() });
+  if (!r.ok) throw new Error('location points ' + r.status);
+  const pts = ((await r.json()).points || []).filter(p => p.lat != null && p.lon != null && !(p.h_acc > 50));
+  const marks = (laps || []).slice().sort((a, b) => a - b), per = new Array(marks.length + 1).fill(0);
+  let total = 0, prev = null;
+  for (const p of pts) {
+    if (prev && p.ts - prev.ts <= 60) {
+      const d = _mapSwHav(prev, p); total += d;
+      let k = 0; while (k < marks.length && p.ts > marks[k]) k++; per[k] += d;
+    }
+    prev = p;
+  }
+  return { total, per, fixes: pts.length };
+}
+function _mapSwToggle(open) {
+  const el = document.getElementById('map-sw'); if (!el) return;
+  const show = open === undefined ? el.hidden : !!open;
+  el.hidden = !show;
+  document.getElementById('map-sw-btn')?.setAttribute('aria-pressed', show ? 'true' : 'false');
+  if (show) { _mapSwRender(); _mapSwRenderPast(); }
+}
+function _mapSwRender() {
+  const st = _mapSwState(), now = Date.now() / 1000;
+  const run = !!st;
+  const q = id => document.getElementById(id);
+  if (!q('map-sw')) return;
+  q('map-sw-start').hidden = run; q('map-sw-lap').hidden = !run; q('map-sw-stop').hidden = !run;
+  q('map-sw-time').textContent = _mapSwFmt(run ? now - st.start : 0);
+  q('map-sw-dist').textContent = ((run ? _mapSwDist : 0) / 1000).toFixed(2) + ' km';
+  q('map-sw-pace').textContent = run ? _mapSwPace(now - st.start, _mapSwDist) : '\u2013 /km';
+  q('map-sw-gps').textContent = run ? (_mapSwFixes ? _mapSwFixes + ' GPS fixes so far' : 'Waiting for GPS from the amux app on your phone') : '';
+  const laps = run ? st.laps : [];
+  q('map-sw-laps').innerHTML = laps.map((t, i) => '<li>Lap ' + (i + 1) + ': ' + _mapSwFmt(t - (i ? laps[i - 1] : st.start)) + '</li>').join('');
+  clearInterval(_mapSwTick); _mapSwTick = null;
+  if (run && !q('map-sw').hidden) {
+    _mapSwTick = setInterval(() => {
+      if (document.getElementById('map-sw')?.hidden || !_mapSwState()) { clearInterval(_mapSwTick); _mapSwTick = null; return; }
+      const s2 = _mapSwState(), t = Date.now() / 1000;
+      document.getElementById('map-sw-time').textContent = _mapSwFmt(t - s2.start);
+      document.getElementById('map-sw-pace').textContent = _mapSwPace(t - s2.start, _mapSwDist);
+      if (t - _mapSwDistAt >= 10) { _mapSwDistAt = t; _mapSwDistance(s2.start, t, s2.laps).then(d => { _mapSwDist = d.total; _mapSwFixes = d.fixes; _mapSwRender(); }).catch(() => {}); }
+    }, 1000);
+  }
+}
+function _mapSwStart() {
+  _mapSwSetState({ start: Date.now() / 1000, laps: [] });
+  _mapSwDist = 0; _mapSwFixes = 0; _mapSwDistAt = 0;
+  _mapSwRender();
+}
+function _mapSwLap() {
+  const st = _mapSwState(); if (!st) return;
+  st.laps.push(Date.now() / 1000); _mapSwSetState(st); _mapSwRender();
+}
+async function _mapSwStop() {
+  const st = _mapSwState(); if (!st) return;
+  const end = Date.now() / 1000;
+  _mapSwSetState(null); clearInterval(_mapSwTick); _mapSwTick = null;
+  let d = { total: _mapSwDist, per: [], fixes: _mapSwFixes };
+  try { d = await _mapSwDistance(st.start, end, st.laps); } catch (e) { showToast('Saved without a fresh GPS distance: ' + (e.message || e)); }
+  const marks = [st.start, ...st.laps, end];
+  const splits = marks.slice(1).map((t, i) => ({ s: Math.round(t - marks[i]), m: Math.round(d.per[i] || 0) }));
+  const trial = { id: 'trial_' + Math.round(st.start * 1000), start: st.start, end, duration_s: Math.round(end - st.start), distance_m: Math.round(d.total), fixes: d.fixes, splits };
+  _mapTrials = [trial, ..._mapTrials].slice(0, 200);
+  _mapSave();
+  _mapSwDist = 0; _mapSwFixes = 0;
+  _mapSwRender(); _mapSwRenderPast();
+  showToast('Trial saved: ' + _mapSwFmt(trial.duration_s) + ', ' + (trial.distance_m / 1000).toFixed(2) + ' km');
+}
+function _mapSwRenderPast() {
+  const el = document.getElementById('map-sw-past'); if (!el) return;
+  if (!_mapTrials.length) { el.innerHTML = ''; return; }
+  const row = t => {
+    const best = (t.splits || []).filter(x => x.m >= 50).map(x => x.s / (x.m / 1000)).sort((a, b) => a - b)[0];
+    return '<li><span>' + esc(new Date(t.start * 1000).toLocaleDateString()) + ' \u00b7 ' + _mapSwFmt(t.duration_s) + ' \u00b7 ' + (t.distance_m / 1000).toFixed(2) + ' km \u00b7 ' + _mapSwPace(t.duration_s, t.distance_m)
+      + (best ? ' \u00b7 best split ' + _mapSwFmt(best) + ' /km' : '') + '</span>'
+      + '<button type="button" class="btn" onclick="_mapSwRoute(\'' + escJs(t.id) + '\')">Route</button></li>';
+  };
+  el.innerHTML = '<h4>Past trials</h4><ol>' + _mapTrials.slice(0, 5).map(row).join('') + '</ol>';
+}
+// A trial's route is the Location history of its window, drawn by that view.
+function _mapSwRoute(id) {
+  const t = _mapTrials.find(x => x.id === id); if (!t) return;
+  _locRange = { from: Math.floor(t.start), to: Math.ceil(t.end) };
+  if (typeof _mapToggleSidebar === 'function' && !_mapSettings.sidebarOpen && window.innerWidth > 600) _mapToggleSidebar();
+  _mapSidebarTab('history');
+  _locLoad();
+  // Leaflet must re-measure after the history pane changes the layout, or part
+  // of the map paints grey on a phone.
+  setTimeout(() => { if (_map) _map.invalidateSize(); }, 60);
+}
+
 function _mapLoad() {
   // Load from localStorage immediately for instant render
   try { var cp = localStorage.getItem('amux_map_pins'); if (cp) _mapPins = JSON.parse(cp); } catch(e) {}
@@ -34715,6 +34832,8 @@ function _mapLoad() {
     });
     if (needsSave) _mapSave();
     _mapTags = data.tags || [];
+    _mapTrials = Array.isArray(data.trials) ? data.trials : [];
+    _mapSwRenderPast();
     // Whether the sidebar is open is this device's state, not the document's:
     // a phone starts with the map showing (see _mapInit). Taking the saved
     // value here without applying it left the setting saying "open" over a
@@ -34759,7 +34878,7 @@ function _mapSave() {
   // an empty/stale client (e.g. fetch not finished) from wiping saved pins when
   // the map is merely panned or zoomed.
   if (!_mapServerLoaded) return;
-  var payload = { pins: _mapPins, tags: _mapTags, settings: _mapSettings };
+  var payload = { pins: _mapPins, tags: _mapTags, settings: _mapSettings, trials: _mapTrials };
   // ?replace=1 — the dashboard holds the full set (guarded by _mapServerLoaded),
   // so it's authorized to replace the whole document, including deletions.
   apiCall(API + '/api/map?replace=1', {

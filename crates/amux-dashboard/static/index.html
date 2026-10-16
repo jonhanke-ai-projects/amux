@@ -1431,6 +1431,18 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button class="map-open-btn" id="map-open-btn" onclick="_mapToggleSidebar()" title="Open sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
   <div class="map-main">
     <div id="map-container"></div>
+    <section class="map-sw" id="map-sw" hidden aria-label="Stopwatch">
+      <div class="map-sw-time" id="map-sw-time" role="timer" aria-live="off">0:00</div>
+      <div class="map-sw-stats"><span id="map-sw-dist">0.00 km</span><span id="map-sw-pace">&ndash; /km</span></div>
+      <p class="ui-help map-sw-gps" id="map-sw-gps"></p>
+      <div class="map-sw-btns">
+        <button class="btn primary" id="map-sw-start" onclick="_mapSwStart()">Start</button>
+        <button class="btn" id="map-sw-lap" onclick="_mapSwLap()" hidden>Lap</button>
+        <button class="btn danger" id="map-sw-stop" onclick="_mapSwStop()" hidden>Stop</button>
+      </div>
+      <ol class="map-sw-laps" id="map-sw-laps"></ol>
+      <div class="map-sw-past" id="map-sw-past"></div>
+    </section>
     <div class="map-drop-hint" id="map-drop-hint">&#x1F4CD; Click anywhere on the map to place a pin &mdash; Esc to cancel</div>
     <div class="map-toolbar">
       <button class="btn map-drop-btn" id="map-drop-btn" onclick="_mapToggleDropMode()" style="font-size:0.78rem;padding:3px 9px;" title="Drop a pin by clicking the map">&#x1F4CD; Drop Pin</button>
@@ -1444,6 +1456,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <option value="terrain">Terrain</option>
       </select>
       <button class="btn" id="map-pins-btn" onclick="_mapTogglePins()" aria-pressed="false" style="font-size:0.78rem;padding:3px 9px;" title="Hide pins on the map (the list stays)">Hide pins</button>
+      <button class="btn" id="map-sw-btn" onclick="_mapSwToggle()" aria-pressed="false" aria-controls="map-sw" style="font-size:0.78rem;padding:3px 9px;" title="Stopwatch for time trials: time, distance, pace and splits from your phone's GPS">&#x23F1; Stopwatch</button>
       <span class="map-coords" id="map-coords"></span>
     </div>
   </div>
