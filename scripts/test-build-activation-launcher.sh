@@ -137,5 +137,32 @@ run_launcher
 expect test ! -s "$TRACE"
 expect grep -q "verdict=ci_gate_unmeasured" "$LOG"
 
+# A RED VERDICT IS RE-ASKED (2026-10-16). A re-run can turn a red commit green;
+# the cache used to keep "red" forever and held a green commit back. This path
+# runs the real cache with only the GitHub call replaced.
+CACHE="$TMP/ci-cache"; FETCHED="$TMP/fetched"; : > "$FETCHED"
+printf '#!/usr/bin/env bash\nv=$(awk -v s="$1" '"'"'$1==s {print $2}'"'"' "%s" | tail -1); echo "${v:-green}"\n' "$FETCHED" > "$TMP/fetch"
+chmod +x "$TMP/fetch"
+run_cached() {
+  AMUX_AUTHORITY_REPO="$STALE" AMUX_AUTHORITY_WORKTREE="$WORK" AMUX_AUTHORITY_MARKER="$MARKER" \
+  AMUX_AUTHORITY_LOG="$LOG" AMUX_RS_ACTIVATION_REF=origin/main AMUX_CI_VERDICT_CACHE="$CACHE" \
+  AMUX_CI_FETCH_CMD="$TMP/fetch" AMUX_RS_HEALTH_URL="file://$TMP/health.json" "$@" bash "$LAUNCHER"
+}
+RERUN=$(commit_next rerun)
+echo "{\"commit_full\":\"$ELECTED\"}" > "$TMP/health.json"
+echo "$RERUN red" >> "$FETCHED"
+: > "$TRACE"
+run_cached env
+expect test "$(cat "$CACHE/$RERUN")" = red
+expect test "$(grep -c "sha=$RERUN" "$TRACE")" = 0
+echo "$RERUN green" >> "$FETCHED"
+# Inside the re-check window the cached red stands.
+run_cached env AMUX_CI_RED_RECHECK_S=3600
+expect test "$(grep -c "sha=$RERUN" "$TRACE")" = 0
+# Past it, the re-run's green is seen, cached, and activated.
+run_cached env AMUX_CI_RED_RECHECK_S=0
+expect test "$(cat "$CACHE/$RERUN")" = green
+expect grep -q "repo=$WORK sha=$RERUN" "$TRACE"
+
 echo "test-build-activation-launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -35,36 +35,53 @@ ci_verdict() {   # green | red | pending | none | unmeasured
   local sha="$1" cached
   if [ -n "${AMUX_CI_VERDICT_CMD:-}" ]; then "$AMUX_CI_VERDICT_CMD" "$sha"; return; fi
   cached=$(cat "$CI_CACHE/$sha" 2>/dev/null || true)
-  case "$cached" in green|red|none) echo "$cached"; return ;; esac
+  case "$cached" in
+    green|none) echo "$cached"; return ;;
+    red)
+      # A re-run can turn red green (2026-10-16: 3067a22da's rust run passed on
+      # attempt 2 at 11:36, the cache had said red since 11:13, and the gate
+      # held a server fix back for an hour while the fleet ran out of quota).
+      # Ask again every AMUX_CI_RED_RECHECK_S until the commit is a day old.
+      local cache_age commit_age
+      cache_age=$(python3 -c 'import os,sys,time; print(int(time.time()-os.path.getmtime(sys.argv[1])))' "$CI_CACHE/$sha" 2>/dev/null || echo 0)
+      commit_age=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") ))
+      if [ "$cache_age" -lt "${AMUX_CI_RED_RECHECK_S:-600}" ] || [ "$commit_age" -gt 86400 ]; then
+        echo red; return
+      fi ;;
+  esac
   local token v
-  token=$(GH_TOKEN= "$HOME/.amux/github-app/get-token.sh" --min-remaining 300 2>/dev/null \
-    | sed -n 's/^export GH_TOKEN=//p' | tr -d "'\"") || true
-  [ -n "$token" ] || { echo unmeasured; return; }
-  # Judge by WORKFLOW RUNS, not check runs (2026-10-15): 6325024c7 went live
-  # with its rust run cancelled by the next push before any job started, so it
-  # had no failing check run and "every check run passed" was true of the
-  # checks workflow alone. Each required workflow must have completed with
-  # success; a cancelled or skipped one leaves the commit without a verdict
-  # (none), so the walk passes it over to an older, fully tested commit.
-  v=$(curl -sf --max-time 15 -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/actions/runs?head_sha=$sha&event=push&per_page=100" \
-    | AMUX_CI_REQUIRED="${AMUX_CI_REQUIRED_WORKFLOWS:-rust,checks}" python3 -c '
-import json,os,sys
-runs=json.load(sys.stdin)["workflow_runs"]
-need=[w.strip() for w in os.environ["AMUX_CI_REQUIRED"].split(",") if w.strip()]
-if not runs: print("none"); raise SystemExit
-states=[]
-for w in need:
-    mine=sorted([r for r in runs if r["name"]==w], key=lambda r: r["created_at"])
-    if not mine: states.append("none"); continue
-    r=mine[-1]
-    if r["status"]!="completed": states.append("pending")
-    elif r["conclusion"]=="success": states.append("green")
-    elif r["conclusion"] in ("cancelled","skipped","stale"): states.append("none")
-    else: states.append("red")
-for v in ("red","pending","none"):
-    if v in states: print(v); raise SystemExit
-print("green")' 2>/dev/null) || v=unmeasured
+  if [ -n "${AMUX_CI_FETCH_CMD:-}" ]; then   # tests: stands in for the GitHub call, cache still applies
+    v=$("$AMUX_CI_FETCH_CMD" "$sha")
+  else
+    token=$(GH_TOKEN= "$HOME/.amux/github-app/get-token.sh" --min-remaining 300 2>/dev/null \
+      | sed -n 's/^export GH_TOKEN=//p' | tr -d "'\"") || true
+    [ -n "$token" ] || { echo unmeasured; return; }
+    # Judge by WORKFLOW RUNS, not check runs (2026-10-15): 6325024c7 went live
+    # with its rust run cancelled by the next push before any job started, so it
+    # had no failing check run and "every check run passed" was true of the
+    # checks workflow alone. Each required workflow must have completed with
+    # success; a cancelled or skipped one leaves the commit without a verdict
+    # (none), so the walk passes it over to an older, fully tested commit.
+    v=$(curl -sf --max-time 15 -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/actions/runs?head_sha=$sha&event=push&per_page=100" \
+      | AMUX_CI_REQUIRED="${AMUX_CI_REQUIRED_WORKFLOWS:-rust,checks}" python3 -c '
+  import json,os,sys
+  runs=json.load(sys.stdin)["workflow_runs"]
+  need=[w.strip() for w in os.environ["AMUX_CI_REQUIRED"].split(",") if w.strip()]
+  if not runs: print("none"); raise SystemExit
+  states=[]
+  for w in need:
+      mine=sorted([r for r in runs if r["name"]==w], key=lambda r: r["created_at"])
+      if not mine: states.append("none"); continue
+      r=mine[-1]
+      if r["status"]!="completed": states.append("pending")
+      elif r["conclusion"]=="success": states.append("green")
+      elif r["conclusion"] in ("cancelled","skipped","stale"): states.append("none")
+      else: states.append("red")
+  for v in ("red","pending","none"):
+      if v in states: print(v); raise SystemExit
+  print("green")' 2>/dev/null) || v=unmeasured
+  fi
   # "none" is only final once the commit is old enough that CI would have started.
   if [ "$v" = green ] || [ "$v" = red ] || { [ "$v" = none ] && \
      [ $(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") )) -gt 3600 ]; }; then
