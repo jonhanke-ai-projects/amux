@@ -280,8 +280,11 @@ test('realtime draw: late joiner snapshot, disconnect mid-stroke, saver hand-off
     await A.p.route('**/api/file', async route => { if (route.request().method() === 'PUT') await held; await route.continue(); });
     await setTool(A.p, 'rectangle');
     const ca = await canvasCenter(A.p);
-    await A.p.mouse.move(ca.cx - 150, ca.cy - 150); await A.p.mouse.down();
-    await A.p.mouse.move(ca.cx - 60, ca.cy - 90, { steps: 5 }); await A.p.mouse.up();
+    // Inside the clear middle of the canvas: on a phone the side columns sit
+    // under the top toolbar since ca78cc3f9, and a start 150px left of centre
+    // at 375px wide landed on the left column, so no rectangle was drawn.
+    await A.p.mouse.move(ca.cx - 100, ca.cy - 120); await A.p.mouse.down();
+    await A.p.mouse.move(ca.cx - 40, ca.cy - 80, { steps: 5 }); await A.p.mouse.up();
     const rectId = await A.p.evaluate(() => (window as unknown as Win)._draw.api.getSceneElements().find((e: any) => e.type === 'rectangle').id);
     const disk0 = JSON.parse(await readFile(path, 'utf8'));
     expect(disk0.elements.map((e: any) => e.id), 'the rectangle is not saved yet').not.toContain(rectId);
