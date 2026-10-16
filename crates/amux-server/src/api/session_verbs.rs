@@ -52133,16 +52133,35 @@ mod amux4770_worktree_isolation_tests {
             .expect("git runs")
     }
 
+    /// A fixture step that must succeed. A bare `.status.success()` assert
+    /// discards git's stderr, so the one CI failure of the locked-worktree
+    /// test (rust run 38932371073, `worktree add` returned non-zero) left no
+    /// trace of WHY, and it has not reproduced locally (0 of 100). Every setup
+    /// step now names its command and git's own message when it fails.
+    fn git_ok(repo: &std::path::Path, args: &[&str]) -> std::process::Output {
+        let out = git(repo, args);
+        assert!(
+            out.status.success(),
+            "fixture step `git -C {} {}` failed ({}): stderr={:?} stdout={:?}",
+            repo.display(),
+            args.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout),
+        );
+        out
+    }
+
     /// A repo with one commit, ready for `worktree add`.
     fn seeded_repo(tmp: &std::path::Path) -> std::path::PathBuf {
         let repo = tmp.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "-q", "-b", "main"]);
-        git(&repo, &["config", "user.email", "t@t"]);
-        git(&repo, &["config", "user.name", "t"]);
+        git_ok(&repo, &["init", "-q", "-b", "main"]);
+        git_ok(&repo, &["config", "user.email", "t@t"]);
+        git_ok(&repo, &["config", "user.name", "t"]);
         std::fs::write(repo.join("f.txt"), "x").unwrap();
-        git(&repo, &["add", "-A"]);
-        git(&repo, &["commit", "-qm", "seed"]);
+        git_ok(&repo, &["add", "-A"]);
+        git_ok(&repo, &["commit", "-qm", "seed"]);
         repo
     }
 
@@ -52166,16 +52185,9 @@ mod amux4770_worktree_isolation_tests {
             let wt = tmp.path().join("wt");
             let wt_s = wt.to_string_lossy().to_string();
             let repo_s = repo.to_string_lossy().to_string();
-            assert!(git(&repo, &["worktree", "add", "--detach", &wt_s, "HEAD"])
-                .status
-                .success());
+            git_ok(&repo, &["worktree", "add", "--detach", &wt_s, "HEAD"]);
             // The ephemeral creation path leaves exactly this lock reason.
-            assert!(git(
-                &repo,
-                &["worktree", "lock", "--reason", "initializing", &wt_s]
-            )
-            .status
-            .success());
+            git_ok(&repo, &["worktree", "lock", "--reason", "initializing", &wt_s]);
             if !directory_survived {
                 std::fs::remove_dir_all(&wt).unwrap();
             }
@@ -52225,9 +52237,7 @@ mod amux4770_worktree_isolation_tests {
         let wt = tmp.path().join("wt");
         let wt_s = wt.to_string_lossy().to_string();
         let repo_s = repo.to_string_lossy().to_string();
-        assert!(git(&repo, &["worktree", "add", "--detach", &wt_s, "HEAD"])
-            .status
-            .success());
+        git_ok(&repo, &["worktree", "add", "--detach", &wt_s, "HEAD"]);
         // Simulate the interrupted-checkout state precisely: removing the
         // WHOLE directory reproduces nothing (git deregisters a cleanly-gone
         // worktree on `remove --force` without complaint, verified). What a
@@ -52413,17 +52423,10 @@ mod amux4770_worktree_isolation_tests {
 
         let wt = tmp.path().join("wt");
         let wt_s = wt.to_string_lossy().to_string();
-        assert!(git(&repo, &["worktree", "add", "--detach", &wt_s, "HEAD"])
-            .status
-            .success());
+        git_ok(&repo, &["worktree", "add", "--detach", &wt_s, "HEAD"]);
 
         // Reproduce the incident exactly: lock it, then lose the directory.
-        assert!(git(
-            &repo,
-            &["worktree", "lock", "--reason", "initializing", &wt_s]
-        )
-        .status
-        .success());
+        git_ok(&repo, &["worktree", "lock", "--reason", "initializing", &wt_s]);
         std::fs::remove_dir_all(&wt).unwrap();
 
         // THE CONTROL that makes the rest mean something: without unlocking,
@@ -52477,9 +52480,7 @@ mod amux4770_worktree_isolation_tests {
 
         let wt = tmp.path().join("wt");
         let wt_s = wt.to_string_lossy().to_string();
-        assert!(git(&repo, &["worktree", "add", "--detach", &wt_s, "HEAD"])
-            .status
-            .success());
+        git_ok(&repo, &["worktree", "add", "--detach", &wt_s, "HEAD"]);
         assert!(
             wt.join(".git").exists(),
             "a real worktree carries a .git entry"
