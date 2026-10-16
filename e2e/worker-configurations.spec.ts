@@ -126,6 +126,17 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     // on without changing To Do pickup or the master switch, then off again.
     await page.locator('#peek-tab-issues').click();
     const boardConfig = page.locator('#peek-board-config');
+    // An accordion, collapsed by default (Ethan, 2026-10-16), that stays open
+    // through a board refresh once the owner opens it.
+    const fold = boardConfig.locator('details.settings-fold');
+    await expect(fold).not.toHaveAttribute('open', /.*/);
+    await expect(fold.locator('summary')).toContainText(/Board settings\s*\d+ of \d+ on/);
+    await expect(boardConfig.locator('.pbc-row').first()).toBeHidden();
+    await fold.locator('summary').click();
+    await expect(fold).toHaveAttribute('open', /.*/);
+    await page.evaluate(() => { const el = document.getElementById('peek-board-config') as any; el._pbcHtml = ''; (window as any)._peekBoardPolicySync(); });
+    await expect(boardConfig.locator('details.settings-fold')).toHaveAttribute('open', /.*/);
+    await expect(boardConfig.locator('.pbc-row').first()).toBeVisible();
     for (const label of ['Refill To Do from Backlog', 'Start To Do cards when idle', 'Keep going on unfinished cards', 'Board steers this worker', 'Plan my messages onto the board']) {
       await expect(boardConfig).toContainText(label);
     }

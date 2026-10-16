@@ -13520,6 +13520,11 @@ const _PEEK_BOARD_ALL_CONFIGS = _BOARD_SWITCHES;
 // save and the session refetch came back, so an unchecked box flipped back
 // (Ethan, 2026-10-04: "when I uncheck these they revert back").
 const _pbcPending = {};
+// The switches sit in the shared settings-fold accordion, collapsed by default
+// (Ethan, 2026-10-16: "make this an accordion collapsed by default"). Open/closed
+// is remembered per worker so a board refresh, which rebuilds the panel, does
+// not snap it shut under the owner's cursor.
+const _pbcFoldOpen = {};
 function _peekBoardPolicySync() {
   const el = document.getElementById('peek-board-config');
   if (!el) return;
@@ -13534,6 +13539,10 @@ function _peekBoardPolicySync() {
     h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
   }
   const states = _boardSwitchStates(s, _pbcPending);
+  const nOn = iso ? 0 : _PEEK_BOARD_ALL_CONFIGS.filter(c => states[c.field].own).length;
+  h += '<details class="settings-fold pbc-fold"' + (_pbcFoldOpen[peekSession] ? ' open' : '')
+    + ' ontoggle="_pbcFoldOpen[\'' + q + '\']=this.open"><summary><span class="pbc-fold-title">Board settings</span>'
+    + '<span class="ui-help">' + nOn + ' of ' + _PEEK_BOARD_ALL_CONFIGS.length + ' on</span></summary>';
   let group = '';
   for (const c of _PEEK_BOARD_ALL_CONFIGS) {
     if (c.group && c.group !== group) { group = c.group; h += '<div class="pbc-group">' + esc(group) + '</div>'; }
@@ -13550,6 +13559,7 @@ function _peekBoardPolicySync() {
       + (why ? '<span class="pbc-why">' + esc(why) + '</span>' : '')
       + '</span></label>';
   }
+  h += '</details>';
   // Rebuild only when something changed: the panel was replaced on every board
   // refresh, several times a second, so a click could land on a box that was
   // about to be thrown away (an e2e click saw the node replaced 13 times).
