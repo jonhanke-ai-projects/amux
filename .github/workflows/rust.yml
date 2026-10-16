@@ -254,11 +254,22 @@ jobs:
   # Compile every test binary ONCE and hand the shards a nextest archive, so
   # no shard pays the ~7 min compile. The env below applies to this job only.
   # Skipped on a PR that changes nothing Rust compiles or reads (rust=none).
+  #
+  # MAIN'S ARCHIVE FOR A rust=targeted PR. Every push to main saves its archive
+  # under `nextest-archive-<rust_key>` (scripts/ci-rust-key.mjs). A targeted PR
+  # (it changed only files Rust tests READ, such as the dashboard's static/)
+  # restores that exact key and runs its filter from main's compiled tests,
+  # with AMUX_DASHBOARD_DIR pointing at the PR's static/ so a test that serves
+  # dashboard assets serves the PR's. On a miss it compiles and runs inline as
+  # before. `archive` and `key` say which happened; `test` repeats them.
   test-build:
     needs: affected
     if: ${{ !cancelled() && needs.affected.outputs.rust != 'none' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      archive: ${{ steps.which.outputs.archive }}
+      key: ${{ steps.key.outputs.key }}
     env:
       # Debuginfo is most of the link time and archive size for binaries this
       # large. Panic messages keep file:line without it (core::panic::Location).
@@ -267,21 +278,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Rust-input key (scripts/ci-rust-key.mjs)
+        id: key
+        run: |
+          set -uo pipefail
+          # Exit 2 = an include the key cannot see: no key, so no restore and no save.
+          if key=$(node scripts/ci-rust-key.mjs); then
+            echo "key=$key" >> "$GITHUB_OUTPUT"
+            echo "rust_key=$key"
+          else
+            echo "::warning title=No Rust-input key::scripts/ci-rust-key.mjs could not key this tree (output above); compiling, and not caching"
+          fi
+      - name: Restore main's nextest archive (rust=targeted PR)
+        id: restore
+        if: ${{ github.event_name == 'pull_request' && needs.affected.outputs.rust == 'targeted' && steps.key.outputs.key != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nextest.tar.zst
+          # Exact key only: a prefix match would run tests compiled from other sources.
+          key: nextest-archive-${{ steps.key.outputs.key }}
       - uses: rui314/setup-mold@v1
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
       # Optimise DEPENDENCIES only (workspace crates stay debug, with
       # debug_assertions). The long pole was one request_log test inserting
       # 260k rows through an -O0 bundled SQLite: 163s of a 174s shard. In
       # $CARGO_HOME so it cannot touch the checkout; `key` below keeps the
       # cache from restoring -O0 deps under the same key and never re-saving.
       - name: Optimise dependencies for the test build
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
         run: printf '[profile.dev.package."*"]\nopt-level = 2\n' >> "${CARGO_HOME:-$HOME/.cargo}/config.toml"
       - uses: Swatinem/rust-cache@v2
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
         with:
           key: deps-opt2
       - uses: taiki-e/install-action@nextest
       - name: Build all workspace test binaries into a nextest archive
         if: ${{ needs.affected.outputs.rust != 'targeted' }}
         run: cargo nextest archive --workspace --archive-file ${{ runner.temp }}/nextest.tar.zst
+      - name: Save the archive for PRs (push to main only)
+        if: ${{ github.event_name == 'push' && steps.key.outputs.key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nextest.tar.zst
+          key: nextest-archive-${{ steps.key.outputs.key }}
       # rust=targeted runs its few filtered tests HERE. Measured on #322
       # (2026-10-15): archiving, uploading, queueing for a runner (2.4 min)
       # and downloading the archive to run one filtered shard took the PR from
@@ -291,18 +330,47 @@ jobs:
         env:
           AMUX_REQUIRE_TMUX: '1'
           RUST_FILTER: ${{ needs.affected.outputs.rust_filter }}
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+          KEY: ${{ steps.key.outputs.key }}
         run: |
           set -uo pipefail
           command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; } || exit 1
           bash scripts/test-tree-clean.sh --self-test || exit 1
           echo "targeted: running only the tests that read the changed files: $RUST_FILTER"
-          bash scripts/test-tree-clean.sh cargo nextest run --workspace --no-fail-fast -E "$RUST_FILTER"
+          if [ "$HIT" = true ]; then
+            # Main's compiled tests, this checkout's files. Same extraction as
+            # the shards, so env!("CARGO_BIN_EXE_*") paths resolve. The tests
+            # read static/ at run time and the dashboard crate serves
+            # AMUX_DASHBOARD_DIR, so the PR's dashboard is what they see.
+            echo "targeted: from cached archive nextest-archive-$KEY (compiled by a push to main with identical Rust inputs); not compiled"
+            export AMUX_DASHBOARD_DIR="$GITHUB_WORKSPACE/crates/amux-dashboard/static"
+            bash scripts/test-tree-clean.sh cargo nextest run \
+              --archive-file "$RUNNER_TEMP/nextest.tar.zst" \
+              --workspace-remap "$GITHUB_WORKSPACE" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite \
+              --no-fail-fast -E "$RUST_FILTER"
+          else
+            echo "targeted: compiling in this run (cache key ${KEY:+nextest-archive-$KEY}${KEY:-none}, no hit)"
+            bash scripts/test-tree-clean.sh cargo nextest run --workspace --no-fail-fast -E "$RUST_FILTER"
+          fi
           rc=$?
           if [ "$rc" = "3" ]; then
             echo "::warning title=Tree residue::A test left residue in the checkout. Advisory during the AF-150 trial period; the diff is above. Fix the FIXTURE, not .gitignore."
             exit 0
           fi
           exit $rc
+      - name: Where the tests came from
+        id: which
+        if: ${{ always() }}
+        env:
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+          RUST_SCOPE: ${{ needs.affected.outputs.rust }}
+        run: |
+          if [ "$HIT" = true ]; then a=cache
+          elif [ "$RUST_SCOPE" = targeted ]; then a=compiled-inline
+          else a=compiled-archive
+          fi
+          echo "archive=$a" >> "$GITHUB_OUTPUT"
+          echo "test binaries: $a"
       - uses: actions/upload-artifact@v4
         if: ${{ needs.affected.outputs.rust != 'targeted' }}
         with:
@@ -403,6 +471,8 @@ jobs:
           FILTER: ${{ needs.affected.outputs.rust_filter }}
           SHARDS: ${{ needs.test-shards.result }}
           BUILD: ${{ needs.test-build.result }}
+          ARCHIVE: ${{ needs.test-build.outputs.archive }}
+          KEY: ${{ needs.test-build.outputs.key }}
         run: |
           if [ "$AFFECTED" != success ]; then
             echo "::error::the affected classification did not succeed ($AFFECTED), so nothing it skipped can be vouched for"
@@ -413,7 +483,12 @@ jobs:
               echo "skipped: not affected. No Rust compile input and no file a Rust test reads changed (scripts/ci-affected.mjs). The full suite runs on every push to main."
               exit 0 ;;
             targeted)
-              echo "targeted: NOT the full suite. Ran only: $FILTER (in test-build). The full suite runs on every push to main."
+              if [ "$ARCHIVE" = cache ]; then
+                from="main's compiled tests from cache key nextest-archive-$KEY, run against this PR's files"
+              else
+                from="compiled in this run (${ARCHIVE:-unknown}; cache key ${KEY:+nextest-archive-$KEY}${KEY:-none} not hit)"
+              fi
+              echo "targeted: NOT the full suite. Ran only: $FILTER (in test-build, $from). The full suite runs on every push to main."
               test "$BUILD" = success; exit $? ;;
             full) echo "full suite" ;;
             *) echo "::error::unknown rust scope '$RUST'"; exit 1 ;;
@@ -424,19 +499,75 @@ jobs:
   # each compiled it, ~6 min apiece, before running a single test). Built on
   # ubuntu-latest (24.04), the same glibc as the noble Playwright image the
   # shards run in. Built only when e2e will run.
+  #
+  # MAIN'S BINARY FOR A PR THAT CHANGED NO RUST INPUT. Every push to main saves
+  # the binary it built under `server-bin-<rust_key>` (scripts/ci-rust-key.mjs:
+  # a hash of every compile input except the dashboard's static/, plus rustc
+  # -V). A PR with rust=targeted|none restores that EXACT key, no prefix
+  # fallback, and skips the ~2.5 min compile; the e2e shards then serve the
+  # PR's static/ through AMUX_DASHBOARD_DIR, so the dashboard under test is the
+  # PR's even though the binary is main's. On a miss, or rust=full, or a failed
+  # classification, it builds exactly as before. `source` says which happened.
   server-bin:
     needs: affected
     if: ${{ !cancelled() && needs.affected.outputs.e2e != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      source: ${{ steps.which.outputs.source }}
+      key: ${{ steps.key.outputs.key }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Rust-input key (scripts/ci-rust-key.mjs)
+        id: key
+        run: |
+          set -uo pipefail
+          # Exit 2 = an include the key cannot see: no key, so no restore and no save.
+          if key=$(node scripts/ci-rust-key.mjs); then
+            echo "key=$key" >> "$GITHUB_OUTPUT"
+            echo "rust_key=$key"
+          else
+            echo "::warning title=No Rust-input key::scripts/ci-rust-key.mjs could not key this tree (output above); building, and not caching"
+          fi
+      - name: Restore main's server binary (PR with no Rust compile input changed)
+        id: restore
+        if: ${{ github.event_name == 'pull_request' && (needs.affected.outputs.rust == 'targeted' || needs.affected.outputs.rust == 'none') && steps.key.outputs.key != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: target/debug/amux-server
+          # Exact key only. A prefix match would hand back a binary built from
+          # different Rust sources.
+          key: server-bin-${{ steps.key.outputs.key }}
       - uses: Swatinem/rust-cache@v2
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
         with:
           shared-key: server-bin
       - name: Build the server the e2e shards boot
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
         run: cargo build -p amux-server
+      - name: Which binary this run uses
+        id: which
+        env:
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+          KEY: ${{ steps.key.outputs.key }}
+          RUST_SCOPE: ${{ needs.affected.outputs.rust }}
+        run: |
+          set -euo pipefail
+          test -x target/debug/amux-server
+          if [ "$HIT" = true ]; then
+            echo "source=cache" >> "$GITHUB_OUTPUT"
+            echo "server-bin: RESTORED from cache key server-bin-$KEY (built by a push to main with identical Rust inputs); not compiled. rust=$RUST_SCOPE"
+          else
+            echo "source=built" >> "$GITHUB_OUTPUT"
+            echo "server-bin: COMPILED in this run (event=$GITHUB_EVENT_NAME, rust=$RUST_SCOPE, cache key ${KEY:+server-bin-$KEY}${KEY:-none}${HIT:+, restore missed})"
+          fi
+      - name: Save the binary for PRs (push to main only)
+        if: ${{ github.event_name == 'push' && steps.key.outputs.key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: target/debug/amux-server
+          key: server-bin-${{ steps.key.outputs.key }}
       - uses: actions/upload-artifact@v4
         with:
           name: amux-server-bin
@@ -555,9 +686,23 @@ jobs:
           }
           JS
       - name: Use the server built once for this run
+        env:
+          SERVER_SOURCE: ${{ needs.server-bin.outputs.source }}
+          SERVER_KEY: ${{ needs.server-bin.outputs.key }}
         run: |
           chmod +x "$RUNNER_TEMP/server-bin/amux-server"
           echo "AMUX_E2E_SERVER_BIN=$RUNNER_TEMP/server-bin/amux-server" >> "$GITHUB_ENV"
+          # A binary restored from main's cache embeds MAIN's dashboard. Serve
+          # this checkout's static/ instead (serve-head.sh lets the variable
+          # through its scrub and checks the directory). $GITHUB_WORKSPACE, not
+          # the github.workspace expression: inside a container job only the
+          # variable holds the container path.
+          if [ "$SERVER_SOURCE" = cache ]; then
+            echo "AMUX_DASHBOARD_DIR=$GITHUB_WORKSPACE/crates/amux-dashboard/static" >> "$GITHUB_ENV"
+            echo "server: main's binary from cache key server-bin-$SERVER_KEY; dashboard served from this checkout via AMUX_DASHBOARD_DIR"
+          else
+            echo "server: compiled in this run (server-bin source=${SERVER_SOURCE:-unknown}); dashboard embedded"
+          fi
       - name: Plan this shard by measured duration (scripts/e2e-plan.mjs)
         run: |
           PLAYWRIGHT_JSON_OUTPUT_NAME="$RUNNER_TEMP/e2e-list.json" npx playwright test --config e2e/playwright.config.ts --list --reporter=json > /dev/null
@@ -672,7 +817,14 @@ jobs:
         env:
           SHARD_RESULT: ${{ needs.e2e-shards.result }}
           GATES_RESULT: ${{ needs.spa-gates.result }}
+          SERVER_SOURCE: ${{ needs.server-bin.outputs.source }}
+          SERVER_KEY: ${{ needs.server-bin.outputs.key }}
         run: |
+          if [ "$SERVER_SOURCE" = cache ]; then
+            echo "server binary: main's, restored from cache key server-bin-$SERVER_KEY (identical Rust inputs); dashboard served from this checkout via AMUX_DASHBOARD_DIR"
+          elif [ -n "$SERVER_SOURCE" ]; then
+            echo "server binary: compiled in this run (cache key ${SERVER_KEY:+server-bin-$SERVER_KEY}${SERVER_KEY:-none})"
+          fi
           if [ "$E2E" = false ]; then
             # Nothing e2e ran; the SPA gates still had to pass if they were due.
             [ "$SPA" = false ] || test "$GATES_RESULT" = success

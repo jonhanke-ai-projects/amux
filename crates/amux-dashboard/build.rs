@@ -1,9 +1,11 @@
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::{env, fs, path::Path};
 
-fn watch(path: &Path, files: &mut Vec<PathBuf>) {
+// The version recipe lives in src/version.rs and is compiled into the library
+// too, so the hash of an AMUX_DASHBOARD_DIR override at runtime is computed by
+// the same code as the embedded one (see `amux_dashboard::asset_version`).
+include!("src/version.rs");
+
+fn watch(path: &Path) {
     // Absolute paths keep a shared target's fingerprint tied to the checkout
     // whose assets were embedded. Track files as well as directory additions.
     println!("cargo:rerun-if-changed={}", path.display());
@@ -12,25 +14,8 @@ fn watch(path: &Path, files: &mut Vec<PathBuf>) {
             .expect("dashboard asset directory")
             .flatten()
         {
-            watch(&entry.path(), files);
+            watch(&entry.path());
         }
-    } else if !path
-        .file_name()
-        .is_some_and(|n| n.to_string_lossy().starts_with('.'))
-    {
-        // Dotfiles (.DS_Store and friends) are local noise, never shipped
-        // content, so they must not move the version between machines.
-        files.push(path.to_path_buf());
-    }
-}
-
-/// FNV-1a, 64 bit. Dependency-free and stable across Rust releases, which
-/// `std::hash` is not. Collision resistance against an adversary is not a
-/// requirement: the value only has to change when the shipped bytes do.
-fn fnv1a(hash: &mut u64, bytes: &[u8]) {
-    for b in bytes {
-        *hash ^= u64::from(*b);
-        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 }
 
@@ -42,41 +27,13 @@ fn fnv1a(hash: &mut u64, bytes: &[u8]) {
 /// `amux_dashboard::asset`). Every client-visible byte change therefore moves
 /// the version, and the version can never disagree between the two files. The
 /// literal used to make every pair of dashboard PRs conflict on the same line.
-fn asset_version(root: &Path, files: &[PathBuf]) -> String {
-    let mut rel: Vec<(String, &PathBuf)> = files
-        .iter()
-        .map(|p| {
-            let r = p
-                .strip_prefix(root)
-                .expect("asset under static/")
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("/");
-            (r, p)
-        })
-        .collect();
-    rel.sort();
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for (name, path) in rel {
-        fnv1a(&mut hash, name.as_bytes());
-        fnv1a(&mut hash, &[0]);
-        let bytes = fs::read(path).expect("readable dashboard asset");
-        fnv1a(&mut hash, &(bytes.len() as u64).to_le_bytes());
-        fnv1a(&mut hash, &bytes);
-    }
-    format!("{hash:016x}")[..12].to_string()
-}
-
 fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_MANIFEST_DIR");
     let root = env::var("CARGO_MANIFEST_DIR").expect("dashboard manifest directory");
     let static_dir = Path::new(&root).join("static");
-    let mut files = Vec::new();
-    watch(&static_dir, &mut files);
-    println!(
-        "cargo:rustc-env=AMUX_ASSET_VER={}",
-        asset_version(&static_dir, &files)
-    );
+    watch(&static_dir);
+    println!("cargo:rerun-if-changed={}", Path::new(&root).join("src/version.rs").display());
+    let version = dir_asset_version(&static_dir).expect("readable dashboard assets");
+    println!("cargo:rustc-env=AMUX_ASSET_VER={version}");
     println!("cargo:rustc-env=AMUX_DASHBOARD_SOURCE_ROOT={root}");
 }
