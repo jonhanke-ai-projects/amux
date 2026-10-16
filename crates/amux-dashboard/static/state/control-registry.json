@@ -612,6 +612,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cardsRenderDefer": {
+      "kind": "command._cardsRenderDefer",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cdcBoardUpdate": {
       "kind": "command._cdcBoardUpdate",
       "feedback_required": true,

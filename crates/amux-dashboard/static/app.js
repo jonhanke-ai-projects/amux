@@ -7342,6 +7342,39 @@ function _reportWorkerActionParity(s) {
   } catch (e) {}
 }
 
+// A PRESS ON A WORKER CARD OUTLIVES THE RENDER THAT LANDS DURING IT.
+// render() rewrites the whole card list. When that lands between pointerdown
+// and pointerup, the press goes down on one node and comes up on its
+// replacement, the browser fires no click, and the tap on the card or its
+// menu button does nothing (ios-safari CI, run 38917609108: the menu button
+// press opened nothing, no card-menu-geo beacon, and the pressed button was
+// gone from the next DOM snapshot). The list now waits for the press to end
+// and renders once afterwards, on a timer so the click is dispatched first.
+// The 3s bound covers a pointerup the page never sees.
+let _cardsPressAt = 0, _cardsRenderDeferred = false, _cardsRenderDeferredN = 0;
+function _cardsPressActive() { return _cardsPressAt && performance.now() - _cardsPressAt < 3000; }
+document.addEventListener('pointerdown', e => {
+  if (e.target && e.target.closest && e.target.closest('#cards')) _cardsPressAt = performance.now();
+}, true);
+function _cardsPressEnd() {
+  if (!_cardsPressAt) return;
+  _cardsPressAt = 0;
+  if (!_cardsRenderDeferred) return;
+  _cardsRenderDeferred = false;
+  setTimeout(render, 0);
+}
+document.addEventListener('pointerup', _cardsPressEnd, true);
+document.addEventListener('pointercancel', _cardsPressEnd, true);
+function _cardsRenderDefer() {
+  _cardsRenderDeferred = true;
+  _cardsRenderDeferredN++;
+  if (_cardsRenderDeferredN === 1 || _cardsRenderDeferredN % 50 === 0) {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'cards-render', verdict: 'deferred_during_press', measured: true,
+        n_considered: _cardsRenderDeferredN, ver: APP_VER }) }).catch(() => {});
+  }
+}
+
 function render() {
   // The Send/Queue label reads the target's status, so it follows each render.
   try { _syncComposerPending(); } catch (_) {}
@@ -7367,6 +7400,7 @@ function render() {
   // Skip the CARD LIST render if a menu or edit overlay is open, to prevent
   // DOM clobbering.
   if (openMenu || editState || document.getElementById('edit-overlay').classList.contains('active')) return;
+  if (_cardsPressActive()) { _cardsRenderDefer(); return; }
   const el = document.getElementById('cards');
   // Skip re-render while user has focus inside any card input/textarea — prevents cursor reset and value loss
   const _active = document.activeElement;
