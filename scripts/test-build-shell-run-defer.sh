@@ -15,8 +15,13 @@ row() { printf '{"schedule_id":"%s","status":"%s","delivery":%s,"ran_at":%s}' "$
 one="[$(row SCHED-465 running '"shell"' $((now-60)))]"
 got=$(runs "$one")
 expect test "$got" = "SCHED-465"
-# A cron prompt delivery, a finished shell run and a stale running row do not hold.
-others="[$(row SCHED-706 running null $((now-10))),$(row SCHED-1 ok '"shell"' $((now-10))),$(row SCHED-2 running '"shell"' $((now-5000)))]"
+# Finished runs and stale running rows do not hold.
+# A cron-fired run is delivery=null until it ends: it holds too (the first
+# version matched "shell" only and never held a scheduled run).
+cron="[$(row SCHED-465 running null $((now-120)))]"
+got=$(runs "$cron")
+expect test "$got" = "SCHED-465"
+others="[$(row SCHED-706 ok null $((now-10))),$(row SCHED-1 ok '"shell"' $((now-10))),$(row SCHED-2 running '"shell"' $((now-5000))),$(row SCHED-3 running null $((now-5000)))]"
 got=$(runs "$others")
 expect test -z "$got"
 # An unreadable scheduler never holds a deploy.

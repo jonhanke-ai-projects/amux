@@ -55,8 +55,11 @@ import json,sys,time
 try: rows=json.load(sys.stdin)
 except Exception: raise SystemExit
 w=float(sys.argv[1]); now=time.time()
+# A cron-fired run carries delivery=null until it finishes; only a manual run
+# is stamped "shell" up front. Matching "shell" alone saw no scheduled run at
+# all: SCHED-465 was killed by the 03:19 deploy on 2026-10-16 with zero holds.
 ids=[r.get("schedule_id","?") for r in rows if isinstance(r,dict) and r.get("status")=="running"
-     and r.get("delivery")=="shell" and now-(r.get("ran_at") or 0) < w]
+     and r.get("delivery") in ("shell", None) and now-(r.get("ran_at") or 0) < w]
 print(",".join(sorted(set(ids))))' "$window" 2>/dev/null || true
 }
 
