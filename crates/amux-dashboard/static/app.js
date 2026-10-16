@@ -11868,7 +11868,28 @@ async function _scopeLoad(scope, targetId) {
   // three in sequence and comparing; either one alone looks fine.
   if (!el || !sc || (sc.level !== 'global' && !sc.name)) return;
   const w = sc.name, lvl = sc.level;
-  el.textContent = 'Loading\u2026';
+  // ONE RENDER PER TARGET, NEWEST WINS. Several paths load the same panel
+  // close together (the restored Configurations tab, the tab click, a setting
+  // saved then refetched), and each used to blank it to "Loading" and write it
+  // again whenever its own fetches finished. An older load could land after a
+  // newer one and show the setting as it was before the save, and a control
+  // the owner was reaching for was replaced under the pointer (CI: "Element is
+  // not attached to the DOM" on the isolated switch, run 38821710436). A load
+  // that is no longer the newest for its panel now writes nothing, and a
+  // reload of the scope already shown keeps its rows until new markup differs.
+  const scopeKey = lvl + ':' + (w || '');
+  const gen = el._scopeGen = (el._scopeGen || 0) + 1;
+  const stale = () => {
+    if (el._scopeGen === gen) return false;
+    _scopeLoadSuperseded++;
+    if (_scopeLoadSuperseded === 1 || _scopeLoadSuperseded % 50 === 0) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'scope-render', verdict: 'superseded_load_discarded', measured: true,
+          n_considered: _scopeLoadSuperseded, ver: APP_VER }) }).catch(() => {});
+    }
+    return true;
+  };
+  if (el.dataset.scopeKey !== scopeKey) { el.textContent = 'Loading\u2026'; el._scopeHtml = ''; el.dataset.scopeKey = scopeKey; }
   try {
     const r = await fetch(API + '/api/scope?level=' + encodeURIComponent(lvl)
                           + (lvl === 'global' ? '' : '&name=' + encodeURIComponent(w)),
@@ -12048,15 +12069,21 @@ async function _scopeLoad(scope, targetId) {
     h += '<div class="scope-bp" id="' + _bpId + '" data-level="' + esc(lvl) + '" data-name="' + esc(w || '') + '"></div>';
     const _vaultId = 'scope-vault-' + lvl + '-' + String(w || 'global').replace(/[^A-Za-z0-9_-]/g, '_');
     h += '<div class="scope-vault" id="' + _vaultId + '"></div>';
-    const dst = document.getElementById(targetId || 'peek-scope-body') || el;
-    dst.innerHTML = h;
+    if (stale()) return;
+    // Identical markup keeps the live nodes rather than replacing them with
+    // copies of themselves. The browser-profile and vault sections own their
+    // own reads and divs, so they refresh either way.
+    if (el._scopeHtml !== h) { el.innerHTML = h; el._scopeHtml = h; }
     _scopeBpLoad(lvl, w || '', _bpId);
     _scopeVaultLoad(lvl, w || '', _vaultId);
   } catch (e) {
-    const dst = document.getElementById(targetId || 'peek-scope-body') || el;
-    dst.textContent = 'Could not load configurations: ' + e.message;
+    if (stale()) return;
+    el.textContent = 'Could not load configurations: ' + e.message;
+    el._scopeHtml = '';
+    el.dataset.scopeKey = '';
   }
 }
+let _scopeLoadSuperseded = 0;
 
 // ── Vault secrets in the Scope tab (AMUX-5375): names and where they come
 // from, never values. Editing lives on the Vault page, one place for it.

@@ -3618,6 +3618,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_scopeLoad": {
+      "kind": "command._scopeLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_scopeRowToggle": {
+      "kind": "command._scopeRowToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_scopeVaultManage": {
       "kind": "command._scopeVaultManage",
       "feedback_required": true,
