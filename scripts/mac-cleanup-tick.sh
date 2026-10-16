@@ -524,6 +524,12 @@ SELF_FAIL_STREAK=${AMUX_CLEANUP_SELF_FAIL_STREAK:-2}   # runs in a row not ok
 SELF_FAIL_24H=${AMUX_CLEANUP_SELF_FAIL_24H:-4}         # runs not ok in 24h
 SELF_SKIP_24H=${AMUX_CLEANUP_SELF_SKIP_24H:-3}         # runs that skipped arms for lack of time
 SELF_FALLBACK_24H=${AMUX_CLEANUP_SELF_FALLBACK_24H:-3} # times launchd had to run it instead
+# The speed rule judges only recent runs. Over the whole 24h, one slow run kept
+# escalating for a day after the fix that sped the tick up (RCA self
+# 20261016-082126: a 497s run from 09:25 the day before, re-escalated at 6h
+# cadence while every run after the fix took 402s or less). Same 6h as the
+# escalation cooldown, so each escalation is judged on runs the last one did not see.
+SELF_SLOW_RECENT_MIN=${AMUX_CLEANUP_SELF_SLOW_RECENT_MIN:-360}
 SELF_COLLIDE_24H=${AMUX_CLEANUP_SELF_COLLIDE_24H:-2}   # fires that found another tick running
 
 # ── pure decisions (no side effects, so the tests can exercise them) ──────────
@@ -1072,7 +1078,7 @@ self_verdict() { HEALTH_VERDICTS=$(printf '%s\nself %s\n' "$HEALTH_VERDICTS" "$1
 # schedule is still enabled. Each failing rule adds a "self ..." constraint, so it
 # escalates like any other class, with its own cooldown.
 check_self_runs() {
-  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 n_logs=0 n_unfin=0 n_skip=0 n_coll=0 since fb sum
+  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_coll=0 since fb sum
   if ! en=$(sqlite3 -readonly -cmd '.timeout 5000' "$SELF_DB" \
       "SELECT enabled FROM schedules WHERE id='$SELF_SCHED_ID' AND deleted IS NULL" 2>/dev/null); then
     echo "mac-cleanup: self: run history UNMEASURED ($SELF_DB unreadable), judged nothing about this check (verdict=self_unmeasured)"
@@ -1105,15 +1111,22 @@ check_self_runs() {
     line=$(grep -a '^mac-cleanup: done ' "$f" 2>/dev/null | tail -1)
     if [ -z "$line" ]; then n_unfin=$((n_unfin+1)); continue; fi
     el=${line#*elapsed=}; el=${el%%s *}
-    case "$el" in ''|*[!0-9]*) ;; *) [ "$el" -gt "$slowest" ] && slowest=$el ;; esac
+    case "$el" in ''|*[!0-9]*) ;; *)
+      fage=$(( $(date +%s) - $(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || date +%s) ))
+      if [ "$el" -gt "$slowest" ]; then slowest=$el; slowest_age=$fage; fi
+      if [ "$fage" -lt $(( SELF_SLOW_RECENT_MIN * 60 )) ] && [ "$el" -gt "$slow_recent" ]; then slow_recent=$el; fi ;;
+    esac
     case "$line" in *" skipped=none "*) ;; *" skipped="*) n_skip=$((n_skip+1)) ;; esac
   done < <(find "$SELF_RUNS_DIR" -maxdepth 1 -type f -name '*.log' -mmin -1440 ! -mmin -10 2>/dev/null)
   since=$(date -v-24H '+%F %T' 2>/dev/null || date -d '24 hours ago' '+%F %T' 2>/dev/null)
   fb=$(awk -v s="$since" '/so launchd is$/ { if ($2" "$3 >= s) n++ } END { print n+0 }' "$SELF_FALLBACK_LOG" 2>/dev/null); fb=${fb:-0}
-  echo "mac-cleanup: self: $SELF_SCHED_ID last 24h: $((ok+bad)) finished runs, $ok ok, $bad not ok${sum:+ ($sum)}; newest $streak in a row not ok; $n_logs run log(s), $n_unfin killed before the done line, $n_coll found another tick running and did nothing, slowest ${slowest}s (warn ${TICK_WARN_S}s, killed at 600s), $n_skip skipped arms for lack of time; the launchd fallback ran it ${fb}x"
+  echo "mac-cleanup: self: $SELF_SCHED_ID last 24h: $((ok+bad)) finished runs, $ok ok, $bad not ok${sum:+ ($sum)}; newest $streak in a row not ok; $n_logs run log(s), $n_unfin killed before the done line, $n_coll found another tick running and did nothing, slowest ${slowest}s $(( slowest_age / 3600 ))h ago, slowest in the last $(( SELF_SLOW_RECENT_MIN / 60 ))h ${slow_recent}s (warn ${TICK_WARN_S}s, killed at 600s), $n_skip skipped arms for lack of time; the launchd fallback ran it ${fb}x"
   [ "$streak" -ge "$SELF_FAIL_STREAK" ] && self_verdict "$streak runs in a row of $SELF_SCHED_ID did not finish ok ($sum)"
   [ "$bad" -ge "$SELF_FAIL_24H" ] && self_verdict "$bad of $((ok+bad)) runs of $SELF_SCHED_ID in 24h did not finish ok ($sum)"
-  [ "$slowest" -ge "$TICK_WARN_S" ] && self_verdict "the slowest run of $SELF_SCHED_ID in 24h took ${slowest}s, over the ${TICK_WARN_S}s warning (the scheduler kills it at 600s)"
+  [ "$slow_recent" -ge "$TICK_WARN_S" ] && self_verdict "the slowest run of $SELF_SCHED_ID in the last $(( SELF_SLOW_RECENT_MIN / 60 ))h took ${slow_recent}s, over the ${TICK_WARN_S}s warning (the scheduler kills it at 600s)"
+  if [ "$slowest" -ge "$TICK_WARN_S" ] && [ "$slow_recent" -lt "$TICK_WARN_S" ]; then
+    echo "mac-cleanup: self: the ${slowest}s run is $(( slowest_age / 3600 ))h old, outside the last $(( SELF_SLOW_RECENT_MIN / 60 ))h; recent runs are under the ${TICK_WARN_S}s warning, so it is not a constraint (verdict=self_slow_run_aged_out)"
+  fi
   [ "$n_skip" -ge "$SELF_SKIP_24H" ] && self_verdict "$n_skip runs of $SELF_SCHED_ID in 24h skipped cleanup arms for lack of time"
   [ "$n_coll" -ge "$SELF_COLLIDE_24H" ] && self_verdict "$n_coll fires of $SELF_SCHED_ID in 24h found another tick holding the lock and did no work (the scheduler records them as ok)"
   [ "$fb" -ge "$SELF_FALLBACK_24H" ] && self_verdict "the launchd fallback ran this check ${fb} times in 24h; it runs only when the scheduled run's output is stale or unfinished, so $SELF_SCHED_ID is not finishing on schedule"

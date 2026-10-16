@@ -73,11 +73,23 @@ addlog lock1 3600 "$LOCKED"; addlog lock2 7200 "$LOCKED"
 addlog live 60 "mac-cleanup: measured=true"
 addlog ancient 90000 "mac-cleanup: measured=true"
 out=$(probe)
-check "a slow run is a constraint"                    yes "$(has "$out" '^self the slowest run of SCHED-T in 24h took 500s, over the 480s warning')"
+check "a slow run is a constraint"                    yes "$(has "$out" '^self the slowest run of SCHED-T in the last 6h took 500s, over the 480s warning')"
 check "three runs that skipped arms are one"          yes "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
 check "blocked fires are one, though recorded ok"     yes "$(has "$out" '^self 2 fires of SCHED-T in 24h found another tick holding the lock')"
 check "a killed run is counted, a blocked one is not" yes "$(has "$out" '1 killed before the done line, 2 found another tick running')"
 check "a log still being written is not judged"       yes "$(has "$out" ' 7 run log\(s\)')"
+
+echo "4b. a slow run older than 6h is reported, not escalated (RCA self 20261016-082126)"
+newdb 1 <<<"600|ok|"; newlogs
+addlog old 61200 "mac-cleanup: done elapsed=497s purge=no skipped=none constraints=0"
+addlog new 900 "mac-cleanup: done elapsed=402s purge=no skipped=none constraints=0"
+out=$(probe)
+check "the 24h line still names it and its age"      yes "$(has "$out" 'slowest 497s 17h ago, slowest in the last 6h 402s')"
+check "no speed constraint from a pre-fix run"        no  "$(has "$out" '^self the slowest run')"
+check "it says why, with a verdict"                   yes "$(has "$out" 'verdict=self_slow_run_aged_out')"
+addlog new2 1800 "mac-cleanup: done elapsed=481s purge=no skipped=none constraints=0"
+out=$(probe)
+check "a recent slow run still escalates"             yes "$(has "$out" '^self the slowest run of SCHED-T in the last 6h took 481s')"
 
 echo "5. the fallback's own log"
 newdb 1 <<<"600|ok|"; newlogs
