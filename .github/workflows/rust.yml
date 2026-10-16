@@ -280,8 +280,31 @@ jobs:
           key: deps-opt2
       - uses: taiki-e/install-action@nextest
       - name: Build all workspace test binaries into a nextest archive
+        if: ${{ needs.affected.outputs.rust != 'targeted' }}
         run: cargo nextest archive --workspace --archive-file ${{ runner.temp }}/nextest.tar.zst
+      # rust=targeted runs its few filtered tests HERE. Measured on #322
+      # (2026-10-15): archiving, uploading, queueing for a runner (2.4 min)
+      # and downloading the archive to run one filtered shard took the PR from
+      # ~7 to 12.2 min. Same tree-residue guard and exit-code rule as the shards.
+      - name: Targeted tests (run in place, no shard hop) — tree-residue guarded
+        if: ${{ needs.affected.outputs.rust == 'targeted' }}
+        env:
+          AMUX_REQUIRE_TMUX: '1'
+          RUST_FILTER: ${{ needs.affected.outputs.rust_filter }}
+        run: |
+          set -uo pipefail
+          command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; } || exit 1
+          bash scripts/test-tree-clean.sh --self-test || exit 1
+          echo "targeted: running only the tests that read the changed files: $RUST_FILTER"
+          bash scripts/test-tree-clean.sh cargo nextest run --workspace --no-fail-fast -E "$RUST_FILTER"
+          rc=$?
+          if [ "$rc" = "3" ]; then
+            echo "::warning title=Tree residue::A test left residue in the checkout. Advisory during the AF-150 trial period; the diff is above. Fix the FIXTURE, not .gitignore."
+            exit 0
+          fi
+          exit $rc
       - uses: actions/upload-artifact@v4
+        if: ${{ needs.affected.outputs.rust != 'targeted' }}
         with:
           name: nextest-archive
           path: ${{ runner.temp }}/nextest.tar.zst
@@ -298,7 +321,7 @@ jobs:
   # classification run all 8.
   test-shards:
     needs: [affected, test-build]
-    if: ${{ !cancelled() && needs.test-build.result == 'success' }}
+    if: ${{ !cancelled() && needs.test-build.result == 'success' && needs.affected.outputs.rust != 'targeted' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -379,6 +402,7 @@ jobs:
           RUST: ${{ needs.affected.outputs.rust }}
           FILTER: ${{ needs.affected.outputs.rust_filter }}
           SHARDS: ${{ needs.test-shards.result }}
+          BUILD: ${{ needs.test-build.result }}
         run: |
           if [ "$AFFECTED" != success ]; then
             echo "::error::the affected classification did not succeed ($AFFECTED), so nothing it skipped can be vouched for"
@@ -388,7 +412,9 @@ jobs:
             none)
               echo "skipped: not affected. No Rust compile input and no file a Rust test reads changed (scripts/ci-affected.mjs). The full suite runs on every push to main."
               exit 0 ;;
-            targeted) echo "targeted: NOT the full suite. Ran only: $FILTER. The full suite runs on every push to main." ;;
+            targeted)
+              echo "targeted: NOT the full suite. Ran only: $FILTER (in test-build). The full suite runs on every push to main."
+              test "$BUILD" = success; exit $? ;;
             full) echo "full suite" ;;
             *) echo "::error::unknown rust scope '$RUST'"; exit 1 ;;
           esac
