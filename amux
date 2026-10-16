@@ -3225,6 +3225,13 @@ except Exception:
     d = {}
 why = (d.get("error") or d.get("why") or "see the response above") if isinstance(d, dict) else "see the response above"
 code = d.get("code") if isinstance(d, dict) else None
+# The server says HOW to satisfy the gate in `why`; print it before the
+# one-line verdict, which stays last for `| tail -1`. Without it the evidence
+# gate read "requires evidence of what was run" and gave no form, and 70 closes
+# in one triage were refused for want of backticks (amux, 2026-10-16).
+how = d.get("why") if isinstance(d, dict) else None
+if how and how != why:
+    sys.stderr.write("amux board: why: %s\n" % str(how)[:400])
 sys.stderr.write("amux board: %s was NOT moved to %s: %s%s\n" % (os.environ["ID"], os.environ["W"], str(why)[:240], " [" + str(code) + "]" if code else ""))
 ' || true
     return "$rc"
