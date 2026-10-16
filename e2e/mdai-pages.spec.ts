@@ -23,11 +23,26 @@ type Mode = { delayMs: number; fail?: string };
 async function fakeMessagesApi() {
   const mode: Mode = { delayMs: 0 };
   const prompts: string[] = [];
+  // `mdai_api_base` is a server-wide pref, and other model helpers share the
+  // server's ApiModel: a skills spec running beside this one on the same
+  // project server saved a skill, and its example-inference calls landed here
+  // and were counted as node runs ("ran it once" read 5 in run 38947919221,
+  // "one model call" read 2 in run 38945632973; the server logged
+  // skill_examples_unavailable with this stand-in's 181-byte answer). Only a
+  // prompt carrying this spec's instruction is a node call. Anything else is
+  // recorded apart and refused the way the real provider refuses the e2e
+  // home's non-secret key.
+  const foreign: string[] = [];
   const server: Server = createServer(async (req: IncomingMessage, res) => {
     let body = '';
     for await (const chunk of req) body += chunk;
     if (req.method !== 'POST' || !req.url?.endsWith('/v1/messages')) { res.writeHead(404).end(); return; }
     const prompt = JSON.parse(body).messages?.[0]?.content || '';
+    if (!String(prompt).includes(NODE_MARK)) {
+      foreign.push(String(prompt).slice(0, 200));
+      res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key (stand-in: not an MDAI node prompt)' } }));
+      return;
+    }
     prompts.push(prompt);
     const { delayMs, fail } = mode;
     setTimeout(() => {
@@ -44,9 +59,12 @@ async function fakeMessagesApi() {
   });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
   const port = (server.address() as { port: number }).port;
-  return { url: `http://127.0.0.1:${port}`, mode, prompts, close: () => new Promise<void>(r => { server.closeAllConnections(); server.close(() => r()); }) };
+  return { url: `http://127.0.0.1:${port}`, mode, prompts, foreign, close: () => new Promise<void>(r => { server.closeAllConnections(); server.close(() => r()); }) };
 }
 
+// Every node prompt carries the instruction (the run assertions below check
+// this phrase in it), so it marks a call as this spec's.
+const NODE_MARK = '"Where I Left Off" dashboard';
 const PROMPT = '# Amux Workstream Reconstruction & Resumption\n\nAnalyze my complete Amux message history and reconstruct all the workstreams.\n\n## Final instruction\n\nStart with a **"Where I Left Off" dashboard**.\n';
 
 // The MDAI list is a directory view like Files: open the node's folder, then
@@ -302,6 +320,10 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await expect(page.locator('#mdai-list')).toContainText('No MDAI nodes yet');
     await expect(access(join(dir, 'team', 'Resume.mdai'))).rejects.toThrow();
   } finally {
+    if (api.foreign.length) {
+      console.log(`[mdai-pages] ${api.foreign.length} non-node model call(s) reached the stand-in and were not counted: ${JSON.stringify(api.foreign.map(p => p.slice(0, 80)))}`);
+      info.annotations.push({ type: 'foreign-model-calls', description: String(api.foreign.length) });
+    }
     await cleanup('restore MDAI prefs', () => Promise.all([pref('mdai_root', prior[0]), pref('mdai_api_base', prior[1])]));
     await cleanup('stop the stand-in Messages API', () => api.close());
     await cleanup('remove temp folder', () => rm(dir, { recursive: true, force: true }));
