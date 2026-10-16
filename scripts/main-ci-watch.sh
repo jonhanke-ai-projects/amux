@@ -61,7 +61,7 @@ PY
     # backlog card alone is not dispatched and a red main holds every deploy.
     for status in todo backlog; do
       body=$(python3 -c "import json,sys; print(json.dumps({'title':sys.argv[1],'desc':sys.argv[2],'status':sys.argv[3],'session':'amux'}))" "$title" "$desc" "$status")
-      resp=$(mktemp -t main-ci-card)
+      resp=$(mktemp "${TMPDIR:-/tmp}/main-ci-card.XXXXXX")   # GNU mktemp -t needs X's; this form works on both
       code=$(curl -sk --max-time 20 -o "$resp" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Amux-Session: amux' -d "$body" "$U/api/board")
       # The refusal's reason, not just its status: 2026-10-16 13:23 two 400s
       # were the lane's WIP gate ("blocked", holding 348 open cards), which a

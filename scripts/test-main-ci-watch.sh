@@ -72,4 +72,5 @@ out=$(run 9 || true)
 check "both tries are named"                   yes "$(has "$out" '(try 2): send refused')"
 check "it is counted undelivered"              yes "$(has "$out" '"alerts_not_delivered":1')"
 
+[ "$fails" = 0 ] || { echo "--- last script output ---"; printf '%s\n' "$out" | tail -20; }
 if [ "$fails" = 0 ]; then echo "PASS: main-ci-watch — all checks passed"; else echo "main-ci-watch: $fails check(s) FAILED"; exit 1; fi
