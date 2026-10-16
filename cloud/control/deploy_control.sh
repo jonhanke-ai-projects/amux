@@ -96,7 +96,7 @@ GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=sn
   # through the Gmail API with it. Google refuses the account password over SMTP. Fallback:
   # AMUX_CLOUD_SMTP_PASSWORD, a Google app password, becomes SMTP_URL.
   GT="$HOME/.amux/gmail-tokens/${CONTROL_MAIL_ACCOUNT:-hello@amux.io}.json"
-  SMP="${AMUX_CLOUD_SMTP_PASSWORD:-$(envv AMUX_CLOUD_SMTP_PASSWORD)}"
+  SMP="${AMUX_CLOUD_SMTP_PASSWORD:-$(envv AMUX_CLOUD_SMTP_PASSWORD || true)}"   # optional: no match must not end the deploy
   if [[ -s "$GT" ]]; then
     echo "GMAIL_OAUTH=$(base64 < "$GT" | tr -d '\n')"
   elif [[ -n "$SMP" ]]; then
