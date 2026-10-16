@@ -1391,6 +1391,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Info | `dtSwitchTab` | onclick |
 | index.html | Network | `dtSwitchTab` | onclick |
 | app.js | draw-dir-pop | `e` | addEventListener |
+| app.js | grid | `e` | addEventListener |
 | app.js | el | `ev` | addEventListener |
 | index.html | Exit | `exitGridMode` | onclick |
 | index.html | JSON | `exportBoard` | onclick |

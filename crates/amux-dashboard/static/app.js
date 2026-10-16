@@ -9771,7 +9771,9 @@ function updateTelemetryPill() {
 // .modal-overlay > .modal > header / body / footer). A toast was the wrong
 // shape: on a phone it covered the list, vanished, and could not be acted on
 // (Ethan, 2026-09-26: "pressing 1 should open a modal").
-function _chipDetailModal(id, title, subtitle, bodyHtml) {
+// opts.returnFocus: the element that opened the dialog; focus goes back to it
+// on every close path (button, Esc, backdrop) so a keyboard reader keeps place.
+function _chipDetailModal(id, title, subtitle, bodyHtml, opts) {
   document.getElementById(id)?.remove();
   const overlay = document.createElement('div');
   overlay.id = id; overlay.className = 'modal-overlay active';
@@ -9781,7 +9783,8 @@ function _chipDetailModal(id, title, subtitle, bodyHtml) {
     + '<button class="modal-close" aria-label="Close">×</button></header>'
     + '<div class="modal-body">' + bodyHtml + '</div>'
     + '<footer class="modal-footer"><span class="ui-help"></span><button class="btn" data-close>Close</button></footer></section>';
-  const close = () => overlay.remove();
+  const opener = opts && opts.returnFocus;
+  const close = () => { overlay.remove(); if (opener && opener.isConnected) opener.focus({ preventScroll: true }); };
   overlay.onclick = e => { if (e.target === overlay) close(); };
   overlay.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
   document.body.appendChild(overlay);
@@ -52220,8 +52223,72 @@ function _dbRenderGrid(grid, columns, rows, sortable) {
     const arrow = sortable && _dbSort === c ? (_dbDir === 'asc' ? ' ▲' : ' ▼') : '';
     return '<th' + (sortable ? ' class="sortable" onclick="_dbSortBy(\'' + esc(c) + '\')"' : '') + '>' + esc(c) + arrow + '</th>';
   }).join('');
-  const body = rows.map(r => '<tr>' + r.map(v => '<td>' + (v === null ? '<span class="sql-null">NULL</span>' : esc(String(v))) + '</td>').join('') + '</tr>').join('');
+  const body = rows.map((r, i) => '<tr class="db-row" tabindex="0" data-row="' + i + '">' + r.map(v => '<td>' + (v === null ? '<span class="sql-null">NULL</span>' : esc(String(v))) + '</td>').join('') + '</tr>').join('');
   grid.innerHTML = '<table class="sqlr"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table>';
+  // The Data pane browses one table (title and primary key known); the Query
+  // pane shows an arbitrary result set, so it has neither.
+  grid._dbResult = { columns, rows, table: sortable ? _dbTable : null, offset: sortable ? _dbOffset : 0 };
+  if (!grid._dbRowWired) {
+    grid._dbRowWired = true;
+    grid.addEventListener('click', e => {
+      const tr = e.target.closest('tbody tr.db-row');
+      if (!tr || !grid.contains(tr)) return;
+      // Dragging to select cell text ends in a click; keep the selection.
+      const sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && String(sel).trim() && tr.contains(sel.anchorNode)) return;
+      _dbOpenRow(grid, tr);
+    });
+    grid.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const tr = e.target.closest && e.target.closest('tbody tr.db-row');
+      if (!tr || e.target !== tr) return;
+      e.preventDefault();
+      _dbOpenRow(grid, tr);
+    });
+  }
+}
+
+// A cell holding a JSON object or array is shown indented; anything else is
+// shown exactly as stored.
+function _dbDetailValue(v) {
+  if (v === null || v === undefined) return { html: '<span class="sql-null">NULL</span>', copy: null };
+  let text = typeof v === 'object' ? JSON.stringify(v) : String(v);
+  const t = text.trim();
+  if (typeof v === 'object' || (t.length > 1 && ((t[0] === '{' && t.endsWith('}')) || (t[0] === '[' && t.endsWith(']'))))) {
+    try {
+      const parsed = typeof v === 'object' ? v : JSON.parse(t);
+      if (parsed && typeof parsed === 'object') {
+        return { html: '<pre class="db-detail-val db-detail-json">' + esc(JSON.stringify(parsed, null, 2)) + '</pre>', copy: text };
+      }
+    } catch (e) { /* not JSON: show as text */ }
+  }
+  return { html: '<pre class="db-detail-val">' + (text === '' ? '<span class="sql-null">(empty string)</span>' : esc(text)) + '</pre>', copy: text };
+}
+
+function _dbOpenRow(grid, tr) {
+  const res = grid._dbResult;
+  const i = parseInt(tr.dataset.row, 10);
+  if (!res || !res.rows || !res.rows[i]) return;
+  const row = res.rows[i];
+  const t = res.table ? _dbTables.find(x => x.name === res.table) : null;
+  const typeOf = name => { const c = t && t.columns.find(c => c.name === name); return c ? (c.type || '') : ''; };
+  const pkCols = t ? t.columns.filter(c => c.pk).sort((a, b) => a.pk - b.pk).map(c => c.name) : [];
+  const pkParts = pkCols.map(name => { const j = res.columns.indexOf(name); return j < 0 ? null : name + ' = ' + (row[j] === null ? 'NULL' : String(row[j])); });
+  const which = pkParts.length && pkParts.every(Boolean) ? pkParts.join(', ') : 'row ' + (res.offset + i + 1);
+  const values = res.columns.map((c, j) => _dbDetailValue(row[j]));
+  const html = '<dl class="db-detail">' + res.columns.map((c, j) => {
+    const ty = typeOf(c);
+    return '<div class="db-detail-item"><dt><span class="db-detail-name">' + esc(c) + '</span>' +
+      (ty ? '<span class="db-detail-type">' + esc(ty) + '</span>' : '') +
+      (values[j].copy !== null ? '<button type="button" class="btn db-detail-copy" data-col="' + j + '" aria-label="Copy ' + esc(c) + '">Copy</button>' : '') +
+      '</dt><dd>' + values[j].html + '</dd></div>';
+  }).join('') + '</dl>';
+  const title = (res.table || 'Query result') + ' · ' + which;
+  const overlay = _chipDetailModal('db-row-detail', title, res.columns.length + ' column' + (res.columns.length === 1 ? '' : 's'), html, { returnFocus: tr });
+  overlay.classList.add('db-row-detail');
+  overlay.querySelectorAll('.db-detail-copy').forEach(b => {
+    b.onclick = () => { const j = parseInt(b.dataset.col, 10); _copyTextWithToast(values[j].copy, 'Copied ' + res.columns[j]); };
+  });
 }
 
 function _dbRenderStructure() {

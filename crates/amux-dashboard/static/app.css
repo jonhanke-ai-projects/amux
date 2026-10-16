@@ -7478,6 +7478,42 @@ details.status-evidence > summary { cursor:pointer; font-weight:600; margin:4px 
 .chip-detail-list > li { padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius-control, 8px); background:var(--bg); }
 .chip-detail-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .chip-detail-list p { margin:4px 0 0; }
+/* Database row detail: the shared chip-detail dialog, wider for a whole row.
+   Rows open it on click/tap and on Enter/Space when focused. */
+#sql-view table.sqlr tbody tr.db-row { cursor:pointer; }
+#sql-view table.sqlr tbody tr.db-row:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+#sql-view table.sqlr tbody tr.db-row:focus-visible td { background:var(--bg); }
+.db-row-detail > .modal { max-width:720px; max-height:min(86dvh, 820px); }
+.db-row-detail .modal-header { gap:8px; }
+.db-row-detail .modal-header > div { min-width:0; }
+.db-row-detail .modal-header h3 { overflow-wrap:anywhere; }
+.db-detail { margin:0; display:flex; flex-direction:column; gap:10px; }
+.db-detail-item { border:1px solid var(--border); border-radius:var(--radius-control, 8px); background:var(--bg); padding:8px 10px; min-width:0; }
+.db-detail-item dt { display:flex; align-items:center; gap:8px; margin:0 0 4px; min-width:0; }
+.db-detail-name { font-family:var(--mono); font-weight:600; font-size:0.82rem; overflow-wrap:anywhere; min-width:0; }
+.db-detail-type { color:var(--dim); font-size:0.7rem; font-family:var(--mono); text-transform:uppercase; flex-shrink:0; }
+.db-detail-copy { margin-left:auto; flex-shrink:0; min-height:32px; padding:4px 10px; font-size:0.76rem; }
+.db-detail-item dd { margin:0; min-width:0; }
+.db-detail-val { margin:0; font-family:var(--mono); font-size:0.8rem; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; color:var(--text); background:none; border:0; padding:0; max-width:100%; }
+.db-detail-json { color:var(--text); }
+.db-detail .sql-null { color:var(--muted, var(--dim)); font-style:italic; }
+@media (max-width: 600px) {
+  .db-row-detail .modal-close { min-height:44px; }
+  /* Phone: a bottom sheet the width of the screen, clear of the notch and the
+     home indicator. */
+  .modal-overlay.db-row-detail { padding:max(8px, env(safe-area-inset-top)) 0 0 0; align-items:flex-end; }
+  .db-row-detail > .modal {
+    max-width:none; width:100%;
+    max-height:calc(var(--dialog-viewport-height, 100dvh) - max(8px, env(safe-area-inset-top)));
+    border-radius:var(--radius-dialog) var(--radius-dialog) 0 0; border-bottom:0;
+  }
+  .db-row-detail .modal-header, .db-row-detail .modal-body, .db-row-detail .modal-footer {
+    padding-left:max(16px, env(safe-area-inset-left)); padding-right:max(16px, env(safe-area-inset-right));
+  }
+  .db-row-detail .modal-footer { padding-bottom:calc(12px + env(safe-area-inset-bottom)); }
+  .db-detail-copy { min-height:44px; min-width:44px; }
+  .db-row-detail .modal-footer .btn { min-height:44px; }
+}
 @media (min-width:601px) { .header-row .header-actions { gap:10px !important; } .header-row .settings-btn,.header-row .btn-active,.header-row .btn-rate-limit,.header-row .header-add-btn { min-height:44px; } }
 @media (max-width:600px) {
  .header-row { gap:0; }
