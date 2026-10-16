@@ -49,6 +49,17 @@ LOG = os.environ.get("CLAUDE_ROTATE_LOG", os.path.join(HOME, ".amux", "logs", "c
 CLAUDE_JSON = os.environ.get("CLAUDE_ROTATE_CLAUDE_JSON", os.path.join(HOME, ".claude.json"))
 SWITCH_AT = float(os.environ.get("CLAUDE_SWITCH_AT", "99"))
 MIN_HEADROOM = float(os.environ.get("CLAUDE_MIN_HEADROOM", "2"))
+# SWITCH BEFORE THE LIMIT (Ethan, 2026-10-15: "workers shouldn't never be rate
+# limited, u needs to switch login before then"). Switching only once the
+# current account was exhausted (SWITCH_AT) let amux-app hit the weekly limit:
+# getmixpeek ran out at 22:45, three email sign-ins failed (about 4 min each)
+# and the switch landed at 23:03. Once either window of the current account
+# passes PREEMPT_AT, move to a usable account with more headroom. Targets stay
+# usable up to SWITCH_AT, so the last few percent of every account still get
+# spent, just not by the account the fleet is standing on.
+PREEMPT_AT = float(os.environ.get("CLAUDE_PREEMPT_AT", "85"))
+# A worker already parked on Claude's limit prompt is resumed at most this often.
+RESUME_GAP_S = int(os.environ.get("CLAUDE_ROTATE_RESUME_GAP_S", "600"))
 # Readings arriving this soon after a switch may still describe the previous
 # account (the CLI reports headers from its last response), so they are dropped.
 SETTLE_S = int(os.environ.get("CLAUDE_ROTATE_SETTLE_S", "180"))
@@ -340,6 +351,16 @@ def decide(current, rows, state, at=None):
     cur = next((r for r in rows if r["email"] == current), None)
     if best is None:
         return None, "no_usable_account"
+    # Preempt first: the account nearest its limit is often also the one whose
+    # weekly window resets soonest, which the policy below calls "best".
+    if cur is not None and cur["usable"]:
+        peak = max(cur["five_hour"] or 0, cur["weekly"] or 0)
+        roomier = next((r for r in rows if r["usable"] and r["email"] != current
+                        and r["headroom"] > cur["headroom"]), None)
+        if peak >= PREEMPT_AT and roomier is not None:
+            if time.time() - float(state.get("switched_at") or 0) < MIN_SWITCH_GAP_S:
+                return None, "recent_switch"
+            return roomier["email"], "preempt_limit"
     if best["email"] == current:
         return None, "current_is_best"
     if cur is None or not cur["usable"]:
@@ -470,10 +491,78 @@ def cmd_tick():
     target, reason = decide(current, rows, state)
     if not target:
         print(log("claude_rotate_hold", measured=True, n_considered=len(rows), current=current, reason=reason))
+        cur = next((r for r in rows if r["email"] == current), None)
+        if cur and cur["usable"]:
+            resume_stranded()
         return 0
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
               target=target, reason=reason))
     return switch(target, reason)
+
+
+# ---------------------------------------------------------------- resuming
+
+LIMIT_PROMPT = "Stop and wait for limit to reset"
+
+
+def stranded(sessions):
+    """Running, non-isolated workers parked on the rate limit. Isolated workers
+    take no amux input; they are counted, not touched."""
+    out, isolated = [], []
+    for s in sessions:
+        if s.get("running") and s.get("status") == "rate_limited":
+            (isolated if s.get("isolated") else out).append(s["name"])
+    return out, isolated
+
+
+def resume_action(screen):
+    """The keys that leave Claude's limit prompt, or None when it is not on screen
+    (a worker in any other state must not get a stray keypress)."""
+    return "1" if LIMIT_PROMPT in (screen or "") else None
+
+
+def _amux(path, body=None):
+    base = os.environ.get("AMUX_URL") or subprocess.run(["amux", "url"], capture_output=True, text=True).stdout.strip()
+    cmd = ["curl", "-sk", "--max-time", "10", base + path]
+    if body is not None:
+        cmd[1:1] = ["-X", "POST", "-H", "Content-Type: application/json", "-d", json.dumps(body)]
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    return json.loads(out) if out.strip() else None
+
+
+def resume_stranded(force=False):
+    """After a switch, or while the current login has room, take workers off
+    Claude's limit prompt and continue them on the current login. amux-app
+    resumed this way on 2026-10-15 after sitting at the prompt for 20 min."""
+    try:
+        sessions = _amux("/api/sessions") or []
+    except Exception as e:
+        log("claude_rotate_resume_failed", measured=False, why_unmeasured=str(e)[:200])
+        return
+    names, isolated = stranded(sessions)
+    if not names and not isolated:
+        return
+    state = load(STATE, {})
+    last = state.get("resumed", {})
+    done, skipped = [], []
+    for name in names:
+        if not force and time.time() - float(last.get(name, 0)) < RESUME_GAP_S:
+            skipped.append(name)
+            continue
+        peek = _amux(f"/api/sessions/{urllib.parse.quote(name)}/peek?lines=40") or {}
+        keys = resume_action(peek.get("output") or "")
+        if not keys:
+            skipped.append(name)
+            continue
+        _amux(f"/api/sessions/{urllib.parse.quote(name)}/keys", {"keys": keys})
+        time.sleep(2)
+        _amux(f"/api/sessions/{urllib.parse.quote(name)}/send", {"text": "continue"})
+        last[name] = time.time()
+        done.append(name)
+    state["resumed"] = last
+    save(STATE, state)
+    print(log("claude_rotate_resumed", measured=True, n_considered=len(names) + len(isolated),
+              current=current_email(), resumed=done, not_on_prompt_or_recent=skipped, isolated_left_to_owner=isolated))
 
 
 # ---------------------------------------------------------------- switching
@@ -744,6 +833,7 @@ def _switch(target, reason):
         save(STATE, state)
         print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
                   elapsed_s=elapsed, steps=steps))
+        resume_stranded(force=True)
         return 0
     tail = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x07\x1b]*(\x07|\x1b\\)?", "", cli_out)[-300:]
     print(log("claude_rotate_switch_failed", measured=True, target=target, still=after, reason=reason,
