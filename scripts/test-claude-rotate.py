@@ -52,6 +52,31 @@ rows = [row("a", 10, 88, "2026-10-17T00:00:00-04:00"), row("b", 0, 95, "2026-10-
 t, why = rot.decide("a", rows, old)
 expect(t is None, f"no account with more headroom: hold, got {(t, why)}")
 
+# A target that failed FAIL_BACKOFF_N switches inside the window is skipped
+# (2026-10-16: 98 of 101 switches to one account failed, ~4 min each, every 5 min).
+import time as _t
+rows = [row("a", 10, 30, "2026-10-25T00:00:00-04:00"), row("b", 0, 20, "2026-10-17T00:00:00-04:00"),
+        row("c", 0, 25, "2026-10-18T00:00:00-04:00")]
+rows.sort(key=lambda r: (not r["usable"], r["weekly_resets"]))  # rank()'s order
+t, why = rot.decide("a", rows, old)
+expect(t == "b", f"without failures the soonest-expiring account is picked, got {(t, why)}")
+nowt = _t.time()
+failed = {"switched_at": 0, "switch_failures": {"b": [nowt - 60, nowt - 400, nowt - 700]}}
+t, why = rot.decide("a", rows, failed)
+expect(t == "c", f"a backed-off account is skipped for the next one, got {(t, why)}")
+stale = {"switched_at": 0, "switch_failures": {"b": [nowt - 7 * 3600] * 3}}
+t, why = rot.decide("a", rows, stale)
+expect(t == "b", f"failures outside the window do not count, got {(t, why)}")
+two = {"switched_at": 0, "switch_failures": {"b": [nowt - 60, nowt - 400]}}
+expect(rot.decide("a", rows, two)[0] == "b", "two failures are not yet a backoff")
+expect(rot.backed_off(failed) == {"b"}, "backed_off names the account")
+
+# The sign-in link search covers spam (every link to one account landed there).
+seen = []
+rot.amux_get = lambda path: seen.append(path) or []
+rot.magic_link("x@example.com", 0)
+expect(seen and "in%3Aanywhere" in seen[0], f"magic-link search includes spam, got {seen[:1]}")
+
 # Stranded workers: running, rate limited, not isolated.
 names, iso = rot.stranded([
     {"name": "w1", "running": True, "status": "rate_limited"},

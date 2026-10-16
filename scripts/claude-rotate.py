@@ -344,9 +344,27 @@ def rank(at=None):
     return rows
 
 
+FAIL_BACKOFF_N = int(os.environ.get("CLAUDE_ROTATE_FAIL_BACKOFF_N", "3"))
+FAIL_BACKOFF_S = int(os.environ.get("CLAUDE_ROTATE_FAIL_BACKOFF_S", str(6 * 3600)))
+
+
+def backed_off(state, at_s=None):
+    """Accounts with FAIL_BACKOFF_N failed switches inside FAIL_BACKOFF_S. Each
+    failed switch costs ~4 minutes of a 5-minute tick and holds every deploy
+    behind it, so a target that keeps failing is skipped until the window passes
+    or a switch to it succeeds."""
+    at_s = at_s or time.time()
+    fails = state.get("switch_failures") or {}
+    return {e for e, ts in fails.items()
+            if sum(1 for t in ts if at_s - float(t) < FAIL_BACKOFF_S) >= FAIL_BACKOFF_N}
+
+
 def decide(current, rows, state, at=None):
     """Return (target or None, reason)."""
     at = at or now()
+    skip = backed_off(state) - {current}
+    if skip:
+        rows = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
     best = next((r for r in rows if r["usable"]), None)
     cur = next((r for r in rows if r["email"] == current), None)
     if best is None:
@@ -489,14 +507,16 @@ def cmd_tick():
     rows = rank()
     state = load(STATE, {})
     target, reason = decide(current, rows, state)
+    skipped = sorted(backed_off(state) - {current})
     if not target:
-        print(log("claude_rotate_hold", measured=True, n_considered=len(rows), current=current, reason=reason))
+        print(log("claude_rotate_hold", measured=True, n_considered=len(rows), current=current, reason=reason,
+                  backed_off=skipped))
         cur = next((r for r in rows if r["email"] == current), None)
         if cur and cur["usable"]:
             resume_stranded()
         return 0
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
-              target=target, reason=reason))
+              target=target, reason=reason, backed_off=skipped))
     return switch(target, reason)
 
 
@@ -694,7 +714,10 @@ def amux_get(path):
 
 
 def magic_link(email, since_epoch):
-    msgs = amux_get("/api/email/search?q=%s&days=1&limit=20" % urllib.parse.quote("secure link to Claude")) or []
+    # in:anywhere: Gmail files some of these as spam, and a plain search skips spam.
+    # 2026-10-16: every link to ethan@mixpeekvectors.com sat in spam, so 98 of 101
+    # switches to it waited out the login page and failed.
+    msgs = amux_get("/api/email/search?q=%s&days=1&limit=20" % urllib.parse.quote("in:anywhere secure link to Claude")) or []
     for m in msgs:
         if (m.get("to") or "").lower() != email.lower():
             continue
@@ -830,14 +853,20 @@ def _switch(target, reason):
     if ok:
         state = load(STATE, {})
         state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
+        (state.get("switch_failures") or {}).pop(target, None)
         save(STATE, state)
         print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
                   elapsed_s=elapsed, steps=steps))
         resume_stranded(force=True)
         return 0
     tail = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x07\x1b]*(\x07|\x1b\\)?", "", cli_out)[-300:]
+    state = load(STATE, {})
+    fails = state.setdefault("switch_failures", {})
+    fails[target] = [t for t in fails.get(target, []) if time.time() - float(t) < FAIL_BACKOFF_S] + [time.time()]
+    save(STATE, state)
     print(log("claude_rotate_switch_failed", measured=True, target=target, still=after, reason=reason,
-              elapsed_s=elapsed, steps=steps, cli_tail=tail))
+              elapsed_s=elapsed, steps=steps, cli_tail=tail, recent_failures=len(fails[target]),
+              backed_off=len(fails[target]) >= FAIL_BACKOFF_N))
     return 1
 
 
