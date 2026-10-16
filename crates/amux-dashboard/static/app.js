@@ -26358,6 +26358,7 @@ const _UNIVER_FACADES = ['core', 'engine-formula', 'ui', 'docs', 'docs-ui', 'she
 const _UNIVER_LOCALES = ['design', 'ui', 'sheets', 'sheets-ui', 'docs-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
 const _UNIVER_CSS = ['design', 'ui', 'docs-ui', 'sheets-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
 let _univerLoading = null;
+const _UNIVER_LOAD_BUDGET_MS = 30000;
 let _xlsxEd = null;   // { univer, api, wb (ExcelJS), initial, path, etag, dirty, sub }
 
 function _loadScriptOnce(src) {
@@ -26392,7 +26393,11 @@ function _univerShimReact() {
 function _loadUniver() {
   if (_univerLoading) return _univerLoading;
   const U = 'https://unpkg.com/';
-  const v = p => (p === 'themes' || p === 'protocol') ? '' : '@' + _UNIVER_V;
+  // Every package at the same release. themes and protocol were unversioned,
+  // so they resolved through a redirect to whatever is latest (1.0.4 on
+  // 2026-10-16) while core@1.0.3 declares both at exactly 1.0.3.
+  const pending = new Set();
+  const track = src => { pending.add(src); return _loadScriptOnce(src).then(() => { pending.delete(src); }); };
   _univerLoading = (async () => {
     for (const p of _UNIVER_CSS) {
       const href = U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/index.css';
@@ -26401,17 +26406,31 @@ function _loadUniver() {
         document.head.appendChild(l);
       }
     }
-    await _loadScriptOnce(U + 'react@18.3.1/umd/react.production.min.js');
-    await _loadScriptOnce(U + 'react-dom@18.3.1/umd/react-dom.production.min.js');
-    _univerShimReact();
-    const rest = [U + 'rxjs@7.8.1/dist/bundles/rxjs.umd.min.js', U + 'echarts@5.6.0/dist/echarts.min.js',
-      U + '@wendellhu/redi@1.1.2/dist/umd/index.js', U + '@wendellhu/redi@1.1.2/dist/umd/react-bindings/index.js',
-      ..._UNIVER_PKGS.map(p => U + '@univerjs/' + p + v(p) + '/lib/umd/index.js'),
-      ..._UNIVER_FACADES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/facade.js'),
-      ..._UNIVER_LOCALES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/locale/en-US.js'),
-      U + 'exceljs@4.4.0/dist/exceljs.min.js'];
-    // Ordered, but fetched in parallel: async=false keeps execution order.
-    await Promise.all(rest.map(_loadScriptOnce));
+    // NEVER WAIT FOREVER. A script whose load event never fires used to leave
+    // "Loading spreadsheet editor…" on screen with no fallback and no signal
+    // (ios-safari CI run 38777481347: every editor script was fetched with a
+    // 200, the raw workbook was never requested, the body never changed for
+    // 45 s). A stall now rejects, which shows the read-only viewer and posts
+    // the existing xlsx-editor fallback beacon naming the scripts that never
+    // reported loaded.
+    let stallTimer = null;
+    const stall = new Promise((_, reject) => {
+      stallTimer = setTimeout(() => reject(new Error('spreadsheet editor scripts did not load within '
+        + (_UNIVER_LOAD_BUDGET_MS / 1000) + 's: ' + [...pending].map(x => x.replace(U, '')).join(', '))), _UNIVER_LOAD_BUDGET_MS);
+    });
+    try {
+      await Promise.race([track(U + 'react@18.3.1/umd/react.production.min.js'), stall]);
+      await Promise.race([track(U + 'react-dom@18.3.1/umd/react-dom.production.min.js'), stall]);
+      _univerShimReact();
+      const rest = [U + 'rxjs@7.8.1/dist/bundles/rxjs.umd.min.js', U + 'echarts@5.6.0/dist/echarts.min.js',
+        U + '@wendellhu/redi@1.1.2/dist/umd/index.js', U + '@wendellhu/redi@1.1.2/dist/umd/react-bindings/index.js',
+        ..._UNIVER_PKGS.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/index.js'),
+        ..._UNIVER_FACADES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/facade.js'),
+        ..._UNIVER_LOCALES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/locale/en-US.js'),
+        U + 'exceljs@4.4.0/dist/exceljs.min.js'];
+      // Ordered, but fetched in parallel: async=false keeps execution order.
+      await Promise.race([Promise.all(rest.map(track)), stall]);
+    } finally { clearTimeout(stallTimer); }
     if (!window.UniverCore || !window.ExcelJS) throw new Error('spreadsheet editor did not initialise');
   })();
   _univerLoading.catch(() => { _univerLoading = null; });
