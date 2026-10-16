@@ -31,6 +31,25 @@ check "an arm past the reserve does not run"          1   "$rc2"
 check "the skipped arm is recorded by name"           late_arm "$skipped"
 check "and the skip is said, with its verdict"        yes "$(has "$out" 'late arm skipped: .*verdict=tick_out_of_time')"
 
+echo "1b. the deadline sits under the warning, and the done line names the slowest section"
+got=$(TICK_PATH="$TICK" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"
+  printf "%s|%s" "$TICK_BUDGET_S" "$TICK_WARN_S"')
+IFS='|' read -r budget warn <<<"$got"
+check "the default deadline is under the warning"      yes "$([ "$budget" -lt "$warn" ] && echo yes || echo no)"
+got=$(TICK_PATH="$TICK" AMUX_CLEANUP_TICK_BUDGET_S=540 bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; echo "$TICK_BUDGET_S"')
+check "a deadline at or over the warning is clamped"   450 "$got"
+out=$(TICK_PATH="$TICK" AMUX_CLEANUP_TICK_BUDGET_S=540 bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"' | head -1)
+check "and the clamp says so"                         yes "$(has "$out" 'verdict=tick_budget_clamped')"
+got=$(TICK_PATH="$TICK" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"
+  SECONDS=0;  tick_mark "cargo targets"
+  SECONDS=40; tick_mark "claude tmp"
+  SECONDS=55; tick_mark verdicts
+  SECONDS=200; tick_mark end
+  echo "$TICK_SLOWEST"')
+check "the slowest section is named with its seconds"  verdicts:145s "$got"
+
 echo "2. a tick out of time still reaches its verdicts and names what it skipped (macOS only)"
 if [ "$(uname)" = Darwin ]; then
   run() { AMUX_CLEANUP_HEALTH_PS_CMD=true AMUX_CLEANUP_ORPHAN_PS_CMD=true AMUX_CLEANUP_SQLITE_PS_CMD=true \

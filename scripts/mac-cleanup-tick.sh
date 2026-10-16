@@ -377,7 +377,10 @@ STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 # load 133, swap 12 of 13 GB, and the health check said nothing. Each cleanup arm
 # gets at most what is left of TICK_BUDGET_S after TICK_RESERVE_S, which is kept for
 # the verdicts and escalation; an arm with no time left is skipped and named.
-TICK_BUDGET_S=${AMUX_CLEANUP_TICK_BUDGET_S:-540}
+# Under TICK_WARN_S too (RCA self 20261016-012157): at 540 the deadline sat above
+# the 480s warning, so a run that kept every budget could still cross it (497s on
+# 2026-10-16 at load 36/28) and escalate itself. The clamp below enforces it.
+TICK_BUDGET_S=${AMUX_CLEANUP_TICK_BUDGET_S:-450}
 TICK_RESERVE_S=${AMUX_CLEANUP_TICK_RESERVE_S:-120}
 TICK_SKIPPED=""
 
@@ -435,6 +438,10 @@ SENDFAIL_CARD_AFTER=${AMUX_CLEANUP_SENDFAIL_CARD_AFTER:-2}
 # 48). The budgets are sized to stay under it, and the done line prints elapsed
 # time with a WARN past TICK_WARN_S so the next regression announces itself.
 TICK_WARN_S=${AMUX_CLEANUP_TICK_WARN_S:-480}
+if [ "$TICK_BUDGET_S" -ge "$TICK_WARN_S" ]; then
+  echo "mac-cleanup: tick budget ${TICK_BUDGET_S}s is not under the ${TICK_WARN_S}s warning; using $(( TICK_WARN_S - 30 ))s (verdict=tick_budget_clamped)"
+  TICK_BUDGET_S=$(( TICK_WARN_S - 30 ))
+fi
 WRITERS_BUDGET_S=${AMUX_CLEANUP_WRITERS_BUDGET_S:-150}
 LOCK_STALE_MIN=${AMUX_CLEANUP_LOCK_STALE_MIN:-30}
 # Seams: the tests point these at a recorder so an action can be observed
@@ -881,8 +888,23 @@ reap_orphan_sqlite_backups() { # <dry:0|1>
 
 # May this arm still run? Shrinks each named budget variable to what the tick has
 # left before its verdict reserve, or skips the arm, says so, and records it.
+# Where the tick's time went: each tick_arm call (and the verdict markers) closes
+# the previous section, and the done line names the slowest, so a slow run says
+# which part was slow instead of only its total.
+TICK_SECTION="" TICK_SECTION_T0=0 TICK_SLOWEST="" TICK_SLOWEST_S=-1
+tick_mark() { # <label> (or "end")
+  if [ -n "$TICK_SECTION" ]; then
+    local d=$(( SECONDS - TICK_SECTION_T0 ))
+    if [ "$d" -gt "$TICK_SLOWEST_S" ]; then TICK_SLOWEST_S=$d; TICK_SLOWEST="${TICK_SECTION// /_}:${d}s"; fi
+  fi
+  TICK_SECTION=$1; TICK_SECTION_T0=$SECONDS
+  [ "$1" = end ] && TICK_SECTION=""
+  return 0
+}
+
 tick_arm() { # <label> [budget var]...
   local label=$1 v left; shift
+  tick_mark "$label"
   left=$(( TICK_BUDGET_S - TICK_RESERVE_S - SECONDS ))
   if [ "$left" -le 0 ]; then
     echo "mac-cleanup: $label skipped: the tick has used ${SECONDS}s of its ${TICK_BUDGET_S}s budget and keeps ${TICK_RESERVE_S}s for the verdicts (verdict=tick_out_of_time)"
@@ -2409,6 +2431,7 @@ fi
 if [ "$burn" = "-" ]; then burn_txt="unmeasured (no previous reading)"; else burn_txt="${burn}G/h from ${burn_src}"; fi
 if [ "$htf" = "-" ]; then htf_txt="not filling"; else htf_txt="full in ${htf}h"; fi
 [ "$DRY" = "1" ] || state_put "$STATE" "last_ts=$now" "last_disk_free_gb=$disk_now"
+tick_mark verdicts
 verdicts=$(classify_constraints "$disk_now" "$burn" "$htf" "$level_now" "$swap_free_now" "$load15" "$ncpu" "$fam_over" "$swap_total_now" "$cpu_idle")
 # Say so when a high load was judged not to be CPU, so a sweep can tell
 # "load was high but the CPU idle" from "load was fine".
@@ -2509,5 +2532,6 @@ fi
 if [ "$SECONDS" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: WARN tick took ${SECONDS}s, over ${TICK_WARN_S}s: the scheduler kills it at 600s, so a slower run is lost; tighten the budgets"
 fi
-echo "mac-cleanup: done elapsed=${SECONDS}s purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} skipped=${TICK_SKIPPED:-none} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
+tick_mark end
+echo "mac-cleanup: done elapsed=${SECONDS}s slowest=${TICK_SLOWEST:-none} purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} skipped=${TICK_SKIPPED:-none} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
 exit 0
