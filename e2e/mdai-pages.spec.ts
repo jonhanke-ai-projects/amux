@@ -53,7 +53,7 @@ const PROMPT = '# Amux Workstream Reconstruction & Resumption\n\nAnalyze my comp
 // open the node the way Files does (tap on touch, double-click with a mouse).
 async function openNodeFromList(page: Page, folder = 'team') {
   await page.locator('#mdai-fe-body .fe-row.fe-dir', { hasText: folder }).click();
-  await expect(page.locator('#mdai-crumbs')).toContainText(folder);
+  await expect(page.locator('#mdai-breadcrumb')).toContainText(folder);
   const row = page.locator('#mdai-fe-body .fe-row:not(.fe-dir)');
   await expect(row).toHaveCount(1);
   if (await page.evaluate(() => (window as any)._feTouchDevice())) await row.click(); else await row.dblclick();
@@ -301,5 +301,87 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await cleanup('restore MDAI prefs', () => Promise.all([pref('mdai_root', prior[0]), pref('mdai_api_base', prior[1])]));
     await cleanup('stop the stand-in Messages API', () => api.close());
     await cleanup('remove temp folder', () => rm(dir, { recursive: true, force: true }));
+  }
+});
+
+// The MDAI tab lists its folder through the Files tab's file view, not a
+// parallel table (Ethan, 2026-10-16: "this should be the same file directory /
+// file view as any other file view"). The same folder is opened in both tabs
+// and the markup is compared: breadcrumb, header cells, row structure, parent
+// row and status bar come from the same builders, sorting is one state, and a
+// .mdai row opens its node page.
+// Same file as the lifecycle test above, so the two run one after the other in
+// one worker: both point the server-wide mdai_root pref at their own folder.
+// The class list of every cell in the first row matching `sel`: the shape
+// _feBuildRow produces, without names, sizes or dates.
+const rowShape = (page: Page, sel: string) => page.locator(sel).first().evaluate(row =>
+  [row.className.split(' ').filter(c => c !== 'fe-selected').sort().join(' ')]
+    .concat([...row.children].map(c => c.className)).join(' | '));
+
+test('MDAI: the folder list is the Files file view (same breadcrumb, rows, sort, parent row, status)', async ({ page, request }, info) => {
+  test.setTimeout(120_000);
+  const dir = await mkdtemp(join(tmpdir(), 'amux-mdai-fv-'));
+  await mkdir(join(dir, 'team'), { recursive: true });
+  await writeFile(join(dir, 'Top.mdai'), '---\ntitle: Top\n---\nSay hello.\n');
+  await writeFile(join(dir, 'team', 'Inner.mdai'), '---\ntitle: Inner\n---\nSay hello.\n');
+  await page.goto('/');
+  const headers = await page.evaluate(() => ({ Authorization: 'Bearer ' + (window as any)._AMUX_AUTH_TOKEN }));
+  const pref = (key: string, value: string) => request.post('/api/prefs', { headers, data: { key, value } });
+  const prior = (await (await request.get('/api/prefs?key=mdai_root', { headers })).json()).value || '';
+  try {
+    expect((await pref('mdai_root', dir)).ok()).toBeTruthy();
+    await page.reload();
+    await page.waitForFunction(() => typeof (window as any).openMdaiNode === 'function');
+    await page.evaluate(() => (window as any).switchView('mdai'));
+
+    // Breadcrumb: the Files breadcrumb, the whole path, root segment first.
+    const crumb = page.locator('#mdai-breadcrumb');
+    await expect(crumb).toHaveClass(/fe-breadcrumb/);
+    await expect(crumb.locator('.fe-crumb').first()).toHaveText('/');
+    await expect(crumb.locator('.fe-crumb').last()).toHaveText(dir.split('/').pop()!);
+    await expect(page.locator('#mdai-view .mdai-rootline'), 'the separate "Folder <path>" line is gone').toHaveCount(0);
+
+    // Rows: the folder and the node, built by the shared row builder.
+    const mdaiDir = '#mdai-fe-body .fe-row.fe-dir';
+    await expect(page.locator(mdaiDir, { hasText: 'team' })).toHaveCount(1);
+    await expect(page.locator('#mdai-fe-body .fe-row:not(.fe-dir)', { hasText: 'Top.mdai' })).toHaveCount(1);
+    await expect(page.locator('#mdai-fe-status')).toHaveText('1 folder, 1 file');
+    const mdaiShape = await rowShape(page, mdaiDir);
+    const mdaiFileShape = await rowShape(page, '#mdai-fe-body .fe-row:not(.fe-dir)');
+    const mdaiHeaders = await page.locator('#mdai-view .fe-col-headers > div').evaluateAll(els => els.map(e => e.className.replace(/\s*sorted/, '') + ':' + (e as HTMLElement).dataset.sortCol));
+
+    // One sort: a header click here sorts this list and marks the same column in Files.
+    await page.locator('#mdai-view [data-sort-col=name]').click();
+    await expect(page.locator('#mdai-view [data-sort-col=name]')).toHaveClass(/sorted/);
+    await expect(page.locator('#fe-hdr-name')).toHaveClass(/sorted/);
+
+    // Into the subfolder and back through the shared parent row.
+    await page.locator(mdaiDir, { hasText: 'team' }).click();
+    await expect(crumb.locator('.fe-crumb').last()).toHaveText('team');
+    await expect(page.locator('#mdai-fe-body .fe-back-row svg')).toHaveCount(1);
+    await expect(page.locator('#mdai-fe-body .fe-row', { hasText: 'Inner.mdai' })).toHaveCount(1);
+    await page.locator('#mdai-fe-body .fe-back-row').click();
+    await expect(page.locator(mdaiDir, { hasText: 'team' })).toHaveCount(1);
+    await page.screenshot({ path: info.outputPath('mdai-file-view.png') });
+
+    // The same folder in the Files tab: identical row and header structure.
+    await page.evaluate(d => { (window as any).switchView('files'); (window as any).loadFiles(d); }, dir);
+    const filesDir = '#files-body .fe-row.fe-dir';
+    await expect(page.locator(filesDir, { hasText: 'team' })).toHaveCount(1);
+    expect(await rowShape(page, filesDir), 'folder row').toBe(mdaiShape);
+    expect(await rowShape(page, '#files-body .fe-row:not(.fe-dir)'), 'file row').toBe(mdaiFileShape);
+    const filesHeaders = await page.locator('#fe-col-headers > div').evaluateAll(els => els.map(e => e.className.replace(/\s*sorted/, '') + ':' + (e as HTMLElement).dataset.sortCol));
+    expect(filesHeaders, 'header cells').toEqual(mdaiHeaders);
+    await page.screenshot({ path: info.outputPath('files-same-folder.png') });
+
+    // A .mdai row opens its node page, the way Files opens it.
+    await page.evaluate(() => (window as any).switchView('mdai'));
+    const node = page.locator('#mdai-fe-body .fe-row:not(.fe-dir)', { hasText: 'Top.mdai' });
+    if (await page.evaluate(() => (window as any)._feTouchDevice())) await node.click(); else await node.dblclick();
+    await expect(page.locator('#mdai-overlay')).toHaveClass(/active/);
+    await expect(page.locator('#mdai-title')).toHaveText('Top.mdai');
+  } finally {
+    await cleanup('restore the MDAI folder pref', () => pref('mdai_root', prior), info);
+    await cleanup('remove temp folder', () => rm(dir, { recursive: true, force: true }), info);
   }
 });

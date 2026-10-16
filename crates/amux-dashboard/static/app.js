@@ -16163,19 +16163,11 @@ function _psfRenderEntries(dirPath, data) {
   const hdrs = document.getElementById('psf-col-headers');
   if (hdrs) hdrs.style.display = '';
   body.innerHTML = '';
-  if (data.parent && data.parent !== data.path) {
-    const back = document.createElement('div');
-    back.className = 'fe-back-row';
-    back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
-    back.onclick = () => _psfLoad(data.parent);
-    body.appendChild(back);
-  }
+  if (data.parent && data.parent !== data.path) body.appendChild(_feParentRow(() => _psfLoad(data.parent)));
   const sorted = _psfSortEntries(data.entries);
   const psfOpts = { openDir: _psfLoad, openFile: _psfViewFile, singleClickOpens: true };
   for (const entry of sorted) body.appendChild(_feBuildRow(entry, dirPath, 0, '', psfOpts));
-  if (!data.entries.length) {
-    body.innerHTML = '<div style="padding:16px;color:var(--dim);text-align:center;font-size:0.82rem;">Empty folder</div>';
-  }
+  if (!data.entries.length) body.appendChild(_feEmptyRow('Empty folder'));
   _fselApply();
 }
 
@@ -27172,13 +27164,14 @@ function _filesSetSort(col) {
     const { path, data, cacheTs } = _filesLastData;
     _renderFilesEntries(document.getElementById('files-body'), path, data, cacheTs);
   }
+  // The MDAI tab lists folders through the same view and sort.
+  if (typeof activeView !== 'undefined' && activeView === 'mdai' && document.getElementById('mdai-fe-body')) _mdaiRenderList();
 }
 
 function _filesUpdateSortHeaders() {
   const arrow = _filesSort.dir === 1 ? '↑' : '↓';
-  ['name','size','modified'].forEach(col => {
-    const el = document.getElementById('fe-hdr-' + col);
-    if (!el) return;
+  document.querySelectorAll('#fe-col-headers [data-sort-col], #mdai-view [data-sort-col]').forEach(el => {
+    const col = el.dataset.sortCol;
     const sorted = _filesSort.col === col;
     el.classList.toggle('sorted', sorted);
     const existing = el.querySelector('.fe-sort-arrow');
@@ -27735,15 +27728,7 @@ async function loadFiles(path) {
   const srch = document.getElementById('files-search'); if (srch) srch.value = '';
   _updateFilesCwdBtn();
   // Breadcrumb
-  const parts = path.split('/').filter(Boolean);
-  let crumbHtml = '<span class="fe-crumb" onclick="loadFiles(\'/\')">/</span>';
-  let cum = '';
-  for (const part of parts) {
-    cum += '/' + part;
-    const cp = cum;
-    crumbHtml += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="loadFiles(\'' + cp.replace(/'/g, "\\'") + '\')">' + esc(part) + '</span>';
-  }
-  document.getElementById('files-breadcrumb').innerHTML = crumbHtml;
+  document.getElementById('files-breadcrumb').innerHTML = _feCrumbsHtml(path, 'loadFiles');
   _filesToolbarCheck();
   // CACHE FIRST (Ethan, 2026-10-04, offline on a phone: "this should load
   // offline cached locally"). The saved listing was only read after the
@@ -27781,6 +27766,49 @@ function _feHighlight(name, q) {
   if (!q) return esc(name);
   const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
   return esc(name).replace(re, m => `<mark style="background:rgba(99,102,241,0.25);color:inherit;border-radius:2px;">${m}</mark>`);
+}
+// The parts of a directory listing every file view shares: the Files tab, the
+// Split view's file panel and the MDAI tab all render a folder through these
+// and _feBuildRow, so a folder looks and behaves the same wherever it appears
+// (Ethan, 2026-10-16: "this should be the same file directory / file view as
+// any other file view"). Add a hook here rather than a parallel listing.
+//
+// Breadcrumb: "/ > a > b", each segment calling window[fnName](absPath).
+function _feCrumbsHtml(path, fnName) {
+  const go = p => fnName + '(' + JSON.stringify(p).replace(/"/g, '&quot;') + ')';
+  let html = '<span class="fe-crumb" onclick="' + go('/') + '">/</span>';
+  let cum = '';
+  for (const part of String(path || '/').split('/').filter(Boolean)) {
+    cum += '/' + part;
+    html += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="' + go(cum) + '">' + esc(part) + '</span>';
+  }
+  return html;
+}
+// The ".. (parent)" row.
+function _feParentRow(onOpen) {
+  const back = document.createElement('div');
+  back.className = 'fe-back-row';
+  back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
+  back.onclick = onOpen;
+  return back;
+}
+// The empty-folder / no-match line.
+function _feEmptyRow(text) {
+  const msg = document.createElement('div');
+  msg.className = 'fe-empty';
+  msg.style.cssText = 'padding:20px;color:var(--dim);font-size:0.83rem;text-align:center;';
+  msg.textContent = text;
+  return msg;
+}
+// The status bar text: "2 folders, 5 files", or the search result count.
+function _feStatusText(entries, q) {
+  if (q) return `${entries.length} result${entries.length !== 1 ? 's' : ''} for "${q}"`;
+  const dirs = entries.filter(e => e.type === 'dir').length;
+  const files = entries.length - dirs;
+  const parts = [];
+  if (dirs) parts.push(dirs + (dirs === 1 ? ' folder' : ' folders'));
+  if (files) parts.push(files + (files === 1 ? ' file' : ' files'));
+  return parts.join(', ') || 'Empty folder';
 }
 // Build one file-explorer row. Dirs get an expand chevron (inline accordion) AND
 // still navigate on row click; `depth` indents nested rows.
@@ -28093,29 +28121,13 @@ function _renderFilesEntries(body, path, data, cacheTs) {
 
   // Status bar
   const statusEl = document.getElementById('fe-status');
-  if (statusEl) {
-    const dirs = entries.filter(e => e.type === 'dir').length;
-    const files = entries.filter(e => e.type !== 'dir').length;
-    const parts = [];
-    if (dirs) parts.push(dirs + (dirs === 1 ? ' folder' : ' folders'));
-    if (files) parts.push(files + (files === 1 ? ' file' : ' files'));
-    statusEl.textContent = q ? `${entries.length} result${entries.length !== 1 ? 's' : ''} for "${q}"` : (parts.join(', ') || 'Empty folder');
-  }
+  if (statusEl) statusEl.textContent = _feStatusText(entries, q);
 
   // ".. up" row
-  if (!q && data.parent && data.parent !== data.path) {
-    const back = document.createElement('div');
-    back.className = 'fe-back-row';
-    back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
-    back.onclick = () => loadFiles(data.parent);
-    body.appendChild(back);
-  }
+  if (!q && data.parent && data.parent !== data.path) body.appendChild(_feParentRow(() => loadFiles(data.parent)));
 
   if (!entries.length) {
-    const msg = document.createElement('div');
-    msg.style.cssText = 'padding:20px;color:var(--dim);font-size:0.83rem;text-align:center;';
-    msg.textContent = q ? `No results for "${q}"` : 'Empty folder';
-    body.appendChild(msg);
+    body.appendChild(_feEmptyRow(q ? `No results for "${q}"` : 'Empty folder'));
     return;
   }
 
@@ -29876,8 +29888,6 @@ async function _mdaiTabLoad() {
   const body = document.getElementById('mdai-list');
   if (!body) return;
   _mdaiShowPage('list');
-  const dirEl = document.getElementById('mdai-dir');
-  if (dirEl) { dirEl.textContent = _mdaiRoot(); dirEl.title = _mdaiRoot(); }
   if (!_mdaiListData) body.innerHTML = '<div class="mdai-empty">Loading…</div>';
   try {
     const r = await fetch(API + '/api/files/mdai', { signal: AbortSignal.timeout(15000) });
@@ -29908,6 +29918,13 @@ function _mdaiListSearch(v) { _mdaiListFilter = v || ''; _mdaiRenderList(); }
 let _mdaiDir = '';             // folder shown, relative to the MDAI root ('' = root)
 let _mdaiDirGen = 0;
 function _mdaiOpenDir(rel) { _mdaiDir = (rel || '').replace(/^\/+|\/+$/g, ''); _mdaiRenderList(); }
+// A breadcrumb segment: inside the MDAI folder it stays in this view; above it,
+// the folder opens in the Files tab like any other path.
+function _mdaiCrumb(abs) {
+  const root = _mdaiRoot();
+  if (abs === root || abs.startsWith(root + '/')) _mdaiOpenDir(abs.slice(root.length));
+  else openExplore(abs);
+}
 async function _mdaiRenderList() {
   const body = document.getElementById('mdai-list');
   if (!body || !_mdaiListData) return;
@@ -29945,30 +29962,20 @@ async function _mdaiRenderList() {
   const q = _mdaiListFilter.trim().toLowerCase();
   if (q) entries = entries.filter(e => e.name.toLowerCase().includes(q));
   entries = _filesSortEntries(entries);
+  // The Files tab's own pieces: breadcrumb, sortable headers, parent row, empty
+  // line and status bar (_feCrumbsHtml, _feParentRow, _feEmptyRow, _feStatusText).
   const parts = rel ? rel.split('/') : [];
-  let crumbs = '<span class="fe-crumb" onclick="_mdaiOpenDir(\'\')">' + esc(root.split('/').pop() || root) + '</span>';
-  parts.forEach((part, i) => {
-    const to = parts.slice(0, i + 1).join('/');
-    crumbs += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="_mdaiOpenDir(' + _mdaiQ(to) + ')">' + esc(part) + '</span>';
-  });
-  body.innerHTML = '<div class="mdai-crumbs" id="mdai-crumbs">' + crumbs + '</div>'
-    + '<div class="fe-scroll mdai-fe"><div class="fe-col-headers" style="display:grid"><div class="fe-col-hdr">Name</div><div class="fe-col-hdr">Size</div><div class="fe-col-hdr">Modified</div><div class="fe-col-hdr-actions"></div></div>'
+  const hdr = (col, label) => '<div class="fe-col-hdr" data-sort-col="' + col + '" onclick="_filesSetSort(\'' + col + '\')">' + label + '</div>';
+  body.innerHTML = '<div id="mdai-breadcrumb" class="fe-breadcrumb">' + _feCrumbsHtml(abs, '_mdaiCrumb') + '</div>'
+    + '<div class="fe-scroll"><div class="fe-col-headers" style="display:grid">' + hdr('name', 'Name') + hdr('size', 'Size') + hdr('modified', 'Modified') + '<div class="fe-col-hdr-actions"></div></div>'
     + '<div id="mdai-fe-body"></div></div>'
+    + '<div id="mdai-fe-status" class="fe-status">' + esc(_feStatusText(entries, q)) + '</div>'
     + (_mdaiListData.truncated ? '<div class="mdai-hint">The folder scan was cut short, so this list may be incomplete.</div>' : '');
+  _filesUpdateSortHeaders();
   const list = document.getElementById('mdai-fe-body');
-  if (rel) {
-    const up = parts.slice(0, -1).join('/');
-    const back = document.createElement('div');
-    back.className = 'fe-back-row';
-    back.innerHTML = '<div class="fe-cell-name"><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>';
-    back.onclick = () => _mdaiOpenDir(up);
-    list.appendChild(back);
-  }
+  if (rel && !q) list.appendChild(_feParentRow(() => _mdaiOpenDir(parts.slice(0, -1).join('/'))));
   if (!entries.length) {
-    const msg = document.createElement('div');
-    msg.className = 'mdai-empty';
-    msg.textContent = q ? 'No node matches "' + q + '" in this folder.' : 'No MDAI nodes in this folder.';
-    list.appendChild(msg);
+    list.appendChild(_feEmptyRow(q ? 'No node matches "' + q + '" in this folder.' : 'No MDAI nodes in this folder.'));
     return;
   }
   for (const entry of entries) {

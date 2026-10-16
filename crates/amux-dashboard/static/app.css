@@ -9458,7 +9458,6 @@ body.light #mdai-overlay.mdai-detail { background: var(--bg); }
    whose every field is a control (the server owns the file format). */
 #mdai-list-page { flex-direction: column; flex: 1; min-height: 0; }
 .mdai-list-body { display: flex; flex-direction: column; gap: 8px; }
-.mdai-rootline { margin: -4px 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mdai-tr { grid-template-columns: minmax(0, 3fr) minmax(0, 1.3fr) minmax(0, 0.9fr) 0.6fr 0.5fr minmax(0, 1.2fr); min-height: 44px; box-sizing: border-box; }
 .mdai-tr .mdai-td { overflow: hidden; text-overflow: ellipsis; }
 .mdai-dot.run { background: var(--accent); animation: mdai-pulse 1.2s ease-in-out infinite; }
@@ -9570,6 +9569,6 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 }
 /* The scheduled-delivery tag also clears the delay: a full touch target on a phone. */
 @media(max-width:600px) { .steer-delay-tag { min-height:44px; padding:0 12px !important; font-size:0.78rem !important; } }
-/* MDAI list as a directory view (same rows as Files). */
-.mdai-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 4px 0 8px; font-size: 0.85rem; }
-.mdai-fe { border: 1px solid var(--border); border-radius: var(--radius-control, 8px); overflow-x: auto; }
+/* MDAI list renders through the Files tab's file view (fe-* classes); the
+   breadcrumb is a flex item here, so it must not grow to fill the column. */
+#mdai-breadcrumb { flex: 0 0 auto; }

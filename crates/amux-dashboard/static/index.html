@@ -1075,9 +1075,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
        header staying aligned, instead of those columns being hidden. -->
   <div id="fe-scroll" class="fe-scroll">
     <div id="fe-col-headers" class="fe-col-headers" style="display:none;">
-      <div class="fe-col-hdr" id="fe-hdr-name" onclick="_filesSetSort('name')">Name</div>
-      <div class="fe-col-hdr" id="fe-hdr-size" onclick="_filesSetSort('size')">Size</div>
-      <div class="fe-col-hdr" id="fe-hdr-modified" onclick="_filesSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" id="fe-hdr-name" data-sort-col="name" onclick="_filesSetSort('name')">Name</div>
+      <div class="fe-col-hdr" id="fe-hdr-size" data-sort-col="size" onclick="_filesSetSort('size')">Size</div>
+      <div class="fe-col-hdr" id="fe-hdr-modified" data-sort-col="modified" onclick="_filesSetSort('modified')">Modified</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
     <div id="files-body"></div>
@@ -1116,7 +1116,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Refresh" aria-label="Refresh">&#8635;<span class="mdai-btn-lbl"> Refresh</span></button>
       <button class="btn primary" id="mdai-new-btn" onclick="_mdaiCreatePage()">+ New MDAI</button>
     </div>
-    <div class="mdai-dim mdai-rootline">Folder <span id="mdai-dir" class="mdai-code"></span></div>
     <div id="mdai-list" class="mdai-list-body"></div>
   </div>
   <!-- Create page: every field of a node, as controls -->

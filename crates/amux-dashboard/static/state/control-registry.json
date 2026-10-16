@@ -2190,6 +2190,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiCrumb": {
+      "kind": "command._mdaiCrumb",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiDelete": {
       "kind": "command._mdaiDelete",
       "feedback_required": true,

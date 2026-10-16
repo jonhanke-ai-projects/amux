@@ -49,6 +49,19 @@ board, workers, schedulers, filesystem, groups, memories, environment, messages.
 If a request decomposes into these, the work is configuration and UX. Do not add a
 ninth thing that re-expresses them.
 
+## Reuse existing paradigms (UI and code)
+
+Before building a view, find the one amux already has for that job and render
+through it: a folder is the file view (`_feCrumbsHtml`, `_feBuildRow`,
+`_feParentRow`, `_feEmptyRow`, `_feStatusText`), a prompt is `showConfirm` /
+`showPrompt`, a dialog is `.modal-overlay > .modal`. If it lacks a hook you need
+(a root, an open callback, a filter), add the hook to the shared one. A second
+table, dialog or list with its own markup drifts from the first on every later
+change. Specimen, 2026-10-16: the MDAI tab grew its own folder table, breadcrumb
+and "Folder" line beside the Files tab, and Ethan asked for it to be "the same
+file directory / file view as any other file view". Catalogue:
+`docs/ui-style-guide.md`.
+
 ## Dogfooding + two-fix rule
 
 You run inside amux. Fix rough edges at the root, not with workarounds. Every bug fix
