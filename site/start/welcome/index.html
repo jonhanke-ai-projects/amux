@@ -125,22 +125,40 @@ function show(state) {
   const i = ORDER.indexOf(state);
   document.querySelectorAll('#steps li').forEach((li, n) => li.className = n < i ? 'done' : (n === i ? 'now' : ''));
 }
+// A failed request is retried, never read as "no such order": only the API saying so (404/400,
+// three times in a row) is. Trouble and slowness both say so on screen, with where to get help.
+let fails = 0, missing = 0;
+const HELP = ' Questions: <a href="mailto:hello@amux.io">hello@amux.io</a>.';
+function say(html) { document.getElementById('note').innerHTML = html; }
 async function poll() {
+  let d = null, code = 0;
   try {
-    const d = await (await fetch(API + '/api/status?session_id=' + encodeURIComponent(sid))).json();
-    if (d.error) { document.getElementById('sub').textContent = 'We could not find this order. Check your email for the receipt.'; return; }
-    show(d.state);
-    if (d.state === 'ready') {
-      document.querySelectorAll('#steps li').forEach(li => li.className = 'done');
-      const r = document.getElementById('ready'); r.style.display = '';
-      document.querySelector('h1').textContent = 'Your server is ready';
-      document.getElementById('sub').textContent = 'Payment received and your server is running.';
-      document.getElementById('open').href = d.url; document.getElementById('open').textContent = 'Open ' + d.url.replace('https://', '');
-      if (d.email) document.getElementById('who').textContent = d.email;
-      document.getElementById('note').style.display = 'none';
-      return;
-    }
+    const r = await fetch(API + '/api/status?session_id=' + encodeURIComponent(sid), { cache: 'no-store' });
+    code = r.status; d = await r.json().catch(() => null);
   } catch (e) {}
+  if (!sid || ((code === 404 || code === 400) && ++missing >= 3)) {
+    document.getElementById('sub').innerHTML = 'We could not find this order. Check your email for the receipt.' + HELP;
+    return;
+  }
+  if (!d || !d.state) {
+    if (++fails >= 2) say('We are having trouble reaching the setup service and keep retrying. Your payment is safe and your server is still being set up.' + HELP);
+    setTimeout(poll, Math.min(30000, 3000 * fails));
+    return;
+  }
+  fails = 0; missing = 0;
+  show(d.state);
+  if (d.state === 'ready') {
+    document.querySelectorAll('#steps li').forEach(li => li.className = 'done');
+    const rd = document.getElementById('ready'); rd.style.display = '';
+    document.querySelector('h1').textContent = 'Your server is ready';
+    document.getElementById('sub').textContent = 'Payment received and your server is running.';
+    document.getElementById('open').href = d.url; document.getElementById('open').textContent = 'Open ' + d.url.replace('https://', '');
+    if (d.email) document.getElementById('who').textContent = d.email;
+    document.getElementById('note').style.display = 'none';
+    return;
+  }
+  if ((d.waited_s || 0) > 300)
+    say('This is taking longer than usual. Setup keeps retrying by itself and we email you the moment the server is ready, so you can close this page.' + HELP);
   setTimeout(poll, 3000);
 }
 poll();

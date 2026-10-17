@@ -56,6 +56,12 @@
     <form id="b"><label class="field"><span>Email</span><input id="email" type="email" autocomplete="email"></label>
       <button class="btn btn-primary go" id="go" type="submit">Email me a billing link</button>
       <div class="hint" id="msg" role="status"></div></form>
+    <h2>Delete your account</h2>
+    <p>This deletes your server and everything on it, its backups and snapshots, and stops billing. We email you a link to confirm first.</p>
+    <form id="d"><label class="field"><span>Email</span><input id="demail" type="email" autocomplete="email"></label>
+      <button class="btn go" id="dgo" type="submit">Email me a deletion link</button>
+      <div class="hint" id="dmsg" role="status"></div></form>
+    <p class="hint">Questions or trouble? Write to <a href="mailto:hello@amux.io">hello@amux.io</a>.</p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -109,13 +115,26 @@ const API = (Q.get('api') || 'https://cloud.amux.io').replace(/\/+$/, '');
 const TK = Q.get('tk') || '';
 const keep = s => (Q.get('api') ? '&api=' + encodeURIComponent(Q.get('api')) : '') + (TK ? '&tk=' + encodeURIComponent(TK) : '') + (s || '');
 
-document.getElementById('b').addEventListener('submit', async ev => {
-  ev.preventDefault();
-  const email = document.getElementById('email').value.trim(); if (!email) return;
-  document.getElementById('go').disabled = true;
-  try { await fetch(API + '/api/billing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) }); } catch (e) {}
-  document.getElementById('msg').textContent = 'If that address has an amux Cloud subscription, a link is on its way. It works for an hour.';
-});
+// One handler for both forms. A failed request says so; it never claims an email is on its way.
+function mailForm(form, input, button, msg, path, sent) {
+  document.getElementById(form).addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const email = document.getElementById(input).value.trim();
+    const m = document.getElementById(msg), b = document.getElementById(button);
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { m.className = 'hint bad'; m.textContent = 'Enter the email address you signed up with.'; return; }
+    b.disabled = true; m.className = 'hint'; m.textContent = 'Sending…';
+    try {
+      const r = await fetch(API + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) });
+      if (!r.ok) throw new Error(r.status);
+      m.className = 'hint good'; m.textContent = sent;
+    } catch (e) {
+      m.className = 'hint bad'; m.textContent = 'We could not send that right now. Try again in a minute, or write to hello@amux.io.';
+      b.disabled = false;
+    }
+  });
+}
+mailForm('b', 'email', 'go', 'msg', '/api/billing', 'If that address has an amux Cloud subscription, a link is on its way. It works for an hour.');
+mailForm('d', 'demail', 'dgo', 'dmsg', '/api/delete', 'If that address has an amux Cloud account, a confirmation link is on its way. It works for an hour.');
 </script>
 </body>
 </html>
