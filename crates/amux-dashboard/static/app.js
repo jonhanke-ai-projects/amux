@@ -31054,7 +31054,19 @@ function _mdaiHistNav(delta) {
 }
 // Save a structured change. `patch` is merged over the current doc; the server
 // validates, writes the canonical file and answers with what it now holds.
-async function _mdaiSaveDoc(patch, extra) {
+// ONE SAVE AT A TIME. A save's request is built from _mdaiCur (the doc and its
+// mtime), which only the previous save's response brings up to date. A second
+// save started while the first was in flight was built from the stale doc: the
+// server refused it as changed on disk, and had it not, it would have put back
+// what the first save removed. Each save waits for the one before it.
+let _mdaiSaveChain = Promise.resolve();
+function _mdaiSerial(fn) {
+  const p = _mdaiSaveChain.then(fn, fn);
+  _mdaiSaveChain = p.catch(() => {});
+  return p;
+}
+function _mdaiSaveDoc(patch, extra) { return _mdaiSerial(() => _mdaiSaveDocNow(patch, extra)); }
+async function _mdaiSaveDocNow(patch, extra) {
   if (!_mdaiCur || !_mdaiCur.doc) { showToast('Fix the file in Edit → Raw file first; it does not parse'); return false; }
   const doc = Object.assign({}, _mdaiCur.doc, patch || {});
   const req = Object.assign({ path: _mdaiCur.abs, doc, base_mtime_ms: _mdaiCur.mtime }, extra || {});
@@ -31073,6 +31085,10 @@ async function _mdaiPutDoc(req) {
     _mdaiKeptEdits = [];
   }
   if (_mdaiCur && _mdaiCur.readOnly) { showToast(_mdaiCur.readOnly); return false; }
+  // The drafts as this save began. The file on disk changes before this
+  // response arrives, so the owner can already be typing the next change; a
+  // draft that moved while the save was in flight is not the one it saved.
+  const draft0 = _mdaiDraft, body0 = _mdaiBodyDraft;
   try {
     const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', req);
     if (_isLocallyQueued(r)) { showToast('Offline: not saved'); return false; }
@@ -31083,7 +31099,8 @@ async function _mdaiPutDoc(req) {
       return false;
     }
     _mdaiApplyDoc(d);
-    _mdaiDraft = null; _mdaiBodyDraft = null;
+    if (_mdaiDraft === draft0) _mdaiDraft = null; else _mdaiKeptEdits.push('raw-draft-in-flight');
+    if (_mdaiBodyDraft === body0) _mdaiBodyDraft = null; else _mdaiKeptEdits.push('body-draft-in-flight');
     // The graph reload lands after the save's own render, possibly while the
     // owner is typing the next change; _mdaiRender keeps that typing.
     _mdaiLoadGraph().then(() => { if (_mdaiCur) _mdaiRender(); });
@@ -31096,10 +31113,11 @@ function _mdaiDirty() {
 }
 async function _mdaiSave() {
   if (!_mdaiCur) return false;
+  _mdaiCaptureDrafts();   // the text on screen is what the owner means to save
   const btn = document.getElementById('mdai-save-btn');
   if (btn) btn.disabled = true;
   let ok = true;
-  if (_mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content) ok = await _mdaiPutDoc({ path: _mdaiCur.abs, raw: _mdaiDraft, base_mtime_ms: _mdaiCur.mtime });
+  if (_mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content) ok = await _mdaiSerial(() => _mdaiPutDoc({ path: _mdaiCur.abs, raw: _mdaiDraft, base_mtime_ms: _mdaiCur.mtime }));
   else if (_mdaiBodyDraft !== null && _mdaiBodyDraft !== _mdaiCur.body) ok = await _mdaiSaveDoc({ body: _mdaiBodyDraft });
   if (btn) btn.disabled = false;
   if (ok) showToast('Saved');
