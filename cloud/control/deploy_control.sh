@@ -2,8 +2,11 @@
 # Deploy the amux Cloud control plane to its own small Hetzner server
 # (docs/design/cloud-self-service.md section 3). Idempotent: run again to ship new code.
 #
-#   CONTROL_HOST=cp-test.amux.io cloud/control/deploy_control.sh                         (Stripe test mode)
-#   CONTROL_HOST=cloud.amux.io CONTROL_STRIPE_MODE=live cloud/control/deploy_control.sh  (production)
+#   cloud/control/deploy_control.sh                                    (production: cloud.amux.io, live Stripe)
+#   CONTROL_HOST=cp-test.amux.io cloud/control/deploy_control.sh       (a test plane on Stripe test mode)
+#
+# cp-test was retired on 2026-10-17 once production was live (owner: delete Hetzner instances when
+# done). A test plane is a new cx23 at about $6.49 a month: create it for a task and delete it after.
 #
 # Live mode reads STRIPE_LIVE_SECRET_KEY from server.env (owner launch decision, 2026-10-17).
 #
@@ -13,7 +16,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-HOST="${CONTROL_HOST:-cp-test.amux.io}"
+HOST="${CONTROL_HOST:-cloud.amux.io}"
 NAME="amux-control-${HOST%%.*}"
 KEY="${CONTROL_SSH_KEY:-$HOME/.ssh/amux_wexus}"
 KEY_NAME="${CONTROL_SSH_KEY_NAME:-amux-wexus}"
@@ -69,7 +72,8 @@ COPYFILE_DISABLE=1 tar --no-mac-metadata -C "$REPO" -czf - cloud/control | "${SS
 # Stripe test mode (T-PAY-1): with STRIPE_TEST_SECRET_KEY in server.env the control plane takes real
 # test-mode checkouts. stripe_setup.py makes the products, prices and webhook; the webhook secret
 # is shown once, so it is kept in ~/.amux/cloud/stripe-test-webhook-secret.
-MODE="${CONTROL_STRIPE_MODE:-test}"
+MODE="${CONTROL_STRIPE_MODE:-test}"; if [[ "$HOST" == "cloud.amux.io" ]]; then MODE="${CONTROL_STRIPE_MODE:-live}"; fi
+[[ "$HOST" != "cloud.amux.io" || "$MODE" == "live" ]] || { log "FATAL: cloud.amux.io takes live Stripe only"; exit 1; }
 if [[ "$MODE" == "live" ]]; then
   STK="$(envv STRIPE_LIVE_SECRET_KEY || true)"
   [[ "$STK" == sk_live_* || "$STK" == rk_live_* ]] || { log "FATAL: CONTROL_STRIPE_MODE=live needs STRIPE_LIVE_SECRET_KEY in server.env"; exit 1; }
