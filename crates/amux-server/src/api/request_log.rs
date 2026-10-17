@@ -1317,7 +1317,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/connection/session",
-        methods: &["POST"],
+        methods: &["POST", "DELETE"],
     },
     RouteEntry {
         path: "/api/connection/certificate",
@@ -2640,6 +2640,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/fs/rename",
+        methods: ANY,
+    },
+    RouteEntry {
+        path: "/api/fs/move",
         methods: ANY,
     },
     RouteEntry {
