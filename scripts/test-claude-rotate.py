@@ -112,5 +112,51 @@ expect(rot.resume_action("What do you want to do?\n 1. Stop and wait for limit t
        "the limit prompt is answered with 1")
 expect(rot.resume_action("❯ fix the deploy gate") is None, "a composer gets no stray keypress")
 
+
+# A status line far above a recent /usage probe is another process's stale
+# number (2026-10-17: probe 13% weekly, status lines 100%, the account ranked
+# spent and four browser switches away from it failed).
+import time as _t
+acct = {"probed": {"seven_day": {"used": 13, "at": _t.time()}}}
+expect(rot.contradicts_probe(acct, "seven_day", 100), "100% status line vs 13% probe is rejected")
+expect(not rot.contradicts_probe(acct, "seven_day", 18), "a small rise over the probe is kept")
+acct_old = {"probed": {"seven_day": {"used": 13, "at": _t.time() - rot.PROBE_TRUST_S - 5}}}
+expect(not rot.contradicts_probe(acct_old, "seven_day", 100), "an old probe no longer outranks status lines")
+rot.record("p@x", 47, "2026-10-17T23:50:00-04:00", 13, "2026-10-17T21:00:00-04:00", source="usage-probe")
+expect(rot.record("p@x", 45, "2026-10-17T23:50:00-04:00", 100, "2026-10-17T20:59:00-04:00") is False,
+       "record() refuses the contradicting status line")
+rot.record("q@x", 45, "2026-10-17T23:50:00-04:00", 100, "2026-10-17T20:59:00-04:00")
+rot.record("q@x", 47, "2026-10-17T23:50:00-04:00", 13, "2026-10-17T21:00:00-04:00", source="usage-probe")
+q = rot.load(rot.ACCOUNTS, {})["accounts"]["q@x"]["seven_day"]["used_percentage"]
+expect(q == 13, f"a probe lower than a status line's number corrects it, got {q}")
+stored = rot.load(rot.ACCOUNTS, {})["accounts"]["p@x"]["seven_day"]["used_percentage"]
+expect(stored == 13, f"the probe's 13% stands, got {stored}")
+
+# A switch to an account with a stored login never opens the browser, and a
+# failed swap puts the previous login back.
+kc = {(rot.CRED_SVC, rot.CRED_ACCT): '{"claudeAiOauth": {"refreshToken": "old"}, "mcpOAuth": {"m": 1}}'}
+rot._kc_read = lambda s, a: kc.get((s, a))
+rot._kc_write = lambda s, a, v: kc.__setitem__((s, a), v) or True
+rot.capture_login = lambda: None
+rot.resume_stranded = lambda force=False: None
+rot.resume_auth_lost = lambda: None
+rot.CLAUDE_JSON = os.path.join(os.environ["CLAUDE_ROTATE_DIR"], "claude.json")
+rot.save(rot.CLAUDE_JSON, {"oauthAccount": {"emailAddress": "a@x"}})
+expect(rot.stored_switch("b@x", "a@x", "preempt_limit", _t.time()) is None, "no stored login: browser fallback")
+kc[(rot.STORE_SVC, "b@x")] = '{"claudeAiOauth": {"refreshToken": "new"}, "oauthAccount": {"emailAddress": "b@x"}}'
+rot.cli_email = lambda: rot.load(rot.CLAUDE_JSON, {})["oauthAccount"]["emailAddress"]
+rot.probe = lambda: {"seven_day": {}}
+expect(rot.stored_switch("b@x", "a@x", "preempt_limit", _t.time()) == 0, "stored login switches by CLI")
+import json as _j
+cred = _j.loads(kc[(rot.CRED_SVC, rot.CRED_ACCT)])
+expect(cred["claudeAiOauth"]["refreshToken"] == "new" and cred["mcpOAuth"] == {"m": 1},
+       "the swap replaces only claudeAiOauth and keeps MCP logins")
+rot.probe = lambda: None
+kc[(rot.STORE_SVC, "a@x")] = '{"claudeAiOauth": {"refreshToken": "a"}, "oauthAccount": {"emailAddress": "a@x"}}'
+before = kc[(rot.CRED_SVC, rot.CRED_ACCT)]
+expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) is None, "an unproven swap falls back")
+expect(kc[(rot.CRED_SVC, rot.CRED_ACCT)] == before and rot.current_email() == "b@x",
+       "and the previous login is restored")
+
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

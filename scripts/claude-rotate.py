@@ -172,6 +172,10 @@ def merge_window(known, used, reset, source, at=None):
     /usage probe and manual records are first-hand and may move a reset."""
     at = at or now()
     new = {"used_percentage": used, "resets_at": reset}
+    if source == "usage-probe":
+        # The account's own /usage screen: it outranks whatever a status line
+        # left behind, including a higher number in the same window.
+        return new, "probe"
     known = known or {}
     k_reset, n_reset = _reset(known.get("resets_at")), _reset(reset)
     if known.get("used_percentage") is None or k_reset is None or k_reset <= at or n_reset is None:
@@ -185,6 +189,25 @@ def merge_window(known, used, reset, source, at=None):
     return new, "rose"
 
 
+PROBE_TRUST_S = int(os.environ.get("CLAUDE_ROTATE_PROBE_TRUST_S", "900"))
+PROBE_JUMP = float(os.environ.get("CLAUDE_ROTATE_PROBE_JUMP", "10"))
+
+
+def contradicts_probe(acct, key, used, at_s=None):
+    """A status-line reading far above a recent /usage probe of the same window.
+    A worker's status line repeats its own last API response, so a process that
+    hit the limit earlier, or one still on another login, keeps saying 100%.
+    2026-10-17: the probe read ethan@runmixpeek.com at 13% weekly while status
+    lines said 100%; the status lines won, the account was ranked spent, and
+    four browser switches away from it failed over 19 minutes. The probe reads
+    the account's own /usage screen, so inside PROBE_TRUST_S it wins."""
+    at_s = at_s or time.time()
+    p = (acct.get("probed") or {}).get(key) or {}
+    if p.get("used") is None or at_s - float(p.get("at") or 0) > PROBE_TRUST_S:
+        return False
+    return float(used) - float(p["used"]) > PROBE_JUMP
+
+
 def record(email, five=None, five_reset=None, week=None, week_reset=None, source="statusline"):
     """Store one reading. Returns False when it was rejected as another
     account's numbers or held nothing newer than what is known."""
@@ -192,6 +215,17 @@ def record(email, five=None, five_reset=None, week=None, week_reset=None, source
         data = load(ACCOUNTS, {"accounts": {}})
         acct = data["accounts"].setdefault(email, {})
         changed = source != "statusline"
+        if source == "statusline":
+            for key, used in (("seven_day", week), ("five_hour", five)):
+                if used is not None and contradicts_probe(acct, key, used):
+                    log("claude_rotate_reading_rejected", account=email, source=source, reason="contradicts_probe",
+                        window=key, used=used, probed=acct["probed"][key]["used"])
+                    return False
+        elif source == "usage-probe":
+            probed = acct.setdefault("probed", {})
+            for key, used in (("seven_day", week), ("five_hour", five)):
+                if used is not None:
+                    probed[key] = {"used": used, "at": time.time()}
         if week is not None:
             merged, why = merge_window(acct.get("seven_day"), week, week_reset, source)
             if merged is None:
@@ -555,6 +589,10 @@ def cmd_tick():
             probe()
         except Exception as e:
             log("claude_rotate_probe_failed", measured=False, why_unmeasured=str(e)[:200])
+        try:
+            capture_login()
+        except Exception as e:
+            log("claude_rotate_capture_failed", measured=False, why_unmeasured=str(e)[:200])
     current = current_email()
     rows = rank()
     state = load(STATE, {})
@@ -923,6 +961,122 @@ def magic_link(email, since_epoch):
     return None
 
 
+# ---------------------------------------------------------------- stored logins
+#
+# SWITCH WITHOUT A BROWSER (Ethan, 2026-10-17: "it needs to understand when to
+# switch and only switch to accounts to optimize our usage across them all
+# totally using cli"). The browser sign-in failed four times in a row that
+# evening (~4.5 min each, its Chrome tab blank or gone) while the fleet sat on
+# an account at 100% weekly. The CLI keeps its login in the Keychain item
+# `Claude Code-credentials`: `claudeAiOauth` is the account's token pair and
+# `mcpOAuth` holds MCP logins shared by every account. Every tick snapshots the
+# logged-in account's `claudeAiOauth` (and its `oauthAccount` from
+# ~/.claude.json) into a private Keychain item per email, and again right
+# before switching away, so a rotated refresh token is never lost. A switch to
+# an account with a snapshot swaps it in, keeps `mcpOAuth`, and proves it with
+# a /usage probe; on any failure the previous login is put back and the browser
+# flow runs, which captures that account for next time. Values only travel on
+# stdin to `security -i`, never in argv.
+CRED_SVC = os.environ.get("CLAUDE_ROTATE_CRED_SERVICE", "Claude Code-credentials")
+CRED_ACCT = os.environ.get("CLAUDE_ROTATE_CRED_ACCOUNT", os.environ.get("USER", ""))
+STORE_SVC = os.environ.get("CLAUDE_ROTATE_STORE_SERVICE", "amux-claude-rotate")
+
+
+def _kc_read(service, account):
+    p = subprocess.run(["security", "find-generic-password", "-s", service, "-a", account, "-w"],
+                       capture_output=True, text=True)
+    return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else None
+
+
+def _kc_write(service, account, value):
+    # -X takes hex, so quotes in the JSON cannot break the command line, and
+    # `security -i` reads it from stdin, so the value is never an argv element.
+    cmd = 'add-generic-password -U -s "%s" -a "%s" -X %s\n' % (service, account, value.encode().hex())
+    p = subprocess.run(["security", "-i"], input=cmd, capture_output=True, text=True)
+    return p.returncode == 0 and "error" not in (p.stderr or "").lower()
+
+
+def _write_oauth_account(acct):
+    data = load(CLAUDE_JSON, {}) or {}
+    data["oauthAccount"] = acct
+    save(CLAUDE_JSON, data)
+
+
+def capture_login():
+    """Snapshot the logged-in account's token pair under its email. Only when
+    the CLI and ~/.claude.json agree on who is logged in."""
+    email = current_email()
+    if not email or cli_email() != email:
+        return None
+    raw = _kc_read(CRED_SVC, CRED_ACCT)
+    try:
+        oauth = json.loads(raw or "{}").get("claudeAiOauth")
+    except ValueError:
+        oauth = None
+    if not oauth or not oauth.get("refreshToken"):
+        log("claude_rotate_capture_failed", measured=False, account=email, why_unmeasured="no claudeAiOauth in the CLI credential")
+        return None
+    acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount") or {}
+    prev = _kc_read(STORE_SVC, email)
+    blob = json.dumps({"claudeAiOauth": oauth, "oauthAccount": acct, "captured": time.time()})
+    if prev and json.loads(prev).get("claudeAiOauth") == oauth:
+        return email
+    if _kc_write(STORE_SVC, email, blob):
+        log("claude_rotate_captured", measured=True, account=email, new=prev is None)
+        return email
+    log("claude_rotate_capture_failed", measured=False, account=email, why_unmeasured="keychain write failed")
+    return None
+
+
+def stored_switch(target, before, reason, started):
+    """Swap in `target`'s stored login. Returns 0 on a proven switch, None to
+    fall back to the browser flow."""
+    saved_raw = _kc_read(STORE_SVC, target)
+    if not saved_raw:
+        log("claude_rotate_no_stored_login", target=target)
+        return None
+    saved = json.loads(saved_raw)
+    oauth = saved.get("claudeAiOauth") or {}
+    exp = (oauth.get("refreshTokenExpiresAt") or 0) / (1000 if (oauth.get("refreshTokenExpiresAt") or 0) > 1e12 else 1)
+    if exp and exp < time.time():
+        log("claude_rotate_stored_login_expired", target=target)
+        return None
+    capture_login()  # the account being left keeps its newest refresh token
+    prev_raw = _kc_read(CRED_SVC, CRED_ACCT)
+    prev_acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount")
+    try:
+        cred = json.loads(prev_raw or "{}")
+    except ValueError:
+        cred = {}
+    cred["claudeAiOauth"] = oauth
+    if not _kc_write(CRED_SVC, CRED_ACCT, json.dumps(cred)):
+        log("claude_rotate_stored_switch_failed", target=target, why="keychain write failed")
+        return None
+    _write_oauth_account(saved.get("oauthAccount") or {})
+    after = cli_email()
+    windows = probe() if after == target else None
+    if after == target and windows is not None:
+        elapsed = round(time.time() - started, 1)
+        state = load(STATE, {})
+        state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
+        (state.get("switch_failures") or {}).pop(target, None)
+        save(STATE, state)
+        print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
+                  elapsed_s=elapsed, via="stored_login"))
+        capture_login()
+        resume_stranded(force=True)
+        resume_auth_lost()
+        return 0
+    # Put the previous login back exactly, then let the browser flow try.
+    if prev_raw:
+        _kc_write(CRED_SVC, CRED_ACCT, prev_raw)
+    if prev_acct:
+        _write_oauth_account(prev_acct)
+    log("claude_rotate_stored_switch_failed", target=target, still=cli_email(), cli_said=after,
+        probed=windows is not None, restored=bool(prev_raw))
+    return None
+
+
 def _switch_running():
     with locked(LOCK, nowait=True) as got:
         return not got
@@ -942,6 +1096,9 @@ def _switch(target, reason):
         print(log("claude_rotate_switch_noop", target=target))
         return 0
     started = time.time()
+    rc = stored_switch(target, before, reason, started)
+    if rc is not None:
+        return rc
     with tempfile.TemporaryDirectory(prefix="claude-rotate-") as tmp:
         url_file = os.path.join(tmp, "url")
         opener = os.path.join(tmp, "open.sh")
@@ -1069,6 +1226,7 @@ def _switch(target, reason):
         save(STATE, state)
         print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
                   elapsed_s=elapsed, steps=steps))
+        capture_login()
         resume_stranded(force=True)
         time.sleep(5)
         resume_auth_lost()
