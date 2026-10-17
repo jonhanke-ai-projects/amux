@@ -16,6 +16,9 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
     TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
     SWIFT_STRICT_CONCURRENCY: minimal
+    # The amux Cloud control plane the app signs in to (CloudAccount.base). Nightly builds use
+    # production; a manual TestFlight run can point at the test control plane (ios.yml input).
+    AMUX_CLOUD_URL: "https://cloud.amux.io"
 targets:
   AmuxApp:
     type: application
@@ -85,6 +88,7 @@ targets:
           - location
         ITSAppUsesNonExemptEncryption: false
         CFBundleIconName: AppIcon
+        AmuxCloudURL: $(AMUX_CLOUD_URL)
     entitlements:
       # XcodeGen GENERATES this file and overwrites hand edits, exactly like
       # the `info:` plist above. Declaring the App Group here is what makes it

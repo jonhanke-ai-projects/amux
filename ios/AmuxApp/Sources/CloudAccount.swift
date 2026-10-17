@@ -22,7 +22,13 @@ struct CloudServer: Codable, Identifiable, Equatable {
 
 @MainActor
 final class CloudAccount: NSObject, ObservableObject {
-    static let base = URL(string: "https://cloud.amux.io")!
+    // AmuxCloudURL comes from the AMUX_CLOUD_URL build setting (project.yml), so a test build can
+    // sign in to the test control plane without a code change.
+    static let base: URL = {
+        if let s = Bundle.main.object(forInfoDictionaryKey: "AmuxCloudURL") as? String,
+           s.hasPrefix("https://"), let u = URL(string: s) { return u }
+        return URL(string: "https://cloud.amux.io")!
+    }()
     private static let tokenKey = "io.amux.cloud.token"
 
     @Published private(set) var servers: [CloudServer] = []

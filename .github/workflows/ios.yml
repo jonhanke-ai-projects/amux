@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 6 * * *'  # 6 AM UTC = 11 PM PT / 2 AM ET — nightly
   workflow_dispatch:       # manual trigger anytime
+    inputs:
+      cloud_url:
+        description: "amux Cloud control plane for this build (empty = https://cloud.amux.io). A test build for cp-test is not tagged."
+        required: false
+        default: ""
 
 jobs:
   check:
@@ -93,8 +98,10 @@ jobs:
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
           CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+          AMUX_CLOUD_URL: ${{ inputs.cloud_url }}
 
       - name: Tag this build
+        if: ${{ !inputs.cloud_url }}
         run: |
           cd ..
           BUILD_NUM=$(git rev-list --count HEAD)

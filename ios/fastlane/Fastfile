@@ -72,7 +72,8 @@ platform :ios do
       scheme: "AmuxApp",
       configuration: "Release",
       export_method: "app-store",
-      xcargs: "-skipPackagePluginValidation -allowProvisioningUpdates MARKETING_VERSION=#{version}"
+      xcargs: "-skipPackagePluginValidation -allowProvisioningUpdates MARKETING_VERSION=#{version}" +
+              (ENV["AMUX_CLOUD_URL"].to_s.start_with?("https://") ? " AMUX_CLOUD_URL=#{ENV['AMUX_CLOUD_URL']}" : "")
     )
 
     changelog = ENV["CHANGELOG"] || "Bug fixes and improvements."
