@@ -680,6 +680,10 @@ pub struct ListParams {
     since: Option<String>,
     #[serde(default, alias = "to", alias = "end", alias = "before")]
     until: Option<String>,
+    /// `asc` lists oldest first (the Tasks tab numbers rows in the order they
+    /// were sent); anything else, or absent, keeps newest first.
+    #[serde(default)]
+    order: Option<String>,
 }
 
 /// A time bound as epoch milliseconds (cmd_history.ts): ISO-8601 (with or
@@ -767,6 +771,7 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
     let joined =
         crate::db::interactions::spawn_blocking(move || -> anyhow::Result<(Value, Option<i64>)> {
             let conn = store.read()?;
+            let ascending = p.order.as_deref().is_some_and(|o| o.trim().eq_ignore_ascii_case("asc"));
             let offset: i64 = p
                 .offset
                 .as_deref()
@@ -1037,7 +1042,8 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                 conn.query_row(&count_sql, refs.as_slice(), |r| r.get(0))?
             };
 
-            sql.push_str(" ORDER BY ts DESC LIMIT ? OFFSET ?");
+            // id breaks ties so equal timestamps keep one order on every page.
+            sql.push_str(if ascending { " ORDER BY ts ASC, id ASC LIMIT ? OFFSET ?" } else { " ORDER BY ts DESC LIMIT ? OFFSET ?" });
             params.push(rusqlite::types::Value::Integer(limit));
             params.push(rusqlite::types::Value::Integer(offset));
             let refs: Vec<&dyn rusqlite::types::ToSql> = params
@@ -1467,6 +1473,26 @@ mod tests {
             .finish();
         let scope = tracing::subscriber::set_default(subscriber);
         (bytes, scope, _registration_peer)
+    }
+
+    #[tokio::test]
+    async fn order_asc_lists_oldest_first_with_id_breaking_ties() {
+        let (app, state, _dir) = app_with_state();
+        state.store.write(|conn| {
+            super::super::session_verbs::ensure_fleet_tables(conn)?;
+            for (id, ts) in [(1, 300), (2, 100), (3, 200), (4, 200)] {
+                conn.execute("INSERT INTO cmd_history(id,text,type,session,ts) VALUES (?1,'t','user','w',?2)", rusqlite::params![id, ts])?;
+            }
+            Ok(WriteOutcome {applied:true,events:vec![]})
+        }).unwrap();
+        let ids = |b: &Value| b.as_array().unwrap().iter().map(|r| r["id"].as_i64().unwrap()).collect::<Vec<_>>();
+        let (status, body) = send(&app, "GET", "/api/history?order=asc", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(ids(&body), vec![2, 3, 4, 1]);
+        let (_, page) = send(&app, "GET", "/api/history?order=asc&limit=2&offset=2", None).await;
+        assert_eq!(ids(&page), vec![4, 1], "an offset page continues the same sequence");
+        let (_, newest) = send(&app, "GET", "/api/history", None).await;
+        assert_eq!(ids(&newest)[0], 1, "without order=asc the list stays newest first");
     }
 
     #[tokio::test]
