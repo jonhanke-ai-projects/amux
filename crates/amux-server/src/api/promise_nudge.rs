@@ -310,6 +310,9 @@ pub(crate) async fn promise_sweep(state: &AppState) -> usize {
                         "promise sweep: not nudging yet");
                 }
             }
+            PromiseGate::Nudge if !super::turn_end::nudges_wanted(name, "promise") => {
+                sv::update_meta(name, &[("promise_uuid", json!(""))]);
+            }
             PromiseGate::Nudge => {
                 let card = card.unwrap_or_default();
                 let text = promise_text(&card, &sv::meta_str(&meta, "promise_text"),
