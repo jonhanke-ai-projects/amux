@@ -2301,6 +2301,16 @@ pub async fn start(
     // std::sync::Mutex, and holding one across an await deadlocks the runtime.
     // The same listing already resolves the page tab; its URL was being thrown
     // away, which is why the response could not say where the browser landed.
+    // WAIT FOR THE PAGE THE CALLER ASKED FOR. Chrome gets `url` on its command
+    // line and CDP answers before the launch tab has committed it, so a start
+    // used to return with the tab still on about:blank and the lane's first
+    // `state` read a blank page (2026-10-17 replay: linkedin.com started and
+    // observed about:blank in the same second). Bounded: a slow site returns
+    // with what it has, and says so.
+    let wants_page = !url.is_empty() && url != "about:blank";
+    if wants_page {
+        settle_launch_tab(port, session, url).await;
+    }
     let launch_page = cdp_list(port).await.ok().and_then(|tabs| {
         tabs.as_array()
             .and_then(|ts| {
@@ -5242,6 +5252,65 @@ pub async fn click_grounded(
 /// `complete`; a slow page degrades to "still loading", never a hang. Then
 /// re-inject the capture shim (parity with Python `_bu_open` re-injecting
 /// per navigation) and run the landing check.
+/// Wait (bounded) until the launch tab has left about:blank and finished
+/// loading. Logs `browser_start_settle_timeout` when the page is still loading
+/// at the deadline, so a sweep sees starts that return early.
+async fn settle_launch_tab(port: u16, session: &str, url: &str) {
+    let budget = std::time::Duration::from_millis(
+        std::env::var("AMUX_BROWSER_START_SETTLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000),
+    );
+    let began = std::time::Instant::now();
+    let deadline = began + budget;
+    let blank = |u: &str| u.is_empty() || u == "about:blank";
+    let mut ws = None;
+    let mut last_url = String::new();
+    while std::time::Instant::now() < deadline {
+        if let Ok(tabs) = cdp_list(port).await {
+            if let Some(t) = tabs.as_array().and_then(|ts| ts.iter().find(|t| t.get("type").and_then(Value::as_str) == Some("page"))) {
+                last_url = t.get("url").and_then(Value::as_str).unwrap_or("").to_string();
+                if !blank(&last_url) {
+                    ws = t.get("webSocketDebuggerUrl").and_then(Value::as_str).map(str::to_string);
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    // The tab list shows a PENDING navigation's url, and the about:blank
+    // document it replaces already reads readyState "complete". So ask the
+    // document itself, and accept only a loaded document that is no longer
+    // about:blank. Measured: checking the list and readyState alone returned
+    // after 127 ms on a page that took 2 s, and the next read was still blank.
+    let mut ready = String::new();
+    if let Some(ws) = ws {
+        if let Ok(mut c) = CdpClient::connect(&ws).await {
+            while std::time::Instant::now() < deadline {
+                if let Ok(v) = c.eval("JSON.stringify([location.href, document.readyState])", 3).await {
+                    let pair: Vec<String> = v.as_str().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+                    if let [href, state] = pair.as_slice() {
+                        last_url = href.clone();
+                        ready = state.clone();
+                        if !blank(href) && state == "complete" {
+                            break;
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+        }
+    }
+    let ready = if blank(&last_url) { String::new() } else { ready };
+    let waited_ms = began.elapsed().as_millis() as u64;
+    if ready == "complete" {
+        tracing::info!(session, url, landed = %last_url, waited_ms, measured = true, n_considered = 1,
+            verdict = "browser_start_settled", "browser start waited for the requested page to load");
+    } else {
+        tracing::warn!(session, url, landed = %last_url, ready_state = %ready, waited_ms, measured = true, n_considered = 1,
+            verdict = "browser_start_settle_timeout",
+            "browser start returned before the requested page finished loading; the first read may see a partial or blank page");
+    }
+}
+
 pub async fn navigate_and_settle(c: &mut CdpClient, url: &str) -> anyhow::Result<Value> {
     c.call(
         "Page.navigate",
