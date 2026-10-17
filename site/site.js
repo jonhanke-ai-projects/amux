@@ -1,35 +1,7 @@
 (function () {
-  // Synchronous theme boot — runs before paint to prevent flash
-  var stored = localStorage.getItem('amux-theme');
-  var pageDefault = document.documentElement.getAttribute('data-theme') || null;
-  var theme = stored
-    ? stored
-    : pageDefault
-    ? pageDefault
-    : window.matchMedia('(prefers-color-scheme: light)').matches
-    ? 'light'
-    : 'dark';
-
-  function applyTheme(t) {
-    document.documentElement.setAttribute('data-theme', t);
-    var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', t === 'light' ? '#f5f4ed' : '#1e2330');
-    localStorage.setItem('amux-theme', t);
-    var btn = document.getElementById('theme-toggle-btn');
-    if (btn) {
-      // Icon + label of the mode you'd switch TO — bigger and self-explaining
-      // (was a lone dim 13px glyph). role=switch + aria-checked for AT.
-      btn.innerHTML = t === 'light'
-        ? '<span class="tt-ic" aria-hidden="true">☾</span><span class="tt-label">Dark</span>'
-        : '<span class="tt-ic" aria-hidden="true">☀</span><span class="tt-label">Light</span>';
-      btn.setAttribute('aria-label', t === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
-      btn.setAttribute('title', t === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
-      btn.setAttribute('role', 'switch');
-      btn.setAttribute('aria-checked', t === 'dark' ? 'true' : 'false');
-    }
-  }
-
-  applyTheme(theme);
+  // Dark mode only — no toggle
+  document.documentElement.setAttribute('data-theme', 'dark');
+  var theme = 'dark';
 
   // PostHog analytics — async, non-blocking
   !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.people.toString(1)+" (stub)"},o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug getPageViewId captureTrackedMutations setTrackedMutations".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
@@ -46,25 +18,6 @@
   document.addEventListener('DOMContentLoaded', function () {
     var nav = document.querySelector('.site-header nav') || document.querySelector('header.site nav') || document.querySelector('header nav');
     if (!nav) return;
-    var btn = document.createElement('button');
-    btn.id = 'theme-toggle-btn';
-    btn.className = 'theme-toggle';
-    btn.setAttribute('aria-label', 'Toggle light/dark mode');
-    btn.setAttribute('title', 'Toggle light/dark mode');
-    btn.onclick = function () {
-      var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-      theme = next;
-      applyTheme(next);
-      posthog.register({ theme_preference: next }); // EXP-008
-    };
-    // Insert just before the first CTA button so toggle sits between text links and action buttons
-    var firstCta = nav.querySelector('.nav-cta, .cta, [class*="cta"]');
-    if (firstCta) {
-      nav.insertBefore(btn, firstCta);
-    } else {
-      nav.appendChild(btn);
-    }
-    applyTheme(theme);   // paint the icon+label onto the freshly inserted button
 
     // EXP-002: sticky mobile iOS CTA bar — only on small screens
     // Inject CSS + DOM element so the App Store button is always reachable on mobile
