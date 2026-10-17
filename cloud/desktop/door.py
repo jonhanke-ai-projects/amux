@@ -25,7 +25,13 @@ The token names the person (sub = email), their role, and for a teammate the
 amux invite to redeem. The door redeems it with amux-server, keeps the member
 token in MEMBERS_FILE, and sets a 12-hour cookie.
 
-Every account, password or token, maps to an amux member token in MEMBERS_FILE
+The owner (an AMUX_WEB_USERS entry marked `owner`, which is the paying customer on amux
+Cloud) has no member token: Caddy then sends amux an empty member cookie and amux treats
+the request as its host owner, who can invite teammates in Settings. A teammate opens the
+invite link (/invite/<token>), the door sends them to /_door/join, where they pick their
+own password; the door redeems the invite and keeps that password in JOINED_FILE.
+
+Every other account, password or token, maps to an amux member token in MEMBERS_FILE
 ("name token" lines). /_door/check returns it as X-Amux-Member, which Caddy
 forwards as the only cookie amux sees. Each token is re-validated against
 amux-server's /api/identity at most every 60 seconds, so revoking a member in
@@ -64,6 +70,7 @@ MAX_AGE = 30 * 86400
 TOKEN_MAX_AGE = 12 * 3600
 PORT = int(os.environ.get("DOOR_PORT", "8890"))
 MEMBERS_FILE = os.environ.get("DOOR_MEMBERS", "/etc/amux-door/members")
+JOINED_FILE = os.environ.get("DOOR_JOINED", "/etc/amux-door/joined")   # teammates' own passwords
 FLEET_ENV = os.environ.get("DOOR_FLEET_ENV", "/etc/amux/fleet.env")
 AMUX = os.environ.get("DOOR_AMUX_URL", "https://127.0.0.1:8824")
 MEMBER_RECHECK = float(os.environ.get("DOOR_MEMBER_RECHECK", "60"))
@@ -81,10 +88,10 @@ def scrypt_hash(password, salt=None):
     return "scrypt$%s$%s" % (base64.b64encode(salt).decode(), base64.b64encode(h).decode())
 
 
-def users():
+def users(path=None):
     out = {}
     try:
-        for line in open(USERS_FILE):
+        for line in open(path or USERS_FILE):
             parts = line.split()
             if len(parts) == 2:
                 out[parts[0]] = parts[1]
@@ -103,6 +110,22 @@ def members():
     except FileNotFoundError:
         pass
     return out
+
+
+def joined():
+    """Teammates who set their password at /_door/join. They stay members: revoking one in
+    Settings locks them out, because their check goes through member_valid like a token user."""
+    return users(JOINED_FILE)
+
+
+def save_joined(name, pw_hash):
+    rows = {k: v for k, v in joined().items() if k != name}
+    rows[name] = pw_hash
+    tmp = JOINED_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("".join("%s %s\n" % kv for kv in rows.items()))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, JOINED_FILE)
 
 
 def save_member(name, token):
@@ -191,7 +214,7 @@ def redeem_invite(email, invite):
 
 
 def check_password(user, password):
-    stored = users().get(user)
+    stored = users().get(user) or joined().get(user)
     if not stored or not stored.startswith("scrypt$"):
         # Same work either way so a timing difference does not reveal users.
         scrypt_hash(password)
@@ -276,6 +299,15 @@ button{margin-top:18px;width:100%%;min-height:44px;border:0;border-radius:8px;ba
 <button type="submit">Sign in</button>%(err)s
 </form></body></html>"""
 
+JOIN_PAGE = PAGE.replace('<form method="post" action="/_door/login">', '<form method="post" action="/_door/join">').replace(
+    "<title>Sign in to amux</title>", "<title>Join amux</title>").replace(
+    '<h1>amux</h1><p>%(host)s</p>', '<h1>Join %(host)s</h1><p>You were invited to this amux server. Choose the password you will sign in with.</p>').replace(
+    '<label for="u">Username</label>', '<label for="u">Your email</label>').replace(
+    'autocomplete="current-password" required>', 'autocomplete="new-password" minlength="10" required>'
+    '<label for="p2">Password again</label><input id="p2" name="password2" type="password" autocomplete="new-password" required>').replace(
+    '<input type="hidden" name="next" value="%(next)s">', '<input type="hidden" name="invite" value="%(next)s">').replace(
+    '<button type="submit">Sign in</button>', '<button type="submit">Join</button>')
+
 
 class Door(BaseHTTPRequestHandler):
     server_version = "amux-door"
@@ -297,6 +329,13 @@ class Door(BaseHTTPRequestHandler):
         body = PAGE % {"host": host, "next": html.escape(safe_next(nxt)), "user": html.escape(user),
                        "err": '<div class="err">%s</div>' % html.escape(err) if err else ""}
         self.send(401 if err else 200, body.encode(), [("Content-Type", "text/html; charset=utf-8"),
+                                                       ("Cache-Control", "no-store")])
+
+    def join_page(self, invite, user="", err=""):
+        host = html.escape(self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "")
+        body = JOIN_PAGE % {"host": host, "next": html.escape(invite), "user": html.escape(user),
+                            "err": '<div class="err">%s</div>' % html.escape(err) if err else ""}
+        self.send(400 if err else 200, body.encode(), [("Content-Type", "text/html; charset=utf-8"),
                                                        ("Cache-Control", "no-store")])
 
     def do_GET(self):
@@ -323,6 +362,11 @@ class Door(BaseHTTPRequestHandler):
                 tok = members().get(user)
                 return self.send(200, headers=[("X-Door-User", user)] + ([("X-Amux-Member", tok)] if tok else []))
             accept = self.headers.get("Accept", "")
+            if method == "GET" and uri.startswith("/invite/"):
+                # A teammate's invite link (Settings > Team). They have no password yet.
+                inv = uri[len("/invite/"):].split("?")[0].split("/")[0]
+                return self.send(302, headers=[("Location", "/_door/join?invite=" + urllib.parse.quote(inv, safe="")),
+                                               ("Cache-Control", "no-store")])
             if self.headers.get("X-Forwarded-Method", "GET") == "GET" and "text/html" in accept:
                 cfg = fleet()
                 if cfg.get("AMUX_CONTROL_URL") and cfg.get("AMUX_SLUG") and not users():
@@ -358,6 +402,9 @@ class Door(BaseHTTPRequestHandler):
         if path.path == "/_door/login":
             q = urllib.parse.parse_qs(path.query)
             return self.page(q.get("next", ["/"])[0])
+        if path.path == "/_door/join":
+            q = urllib.parse.parse_qs(path.query)
+            return self.join_page(q.get("invite", [""])[0])
         if path.path == "/_door/status":
             # Public and secret-free: the self-updater's last outcome (cloud/desktop/update.sh) plus
             # whether amux answers right now. cloud.amux.io's monitor reads it without signing in.
@@ -369,6 +416,11 @@ class Door(BaseHTTPRequestHandler):
                 st["live_commit"] = json.loads(_amux("GET", "/health", timeout=3)[1]).get("commit", "")
             except Exception:
                 st["live_commit"] = ""
+            try:   # the page a customer lands on, fetched as the owner over loopback
+                code, body = _amux("GET", "/", timeout=5)
+                st["dashboard"] = code == 200 and b"<html" in body[:4096].lower()
+            except Exception:
+                st["dashboard"] = False
             st["measured"] = True
             return self.send(200, json.dumps(st).encode(), [("Content-Type", "application/json"),
                                                              ("Cache-Control", "no-store")])
@@ -389,10 +441,13 @@ class Door(BaseHTTPRequestHandler):
         self.send(404)
 
     def do_POST(self):
-        if urllib.parse.urlsplit(self.path).path != "/_door/login":
+        route = urllib.parse.urlsplit(self.path).path
+        if route not in ("/_door/login", "/_door/join"):
             return self.send(404)
         n = int(self.headers.get("Content-Length") or 0)
         form = urllib.parse.parse_qs(self.rfile.read(min(n, 65536)).decode(errors="replace"))
+        if route == "/_door/join":
+            return self.join(form)
         user = (form.get("username") or [""])[0].strip()
         pw = (form.get("password") or [""])[0]
         nxt = safe_next((form.get("next") or ["/"])[0])
@@ -403,6 +458,30 @@ class Door(BaseHTTPRequestHandler):
         log(event="signin", user=user, ip=ip, verdict="door_signin_refused")
         time.sleep(1.0)  # slows guessing without a lockout a person could trip
         return self.page(nxt, user, "Wrong username or password.")
+
+
+    def join(self, form):
+        email = (form.get("username") or [""])[0].strip().lower()
+        pw, pw2 = (form.get("password") or [""])[0], (form.get("password2") or [""])[0]
+        invite = (form.get("invite") or [""])[0].strip()
+        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        if "@" not in email or not (3 <= len(email) <= 200) or any(c.isspace() for c in email):
+            return self.join_page(invite, email, "Enter your email address.")
+        if len(pw) < 10:
+            return self.join_page(invite, email, "Use at least 10 characters.")
+        if pw != pw2:
+            return self.join_page(invite, email, "The two passwords differ.")
+        if email in users() or email in joined():
+            return self.join_page(invite, email, "That email already has an account here. Sign in instead.")
+        try:
+            redeem_invite(email, invite)
+        except Exception as e:
+            log(event="join", user=email, ip=ip, verdict="door_join_refused", reason=str(e)[:120])
+            time.sleep(1.0)
+            return self.join_page(invite, email, "This invite link is used or no longer valid. Ask the server owner for a new one.")
+        save_joined(email, scrypt_hash(pw))
+        log(event="join", user=email, ip=ip, verdict="door_join_ok")
+        return self.send(303, headers=[("Location", "/"), ("Cache-Control", "no-store")] + session_cookies(email))
 
 
 def main():

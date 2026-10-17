@@ -7,10 +7,14 @@
 //   GET  /api/slug?name=     -> {available, reason}
 //   GET  /api/status?session_id=cs_...  -> {state: paying|creating|booting|ready|failed, url}
 //   POST /api/billing        {email} -> emails a Stripe billing-portal link
+//   POST /api/delete         {email} -> emails a one-hour link to /start/delete/?t=...
+//   POST /api/delete/confirm {t, slug} -> ends the subscription now and erases the server,
+//                            its address, backups and snapshots (no 30-day keep)
 //   POST /webhooks/stripe    checkout.session.completed: create the server and its DNS record
 //                            customer.subscription.deleted: snapshot it, then (cron) delete it
 //   cron every minute        ready emails; delete servers whose final snapshot is done;
-//                            delete snapshots older than 30 days
+//                            delete snapshots older than 30 days; finish any paid signup the
+//                            webhook did not (reconcile); check each server every 10 minutes
 //
 // Bindings (cloud/start/deploy.sh): STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, HCLOUD_TOKEN,
 // CF_TOKEN, CF_ZONE_ID, GMAIL_OAUTH, GOLDEN_IMAGE, PLANS (JSON), MODE (live|test), TEST_KEY.
@@ -131,7 +135,8 @@ const BOOT = [
 function userData(slug, email, pwHash) {
   // Standalone: the golden image's bootstrap gets its domain and its one owner login. The
   // password arrives already hashed (door.py scrypt format); nothing else about the customer.
-  const envFile = [`AMUX_DOMAIN='${host(slug)}'`, `AMUX_WEB_USERS='${email}:${pwHash}:${email}'`,
+  // `owner`: no member token, so amux treats this login as the host owner (Settings can invite teammates).
+  const envFile = [`AMUX_DOMAIN='${host(slug)}'`, `AMUX_WEB_USERS='${email}:${pwHash}:${email}:owner'`,
     `AMUX_SKIP_PACKAGES=1`].join('\n');
   return `#cloud-config
 write_files:
@@ -150,13 +155,18 @@ async function goldenImage(env) {
   return d.images[0].id;
 }
 
-async function provision(env, session) {
-  const meta = session.metadata || {};
-  const sub = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
-  const email = (session.customer_details?.email || meta.email || '').toLowerCase();
-  if (!sub || !meta.slug || !meta.pw_hash) throw new Error(`session ${session.id} lacks subscription or signup data`);
+// Idempotent, and safe to run again after a partial failure: the webhook calls it, Stripe
+// redelivers it, and the cron's reconcile() calls it for any paid subscription whose signup is
+// not finished (pw_hash still in its metadata). Each step checks before it acts, and pw_hash is
+// cleared only after the server, its backups and its DNS record all exist.
+async function provision(env, { sub, meta, email }) {
+  if (!sub || !meta?.slug || !meta?.pw_hash) throw new Error(`subscription ${sub} lacks signup data`);
   const existing = await hetzner(env, 'GET', `/servers?label_selector=amux-sub=${sub}`);
-  if (existing.servers.length) { log('provision.replay', { sub }); return existing.servers[0]; }   // Stripe redelivers
+  if (existing.servers.length) {
+    const srv = existing.servers[0];
+    log('provision.resume', { sub, server: srv.id });   // a redelivery, or a retry after a partial failure
+    return finish(env, sub, srv.labels['amux-slug'], srv);
+  }
   let slug = meta.slug;
   if (await slugTaken(env, slug)) slug = `${slug}-${sub.slice(-4).toLowerCase()}`;   // lost a race since checkout
   const plan = plans(env).find(p => p.id === meta.plan) || plans(env)[0];
@@ -164,6 +174,9 @@ async function provision(env, session) {
   const labels = { 'amux-cloud': '1', 'amux-standalone': '1', 'amux-sub': sub, 'amux-slug': slug,
                    'amux-plan': plan.id, 'amux-mode': env.MODE };
   let srv, lastErr;
+  // Hetzner sometimes has no capacity for a type in a location (412 resource_unavailable, seen
+  // 2026-10-17 for cx43 in all three at once). Try each; if all refuse, throw, and the cron
+  // retries every minute until one has room, emailing the operator if it takes over 10 minutes.
   for (const location of ['fsn1', 'nbg1', 'hel1']) {
     try {
       srv = (await hetzner(env, 'POST', '/servers', { name: `amux-${slug}`, server_type: plan.server_type, image,
@@ -171,22 +184,80 @@ async function provision(env, session) {
       break;
     } catch (e) { lastErr = e; if (!['resource_unavailable', 'placement_error'].includes(e.code)) throw e; }
   }
-  if (!srv) throw lastErr;
-  // Hetzner's daily backups (7 kept, +20% of the server price): a restorable copy of the whole disk
-  // without anything on the server to maintain. A failure here is logged and retried by the cron.
-  await hetzner(env, 'POST', `/servers/${srv.id}/actions/enable_backup`).catch(e => log('backup.enable_failed', { slug, error: String(e).slice(0, 200) }));
-  const ip = srv.public_net.ipv4.ip;
-  await cf(env, 'POST', `/zones/${env.CF_ZONE_ID}/dns_records`, { type: 'A', name: host(slug), content: ip,
-    proxied: false, ttl: 60, comment: `amux cloud ${sub}` });
-  // The hash has done its job (it is on the server now); an empty value removes it from Stripe.
-  await stripe(env, 'POST', `/subscriptions/${sub}`, { metadata: { slug, hetzner_id: srv.id, pw_hash: '' } });
+  if (!srv) { log('provision.no_capacity', { sub, slug, type: plan.server_type, error: String(lastErr).slice(0, 200) }); throw lastErr; }
   log('provision.created', { sub, slug, server: srv.id, plan: plan.id, mode: env.MODE });
+  return finish(env, sub, slug, srv);
+}
+
+async function finish(env, sub, slug, srv) {
+  // Hetzner's daily backups (7 kept, +20% of the server price): a restorable copy of the whole disk
+  // without anything on the server to maintain. The monitor re-enables them if this fails.
+  if (!srv.backup_window)
+    await hetzner(env, 'POST', `/servers/${srv.id}/actions/enable_backup`).catch(e => log('backup.enable_failed', { slug, error: String(e).slice(0, 200) }));
+  await ensureDns(env, sub, slug, srv);
+  // The hash has done its job (it is on the server now); an empty value removes it from Stripe and
+  // marks the signup finished, so reconcile() stops looking at this subscription.
+  await stripe(env, 'POST', `/subscriptions/${sub}`, { metadata: { slug, hetzner_id: srv.id, pw_hash: '' } });
+  log('provision.finished', { sub, slug, server: srv.id });
   return srv;
 }
 
-async function deprovision(env, sub) {
+async function ensureDns(env, sub, slug, srv) {
+  const ip = srv.public_net.ipv4.ip;
+  const recs = await cf(env, 'GET', `/zones/${env.CF_ZONE_ID}/dns_records?name=${host(slug)}`);
+  if (recs.some(r => r.type === 'A' && r.content === ip)) return false;
+  for (const r of recs) await cf(env, 'DELETE', `/zones/${env.CF_ZONE_ID}/dns_records/${r.id}`);
+  await cf(env, 'POST', `/zones/${env.CF_ZONE_ID}/dns_records`, { type: 'A', name: host(slug), content: ip,
+    proxied: false, ttl: 60, comment: `amux cloud ${sub}` });
+  log('dns.written', { slug, replaced: recs.length });
+  return true;
+}
+
+// Paid subscriptions whose signup is not finished: the webhook failed (no capacity, an API
+// error, a DNS write that did not happen) or never arrived. Runs every minute; the webhook gets
+// the first 90 seconds to itself.
+async function reconcile(env) {
+  const since = Math.floor(Date.now() / 1000) - 7 * 86400;
+  const subs = (await stripe(env, 'GET', '/subscriptions', { status: 'active', 'created[gte]': since, limit: 100,
+                                                              expand: ['data.customer'] })).data;
+  for (const s of subs) {
+    const m = s.metadata || {};
+    if (!m.slug || !m.pw_hash) continue;
+    const age = Date.now() / 1000 - s.created;
+    if (age < 90) continue;
+    try {
+      await provision(env, { sub: s.id, meta: m, email: (s.customer?.email || m.email || '').toLowerCase() });
+      log('reconcile.provisioned', { sub: s.id, slug: m.slug, age_s: Math.round(age) });
+    } catch (e) {
+      log('reconcile.failed', { sub: s.id, slug: m.slug, age_s: Math.round(age), error: String(e.message || e).slice(0, 200) });
+      if (age > 600 && !m.alerted) {
+        await sendMail(env, OPERATOR, `[amux cloud ${env.MODE}] paid order ${m.slug} has no server after ${Math.round(age / 60)} min`,
+          `Subscription ${s.id} (${m.slug}, plan ${m.plan}) was paid ${Math.round(age / 60)} minutes ago and its server is not finished.\r\n\r\n` +
+          `Last error: ${String(e.message || e).slice(0, 400)}\r\n\r\nThe Worker keeps retrying every minute; nothing needs doing unless this repeats.`);
+        await stripe(env, 'POST', `/subscriptions/${s.id}`, { metadata: { alerted: String(Math.floor(Date.now() / 1000)) } });
+      }
+    }
+  }
+}
+
+async function erase(env, sub) {
+  // The customer asked to delete their account: server (Hetzner drops its backups with it),
+  // address and every snapshot, now.
+  const d = await hetzner(env, 'GET', `/servers?label_selector=amux-sub=${sub}`);
+  for (const s of d.servers) {
+    await hetzner(env, 'DELETE', `/servers/${s.id}`);
+    for (const r of await cf(env, 'GET', `/zones/${env.CF_ZONE_ID}/dns_records?name=${host(s.labels['amux-slug'])}`))
+      await cf(env, 'DELETE', `/zones/${env.CF_ZONE_ID}/dns_records/${r.id}`);
+  }
+  const imgs = await hetzner(env, 'GET', `/images?type=snapshot&label_selector=amux-sub=${sub}`);
+  for (const i of imgs.images) await hetzner(env, 'DELETE', `/images/${i.id}`);
+  log('account.erased', { sub, servers: d.servers.length, snapshots: imgs.images.length });
+}
+
+async function deprovision(env, sub, eraseNow) {
   // Ended subscription: power off, keep a snapshot for 30 days (resubscribing can restore it),
   // and let the cron delete the server and its address once the snapshot exists.
+  if (eraseNow) return erase(env, sub);
   const d = await hetzner(env, 'GET', `/servers?label_selector=amux-sub=${sub}`);
   for (const s of d.servers) {
     if (s.labels['amux-ending']) continue;
@@ -204,17 +275,22 @@ async function status(env, sessionId) {
   const s = await stripe(env, 'GET', `/checkout/sessions/${sessionId}`);
   if (s.status !== 'complete') return { state: 'paying' };
   const sub = s.subscription;
+  const waited_s = Math.max(0, Math.round(Date.now() / 1000 - s.created));
   const d = await hetzner(env, 'GET', `/servers?label_selector=amux-sub=${sub}`);
-  if (!d.servers.length) return { state: 'creating' };
+  if (!d.servers.length) return { state: 'creating', waited_s };
   const srv = d.servers[0], slug = srv.labels['amux-slug'], url = `https://${host(slug)}`;
   if (srv.labels['amux-ready'] === '1') return { state: 'ready', url, email: s.customer_details?.email };
-  return { state: (await isUp(slug)) ? 'ready' : 'booting', url, email: s.customer_details?.email };
+  return { state: (await isUp(slug)) ? 'ready' : 'booting', url, email: s.customer_details?.email, waited_s };
 }
 
+// Ready means usable: the door answers, amux-server answers behind it, its dashboard loads, and the
+// first self-update has run (so no update restart lands in the customer's first minutes).
 async function isUp(slug) {
   try {
-    const r = await fetch(`https://${host(slug)}/_door/login`, { redirect: 'manual', cf: { cacheTtl: 0 } });
-    return r.status === 200;
+    const r = await fetch(`https://${host(slug)}/_door/status`, { cf: { cacheTtl: 0 } });
+    if (r.status !== 200) return false;
+    const st = await r.json();
+    return Boolean(st.live_commit && st.dashboard && st.verdict && st.verdict !== 'unknown');
   } catch { return false; }
 }
 
@@ -247,6 +323,7 @@ async function tick(env) {
     }
   }
   await monitor(env, d.servers);
+  await reconcile(env);
   const imgs = await hetzner(env, 'GET', '/images?type=snapshot&label_selector=amux-cloud-final=1');
   for (const i of imgs.images) {
     if (Number(i.labels['amux-expires'] || 0) * 1000 < Date.now()) {
@@ -272,6 +349,7 @@ async function serverProblem(env, s) {
   } catch (e) { return `unreachable (${String(e).slice(0, 80)})`; }
   const age = Date.now() / 1000 - (st.checked_at || 0);
   if (!st.live_commit) return 'amux-server is not answering behind the door';
+  if (st.dashboard === false) return 'the dashboard does not load';
   if (st.verdict === 'unknown') return Date.now() - Date.parse(s.created) > 30 * 60e3 ? 'self-updater has never reported' : '';
   if (age > 3 * 3600) return `self-updater last reported ${Math.round(age / 3600)}h ago`;
   if (String(st.verdict).startsWith('failed')) return `self-update ${st.verdict}: ${st.detail || ''}`;
@@ -282,6 +360,7 @@ async function monitor(env, servers) {
   for (const s of servers) {
     if (s.labels['amux-ending'] || s.labels['amux-ready'] !== '1' || (s.id + minute) % 10) continue;
     if (!s.backup_window) await hetzner(env, 'POST', `/servers/${s.id}/actions/enable_backup`).catch(() => {});
+    await ensureDns(env, s.labels['amux-sub'], s.labels['amux-slug'], s).catch(e => log('dns.repair_failed', { slug: s.labels['amux-slug'], error: String(e).slice(0, 200) }));
     const problem = await serverProblem(env, s).catch(e => `monitor error ${String(e).slice(0, 80)}`);
     const slug = s.labels['amux-slug'], fails = Number(s.labels['amux-fail'] || 0);
     const alerted = Number(s.labels['amux-alert'] || 0), now = Math.floor(Date.now() / 1000);
@@ -302,6 +381,32 @@ async function monitor(env, servers) {
     }
     if (JSON.stringify(labels) !== JSON.stringify(s.labels)) await hetzner(env, 'PUT', `/servers/${s.id}`, { labels });
   }
+}
+
+// ------------------------------------------------------------------ account deletion
+async function accountSubs(env, email) {
+  const out = [];
+  for (const c of (await stripe(env, 'GET', '/customers', { email, limit: 10 })).data)
+    for (const s of (await stripe(env, 'GET', '/subscriptions', { customer: c.id, status: 'all', limit: 20 })).data)
+      if (s.metadata?.slug) out.push(s);
+  return out;
+}
+const b64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+async function tokenKey(env) {
+  return crypto.subtle.importKey('raw', new TextEncoder().encode('amux-delete:' + env.STRIPE_WEBHOOK_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+async function signToken(env, claims) {
+  const body = b64u(new TextEncoder().encode(JSON.stringify(claims)));
+  return body + '.' + b64u(await crypto.subtle.sign('HMAC', await tokenKey(env), new TextEncoder().encode(body)));
+}
+async function verifyToken(env, t) {
+  const [body, sig] = String(t).split('.');
+  if (!body || !sig) return null;
+  const raw = Uint8Array.from(atob(sig.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+  if (!(await crypto.subtle.verify('HMAC', await tokenKey(env), raw, new TextEncoder().encode(body)))) return null;
+  const c = JSON.parse(atob(body.replace(/-/g, '+').replace(/_/g, '/')));
+  return c.exp > Date.now() ? c : null;
 }
 
 // ------------------------------------------------------------------ routes
@@ -340,14 +445,24 @@ async function route(req, env) {
       success_url: `${SITE}/start/welcome/?session_id={CHECKOUT_SESSION_ID}${api}`,
       cancel_url: `${SITE}/start/?canceled=1`,
     });
-    log('checkout.created', { slug, plan: plan.id, mode: env.MODE });
-    return json({ url: s.url }, 200, cors(req));
+    // One payable checkout per server name: a double submit, a second tab or a retry would otherwise
+    // leave two open sessions that could both be paid. Keep the newest and expire the rest, so
+    // concurrent requests converge on the same session.
+    const open = (await stripe(env, 'GET', '/checkout/sessions', { status: 'open', 'created[gte]': Math.floor(Date.now() / 1000) - 86400,
+                                                                   limit: 100 })).data.filter(x => x.metadata?.slug === slug);
+    if (!open.some(x => x.id === s.id)) open.push(s);
+    open.sort((a, b) => (b.created - a.created) || (b.id < a.id ? -1 : 1));
+    for (const old of open.slice(1))
+      await stripe(env, 'POST', `/checkout/sessions/${old.id}/expire`).catch(e => log('checkout.expire_failed', { slug, error: String(e).slice(0, 120) }));
+    log('checkout.created', { slug, plan: plan.id, mode: env.MODE, expired: open.length - 1 });
+    return json({ url: open[0].url }, 200, cors(req));
   }
 
   if (p === '/api/status' && req.method === 'GET') {
     const sid = url.searchParams.get('session_id') || '';
     if (!/^cs_(test|live)_[A-Za-z0-9]+$/.test(sid)) return json({ error: 'bad session' }, 400, cors(req));
-    return json(await status(env, sid), 200, cors(req));
+    try { return json(await status(env, sid), 200, cors(req)); }
+    catch (e) { if (/stripe 404/.test(String(e))) return json({ error: 'no such order' }, 404, cors(req)); throw e; }
   }
 
   if (p === '/api/billing' && req.method === 'POST') {
@@ -359,11 +474,53 @@ async function route(req, env) {
       if (!subs.some(s => s.metadata?.slug)) continue;
       const portal = await stripe(env, 'POST', '/billing_portal/sessions', { customer: c.id, return_url: `${SITE}/start/billing/`,
                                                                             ...(env.PORTAL_CONFIG ? { configuration: env.PORTAL_CONFIG } : {}) });
-      await sendMail(env, email, 'Manage your amux Cloud billing',
-        `Open this link within an hour to change your card, see invoices or cancel:\r\n\r\n${portal.url}`);
+      // A send that failed is reported, so the page can say so instead of "a link is on its way".
+      if (!(await sendMail(env, email, 'Manage your amux Cloud billing',
+        `Open this link within an hour to change your card, see invoices or cancel:\r\n\r\n${portal.url}`)))
+        return json({ error: 'email could not be sent' }, 502, cors(req));
       break;
     }
     return json({ ok: true }, 200, cors(req));
+  }
+
+  if (p === '/api/delete' && req.method === 'POST') {
+    // Same answer whether or not the address has an account. The link proves the person reads that inbox.
+    const email = ((await req.json().catch(() => ({}))).email || '').trim().toLowerCase();
+    const subs = email ? await accountSubs(env, email) : [];
+    if (subs.length) {
+      const t = await signToken(env, { email, exp: Date.now() + 3600e3 });
+      const sent = await sendMail(env, email, 'Delete your amux Cloud account',
+        `Someone (we hope you) asked to delete the amux Cloud account for this address.\r\n\r\n` +
+        `Open this link within an hour to confirm. Nothing is deleted until you confirm on that page:\r\n\r\n` +
+        `${SITE}/start/delete/?t=${encodeURIComponent(t)}${env.MODE === 'test' ? '&api=' + encodeURIComponent(url.origin) : ''}\r\n\r\n` +
+        `If this was not you, ignore this email.`);
+      if (!sent) return json({ error: 'email could not be sent' }, 502, cors(req));
+    }
+    log('delete.requested', { known: subs.length > 0 });
+    return json({ ok: true }, 200, cors(req));
+  }
+
+  if (p === '/api/delete/confirm' && req.method === 'POST') {
+    const b = await req.json().catch(() => ({}));
+    const claims = await verifyToken(env, b.t || '');
+    if (!claims) return json({ error: 'This link has expired. Ask for a new one on the billing page.' }, 400, cors(req));
+    const subs = await accountSubs(env, claims.email);
+    if (url.searchParams.get('peek') === '1')
+      return json({ servers: subs.map(s => host(s.metadata.slug)) }, 200, cors(req));
+    if (!subs.some(s => s.metadata.slug === String(b.slug || '').trim().toLowerCase()))
+      return json({ error: 'Type your server name exactly as shown to confirm.' }, 400, cors(req));
+    for (const s of subs) {
+      if (['active', 'trialing', 'past_due', 'unpaid', 'incomplete'].includes(s.status)) {
+        await stripe(env, 'POST', `/subscriptions/${s.id}`, { metadata: { erase: '1' } });
+        await stripe(env, 'DELETE', `/subscriptions/${s.id}`);   // the webhook erases; doing it here too is idempotent
+      }
+      await erase(env, s.id);
+    }
+    await sendMail(env, claims.email, 'Your amux Cloud account is deleted',
+      `Your server${subs.length > 1 ? 's are' : ' is'} deleted, with ${subs.length > 1 ? 'their' : 'its'} backups and snapshots, ` +
+      `and billing has stopped. Thank you for trying amux Cloud. amux itself stays free: https://amux.io`);
+    log('delete.confirmed', { subs: subs.length });
+    return json({ ok: true, deleted: subs.map(s => host(s.metadata.slug)) }, 200, cors(req));
   }
 
   if (p === '/webhooks/stripe' && req.method === 'POST') {
@@ -373,9 +530,10 @@ async function route(req, env) {
     const o = ev.data.object;
     if (ev.type === 'checkout.session.completed' && o.mode === 'subscription' && o.metadata?.pw_hash &&
         ['paid', 'no_payment_required'].includes(o.payment_status)) {
-      await provision(env, o);
+      const sub = typeof o.subscription === 'string' ? o.subscription : o.subscription?.id;
+      await provision(env, { sub, meta: o.metadata, email: (o.customer_details?.email || o.metadata?.email || '').toLowerCase() });
     } else if (ev.type === 'customer.subscription.deleted' && o.metadata?.slug) {
-      await deprovision(env, o.id);
+      await deprovision(env, o.id, o.metadata?.erase === '1');
     }
     return json({ received: true });
   }
