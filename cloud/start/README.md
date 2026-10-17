@@ -10,14 +10,24 @@ control-plane server and no database. Each customer gets a standalone amux serve
 | Deploy | `deploy.sh live` or `deploy.sh test` |
 | Server image | the newest Hetzner snapshot labelled `amux-golden` (`cloud/control/build_image.py --ref <sha>`) |
 | End-to-end test | `e2e.mjs` (see below) |
+| Offline tests | `node cloud/start/test-worker.mjs`: the real module against fake Hetzner, Cloudflare and Stripe, with injected faults |
 
 Flow: the page hashes the password in the browser (scrypt, the door's format) and posts plan,
 name, email and hash to `/api/checkout`. Stripe Checkout takes payment. On
 `checkout.session.completed` the function creates the server from the golden image with
 `/etc/amux/standalone.env` (domain and the one login) and the DNS record. The server's bootstrap
-gets its own Let's Encrypt certificate. A cron every minute sends the ready email as
-hello@amux.io. On `customer.subscription.deleted` it snapshots the server (kept 30 days), then
-deletes the server and the record.
+gets its own Let's Encrypt certificate and runs its first self-update. A cron every minute
+sends the ready email as hello@amux.io once the server's `/_door/status` shows a commit, a
+dashboard that loads and an update verdict. On `customer.subscription.deleted` it snapshots the
+server (kept 30 days), then deletes the server and the record. Deleting the account from the
+billing page (an emailed one-hour link) ends the subscription and erases everything at once.
+
+Every step of provisioning is idempotent. If the webhook fails part way (no Hetzner capacity, a
+DNS error), Stripe redelivers it and the cron's `reconcile()` finishes any paid subscription
+whose signup is unfinished (its `pw_hash` is still in Stripe metadata). An order still
+unfinished after 10 minutes emails hello@amux.io once. The cron also checks each ready server
+every 10 minutes (reachable, updater healthy, backups on, DNS record right) and emails after two
+failed checks in a row.
 
 State lives in Hetzner labels (`amux-sub`, `amux-slug`, `amux-mode`, `amux-ready`, `amux-ending`)
 and Stripe metadata. The password hash is removed from Stripe once the server exists.
