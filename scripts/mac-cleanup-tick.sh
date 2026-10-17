@@ -183,7 +183,12 @@ USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
 # scratchpad/work/<clone>/ puts the tag at <proj>/<session>/scratchpad/work/<clone>/target/CACHEDIR.TAG,
 # seven levels down. At @6 the scan never saw them: one session held 47G and 23G of targets idle
 # over 6h with 21G free on the disk, and the summary read "eligible 0".
-TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@9:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
+# $HOME@3, last (disk RCA 2026-10-16, 207G free): a lane's own dot-folder,
+# ~/.mvs-infra-ops/target{,-mi5852,-base}, held 263G of build output idle since
+# 2026-09-28. The tag sits at ~/.<lane>/target/CACHEDIR.TAG, three levels down,
+# and no root above reached it, so every tick reported "consumers above 10G:
+# none". Last, so the high-yield roots spend the budget first.
+TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@9:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8:$HOME@3}
 TARGET_IDLE_H=${AMUX_CLEANUP_TARGET_IDLE_H:-24}
 # Under disk pressure the idle floor drops (DESKT-62). On 2026-10-01 the disk fell
 # from 574G to 155G in five days, and about 60G of build output sat 21-23h idle in
