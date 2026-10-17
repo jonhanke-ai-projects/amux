@@ -156,9 +156,9 @@ when an input changes.
 | Team | cx43 | 8 vCPU, 16 GB, 160 GB | $18.49 | $0.60 | $3.70 | $22.79 | $46 | **$69** |
 | Max | cx53 | 16 vCPU, 32 GB, 320 GB | $34.99 | $0.60 | $7.00 | $42.59 | $86 | **$129** |
 
-Prices include VAT for EU consumers and exclude it for VAT-registered businesses
-(Stripe Tax, tax-inclusive pricing for EU consumers); tables use the amount
-after VAT.
+**No EU VAT (owner decision 2026-10-17).** There is no EU VAT registration, so
+Stripe Tax collects no EU VAT and every customer pays the listed USD price. The
+tables below were computed net of VAT and so understate contribution slightly.
 
 ### 4.2 Profit at scale (Stripe)
 
@@ -735,7 +735,6 @@ from them.
 | Payments | Webhook delayed | The success URL reads the transaction directly (J5) | None |
 | Payments | Duplicate payment | Idempotency on the transaction id; automatic refund of the duplicate within the cap | None |
 | Payments | Stripe reviews the account or holds payouts | Accurate business description and terms in A0; Radar rules against card testing; dispute rate watched (M20) | Answer Stripe; rare |
-| Payments | EU VAT return due | Stripe Tax collects; returns filed through Stripe's filing integration; the report shows each filing | None after setup |
 | Payments | Refunds beyond the cap | Default after 7 days (section 9) | Optional |
 | Model sign-in | A provider changes its CLI login flow or expires a token | T-CLI-5 blocks a release with a changed flow; expired tokens show "Sign in again" and an email; API keys always work | None |
 | Tailnet | A customer's tailnet ACLs lock them out while tailnet only is on | The account owner turns tailnet only off at cloud.amux.io, which reaches the server through the fleet agent's outbound channel | None |
@@ -874,7 +873,7 @@ Memories, journal, habits, CRM, Settings, Team presence, Self-update.
 
 | # | Prerequisite | Evidence |
 |---|---|---|
-| P1 | Stripe products from `plans.json`; Stripe Tax on with the EU non-Union OSS registration; tax-filing integration connected; Radar rules; dispute webhook | Test and live products match `plans.json`; registration number recorded |
+| P1 | Stripe products from `plans.json`; Stripe Tax on with no EU registration (owner decision 2026-10-17: no EU VAT); Radar rules; dispute webhook | Test and live products match `plans.json` |
 | P2 | Terms, privacy policy, data processing agreement, subprocessor list (Hetzner, Cloudflare, Clerk, Stripe, PostHog, Apple, Tailscale when used) | Pages live; linked from checkout |
 | P3 | Clerk production with email code, Google, GitHub and Apple; Apple Services ID and key; relay email domain registered; Clerk production configured with our own Apple Services ID and key (so our key can sign Apple's client secret for revocation); whether Clerk revokes Apple tokens on user deletion, recorded | T-ACC-3, T-IOS-4, T-DEL-2 |
 | P4 | `amux.io` on Cloudflare; Origin CA; Hetzner project with quota raised and abuse@ as contact; two payment methods on every provider | T-PROV-1; provider pages |

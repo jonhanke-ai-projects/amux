@@ -149,12 +149,6 @@ try {
         // T-DUN-1, the Stripe half: a real failed charge, then a fixed card. The 14 days of service and the
         // snapshot that follow run on our own clock and are covered with an injected clock in test_lifecycle.py.
         const cust = (await stripe('GET', '/customers', { email: EMAIL })).data[0];
-        // T-PAY-1, EU half: Stripe Tax prices a Solo month for a Berlin customer. Needs an EU registration;
-        // test mode carries an OSS one (2026-10-15), live registration is the owner's.
-        const calc = await stripe('POST', '/tax/calculations', { currency: 'usd', 'line_items[0][amount]': '3900',
-          'line_items[0][reference]': 'solo', 'customer_details[address][country]': 'DE',
-          'customer_details[address][postal_code]': '10115', 'customer_details[address_source]': 'billing' });
-        check('T-PAY-1 EU tax', calc.tax_amount_exclusive > 0, `DE customer: ${calc.tax_amount_exclusive} cents tax on 3900`);
         // T-PAY-1, replay half: Stripe redelivers events; the same checkout event a second time must not
         // start a second server.
         const events = (await stripe('GET', '/events', { type: 'checkout.session.completed', limit: '20' })).data;
