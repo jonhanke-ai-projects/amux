@@ -6839,6 +6839,7 @@ function providerLabel(provider) {
   if (provider === 'muse') return 'Muse Code';
   if (provider === 'iterm2') return 'iTerm2';
   if (provider === 'grok') return 'Grok';
+  if (provider === 'opencode') return 'OpenCode';
   return 'Claude';
 }
 
@@ -6849,7 +6850,7 @@ function sessionProvider(s) {
   // muse lane would have shown a Claude badge, a Claude model and Claude's yolo
   // flag while running `muse`. Anything added to SESSION_PROVIDERS server-side
   // belongs here too.
-  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'grok' || p === 'iterm2') ? p : 'claude';
+  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'grok' || p === 'iterm2' || p === 'opencode') ? p : 'claude';
 }
 
 function providerDefaultModel(provider) {
@@ -6858,6 +6859,9 @@ function providerDefaultModel(provider) {
   if (provider === 'ollama') return 'qwen3.8:27b';
   if (provider === 'grok') return 'grok-4.6';
   if (provider === 'muse') return 'muse-spark-1.3-contributor';
+  // OpenCode has no single default model (`provider/model#variant`, from the
+  // worker's own config); empty is honest rather than showing a Claude default.
+  if (provider === 'opencode') return '';
   return window._AMUX_DEFAULT_MODEL || 'sonnet';
 }
 
@@ -6872,6 +6876,8 @@ function providerYoloFlag(provider) {
   // --disable-approval/--disable-sandbox separately). Sending codex's
   // --dangerously-bypass-approvals-and-sandbox to muse is an unknown flag.
   if (provider === 'gemini' || provider === 'muse') return '--yolo';
+  // opencode's auto-approve is the boolean `--auto` (no skip-permissions flag).
+  if (provider === 'opencode') return '--auto';
   return '--dangerously-skip-permissions';
 }
 
@@ -6881,6 +6887,7 @@ function stripProviderYoloFlags(flags) {
     .replace(/--dangerously-bypass-approvals-and-sandbox/g, '')
     .replace(/--yolo/g, '')
     .replace(/--approval-mode(?:=|\s+)yolo/g, '')
+    .replace(/--auto\b/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -9959,7 +9966,8 @@ function editField(session, field, current, provider) {
       {v:'gemini',l:'Gemini'},
       {v:'grok',l:'Grok'},
       {v:'ollama',l:'Ollama (local)'},
-      {v:'muse',l:'Muse Code'}
+      {v:'muse',l:'Muse Code'},
+      {v:'opencode',l:'OpenCode'}
     ];
     sel.innerHTML = '';
     providers.forEach(p => { const o = document.createElement('option'); o.value = p.v; o.textContent = p.l; sel.appendChild(o); });
@@ -15486,7 +15494,7 @@ function _selectWorkerType(id) {
   const t = _workerTypeInfo(id);
   _renderCreateTypeRow();
   const allowed = p => !t.providers || !t.providers.length || t.providers.includes(p);
-  ['claude', 'codex', 'gemini', 'ollama', 'grok', 'muse'].forEach(p => {
+  ['claude', 'codex', 'gemini', 'ollama', 'grok', 'muse', 'opencode'].forEach(p => {
     const b = document.getElementById('create-provider-' + p);
     if (b) { b.disabled = !allowed(p); b.style.opacity = allowed(p) ? '' : '0.4'; }
   });
@@ -27002,7 +27010,13 @@ async function openFilePreview(path, options = {}) {
   _fileViewMode = options.raw ? 'raw' : 'preview';
   document.getElementById('file-save-btn').style.display = 'none';
   document.getElementById('file-edit-wrap').style.display = 'none';
-  document.getElementById('file-title').textContent = path.split('/').pop();
+  const _titleEl = document.getElementById('file-title');
+  _titleEl.textContent = path.split('/').pop();
+  _titleEl.contentEditable = 'false';
+  _titleEl.style.cursor = '';
+  _titleEl.onblur = null;
+  _titleEl.onkeydown = null;
+  delete _titleEl.dataset.spEditable;
   // Title bar shows the file name plus the folder it lives in, like a file manager.
   const _subEl = document.getElementById('file-subpath');
   if (_subEl) {
@@ -27101,6 +27115,7 @@ async function openFilePreview(path, options = {}) {
     dlBtn.dataset.filename = data.path.split('/').pop();
     dlBtn.style.display = '';
     _renderFileBody(data, _fileViewMode);
+    _spSetupEditableTitle(path, data);
     if (data.source === 'git') {
       const banner = document.createElement('div');
       banner.style.cssText = 'padding:6px 12px;font-size:0.78rem;color:var(--dim);background:rgba(127,127,127,0.08);border-radius:6px;margin:8px 12px 0';
@@ -27222,6 +27237,12 @@ function closeFilePreview() {
   const v = document.querySelector('#file-body video');
   if (v) { v.pause(); v.src = ''; }
   _mdSearchClose();
+  const _cTitleEl = document.getElementById('file-title');
+  _cTitleEl.contentEditable = 'false';
+  _cTitleEl.style.cursor = '';
+  _cTitleEl.onblur = null;
+  _cTitleEl.onkeydown = null;
+  delete _cTitleEl.dataset.spEditable;
   document.getElementById('file-overlay').classList.remove('active');
   document.getElementById('file-download-btn').style.display = 'none';
   document.getElementById('file-save-btn').style.display = 'none';
@@ -27317,7 +27338,31 @@ async function _fileSave() {
       _fileData.content = content;
       if (_fileData._isNew) {
         _fileData._isNew = false;
-        document.getElementById('file-title').textContent = _fileData.path.split('/').pop();
+        // Auto-name from first line if this was an auto-named scratchpad note
+        if (_fileData._spAutoName) {
+          const firstLine = content.split('\n').find(l => l.trim());
+          if (firstLine) {
+            const slug = firstLine.trim().replace(/^#+\s*/, '').trim()
+              .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
+              .substring(0, 60) || 'untitled';
+            const newName = slug + '.md';
+            const oldPath = _fileData.path;
+            const dir = oldPath.substring(0, oldPath.lastIndexOf('/'));
+            const newPath = dir + '/' + newName;
+            if (newName !== oldPath.split('/').pop()) {
+              fetch(API + '/api/fs/rename', {
+                method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
+                body: JSON.stringify({ path: oldPath, new_name: newName })
+              }).then(r => r.json()).then(rd => {
+                if (rd.ok) { _fileData.path = rd.path; }
+                if (activeView === 'scratchpad') _scratchpadLoad();
+              }).catch(() => {});
+            }
+          }
+          delete _fileData._spAutoName;
+        }
+        const title = content.split('\n').find(l => l.trim());
+        document.getElementById('file-title').textContent = title ? title.trim().replace(/^#+\s*/, '').trim() : _fileData.path.split('/').pop();
         loadFiles(_filesPath);
         if (activeView === 'scratchpad') _scratchpadLoad();
       }
@@ -28584,10 +28629,10 @@ async function _scratchpadLoad() {
     bc.style.display = 'none';
   }
   try {
-    let r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0', { signal: AbortSignal.timeout(8000) });
+    let r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0&titles=1', { signal: AbortSignal.timeout(8000) });
     if (r.status === 400 && _spPath === _SP_ROOT) {
       await fetch(API + '/api/fs/mkdir', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: _spPath }) });
-      r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0', { signal: AbortSignal.timeout(8000) });
+      r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0&titles=1', { signal: AbortSignal.timeout(8000) });
     }
     const data = await r.json();
     if (gen !== _spLoadGen) return;
@@ -28598,6 +28643,7 @@ async function _scratchpadLoad() {
     const dirEl = document.getElementById('sp-dir');
     if (dirEl) { const shown = data.path || _spPath; dirEl.textContent = shown; dirEl.title = shown; }
     _spRender(_spPath, data);
+    if (_spPath === _SP_ROOT) _spCleanArchive();
   } catch(e) {
     if (gen !== _spLoadGen) return;
     body.innerHTML = '<div style="padding:16px;color:var(--dim)">Could not load scratchpad.</div>';
@@ -28610,7 +28656,10 @@ function _spRender(path, data) {
   const hdrs = document.getElementById('sp-col-headers');
   if (hdrs) hdrs.style.display = 'grid';
   _spUpdateSortHeaders();
-  const entries = _spSortEntries(data.entries || []);
+  const allEntries = _spSortEntries(data.entries || []);
+  // Separate _archive folder from regular entries; render it at the bottom
+  const entries = allEntries.filter(e => !(e.name === '_archive' && e.type === 'dir'));
+  const archiveEntry = allEntries.find(e => e.name === '_archive' && e.type === 'dir');
   if (path !== _SP_ROOT && data.parent) {
     const back = document.createElement('div');
     back.className = 'fe-back-row';
@@ -28618,7 +28667,7 @@ function _spRender(path, data) {
     back.onclick = () => { const p = path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); _spNav(i > 0 ? p.slice(0, i) : _SP_ROOT); };
     body.appendChild(back);
   }
-  if (!entries.length) {
+  if (!entries.length && !archiveEntry) {
     const msg = document.createElement('div');
     msg.style.cssText = 'padding:32px;color:var(--dim);font-size:0.85rem;text-align:center;';
     msg.textContent = 'Nothing here yet. Paste or drop text and files anywhere on this tab and they are saved.';
@@ -28626,30 +28675,58 @@ function _spRender(path, data) {
     return;
   }
   for (const entry of entries) {
-    const ep = (path.replace(/\/$/, '') + '/' + entry.name);
+    body.appendChild(_spMakeRow(path, entry));
+  }
+  if (archiveEntry) {
+    const sep = document.createElement('div');
+    sep.style.cssText = 'border-top:1px solid var(--border,rgba(127,127,127,0.15));margin:12px 12px 4px;';
+    body.appendChild(sep);
+    const ep = path.replace(/\/$/, '') + '/_archive';
     const row = document.createElement('div');
-    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
+    row.className = 'fe-row fe-dir';
     row.dataset.path = ep;
-    const icon = _fileTypeIcon(entry.name, entry.type);
-    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
-    const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
-    const dateStr = entry.modified ? timeAgo(entry.modified) : '';
-    const openedStr = entry.opened ? timeAgo(entry.opened) : '';
-    const epEsc = ep.replace(/'/g, "\\'");
+    row.style.opacity = '0.6';
     row.innerHTML =
-      '<div class="fe-cell-name">' + icon + '<span>' + esc(entry.name) + slash + '</span></div>' +
-      '<div class="fe-cell-size">' + sizeStr + '</div>' +
-      '<div class="fe-cell-date">' + dateStr + '</div>' +
-      '<div class="fe-cell-date fe-cell-opened">' + openedStr + '</div>' +
-      '<div class="fe-cell-actions">' + (entry.type === 'dir' ? '' : '<button class="fe-menu-btn sp-copy-btn" title="Copy to clipboard" onclick="event.stopPropagation();_spCopy(\'' + epEsc + '\')">⧉</button>') +
-      '<button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
-    if (entry.type === 'dir') {
-      row.onclick = () => _spNav(ep);
-    } else {
-      row.onclick = () => openFilePreview(ep);
-    }
+      '<div class="fe-cell-name">' +
+      '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;margin-right:6px;">' +
+      '<rect x="1" y="3" width="12" height="9" rx="1.5" stroke="var(--dim)" stroke-width="1.2" fill="none"/>' +
+      '<path d="M4 1h6v2H4z" stroke="var(--dim)" stroke-width="1.2" fill="none" rx="0.5"/>' +
+      '<path d="M5.5 6h3" stroke="var(--dim)" stroke-width="1.2" stroke-linecap="round"/></svg>' +
+      '<span style="color:var(--dim);">Archive</span></div>' +
+      '<div class="fe-cell-size"></div><div class="fe-cell-date"></div><div class="fe-cell-actions"></div>';
+    row.onclick = () => _spNav(ep);
     body.appendChild(row);
   }
+}
+
+function _spMakeRow(path, entry) {
+  const ep = (path.replace(/\/$/, '') + '/' + entry.name);
+  const row = document.createElement('div');
+  row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
+  row.dataset.path = ep;
+  const icon = _fileTypeIcon(entry.name, entry.type);
+  const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
+  const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
+  const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+  const epEsc = ep.replace(/'/g, "\\'");
+  const title = entry.title || '';
+  const displayName = title || entry.name;
+  const showSubName = title && entry.type !== 'dir';
+  row.innerHTML =
+    '<div class="fe-cell-name">' + icon +
+    '<div style="min-width:0;overflow:hidden;">' +
+    '<span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(displayName) + slash + '</span>' +
+    (showSubName ? '<span style="display:block;font-size:0.72rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(entry.name) + '</span>' : '') +
+    '</div></div>' +
+    '<div class="fe-cell-size">' + sizeStr + '</div>' +
+    '<div class="fe-cell-date">' + dateStr + '</div>' +
+    '<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_spShowMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
+  if (entry.type === 'dir') {
+    row.onclick = () => _spNav(ep);
+  } else {
+    row.onclick = () => openFilePreview(ep);
+  }
+  return row;
 }
 
 function _spNav(path) {
@@ -28804,11 +28881,21 @@ function _spWireCapture() {
 }
 
 async function _scratchpadNewNote() {
-  const fname = _spUniqueName(_spStamp(), '.md');
+  const existing = (_spLastData?.data?.entries || []).map(e => e.name);
+  let fname = 'untitled.md';
+  let n = 1;
+  while (existing.includes(fname)) {
+    n++;
+    fname = 'untitled-' + n + '.md';
+  }
   const fpath = _spPath.replace(/\/$/, '') + '/' + fname;
-  _fileData = { path: fpath, content: '', is_markdown: /\.md$/i.test(fname), _isNew: true };
+  _fileData = { path: fpath, content: '', is_markdown: true, _isNew: true, _spAutoName: true };
   _fileViewMode = 'edit';
-  document.getElementById('file-title').textContent = fname + ' (new)';
+  const titleEl = document.getElementById('file-title');
+  titleEl.textContent = 'New note';
+  titleEl.contentEditable = 'true';
+  titleEl.style.cursor = 'text';
+  titleEl.dataset.spEditable = '1';
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').style.display = 'none';
   document.getElementById('file-view-tabs').style.display = '';
@@ -28824,6 +28911,154 @@ async function _scratchpadNewNote() {
   wrap.style.display = 'flex';
   document.getElementById('file-overlay').classList.add('active');
   setTimeout(() => ta.focus(), 100);
+}
+
+function _spShowMenu(path, btn, type) {
+  document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
+  const popup = document.createElement('div');
+  popup.className = 'explore-menu-popup';
+  const copyItem = document.createElement('button');
+  copyItem.className = 'explore-menu-item';
+  copyItem.textContent = 'Copy path';
+  copyItem.onclick = () => { popup.remove(); _copyExplorePath(path); };
+  popup.appendChild(copyItem);
+  const renItem = document.createElement('button');
+  renItem.className = 'explore-menu-item';
+  renItem.textContent = 'Rename';
+  renItem.onclick = () => { popup.remove(); _fsRename(path, () => _scratchpadLoad()); };
+  popup.appendChild(renItem);
+  if (type !== 'dir' && type !== 'directory') {
+    const dlItem = document.createElement('button');
+    dlItem.className = 'explore-menu-item';
+    dlItem.textContent = 'Download';
+    dlItem.onclick = async () => {
+      popup.remove();
+      try { await _downloadFileBytes(API + '/api/file/raw?path=' + encodeURIComponent(path), path.split('/').pop()); }
+      catch (e) { showToast('Download failed: ' + e.message); }
+    };
+    popup.appendChild(dlItem);
+  }
+  const archItem = document.createElement('button');
+  archItem.className = 'explore-menu-item';
+  archItem.style.color = 'var(--yellow, #d29922)';
+  archItem.textContent = 'Archive';
+  archItem.onclick = async () => {
+    popup.remove();
+    await _spArchive(path);
+  };
+  popup.appendChild(archItem);
+  document.body.appendChild(popup);
+  const r = _cssRect(btn);
+  const pw = popup.offsetWidth || 160;
+  const ph = popup.offsetHeight || 140;
+  const z = _uiZoomFactor();
+  const vw = window.innerWidth / z, vh = window.innerHeight / z;
+  let left = r.right - pw;
+  if (left < 8) left = r.left;
+  left = Math.max(8, Math.min(left, vw - pw - 8));
+  let top = r.bottom + 4;
+  if (top + ph > vh - 8) top = r.top - ph - 4;
+  top = Math.max(8, Math.min(top, vh - ph - 8));
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+  setTimeout(() => {
+    const dismiss = e => { if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('pointerdown', dismiss, true); } };
+    document.addEventListener('pointerdown', dismiss, true);
+  }, 0);
+}
+
+async function _spArchive(path) {
+  const name = path.split('/').pop();
+  const dir = path.substring(0, path.lastIndexOf('/'));
+  const archiveDir = dir.replace(/\/_archive(\/|$)/, '/') + '/_archive';
+  const dest = archiveDir + '/' + name;
+  try {
+    await fetch(API + '/api/fs/mkdir', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: archiveDir })
+    });
+    const r = await fetch(API + '/api/fs/move', {
+      method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ path, dest })
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      showToast('Archived "' + name + '"');
+      _scratchpadLoad();
+    } else {
+      showToast('Archive failed: ' + (d.error || r.status));
+    }
+  } catch (e) {
+    showToast('Archive error: ' + e.message);
+  }
+}
+
+function _spSetupEditableTitle(path, data) {
+  const titleEl = document.getElementById('file-title');
+  const isScratchpad = path.indexOf('/.amux/scratchpad/') >= 0 || path.indexOf(_SP_ROOT.replace('~', '')) >= 0;
+  if (!isScratchpad || !data.is_markdown || data.readOnly) return;
+  const firstLine = (data.content || '').split('\n').find(l => l.trim());
+  const title = firstLine ? firstLine.trim().replace(/^#+\s*/, '').trim() : '';
+  if (title) titleEl.textContent = title;
+  titleEl.contentEditable = 'true';
+  titleEl.style.cursor = 'text';
+  titleEl.dataset.spEditable = '1';
+  titleEl.dataset.spPath = path;
+  titleEl.dataset.spOrigTitle = titleEl.textContent;
+  titleEl.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); titleEl.blur(); } };
+  titleEl.onblur = () => {
+    const newTitle = titleEl.textContent.trim();
+    const origTitle = titleEl.dataset.spOrigTitle || '';
+    if (!newTitle || newTitle === origTitle) { titleEl.textContent = origTitle; return; }
+    titleEl.dataset.spOrigTitle = newTitle;
+    _spUpdateTitle(titleEl.dataset.spPath, newTitle);
+  };
+}
+
+async function _spUpdateTitle(path, newTitle) {
+  if (!_fileData || !_fileData.content) return;
+  const lines = _fileData.content.split('\n');
+  const idx = lines.findIndex(l => l.trim());
+  if (idx >= 0) {
+    const oldLine = lines[idx];
+    const headingMatch = oldLine.match(/^(#+\s*)/);
+    lines[idx] = (headingMatch ? headingMatch[1] : '# ') + newTitle;
+  } else {
+    lines.unshift('# ' + newTitle);
+  }
+  const newContent = lines.join('\n');
+  try {
+    const r = await fetch(API + '/api/file', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, content: newContent })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      _fileData.content = newContent;
+      const ta = document.getElementById('file-edit-ta');
+      if (ta && _fileViewMode === 'edit') ta.value = newContent;
+      if (activeView === 'scratchpad') _scratchpadLoad();
+    }
+  } catch (e) { showToast('Could not update title'); }
+}
+
+async function _spCleanArchive() {
+  const archivePath = _SP_ROOT + '/_archive';
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(archivePath) + '&hidden=0', { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.error || !data.entries) return;
+    const cutoff = Date.now() / 1000 - 7 * 86400;
+    for (const entry of data.entries) {
+      if (entry.modified && entry.modified < cutoff) {
+        fetch(API + '/api/fs/delete', {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: archivePath + '/' + entry.name })
+        }).catch(() => {});
+      }
+    }
+  } catch (e) { /* archive cleanup is best-effort */ }
 }
 
 async function _scratchpadNewFolder() {
@@ -31959,6 +32194,8 @@ function _selectProvider(p) {
   if (_ollamaBtn) _ollamaBtn.classList.toggle('selected', p === 'ollama');
   const _museBtn = document.getElementById('create-provider-muse');
   if (_museBtn) _museBtn.classList.toggle('selected', p === 'muse');
+  const _opencodeBtn = document.getElementById('create-provider-opencode');
+  if (_opencodeBtn) _opencodeBtn.classList.toggle('selected', p === 'opencode');
   const _typeHasWorktree = _workerTypeInfo(_createWorkerType).worktree !== 'unsupported';
   document.getElementById('create-branch-enabled').closest('.field-group').style.display = _typeHasWorktree ? '' : 'none';
   document.getElementById('create-worktree-field').style.display = _createDirIsGit && _typeHasWorktree ? '' : 'none';
