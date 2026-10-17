@@ -44,6 +44,7 @@ def call(key, method, path, params=None):
 
 
 COUPON = "amux_cloud_first_month_free"
+DESCRIPTOR = "AMUX CLOUD"   # the card statement shows amux, not the account's Mixpeek default
 
 
 def promo_code(key, code, coupon, first_time):
@@ -84,10 +85,11 @@ def main():
         found = call(key, "GET", "/prices", {"lookup_keys": [lk], "active": "true"})["data"]
         if found:
             products.append(found[0]["product"])
+            call(key, "POST", f"/products/{found[0]['product']}", {"statement_descriptor": DESCRIPTOR})
             print(f"price {lk}: present", file=sys.stderr)
             continue
         prod = call(key, "POST", "/products", {"name": f"amux Cloud {p['name']}", "description": p.get("specs", ""),
-                                                "metadata": {"plan": p["id"]}})
+                                                "metadata": {"plan": p["id"]}, "statement_descriptor": DESCRIPTOR})
         call(key, "POST", "/prices", {"product": prod["id"], "currency": plans.get("currency", "usd"),
                                       "unit_amount": int(round(p["price_usd"] * 100)), "recurring": {"interval": "month"},
                                       "lookup_key": lk, "tax_behavior": "exclusive"})

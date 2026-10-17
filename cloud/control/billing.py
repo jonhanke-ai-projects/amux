@@ -6,6 +6,10 @@ fakes.FakeBilling with the same methods. Standard library only.
 import hashlib, hmac, json, time, urllib.error, urllib.parse, urllib.request
 
 FIRST_MONTH_COUPON = "amux_cloud_first_month_free"   # made by stripe_setup.py (COUPON)
+# amux and Mixpeek share only the Stripe entity (owner, 2026-10-17), so every amux checkout carries
+# amux's own name and icon instead of the account's Mixpeek branding.
+BRANDING = {"display_name": "amux Cloud", "icon": {"type": "url", "url": "https://amux.io/icon.png"},
+            "logo": {"type": "url", "url": "https://amux.io/icon.png"}, "button_color": "#0b0f14"}
 
 from lifecycle import ProviderError
 
@@ -99,6 +103,7 @@ class StripeBilling:
             "allow_promotion_codes": True,
             "metadata": {"signup_id": signup_id, "plan": plan_id, "source": source or ""},
             "subscription_data": {"metadata": {"signup_id": signup_id, "plan": plan_id}},
+            "branding_settings": BRANDING,
         }
         if customer_id:
             params["customer"] = customer_id

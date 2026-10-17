@@ -24,6 +24,7 @@ class Checkout(unittest.TestCase):
         p = calls[0][2]
         self.assertTrue(p["allow_promotion_codes"])               # FIRSTMONTH is entered here
         self.assertNotIn("payment_method_collection", p)          # Stripe's default: always take a card
+        self.assertEqual(p["branding_settings"]["display_name"], "amux Cloud")   # never Mixpeek's branding
 
 
 class SyntheticSubscription(unittest.TestCase):
