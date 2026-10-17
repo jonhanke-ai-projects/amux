@@ -12615,6 +12615,12 @@ function setPeekTab(tab) {
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
+  document.getElementById('peek-tab-tasks')?.classList.toggle('active', tab === 'tasks');
+  const tasksP = document.getElementById('peek-tasks-panel');
+  if (tasksP) {
+    if (tab === 'tasks') { tasksP.classList.add('active'); _tasksScopes.peek.open.clear(); _tasksLoad('peek', true); }
+    else tasksP.classList.remove('active');
+  }
   const messages = document.getElementById('peek-messages-panel');
   if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); }
   else { messages.classList.remove('active'); }
@@ -23966,7 +23972,7 @@ function _cmdHistItemHTML(e, ctx) {
   const _matches = _mq && safe.toLowerCase().includes(_mq.trim().toLowerCase());
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
-  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
 }
 // The sender half of "owner → cowork-bot". `owner` is the server's own login
 // (no team-member or gateway identity on the send); the tooltip says so, and
@@ -34552,7 +34558,7 @@ function switchView(view) {
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
-    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'],
+    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -34580,6 +34586,7 @@ function switchView(view) {
   if (view === 'draw') _drawEnter(); else _drawLeave();
   if (view === 'vault') _vaultEnter(); else if (typeof _vaultLeave === 'function') _vaultLeave();
   if (view === 'sql') _sqlInit();
+  if (view === 'tasks') _tasksLoad('main', true);
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
   // so tapping Messages showed one session's history scoped by whichever peek
@@ -52203,6 +52210,217 @@ function _messagesRender() {
 }
 
 // Calendar/time review helpers for the Messages timeline (Ethan 2026-08-13).
+// ── Tasks ─────────────────────────────────────────────────────────────────
+// Every task a worker received, oldest first and numbered: owner prompts,
+// Chat-tab messages, peer asks and scheduled sends (the cmd_history rows
+// /api/history already serves), each tagged with its worker. A row opens its
+// detail: delivery, the board cards it created or joined, the other messages
+// on those cards, and the earlier ask it repeats. Rows are the Messages
+// tab's own (_cmdHistItemHTML); only the numbering, pager and detail are new.
+//
+// Two scopes share this code: `main` is the Tasks tab (all workers, with a
+// worker filter) and `peek` is a worker's own Tasks tab (fixed to
+// peekSession). Each scope's DOM ids carry its prefix.
+const _TASKS_PAGE = 100;
+const _TASKS_KINDS = 'human,chat,session,schedule';
+const _tasksScopes = {
+  main: { prefix: 'tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', withAmux: false, open: new Set(), loading: false, err: '', seq: 0 },
+  peek: { prefix: 'peek-tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', withAmux: false, open: new Set(), loading: false, err: '', seq: 0, fixed: true },
+};
+const _tasksSel = new Set();
+const _tasksEl = (sc, name) => document.getElementById(_tasksScopes[sc].prefix + name);
+function _tasksParams(sc, extra) {
+  const s = _tasksScopes[sc], p = new URLSearchParams();
+  p.set('kind', s.withAmux ? _TASKS_KINDS + ',amux' : _TASKS_KINDS);
+  p.set('order', 'asc');
+  if (s.worker) p.set('session', s.worker);
+  if (s.q) p.set('q', s.q);
+  for (const [k, v] of Object.entries(extra || {})) p.set(k, String(v));
+  return p.toString();
+}
+// toEnd: open on the newest page (the sequence still reads oldest first).
+// A newer load supersedes an older one still in flight (seq).
+async function _tasksLoad(sc, toEnd) {
+  sc = sc || 'main';
+  const s = _tasksScopes[sc];
+  if (sc === 'peek') s.worker = (typeof peekSession !== 'undefined' && peekSession) || '';
+  if (!_tasksEl(sc, 'list') || (s.fixed && !s.worker)) return;
+  const seq = ++s.seq;
+  s.loading = true; s.err = '';
+  _tasksRenderHead(sc);
+  try {
+    if (toEnd !== false) {
+      const r0 = await fetch(API + '/api/history?' + _tasksParams(sc, { limit: 1, offset: 0 }));
+      const total = parseInt(r0.headers.get('x-amux-total') || '0', 10) || 0;
+      s.offset = Math.max(0, Math.floor(Math.max(0, total - 1) / _TASKS_PAGE) * _TASKS_PAGE);
+    }
+    const r = await fetch(API + '/api/history?' + _tasksParams(sc, { limit: _TASKS_PAGE, offset: s.offset }));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const total = parseInt(r.headers.get('x-amux-total') || '0', 10) || 0;
+    const rows = await r.json();
+    if (seq !== s.seq) return;
+    s.total = total;
+    s.rows = (Array.isArray(rows) ? rows : []).map(_msgNorm);
+  } catch (e) {
+    if (seq !== s.seq) return;
+    s.err = (e && e.message) || String(e);
+    s.rows = [];
+    try { window._clientDebug && window._clientDebug('tasks-load-failed', { scope: sc, error: s.err, measured: false }); } catch (_) {}
+  }
+  s.loading = false;
+  _tasksRender(sc);
+}
+function _tasksWorkerOptions() {
+  const sel = _tasksEl('main', 'worker');
+  if (!sel || sel.dataset.filled) return;
+  fetch(API + '/api/history?' + new URLSearchParams({ sessions: '1', kind: _TASKS_KINDS })).then(r => r.json()).then(d => {
+    const names = (Array.isArray(d) ? d : []).map(x => typeof x === 'string' ? x : (x.session || '')).filter(Boolean).sort();
+    const cur = _tasksScopes.main.worker;
+    if (cur && !names.includes(cur)) names.unshift(cur);
+    sel.innerHTML = '<option value="">All workers</option>' + names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+    sel.dataset.filled = '1';
+  }).catch(() => {});
+}
+function _tasksRenderHead(sc) {
+  const s = _tasksScopes[sc], el = _tasksEl(sc, 'count');
+  if (!el) return;
+  if (s.loading) { el.textContent = 'Loading tasks…'; return; }
+  if (s.err) { el.textContent = 'Could not load tasks: ' + s.err; return; }
+  if (!s.total) { el.textContent = 'No tasks match'; return; }
+  el.textContent = 'Tasks ' + (s.offset + 1) + '–' + (s.offset + s.rows.length) + ' of ' + s.total + (s.worker && !s.fixed ? ' for ' + s.worker : '');
+}
+function _tasksCtx(sc) {
+  return { sel: _tasksSel, key: _msgKey, toggle: '_tasksSelToggle', resend: '_tasksResend',
+           searchId: _tasksScopes[sc].prefix + 'search', rowClass: 'msg-row task-row',
+           title: 'Click to show this task\'s delivery, board cards and related messages',
+           target: (e) => (typeof e === 'string' ? '' : (e.session || '')),
+           onOpen: (e) => `_tasksToggle('${sc}','${escJs(String(e.id || ''))}')` };
+}
+function _tasksSelToggle(key, ev) {
+  if (ev) ev.stopPropagation();
+  if (_tasksSel.has(key)) _tasksSel.delete(key); else _tasksSel.add(key);
+  Object.keys(_tasksScopes).forEach(_tasksRender);
+}
+async function _tasksResend(keys) {
+  const all = Object.values(_tasksScopes).flatMap(s => s.rows);
+  const rows = all.filter(m => keys.includes(_msgKey(m)) && (m.session || '')).map(m => ({ session: m.session, text: m.text || '' }));
+  if (await _resendRows(rows)) { _tasksSel.clear(); Object.keys(_tasksScopes).forEach(_tasksRender); }
+}
+function _tasksRender(sc) {
+  const s = _tasksScopes[sc], list = _tasksEl(sc, 'list');
+  if (!list) return;
+  _tasksRenderHead(sc);
+  if (sc === 'main') _tasksWorkerOptions();
+  if (s.err) { list.innerHTML = '<div class="tasks-empty">Could not load tasks. <button class="btn" onclick="_tasksLoad(\'' + sc + '\')">Retry</button></div>'; _tasksRenderPager(sc); return; }
+  if (!s.rows.length) { list.innerHTML = '<div class="tasks-empty">' + (s.loading ? 'Loading…' : 'No tasks match.') + '</div>'; _tasksRenderPager(sc); return; }
+  const ctx = _tasksCtx(sc);
+  let day = '', html = '';
+  s.rows.forEach((m, i) => {
+    const k = _msgDayKey(m.ts);
+    if (k !== day) { day = k; html += '<div class="tasks-day">' + esc(_msgDayLabel(m.ts)) + '</div>'; }
+    const id = String(m.id || '');
+    const open = s.open.has(id);
+    html += '<div class="task-item' + (open ? ' open' : '') + '" id="' + s.prefix + 'item-' + esc(id) + '" data-task-id="' + esc(id) + '">'
+      + '<div class="task-num" title="Task ' + (s.offset + i + 1) + ' in sequence">#' + (s.offset + i + 1) + '</div>'
+      + '<div class="task-main">' + _cmdHistItemHTML(m, ctx)
+      + '<div class="task-detail" id="' + s.prefix + 'detail-' + esc(id) + '"' + (open ? '' : ' hidden') + '></div></div></div>';
+  });
+  list.innerHTML = html;
+  s.open.forEach(id => _tasksFillDetail(sc, id));
+  _tasksRenderPager(sc);
+}
+function _tasksRenderPager(sc) {
+  const s = _tasksScopes[sc], el = _tasksEl(sc, 'pager');
+  if (!el) return;
+  const pages = Math.max(1, Math.ceil(s.total / _TASKS_PAGE));
+  const page = Math.floor(s.offset / _TASKS_PAGE) + 1;
+  const btn = (label, p, dis, title) => '<button class="btn" style="min-height:44px;"' + (dis ? ' disabled' : ' onclick="_tasksGoPage(\'' + sc + '\',' + p + ')"') + ' title="' + title + '">' + label + '</button>';
+  el.innerHTML = s.total <= _TASKS_PAGE ? '' : btn('&laquo; First', 1, page <= 1, 'Oldest tasks')
+    + btn('&lsaquo;', page - 1, page <= 1, 'Earlier tasks')
+    + '<span class="tasks-page">Page ' + page + ' of ' + pages + '</span>'
+    + btn('&rsaquo;', page + 1, page >= pages, 'Later tasks')
+    + btn('Latest &raquo;', pages, page >= pages, 'Newest tasks');
+}
+function _tasksGoPage(sc, p) {
+  const s = _tasksScopes[sc];
+  const pages = Math.max(1, Math.ceil(s.total / _TASKS_PAGE));
+  s.offset = (Math.min(Math.max(1, p), pages) - 1) * _TASKS_PAGE;
+  _tasksLoad(sc, false).then(() => { const l = _tasksEl(sc, 'list'); if (l) l.scrollTop = 0; });
+}
+function _tasksFilter(sc) {
+  sc = sc || 'main';
+  const s = _tasksScopes[sc];
+  if (!s.fixed) s.worker = (_tasksEl(sc, 'worker') || {}).value || '';
+  s.q = ((_tasksEl(sc, 'search') || {}).value || '').trim();
+  s.withAmux = !!(_tasksEl(sc, 'amux') || {}).checked;
+  s.open.clear();
+  _tasksLoad(sc, true);
+}
+const _tasksSearchT = {};
+function _tasksSearchInput(sc) { clearTimeout(_tasksSearchT[sc]); _tasksSearchT[sc] = setTimeout(() => _tasksFilter(sc), 300); }
+// From anywhere: the Tasks tab narrowed to one worker.
+function _tasksByWorker(name) {
+  if (activeView !== 'tasks') switchView('tasks');
+  const sel = _tasksEl('main', 'worker');
+  if (sel) { if (![...sel.options].some(o => o.value === name)) sel.add(new Option(name, name)); sel.value = name; }
+  _tasksFilter('main');
+}
+function _tasksToggle(sc, id) {
+  if (!id) return;
+  const s = _tasksScopes[sc];
+  if (s.open.has(id)) s.open.delete(id); else s.open.add(id);
+  const item = _tasksEl(sc, 'item-' + id), det = _tasksEl(sc, 'detail-' + id);
+  if (item) item.classList.toggle('open', s.open.has(id));
+  if (det) { det.hidden = !s.open.has(id); if (s.open.has(id)) _tasksFillDetail(sc, id); }
+}
+function _tasksOpenCard(id) {
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+  switchView('board'); setTimeout(() => openBoardDetail(id), 250);
+}
+async function _tasksFillDetail(sc, id) {
+  const det = _tasksEl(sc, 'detail-' + id);
+  const m = _tasksScopes[sc].rows.find(r => String(r.id) === String(id));
+  if (!det || !m || det.dataset.filled === '1') return;
+  det.innerHTML = '<div class="tasks-dim">Loading details…</div>';
+  let full = null;
+  try { const r = await fetch(API + '/api/history/' + encodeURIComponent(id)); if (r.ok) full = await r.json(); } catch (_) {}
+  const cards = (m.linked_cards && m.linked_cards.length) ? m.linked_cards : (m.card_id ? [{ id: m.card_id, title: m.card_title, status: m.card_status }] : []);
+  const cardMsgs = {};
+  await Promise.all(cards.slice(0, 4).map(async c => {
+    try { const r = await fetch(API + '/api/board/' + encodeURIComponent(c.id)); if (r.ok) { const d = await r.json(); cardMsgs[c.id] = { card: d, msgs: Array.isArray(d.messages) ? d.messages : [] }; } } catch (_) {}
+  }));
+  const when = (t) => t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  const f = full || m;
+  const delivery = f.delivered === true ? 'Delivered' + (f.delivered_at ? ' ' + when(f.delivered_at) : '') + (f.delivered_source ? ' (' + esc(f.delivered_source) + ')' : '')
+    : f.delivered === false ? 'Not confirmed delivered' : (f.delivery ? esc(f.delivery) : 'Unknown');
+  const sess = m.session || '';
+  let html = '<div class="task-facts">'
+    + '<div><span class="tasks-dim">Worker</span> ' + (sess ? '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>'
+      + ' <button type="button" class="btn" onclick="event.stopPropagation();openPeek(\'' + escJs(sess) + '\')">Open worker</button>' : '-') + '</div>'
+    + '<div><span class="tasks-dim">From</span> ' + esc(m.sender || m.origin || 'unknown') + '</div>'
+    + '<div><span class="tasks-dim">Sent</span> ' + esc(when(m.ts)) + ' &middot; MSG-' + esc(String(id)) + '</div>'
+    + '<div><span class="tasks-dim">Delivery</span> ' + delivery + (m.queue_wait_ms ? ' after ' + Math.round(m.queue_wait_ms / 1000) + 's in the queue' : '') + '</div>'
+    + (f.repeat_of ? '<div><span class="tasks-dim">Repeats</span> <button type="button" class="btn" onclick="event.stopPropagation();_bdOpenMessage(\'' + escJs(String(f.repeat_of)) + '\')">MSG-' + esc(String(f.repeat_of)) + '</button></div>' : '')
+    + '</div>';
+  if (!cards.length) html += '<div class="tasks-dim">No board card is linked to this task.</div>';
+  for (const c of cards) {
+    const extra = cardMsgs[c.id];
+    const card = (extra && extra.card) || c;
+    html += '<div class="task-card"><button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(c.id)) + '\')" title="Open this card on the board">'
+      + '<code>' + esc(String(c.id)) + '</code> ' + esc(card.title || c.title || '') + '</button>'
+      + '<span class="msg-tag">' + esc(card.status || c.status || '') + '</span>'
+      + (card.session ? ' <span class="tasks-dim">' + esc(card.session) + '</span>' : '');
+    const others = extra ? extra.msgs.filter(x => String(x.id) !== String(id)) : [];
+    if (others.length) {
+      html += '<div class="task-card-msgs"><div class="tasks-dim">Other messages on this card</div>'
+        + others.slice(0, 10).map(x => '<div class="task-card-msg"><button type="button" class="btn" onclick="event.stopPropagation();_bdOpenMessage(\'' + escJs(String(x.id)) + '\')">MSG-' + esc(String(x.id)) + '</button> <span class="tasks-dim">' + esc(when(x.ts)) + ' ' + esc(x.session || '') + '</span> ' + esc(String(x.text || '').slice(0, 160)) + '</div>').join('')
+        + '</div>';
+    }
+    html += '</div>';
+  }
+  det.innerHTML = html;
+  det.dataset.filled = '1';
+}
 function _msgDayKey(ts) {
   if (!ts) return 'unknown';
   const d = new Date(ts);

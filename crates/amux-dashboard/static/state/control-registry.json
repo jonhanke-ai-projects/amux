@@ -4038,6 +4038,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_tasksByWorker": {
+      "kind": "command._tasksByWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_tasksOpenCard": {
+      "kind": "command._tasksOpenCard",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_tasksResend": {
+      "kind": "command._tasksResend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_termConnect": {
       "kind": "command._termConnect",
       "feedback_required": true,
