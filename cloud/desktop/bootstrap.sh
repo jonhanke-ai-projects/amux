@@ -199,8 +199,10 @@ ufw --force enable >/dev/null
 # the CI-built binary, linked against bookworm's glibc 2.36, which runs here.
 BIN_DIR="$HOME_DIR/.local/bin"
 install -d -o "$USER_NAME" -g "$USER_NAME" "$BIN_DIR"
-if [[ "$FLEET" == 1 && "${AMUX_SKIP_PACKAGES:-0}" == 1 && -x "$BIN_DIR/amux-server-rs" ]]; then
-  log "binaries: baked into the image; releases arrive through the fleet agent"
+# Any prepared golden image already has them: a fleet server and a standalone amux Cloud server
+# (cloud/start, 2026-10-17) both skip the docker pull.
+if [[ "${AMUX_SKIP_PACKAGES:-0}" == 1 && -x "$BIN_DIR/amux-server-rs" ]]; then
+  log "binaries: baked into the image"
   IMAGE_ID=baked
 else
 log "pulling $IMAGE for its binaries"
@@ -508,10 +510,18 @@ for entry in $WEB_USERS; do
     group=*|worker=*) scope="${grant%%=*}:${grant#*=}" ;;
     *) echo "user $u: 4th field must be group=<name> or worker=<name>" >&2; exit 1 ;;
   esac
-  [[ "$u" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "bad username: $u" >&2; exit 1; }
+  # An email is a valid username: amux Cloud signs people in with the address they paid with.
+  [[ "$u" =~ ^[a-zA-Z0-9._+@-]+$ ]] || { echo "bad username: $u" >&2; exit 1; }
   [[ "$email" == *@*.* ]] || { echo "user $u needs an email: user:password:email" >&2; exit 1; }
   [[ -n "$p" ]] || { p=$(openssl rand -base64 18); CREDS_OUT+=" $u:$p"; }
-  printf '%s\n' "$p" | python3 /opt/amux-door/door.py hash "$u" >> /etc/amux-door/users.new
+  if [[ "$p" == scrypt\$* ]]; then
+    # Already hashed (door.py's scrypt format): amux Cloud's signup page hashes in the browser,
+    # so the password itself never leaves the customer's machine.
+    [[ "$p" =~ ^scrypt\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$ ]] || { echo "user $u: malformed password hash" >&2; exit 1; }
+    printf '%s %s\n' "$u" "$p" >> /etc/amux-door/users.new
+  else
+    printf '%s\n' "$p" | python3 /opt/amux-door/door.py hash "$u" >> /etc/amux-door/users.new
+  fi
   member_token "$u" "$email" "$scope" >/dev/null
 done
 if [[ "$FLEET" == 1 ]]; then
