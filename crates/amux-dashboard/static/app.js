@@ -1904,6 +1904,36 @@ function _connectionSecurityPending(on) {
     const node=document.getElementById(id); if(node) node.disabled=on;
   }
 }
+// The iOS app's native bridge (WebView.swift, `amuxApp`): "settings" opens the app's
+// Settings with amux Cloud sign-in; "switch-server" returns to its setup screen.
+function _appBridge(op) {
+  const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxApp;
+  if (!h) return false;
+  try { h.postMessage({op}); return true; } catch (e) { return false; }
+}
+function _connectionSessionControls() {
+  const inApp = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxApp);
+  const cloud = document.getElementById('connection-cloud-account');
+  if (cloud) cloud.style.display = inApp ? '' : 'none';
+  const out = document.getElementById('connection-sign-out');
+  if (out && inApp) out.textContent = 'Sign out and switch server';
+}
+// Sign out of this server on this device (2026-10-17). In the iOS app, back to its setup
+// screen (an address, or amux Cloud sign-in). On an amux Cloud server, the door's logout.
+// Elsewhere the owner/member cookies end and the page reloads to its sign-in.
+async function _connectionSignOut() {
+  if (_appBridge('switch-server')) return;
+  if (/\.amux\.io$/.test(location.hostname) && location.hostname !== 'cloud.amux.io') {
+    location.assign('/_door/logout');
+    return;
+  }
+  try {
+    const r = await fetch(location.origin + '/api/connection/session', {method: 'DELETE', credentials: 'same-origin',
+      cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000)});
+    if (!r.ok) { _connectionSecurityError('Sign out did not complete. Refresh and try again.'); return; }
+  } catch (e) { _connectionSecurityError('Sign out did not complete. ' + e.message); return; }
+  location.assign('/api/_clear_sw');
+}
 async function _connectionSignIn() {
   if(_connectionSecurityBusy) return;
   const input=document.getElementById('connection-owner-token');
@@ -47773,7 +47803,7 @@ function _settingsTab(name) {
   }
   try { localStorage.setItem('amux_settings_tab', name); } catch (e) {}
   menu.scrollTop = 0;
-  if(name==='integrations') _connectionSecurityLoad();
+  if(name==='integrations') { _connectionSessionControls(); _connectionSecurityLoad(); }
 }
 function toggleSettings() {
   const menu = document.getElementById('settings-menu');

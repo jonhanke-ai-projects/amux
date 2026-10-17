@@ -888,6 +888,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_connectionSignOut": {
+      "kind": "command._connectionSignOut",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_connectorAuth": {
       "kind": "command._connectorAuth",
       "feedback_required": true,
