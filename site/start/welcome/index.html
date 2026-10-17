@@ -34,6 +34,7 @@
     .steps li.done{color:var(--fg-dim)}.steps li.now{color:var(--fg);font-weight:600}
     .steps li.done::before{content:"\2713  ";color:var(--ok)}.steps li.now::before{content:"\2192  ";color:var(--accent)}
     .ready{border:1px solid var(--ok);border-radius:var(--radius);padding:18px;margin:18px 0}
+    .ready h2{margin-top:0;padding-top:0;border:0}
     @media (max-width:600px){.plans{grid-template-columns:1fr}}
   </style>
 </head>
@@ -133,6 +134,8 @@ async function poll() {
     if (d.state === 'ready') {
       document.querySelectorAll('#steps li').forEach(li => li.className = 'done');
       const r = document.getElementById('ready'); r.style.display = '';
+      document.querySelector('h1').textContent = 'Your server is ready';
+      document.getElementById('sub').textContent = 'Payment received and your server is running.';
       document.getElementById('open').href = d.url; document.getElementById('open').textContent = 'Open ' + d.url.replace('https://', '');
       if (d.email) document.getElementById('who').textContent = d.email;
       document.getElementById('note').style.display = 'none';
