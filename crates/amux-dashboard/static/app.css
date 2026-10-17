@@ -9668,6 +9668,4 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 /* The worker's task name is shown in full: on the card and the details page it
    wraps instead of being cut with an ellipsis (Ethan, 2026-10-16). */
 .card-preview.card-task-full { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
-.peek-task-history-btn { font-size:0.72rem; padding:1px 8px; flex-shrink:0; }
-@media (max-width: 600px) { .peek-task-history-btn { min-height:44px; } }
 .task-history-list li { overflow-wrap:anywhere; }
