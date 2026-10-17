@@ -213,7 +213,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Expand / collapse | `_feToggleExpand` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Download | `_fileDownload` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Pin | `_filePinOverlay` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| index.html | Save | `_fileSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Save | `_fileSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Full-screen player | `_fileVideoFullscreen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | + | `_filesAddBookmark` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -630,6 +630,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Back | `closeBoardDetail` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Return to worker | `closeExplore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | button | `closeExplore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | button | `closeFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Back to all nodes | `closeMdaiNode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Close worker | `closePeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Open Projects | `closePeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1363,7 +1364,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | edit-overlay | `closeEdit` | onclick |
 | app.js | Cancel | `closeEventModal` | onclick |
 | app.js | × | `closeEventModal` | onclick |
-| index.html | button | `closeFilePreview` | onclick |
 | index.html | Done | `closeFiltersModal` | onclick |
 | index.html | button | `closeFiltersModal` | onclick |
 | index.html | filters-modal | `closeFiltersModal` | onclick |

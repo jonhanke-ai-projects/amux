@@ -1506,6 +1506,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileEditBeacon": {
+      "kind": "command._fileEditBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_filePinOverlay": {
       "kind": "command._filePinOverlay",
       "feedback_required": true,
@@ -4730,6 +4736,12 @@
     },
     "closeExplore": {
       "kind": "command.closeExplore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "closeFilePreview": {
+      "kind": "command.closeFilePreview",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -27145,7 +27145,48 @@ function _fileVideoFullscreen() {
   _playVideoUrl(v._vpUrl, (_fileData && _fileData.path || '').split('/').pop());
 }
 
+// Unsaved text in the file editor (Ethan, 2026-10-16: "scratchpad is dropping
+// data"). Closing the editor (X, Escape, overlay) discarded typed text with no
+// word, and a new Scratchpad note opens here with only a manual Save button, so
+// a note closed before Save was gone. Only spreadsheets were guarded.
+function _fileEditDirty() {
+  const wrap = document.getElementById('file-edit-wrap'), ta = document.getElementById('file-edit-ta');
+  if (!_fileData || _fileData.readOnly || !wrap || wrap.style.display === 'none' || !ta) return false;
+  if (!_fileData.is_markdown && !_fileData._isNew) return false;   // _fileSave cannot write it anyway
+  if (_fileData._isNew && !ta.value.trim()) return false;          // an empty new note is nothing to keep
+  return ta.value !== (_fileData.content || '');
+}
+function _fileIsScratchpad(path) {
+  const p = String(path || '');
+  return p === _SP_ROOT || p.startsWith(_SP_ROOT + '/') || /\/Vault\/Scratchpad(\/|$)/.test(p);
+}
+function _fileEditBeacon(verdict) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'file-edit-close', verdict, scratchpad: _fileIsScratchpad(_fileData && _fileData.path),
+        is_new: !!(_fileData && _fileData._isNew), measured: true, n_considered: 1, ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }) }).catch(() => {});
+  } catch (e) {}
+}
 function closeFilePreview() {
+  if (_fileEditDirty()) {
+    if (_fileIsScratchpad(_fileData.path)) {
+      // A scratchpad note keeps what was typed: save, then close. A failed save
+      // stays open with the text, so nothing is lost.
+      _fileEditBeacon('scratchpad_saved_on_close');
+      _fileSave().then(() => {
+        if (_fileEditDirty()) { _fileEditBeacon('scratchpad_save_on_close_failed'); showToast('Note not saved yet: it stays open so your text is kept'); return; }
+        closeFilePreview();
+      });
+      return;
+    }
+    showConfirm('This file has unsaved edits. Close without saving?', 'Discard changes', true).then(ok => {
+      if (!ok || !_fileData) return;
+      _fileEditBeacon('discarded_after_confirm');
+      _fileData.content = document.getElementById('file-edit-ta').value;
+      closeFilePreview();
+    });
+    return;
+  }
   if (_xlsxEd && _xlsxEd.dirty) {
     showConfirm('This spreadsheet has unsaved changes. Close without saving?', 'Discard changes', true)
       .then(ok => { if (ok && _xlsxEd) { _xlsxEd.dirty = false; closeFilePreview(); } });
@@ -27210,7 +27251,31 @@ async function _fileSave() {
   btn.classList.add('saving');
   btn.textContent = 'Saving…';
   try {
-    const r = await apiCall(API + '/api/file', {
+    let r = null, sent = false;
+    if (_fileData._isNew) {
+      // A NEW file never replaces an existing one: two notes started in the
+      // same second share a name, and the second used to overwrite the first.
+      // On 409 file_exists step to the next free name, quietly. Offline, fall
+      // through to apiCall's queue below.
+      try {
+        const base = _fileData.path.match(/^(.*?)(\.[^./]+)?$/);
+        for (let n = 1; n < 50; n++) {
+          const path = n === 1 ? _fileData.path : base[1] + '-' + n + (base[2] || '');
+          const res = await fetch(API + '/api/file', { method: 'PUT',
+            headers: Object.assign({'Content-Type': 'application/json'}, _authHeaders()),
+            body: JSON.stringify({path, content, create_only: true}) });
+          if (res.status === 409) continue;
+          sent = true;
+          _fileData.path = path;
+          if (res.ok) { r = res; break; }
+          // A real refusal: keep the text unsaved (and the editor open on close).
+          showToast(await _apiErrText(res));
+          btn.textContent = 'Save'; btn.classList.remove('saving');
+          return;
+        }
+      } catch (e) { sent = false; }
+    }
+    if (!sent) r = await apiCall(API + '/api/file', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({path: _fileData.path, content})
@@ -28654,7 +28719,8 @@ async function _spCaptureSaveTyped() {
   if (!box || !box.value.trim()) return;
   const text = box.value;
   box.value = '';
-  if (!(await _spCaptureSave(text))) box.value = text;
+  if (!(await _spCaptureSave(text))) { box.value = text; return; }
+  try { localStorage.removeItem('amux_sp_capture_draft'); } catch (e) {}
 }
 async function _spCopy(path) {
   try {
@@ -28700,6 +28766,10 @@ function _spWireCapture() {
   }
   _spLoadRetain();
   box.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _spCaptureSaveTyped(); } });
+  // Typed text survives a reload or the app being backgrounded until it is
+  // saved (2026-10-16, "scratchpad is dropping data").
+  try { const d = localStorage.getItem('amux_sp_capture_draft'); if (d && !box.value) box.value = d; } catch (e) {}
+  box.addEventListener('input', () => { try { if (box.value) localStorage.setItem('amux_sp_capture_draft', box.value); else localStorage.removeItem('amux_sp_capture_draft'); } catch (e) {} });
   document.addEventListener('paste', e => {
     if (activeView !== 'scratchpad' || e.target === box) return;
     const t = e.target;
