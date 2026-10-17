@@ -3010,7 +3010,14 @@
        `.overlay` rule is overridden here. */
     #peek-overlay { padding: 6px; }
     #peek-overlay .overlay-header { padding-bottom: 0 !important; gap: 2px !important; margin-bottom: 2px; }
-    #peek-overlay #peek-task-row { display: none !important; }
+    /* The task row is SHOWN on a phone now, compact and wrapping (Ethan,
+       2026-10-16: "make sure i can see the full task name of a worker on the
+       card and details page"); it was dropped here for height since 08-09.
+       Focus mode and the keyboard-open state still hide it, like the dir row. */
+    #peek-overlay #peek-task-row { justify-content: flex-start !important; padding: 0 6px; gap: 4px !important; }
+    #peek-overlay #peek-task-label { font-size: 0.76rem !important; }
+    #peek-overlay.peek-focus #peek-task-row, .overlay.vv-compact #peek-task-row,
+    #peek-overlay.peek-focus #peek-task-history, .overlay.vv-compact #peek-task-history { display: none !important; }
     #peek-overlay .peek-dir-bar { padding: 1px 6px; font-size: 0.68rem; }
     #peek-overlay .peek-tabs { padding: 0 0 0 4px; }   /* right stays 0, see .peek-tabs */
     #peek-overlay .peek-tab { padding: 3px 8px; min-height: 36px; font-size: 0.75rem; }
@@ -9635,3 +9642,11 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .map-sw-past li { display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap; }
 .map-sw-past li .btn { min-height:32px; padding:2px 8px; font-size:0.78rem; }
 @media (max-width: 600px) { .map-sw-past li .btn { min-height:44px; } }
+
+/* The worker's task name is shown in full: on the card and the details page it
+   wraps instead of being cut with an ellipsis (Ethan, 2026-10-16). */
+.card-preview.card-task-full { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
+.peek-task-history-btn { font-size:0.72rem; padding:1px 8px; flex-shrink:0; }
+.peek-task-history { max-height:220px; overflow:auto; margin:4px 12px 0; font-size:0.8rem; }
+.peek-task-history-list { margin:0; padding-left:1.4em; display:flex; flex-direction:column; gap:3px; overflow-wrap:anywhere; }
+@media (max-width: 600px) { .peek-task-history-btn { min-height:44px; } }

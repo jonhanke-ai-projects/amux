@@ -2797,6 +2797,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/sessions/{name}/typing",
         methods: &["GET", "POST"],
     },
+    // -- a worker's task-name changes, newest first (sessions_legacy::task_history)
+    RouteEntry {
+        path: "/api/sessions/{name}/task-history",
+        methods: &["GET"],
+    },
     // -- Converse tab: voice conversations with a worker (api/converse.rs)
     RouteEntry { path: "/api/converse/config", methods: &["GET"] },
     RouteEntry { path: "/api/converse/sweep", methods: &["POST"] },

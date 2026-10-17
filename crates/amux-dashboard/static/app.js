@@ -7664,10 +7664,10 @@ function render() {
         const hasBoard = !!displayTaskBoardId;
         const showLlm = llmTask && llmTask !== displayTaskName;
         return (showLlm
-          ? `<div class="card-preview" style="font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(llmTask)}</div>`
+          ? `<div class="card-preview card-task-full" style="font-weight:600;color:var(--text);">${esc(llmTask)}</div>`
           : '')
         + (displayTaskName
-          ? `<div class="card-preview${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:0.78rem;font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
+          ? `<div class="card-preview card-task-full${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:0.78rem;font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
           : '');
       })() : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
@@ -7971,6 +7971,28 @@ function _activeTaskLink(worker, cardId, title) {
     + esc(cardId) + '</span></button>';
 }
 
+// A worker's task-name history (GET /api/sessions/{name}/task-history), shown
+// under the task line on the details page (Ethan, 2026-10-16).
+async function _peekTaskHistoryToggle(ev) {
+  if (ev) ev.stopPropagation();
+  const box = document.getElementById('peek-task-history');
+  const btn = document.getElementById('peek-task-history-btn');
+  if (!box || !peekSession) return;
+  if (!box.hidden) { box.hidden = true; btn?.setAttribute('aria-expanded', 'false'); return; }
+  box.hidden = false; btn?.setAttribute('aria-expanded', 'true');
+  box.innerHTML = '<div class="ui-help">Loading…</div>';
+  const who = peekSession;
+  try {
+    const d = await (await fetch(API + '/api/sessions/' + encodeURIComponent(who) + '/task-history?limit=30', { headers: _authHeaders() })).json();
+    if (who !== peekSession) return;
+    const rows = d.changes || [];
+    box.innerHTML = rows.length
+      ? '<ol class="peek-task-history-list">' + rows.map(c => '<li><span class="ui-help">' + esc(new Date((c.ts || 0) * 1000).toLocaleString()) + '</span> '
+          + esc(c.to || '') + (c.card ? ' <span class="ui-help">' + esc(c.card) + '</span>' : '') + '</li>').join('') + '</ol>'
+      : '<div class="ui-help">No task changes recorded yet.</div>';
+  } catch (e) { box.innerHTML = '<div class="ui-help">Could not load the task history.</div>'; }
+}
+
 function _bindPeekTaskIdentity(s, identity) {
   const row = document.getElementById('peek-task-row');
   const label = document.getElementById('peek-task-label');
@@ -7983,6 +8005,8 @@ function _bindPeekTaskIdentity(s, identity) {
     : (s.task_name || cardId || '');
   const showBoth = llmTask && boardTitle && llmTask !== boardTitle;
   row.style.display = (llmTask || boardTitle) ? 'flex' : 'none';
+  const hist = document.getElementById('peek-task-history');
+  if (hist && hist.dataset.worker !== s.name) { hist.hidden = true; hist.innerHTML = ''; hist.dataset.worker = s.name; document.getElementById('peek-task-history-btn')?.setAttribute('aria-expanded', 'false'); }
   if (showBoth) {
     label.innerHTML = esc(llmTask) + '<br><span style="font-size:0.82rem;color:var(--dim);font-weight:400;">'
       + (cardId ? esc(boardTitle) + ' <span class="task-id-chip" style="font-size:0.7rem;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:0 6px;">' + esc(cardId) + '</span>' : esc(boardTitle))
