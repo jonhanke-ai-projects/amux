@@ -9675,3 +9675,8 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .task-name-title { color:var(--text); font-size:14px; overflow-wrap:anywhere; }
 .task-name-current { font-size:11px; color:var(--accent); border:1px solid var(--accent); border-radius:8px; padding:0 6px; margin-left:6px; }
 .task-name-meta { color:var(--text-dim, var(--muted)); font-size:12px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+
+/* Worker Board tab: one board switch (Ethan, 2026-10-17). */
+.pbc-one { display:flex; align-items:center; gap:12px; justify-content:space-between; }
+.pbc-one .pbc-text { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1 1 auto; }
+.board-one-switch { min-height:44px; min-width:72px; flex:0 0 auto; }

@@ -11909,6 +11909,55 @@ function _boardSwitchStates(s, pending) {
 }
 const _WORKER_BOARD_CONFIGS = _BOARD_SWITCHES;
 
+// ONE BOARD SWITCH (Ethan, 2026-10-17: "update the board settings on worker
+// page to just have a single toggle enable/disable board. that should do all
+// the board stuff"). The worker pages show this one switch; it PATCHes
+// `board_enabled`, which writes every board key at once. A worker whose keys
+// were set one by one before this reads "Partly on" until it is flipped.
+function _boardOneState(s) {
+  if (!s || s.isolated) return { mode: 'off', on: false, label: 'Off' };
+  const st = _boardSwitchStates(s, _pbcPending);
+  const n = _BOARD_SWITCHES.filter(c => st[c.field].own).length;
+  if ('board_enabled' in _pbcPending) return _pbcPending.board_enabled ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
+  if (n === _BOARD_SWITCHES.length && st.board_force_adherence.effective) return { mode: 'on', on: true, label: 'On' };
+  if (n === 0) return { mode: 'off', on: false, label: 'Off' };
+  return { mode: 'partial', on: false, label: 'Partly on', n };
+}
+const _BOARD_ONE_NOTE = 'On: the board starts this worker\u2019s To Do cards when it is idle, keeps it going on unfinished cards, refills To Do from Backlog, turns task-like messages into cards, and nudges and reminds it. Off: the board only keeps records and never types into this worker.';
+function _boardOneSwitchHTML(name, s, cls) {
+  const b = _boardOneState(s);
+  const dis = s && s.isolated ? ' disabled' : '';
+  return '<button type="button" class="btn board-one-switch' + (b.on ? ' primary' : '') + (cls ? ' ' + cls : '') + '" role="switch"'
+    + ' aria-checked="' + (b.mode === 'partial' ? 'mixed' : String(b.on)) + '" data-board-mode="' + b.mode + '"' + dis
+    + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',' + (!b.on) + ')"'
+    + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>';
+}
+async function _boardOneSet(name, on) {
+  if (!name) return;
+  _pbcPending.board_enabled = !!on;
+  if (peekSession === name) _peekBoardPolicySync();
+  try {
+    const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ board_enabled: !!on })
+    });
+    if (r) {
+      let d = {};
+      try { d = await r.json(); } catch (e) {}
+      showToast(d.message || ('Board ' + (on ? 'on' : 'off')));
+      const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
+      if (s) for (const c of _BOARD_SWITCHES) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
+      if (d.board_enabled !== undefined && d.board_enabled !== !!on) {
+        try { window._clientDebug && window._clientDebug('board-one-switch-not-effective', { session: name, requested: !!on, effective: d.board_enabled, measured: true, n_considered: 1 }); } catch (e) {}
+      }
+    }
+    await fetchSessions().catch(() => {});
+  } finally {
+    delete _pbcPending.board_enabled;
+    if (peekSession === name) _peekBoardPolicySync();
+  }
+}
+
 function _workerConfigurationRow(key, label, value, note, controls) {
   return '<div class="worker-config-row" data-worker-config="' + esc(key) + '">'
     + '<div class="worker-config-copy"><div class="worker-config-label">'
@@ -12086,28 +12135,12 @@ async function _workerExternalEmailSet(name, value) {
 function _workerBoardConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
   if (s.isolated) return '<p>Isolated mode: direct CLI messaging. Boards and harness automation are disabled.</p>';
-  const states = _boardSwitchStates(s);
-  const rows = _WORKER_BOARD_CONFIGS.map(c => {
-    const on = states[c.field].own;
-    const own = !!(c.own && s[c.own]);
-    return '<div class="worker-config-row">'
-      + '<div class="worker-config-copy"><div class="worker-config-label">'
-      + esc(c.label) + (own ? ' <span style="font-size:0.62rem;color:var(--accent);">worker override</span>'
-                              : ' <span style="font-size:0.62rem;color:var(--dim);">inherited/default</span>')
-      + '</div><div class="worker-config-note">' + esc(c.note)
-      + (states[c.field].why ? '<span class="pbc-why" style="display:block;">' + esc(states[c.field].why) + '</span>' : '')
-      + '</div></div><div class="worker-config-actions">'
-      + '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
-      + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
-      + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
-      + escJs(c.field) + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>'
-      + (own ? '<button class="btn" style="font-size:0.65rem;min-height:32px;padding:4px 7px;"'
-          + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
-          + escJs(c.field) + '\',null)">Inherit</button>' : '')
-      + '</div></div>';
-  }).join('');
-  return '<div class="worker-config-grid worker-config-grid-board">'
-    + _workerConfigurationSection('task-lifecycle', 'Board and this worker', 'The same switches as the worker\u2019s Board tab. A switch that is on but held back by the one above it says so. Status availability and Board gates below define transition requirements.', [rows])
+  const b = _boardOneState(s);
+  const row = _workerConfigurationRow('board_enabled', 'Board', '', _BOARD_ONE_NOTE
+      + (b.mode === 'partial' ? ' Some board settings were turned on one by one; switch it on or off to set them all.' : ''),
+    _boardOneSwitchHTML(name, s));
+  return '<div class="worker-config-grid worker-config-grid-board" data-session="' + esc(name) + '">'
+    + _workerConfigurationSection('task-lifecycle', 'Board and this worker', 'Status availability and Board gates below define transition requirements.', [row])
     + '</div>';
 }
 
@@ -13822,11 +13855,6 @@ const _PEEK_BOARD_ALL_CONFIGS = _BOARD_SWITCHES;
 // save and the session refetch came back, so an unchecked box flipped back
 // (Ethan, 2026-10-04: "when I uncheck these they revert back").
 const _pbcPending = {};
-// The switches sit in the shared settings-fold accordion, collapsed by default
-// (Ethan, 2026-10-16: "make this an accordion collapsed by default"). Open/closed
-// is remembered per worker so a board refresh, which rebuilds the panel, does
-// not snap it shut under the owner's cursor.
-const _pbcFoldOpen = {};
 function _peekBoardPolicySync() {
   const el = document.getElementById('peek-board-config');
   if (!el) return;
@@ -13835,38 +13863,16 @@ function _peekBoardPolicySync() {
   el.style.display = show ? '' : 'none';
   if (!show) { el.innerHTML = ''; return; }
   const iso = !!s.isolated;
-  const q = escJs(peekSession);
   let h = '';
   if (iso) {
     h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
   }
-  // The DOM is the truth for open/closed: `toggle` fires a task after the click,
-  // so a rebuild landing in between would otherwise read the old value and snap
-  // the panel shut (CI caught it on dd7d2b635). Only this worker's fold counts.
-  const curFold = el.querySelector('details.pbc-fold');
-  if (curFold && curFold.dataset.session === peekSession) _pbcFoldOpen[peekSession] = curFold.open;
-  const states = _boardSwitchStates(s, _pbcPending);
-  const nOn = iso ? 0 : _PEEK_BOARD_ALL_CONFIGS.filter(c => states[c.field].own).length;
-  h += '<details class="settings-fold pbc-fold" data-session="' + esc(peekSession) + '"' + (_pbcFoldOpen[peekSession] ? ' open' : '')
-    + ' ontoggle="_pbcFoldOpen[\'' + q + '\']=this.open"><summary><span class="pbc-fold-title">Board settings</span>'
-    + '<span class="ui-help">' + nOn + ' of ' + _PEEK_BOARD_ALL_CONFIGS.length + ' on</span></summary>';
-  let group = '';
-  for (const c of _PEEK_BOARD_ALL_CONFIGS) {
-    if (c.group && c.group !== group) { group = c.group; h += '<div class="pbc-group">' + esc(group) + '</div>'; }
-    const on = !iso && states[c.field].own;
-    const isOwn = c.own ? !!s[c.own] : false;
-    const dis = iso ? ' disabled' : '';
-    const why = states[c.field].why;
-    h += '<label class="pbc-row' + (c.parents ? ' pbc-child' : '') + (iso ? ' pbc-disabled' : '') + (why ? ' pbc-blocked' : '') + '" data-field="' + esc(c.field) + '">'
-      + '<input type="checkbox"' + (on ? ' checked' : '') + dis
-      + ' onchange="togglePeekBoardPolicy(\'' + escJs(c.field) + '\',this.checked)">'
-      + '<span class="pbc-text"><span class="pbc-label">' + esc(c.label)
-      + (isOwn ? ' <span class="pbc-own" title="Set on this worker, overriding its group or global setting">override</span>' : '')
-      + '</span><span class="pbc-help">' + esc(c.note) + '</span>'
-      + (why ? '<span class="pbc-why">' + esc(why) + '</span>' : '')
-      + '</span></label>';
-  }
-  h += '</details>';
+  const b = _boardOneState(s);
+  h += '<div class="pbc-one" data-session="' + esc(peekSession) + '">'
+    + '<span class="pbc-text"><span class="pbc-label">Board</span>'
+    + '<span class="pbc-help">' + esc(_BOARD_ONE_NOTE) + '</span>'
+    + (b.mode === 'partial' ? '<span class="pbc-why">Some board settings were turned on one by one. Switch it on or off to set them all.</span>' : '')
+    + '</span>' + _boardOneSwitchHTML(peekSession, s) + '</div>';
   // Rebuild only when something changed: the panel was replaced on every board
   // refresh, several times a second, so a click could land on a box that was
   // about to be thrown away (an e2e click saw the node replaced 13 times).

@@ -33957,6 +33957,54 @@ async fn config_patch_with_liveness(
     // WRITES THE WORKER LAYER ONLY. Group and global layers are Configurations'
     // to set, and silently writing one from a per-worker menu would change every
     // lane in that group from a control labelled with one worker's name.
+    // ONE BOARD SWITCH (Ethan, 2026-10-17: "update the board settings on worker
+    // page to just have a single toggle enable/disable board. that should do
+    // all the board stuff"). `board_enabled` writes every board key below in
+    // one env write: steering, planning, pickup, continue, their master and
+    // backlog refill. `null` removes all six worker overrides. The response's
+    // `board_enabled` is the RESOLVED steering switch, because with steering
+    // off the board only keeps records whatever the others say.
+    if let Some(v) = body.get("board_enabled") {
+        let keys = [
+            super::board_lifecycle::FORCE_ADHERENCE_KEY,
+            super::board_lifecycle::DECOMPOSE_KEY,
+            "CC_AUTO_PICKUP",
+            BOARD_CONTINUE_KEY,
+            "CC_STANDING_ORDERS",
+            crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY,
+        ];
+        let inherit = v.is_null();
+        let on = !inherit && py_truthy(v);
+        for key in keys {
+            if inherit { cfg.remove(key); } else { cfg.set(key, if on { "1" } else { "0" }); }
+        }
+        if let Err(e) = cfg.write(&f) {
+            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": env_write_error(&f, &e)}));
+        }
+        let effective = super::board_lifecycle::force_adherence(name);
+        let pickup = standing_orders_on(name, "CC_AUTO_PICKUP");
+        let drain = crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(name);
+        let agrees = inherit || (effective == on && pickup == on && drain == on);
+        if agrees {
+            tracing::info!(session = %name, requested = ?v, effective, measured = true, n_considered = keys.len(),
+                verdict = "board_switch_set", "worker board switch written to every board key");
+        } else {
+            tracing::warn!(session = %name, requested = ?v, effective, pickup, drain, measured = true, n_considered = keys.len(),
+                verdict = "board_switch_not_effective", "worker board switch written but a board key resolves differently");
+        }
+        return j200(json!({
+            "ok": true,
+            "board_enabled": effective,
+            "inherited": inherit,
+            "message": if inherit {
+                format!("Board: worker overrides removed; resolved {}", if effective { "on" } else { "off" })
+            } else if agrees {
+                format!("Board {} for this worker", if on { "on" } else { "off" })
+            } else {
+                format!("Board set {} but it resolves {}: a process-wide setting outranks the worker", if on { "on" } else { "off" }, if effective { "on" } else { "off" })
+            },
+        }));
+    }
     // BOARD AUTOMATION CONFIGURATION. These are the same scoped env keys the
     // runtime reads on every drive tick, now exposed as first-class worker UI
     // controls from backlog -> todo -> doing -> terminal rather than requiring
@@ -44773,6 +44821,44 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             env.contains("--effort high"),
             "claude still takes its effort in CC_FLAGS: {env}"
         );
+    }
+
+    /// Ethan, 2026-10-17: one switch for "all the board stuff". `board_enabled`
+    /// writes every board key, off and on, and `null` hands them all back to
+    /// inheritance.
+    #[tokio::test]
+    async fn one_board_switch_sets_every_board_key() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/probe.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        let app: Router = routes().with_state(state);
+        let keys = [
+            super::super::board_lifecycle::FORCE_ADHERENCE_KEY,
+            super::super::board_lifecycle::DECOMPOSE_KEY,
+            "CC_AUTO_PICKUP",
+            BOARD_CONTINUE_KEY,
+            "CC_STANDING_ORDERS",
+            crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY,
+        ];
+        let env = || std::fs::read_to_string(home.path().join("sessions/probe.env")).unwrap();
+        for (on, want) in [(true, "1"), (false, "0")] {
+            let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"board_enabled": on}))).await;
+            assert_eq!(st, StatusCode::OK, "{v}");
+            assert_eq!(v["board_enabled"], json!(on), "{v}");
+            let text = env();
+            for k in keys {
+                assert!(text.contains(&format!("{k}=\"{want}\"")) || text.contains(&format!("{k}={want}")),
+                    "{k} not written {want} by board_enabled={on}: {text}");
+            }
+        }
+        let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"board_enabled": null}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let text = env();
+        for k in keys {
+            assert!(!text.contains(&format!("{k}=")), "{k} still overridden after null: {text}");
+        }
     }
 
     /// The refusal must advertise the set it enforces, not a stale subset.
