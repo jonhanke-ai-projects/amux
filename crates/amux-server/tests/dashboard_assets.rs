@@ -1339,7 +1339,6 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "Start To Do cards when idle",
         "Keep going on unfinished cards",
         "Board steers this worker",
-        "Plan my messages onto the board",
         "Status availability and Board gates below define transition requirements",
         "external_email_allowed",
         "Send external email without approval",
@@ -1350,7 +1349,6 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "auto_drain_backlog",
         "board_auto_pickup",
         "board_auto_continue",
-        "board_decompose",
         "board_force_adherence",
     ] {
         assert!(
