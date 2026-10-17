@@ -5983,3 +5983,38 @@ COST: About 12 tool calls: three wrong writes onto my own card, two desc_shrink_
 FIX: When the caller has exactly one open candidate, require the comparison to name
   shared work, not shared lane, before folding; and document `tags` (or a real
   `create` opt-out) in the CLAUDE.md board recipe beside the 201/200 check.
+
+## A bare `tmux kill-server` from any lane kills the whole fleet, and nothing guards it
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-17
+SESSION: long-form-videos
+CARD: LFV-15
+SYMPTOM: A demo-server reset script ran `TMUX_TMPDIR=/tmp/lfvd.X tmux kill-server`
+  to stop a private test socket. Inside a pane, $TMUX wins over TMUX_TMPDIR, so it
+  killed /private/tmp/tmux-501/default at 18:51Z: every lane, the caller included
+  (exit 137). Ran twice before the cause was clear. The git-shared-guard hook
+  blocks `git add -A` in a shared checkout; no hook looks at tmux verbs.
+COST: 36 lanes dropped mid-turn; 19 still down after auto-restore stopped at 17
+  (see the swap-gate entry below). Owner paged.
+FIX: A PreToolUse guard that refuses `tmux kill-server` / `kill-session -a` unless
+  the command names `-S <socket>` or `-L <name>` that is not the fleet socket, and
+  unsets $TMUX for any tmux call that sets TMUX_TMPDIR. Same guard shape as
+  git-shared-guard.py.
+
+## Worker start refuses on stale swap while memory pressure is normal
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-17
+SESSION: long-form-videos
+CARD: LFV-15
+SYMPTOM: After the fleet tmux server died, auto-restore brought back 17 lanes and
+  stopped. POST /api/workers/gtm-videos/start: "host is out of memory headroom",
+  swap_used_mb 20832 > AMUX_MEM_SWAP_DENY_MB 8192, while the same reply said
+  "pressure":"normal" and memory_pressure reported 87% free of 96 GB.
+COST: 19 lanes stay down until a human raises the threshold or reboots; recovery
+  after a crash is exactly when swap is high and lanes most need starting.
+FIX: Gate on current pressure (memory_pressure level, or swapins rate) rather than
+  cumulative swap_used, or let swap count only while pressure is warn/critical.
