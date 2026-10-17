@@ -55,8 +55,17 @@ PY
 }
 
 # 1. Checkout (fast-forward only; a diverged checkout is reported, never forced).
+SELF="$SRC/cloud/desktop/update.sh"
+before=$(sha256sum "$SELF" 2>/dev/null | cut -c1-64)
 if ! as_user git -C "$SRC" pull -q --ff-only 2>/dev/null; then
   say "WARN checkout $SRC did not fast-forward; keeping its current scripts"
+fi
+# This run is executing the bytes it started with. If the pull changed this script, run the new
+# one now (once), so a fix in it lands in this run rather than an hour later.
+if [[ -z "${AMUX_UPDATE_REEXEC:-}" && -f "$SELF" && "$(sha256sum "$SELF" | cut -c1-64)" != "$before" ]]; then
+  say "update.sh changed in the pull; running the new version"
+  exec 9>&-
+  AMUX_UPDATE_REEXEC=1 exec bash "$SELF"
 fi
 as_user make -C "$SRC" install-cli BIN_DIR="$BIN_DIR" >/dev/null 2>&1 || say "WARN install-cli failed"
 
