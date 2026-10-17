@@ -34,6 +34,10 @@ jobs:
       # binary and a false green, so its input classes are pinned here.
       - name: Rust-input cache key (scripts/ci-rust-key.mjs)
         run: node --test tests/ci-rust-key.test.mjs
+      # Browser methods: the backend ladder, agent selection, and the OpAgent
+      # adapter against fixtures produced by OpAgent's own Python.
+      - name: browser methods registry and agent adapters
+        run: node --test tests/browser-methods.test.mjs
       # AMUX-5397: the ChatGPT front door's tenant rules (a grant reaches only
       # its own workspace; a tunnel answer only from its own org). The real
       # gateway handler against fake workspaces: no cloud, Clerk or Docker.

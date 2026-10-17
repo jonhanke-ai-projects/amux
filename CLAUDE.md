@@ -543,8 +543,16 @@ and lives only in `server.env`. Never commit the actual URL (repo is public).
 Use `amux browser route start '{"profile":"<saved-profile>","url":"https://..."}'`,
 then `amux browser route state`, `amux browser route shot`, and
 `amux browser route action '{"action":"click","selector":"..."}'`.
-The shared route tries Amux → direct CDP with the Chrome profile configured in
-Browser → Browser route settings → CUA when enabled. The result's `route`
-names the actual backend/profile and failed attempts. After a handoff, observe
-again before acting; uncertain actions are never replayed. Scope refusals remain refusals; an occupied native profile can use the configured isolated CDP copy while preserving its owner’s browser. Login-cookie evidence is not live auth proof.
+Omit `profile` and the route uses the profile `amux browser for <url>` picks for
+that site. Backends are tried in the `ladder` of `browser-methods.toml` (Amux →
+CDP copy of the Chrome profile set in Browser → Browser route settings → CUA
+when enabled). When another worker holds the profile, the Amux backend joins
+its browser in a tab of your own (live sign-ins); it falls to the CDP copy only
+if joining fails, or with `"join":false`. The result's `route` names the actual
+backend, profile, how the profile was chosen, and every attempt. After a
+handoff, observe again before acting; uncertain actions are never replayed.
+Scope refusals remain refusals. Login-cookie evidence is not live auth proof.
+`amux browser route goal '{"task":"..."}'` hands a whole task to an agent method
+from `browser-methods.toml` (OpAgent first; disabled until its model is served),
+which drives the route and returns its answer and a trajectory.
 Standalone `/chrome-cdp` remains available for explicit tab work.
