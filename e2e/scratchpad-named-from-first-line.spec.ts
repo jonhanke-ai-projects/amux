@@ -78,6 +78,9 @@ test('two notes with the same first line get distinct names (no overwrite)', asy
   await page.locator('#sp-capture').fill(`${first}\nbody ALPHA ${m}`);
   await page.locator('#sp-capture').press('Meta+Enter');
   await expect.poll(() => nameContaining(page, auth, `ALPHA ${m}`), { timeout: 15_000 }).not.toBeNull();
+  // The client's cached listing can lag the folder (CI, a phone saving right
+  // after opening the tab). Forget it, so the name must come from the server.
+  await page.evaluate('_spLastData = null');
   await page.locator('#sp-capture').fill(`${first}\nbody BRAVO ${m}`);
   await page.locator('#sp-capture').press('Meta+Enter');
   await expect.poll(() => nameContaining(page, auth, `BRAVO ${m}`), { timeout: 15_000 }).not.toBeNull();
