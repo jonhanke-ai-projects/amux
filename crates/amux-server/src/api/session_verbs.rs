@@ -17081,7 +17081,24 @@ fn resume_context_from_state(
     // the session ran in .../server/.worktrees/gs12-extra-2.
     let own_worktree = Path::new(configured_cwd).ends_with(Path::new(".worktrees").join(name))
         && Path::new(configured_cwd).is_dir();
-    let cwd = if own_worktree || runtime_cwd.trim().is_empty() {
+    // A REMOVED worktree nested in the lane's own checkout
+    // (`<configured>/.worktrees/<x>`) resolves to that checkout, the same
+    // choice `resume_cwd` makes for a nested checkout that still exists. Its
+    // work is published or gone either way, and refusing left the lane unable
+    // to start at all, fresh conversation included: mixpeek-frustrations,
+    // 2026-10-17, cc_cwd `.worktrees/mf2650/server` removed after landing,
+    // then 30+ refused starts after the 14:51 tmux kill. A missing directory
+    // anywhere else still refuses (never substitute an unrelated checkout).
+    let removed_nested = !runtime_cwd.trim().is_empty()
+        && !Path::new(runtime_cwd).exists()
+        && Path::new(runtime_cwd).starts_with(Path::new(configured_cwd).join(".worktrees"))
+        && Path::new(configured_cwd).is_dir();
+    if removed_nested {
+        tracing::warn!(session = name, removed = %runtime_cwd, chosen = %configured_cwd,
+            measured = true, n_considered = 1, verdict = "resume_cwd_removed_worktree",
+            "the lane's last directory was a removed worktree inside its own checkout; resuming in the checkout");
+    }
+    let cwd = if own_worktree || runtime_cwd.trim().is_empty() || removed_nested {
         configured_cwd
     } else {
         runtime_cwd
@@ -43481,6 +43498,27 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert!(
             resume_context_from_state(&conn, "lane-a", "relative/missing", "/tmp/shared-main")
                 .is_err()
+        );
+    }
+
+    /// A removed worktree INSIDE the lane's checkout resumes in the checkout;
+    /// a removed directory anywhere else still refuses.
+    #[test]
+    fn a_removed_nested_worktree_resumes_in_the_lanes_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("r.db")).unwrap();
+        let conn = store.read().unwrap();
+        let checkout = dir.path().join("repo");
+        std::fs::create_dir_all(checkout.join(".worktrees")).unwrap();
+        let gone = checkout.join(".worktrees/mf2650/server");
+        let c = resume_context_from_state(&conn, "lane-a", gone.to_str().unwrap(), checkout.to_str().unwrap())
+            .expect("a removed nested worktree must not strand the lane");
+        assert_eq!(c.cwd, checkout.to_str().unwrap());
+        let elsewhere = dir.path().join("other/.worktrees/x");
+        assert!(
+            resume_context_from_state(&conn, "lane-a", elsewhere.to_str().unwrap(), checkout.to_str().unwrap())
+                .is_err(),
+            "a missing directory outside the checkout still refuses"
         );
     }
 

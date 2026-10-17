@@ -245,6 +245,51 @@ mem_level_critical = 4
 ack_env = "AMUX_RESOURCES_ACK"
 
 [[boundary]]
+id = "fleet-tmux"
+title = "The fleet's tmux server is not yours to stop"
+rule = """
+Every worker runs inside one shared tmux server. Inside a pane, a bare tmux
+command goes to that server because $TMUX names it, even when TMUX_TMPDIR is
+set. Never run `tmux kill-server` or `tmux kill-session -a` without `-L <name>`
+or `-S <socket>` naming your own private server in the same command. For a
+private test server, start and stop it as `tmux -L <name> ...` (or
+`env -u TMUX tmux -S <path> ...`). Stop a worker with `amux stop <name>`.
+"""
+enforced_by = ["hook: boundary-guard (fleet tmux kill-server / kill-session -a)"]
+
+# 2026-10-17 14:51: a demo reset script ran `TMUX_TMPDIR=/tmp/lfvd.X tmux
+# kill-server` in a pane. $TMUX won, the fleet server died, and 36 lanes
+# dropped mid-turn. The rule: a kill-server (or kill-session -a) in a tmux
+# invocation that names no -L/-S is the fleet; so is one naming the default
+# socket explicitly.
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['(?:^|[\s;&|(=])tmux\s(?:(?!(?<!\S)-[LS]\b)[^;&|\n])*\bkill-(server|session\b[^;&|\n]*\s-a\b)']
+reason = "A tmux kill without -L/-S inside a pane stops the shared fleet server and every worker with it ($TMUX wins over TMUX_TMPDIR). Name your private server: `tmux -L <name> kill-server`. Stop a worker with `amux stop <name>`."
+block_examples = [
+  "TMUX_TMPDIR=/tmp/lfvd.X tmux kill-server",
+  "tmux kill-server",
+  "tmux kill-session -a -t keep",
+  "cd /tmp && tmux kill-server 2>/dev/null || true",
+]
+allow_examples = [
+  "tmux -L lfvd kill-server",
+  "env -u TMUX tmux -S /tmp/lfvd/sock kill-server",
+  "tmux kill-session -t my-demo",
+  "grep -rn kill-server scripts/",
+]
+
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['(?:^|[\s;&|(=])tmux\s[^;&|\n]*?-(L\s*default\b|S\s*\S*/tmux-\d+/default\b)[^;&|\n]*\bkill-(server|session\b[^;&|\n]*\s-a\b)']
+reason = "That socket is the shared fleet tmux server; killing it stops every worker. Use your own `-L <name>`, or `amux stop <name>` for a worker."
+block_examples = [
+  "tmux -L default kill-server",
+  "tmux -S /private/tmp/tmux-501/default kill-server",
+]
+allow_examples = ["tmux -L default ls", "tmux -S /tmp/tmux-501/demo kill-server"]
+
+[[boundary]]
 id = "boundaries-self"
 title = "Boundaries are the owner's to change"
 rule = """
