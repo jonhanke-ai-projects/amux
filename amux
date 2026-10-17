@@ -6429,13 +6429,27 @@ print(json.dumps(d))' 2>/dev/null) || die "amux order: bad --amount (must be a n
   ok=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("1" if d.get("ok") else "0")' 2>/dev/null || echo 0)
   if [[ "$ok" == "1" ]]; then
     filled=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(", ".join(d.get("filled",[])))' 2>/dev/null || echo "?")
+    # GE-1121: an empty fill is not a filled form, whatever the server said.
+    if [[ -z "$filled" ]]; then
+      echo "amux order: the harness filled no field on this page; nothing was filled or submitted" >&2
+      return 1
+    fi
     echo "order form filled by the harness (fields: $filled)"
     local submitted
     submitted=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); s=d.get("submit",{}); print("yes" if s.get("submitted") else "no")' 2>/dev/null || echo "?")
     [[ "$submitted" == "yes" ]] && echo "order submitted"
   else
     local emsg
-    emsg=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error","unknown error"))' 2>/dev/null || echo "$result")
+    emsg=$(echo "$result" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print(d.get("error","unknown error"))
+if d.get("filled") is not None: print("  filled:     " + (", ".join(d.get("filled") or []) or "none"))
+if d.get("not_found"): print("  not found:  " + ", ".join(d["not_found"]))
+for m in d.get("mismatched") or []:
+  print("  did not take: %s (field %s, %s)" % (m.get("key"), m.get("field"),
+    "no option selected" if m.get("selected_index") == -1 else "wanted %s chars, holds %s" % (m.get("expected_len"), m.get("actual_len"))))
+if d.get("submitted") is False: print("  nothing was submitted")' 2>/dev/null || echo "$result")
     echo "amux order: $emsg" >&2
     return 1
   fi

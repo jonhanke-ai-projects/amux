@@ -586,46 +586,41 @@ async fn remove(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
 
 /// The page script that types a card into the current checkout. Values travel
 /// only to Chrome; the script returns WHICH fields it filled, never values.
+/// The script lives in `vault_fill.js` so a browser test runs these exact bytes.
+pub(crate) const FILL_SCRIPT_JS: &str = include_str!("vault_fill.js");
+
 pub(crate) fn fill_script(values: &Value) -> String {
-    format!(
-        r#"(() => {{
-  const v = {values};
-  const pick = (sels) => {{ for (const s of sels) {{ const el = document.querySelector(s); if (el && !el.disabled && el.offsetParent !== null) return el; }} return null; }};
-  const set = (el, val) => {{
-    const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-    const d = Object.getOwnPropertyDescriptor(proto, 'value');
-    el.focus(); d.set.call(el, val);
-    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    el.blur();
-  }};
-  const F = {{
-    number: ['[autocomplete="cc-number"]', 'input[name*="cardnumber" i]', 'input[name*="card_number" i]', 'input[id*="cardnumber" i]', 'input[name*="ccnumber" i]'],
-    exp: ['[autocomplete="cc-exp"]', 'input[name*="expiry" i]:not([name*="month" i]):not([name*="year" i])', 'input[name="exp" i]'],
-    exp_month: ['[autocomplete="cc-exp-month"]', 'select[name*="month" i]', 'input[name*="exp_month" i]'],
-    exp_year: ['[autocomplete="cc-exp-year"]', 'select[name*="year" i]', 'input[name*="exp_year" i]'],
-    cvc: ['[autocomplete="cc-csc"]', 'input[name*="cvc" i]', 'input[name*="cvv" i]', 'input[name*="csc" i]', 'input[name*="security" i]'],
-    name: ['[autocomplete="cc-name"]', 'input[name*="cardholder" i]', 'input[name*="nameoncard" i]', 'input[name*="card_name" i]'],
-    address: ['[autocomplete="address-line1"]', '[autocomplete="street-address"]', 'input[name*="address1" i]', 'input[name*="line1" i]'],
-    city: ['[autocomplete="address-level2"]', 'input[name*="city" i]'],
-    state: ['[autocomplete="address-level1"]', 'select[name*="state" i]', 'input[name*="state" i]'],
-    zip: ['[autocomplete="postal-code"]', 'input[name*="zip" i]', 'input[name*="postal" i]'],
-    country: ['[autocomplete="country"]', '[autocomplete="country-name"]', 'select[name*="country" i]'],
-    email: ['[autocomplete="email"]', 'input[type="email"]'],
-  }};
-  const filled = [], not_found = [];
-  const wantsSplit = !pick(F.exp);
-  for (const [k, sels] of Object.entries(F)) {{
-    if (v[k] == null || v[k] === '') continue;
-    if (k === 'exp' && wantsSplit) continue;
-    if ((k === 'exp_month' || k === 'exp_year') && !wantsSplit) continue;
-    const el = pick(sels);
-    if (el) {{ set(el, v[k]); filled.push(k); }} else not_found.push(k);
-  }}
-  const iframes = [...document.querySelectorAll('iframe')].filter(f => /stripe|braintree|adyen|checkout|payment|card/i.test(f.src || f.name || '')).length;
-  return {{ filled, not_found, payment_iframes: iframes, url: location.href }};
-}})()"#
-    )
+    FILL_SCRIPT_JS.replacen("__AMUX_FILL_VALUES__", &values.to_string(), 1)
+}
+
+/// What a fill result says about the form, read the same way by both callers.
+/// A fill that typed nothing, or wrote a field that did not keep its value, is
+/// not a filled form (GE-1121: "order form filled by the harness (fields: )"
+/// exited 0 with nothing in the page).
+pub(crate) struct FillOutcome {
+    pub filled: Value,
+    pub not_found: Value,
+    pub mismatched: Value,
+    pub complete: bool,
+    pub why: String,
+}
+
+pub(crate) fn fill_outcome(r: &Value) -> FillOutcome {
+    let filled = r.get("filled").cloned().filter(Value::is_array).unwrap_or(json!([]));
+    let not_found = r.get("not_found").cloned().filter(Value::is_array).unwrap_or(json!([]));
+    let mismatched = r.get("mismatched").cloned().filter(Value::is_array).unwrap_or(json!([]));
+    let n_filled = filled.as_array().map_or(0, Vec::len);
+    let n_bad = mismatched.as_array().map_or(0, Vec::len);
+    let why = if n_filled == 0 && n_bad == 0 {
+        "no payment field on this page took a value: the form was not filled. Fields inside a cross-origin payment iframe cannot be reached; check payment_iframes and not_found".to_string()
+    } else if n_bad > 0 {
+        let keys: Vec<&str> = mismatched.as_array().into_iter().flatten()
+            .filter_map(|m| m["key"].as_str()).collect();
+        format!("{} field(s) did not keep the value written to them ({}): the form is not correctly filled", n_bad, keys.join(", "))
+    } else {
+        String::new()
+    };
+    FillOutcome { filled, not_found, mismatched, complete: why.is_empty(), why }
 }
 
 /// A worker asks amux to put a vault card into its amux browser page for a
@@ -704,17 +699,26 @@ async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<V
     let mut a = base_audit;
     match result {
         Ok(r) => {
-            let filled = r.get("filled").cloned().unwrap_or(json!([]));
-            let not_found = r.get("not_found").cloned().unwrap_or(json!([]));
-            a["decision"] = json!("filled");
-            a["filled"] = filled.clone();
-            a["not_found"] = not_found.clone();
+            let o = fill_outcome(&r);
+            a["decision"] = json!(if o.complete { "filled" } else { "fill_incomplete" });
+            a["filled"] = o.filled.clone();
+            a["not_found"] = o.not_found.clone();
+            a["mismatched"] = o.mismatched.clone();
             a["page"] = r.get("url").cloned().unwrap_or(Value::Null);
             audit(&home, a);
+            if !o.complete {
+                tracing::warn!(item = %id, session = %session, amount, merchant = %merchant,
+                    filled = %o.filled, not_found = %o.not_found, mismatched = %o.mismatched,
+                    measured = true, n_considered = 1, verdict = "vault_fill_incomplete",
+                    "vault card fill did not fill the form (values not logged)");
+                return err(StatusCode::UNPROCESSABLE_ENTITY, json!({"ok": false, "error": o.why,
+                    "filled": o.filled, "not_found": o.not_found, "mismatched": o.mismatched,
+                    "payment_iframes": r.get("payment_iframes"), "page": r.get("url")}));
+            }
             tracing::info!(item = %id, session = %session, amount, merchant = %merchant,
                 measured = true, n_considered = 1, verdict = "vault_card_filled",
                 "vault card filled into the worker's page (values not logged)");
-            Json(json!({"ok": true, "filled": filled, "not_found": not_found,
+            Json(json!({"ok": true, "filled": o.filled, "not_found": o.not_found,
                 "payment_iframes": r.get("payment_iframes"),
                 "note": "values were typed into the page by amux and are not returned. A field inside a cross-origin payment iframe cannot be reached from the page and shows up in not_found."}))
                 .into_response()
@@ -1000,8 +1004,9 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
         .map_err(|e| e.to_string());
 
     // Optionally click submit/place-order
+    let fill_complete = fill_result.as_ref().map(|r| fill_outcome(r).complete).unwrap_or(false);
     let submit_result = if auto_submit {
-        if fill_result.is_ok() {
+        if fill_complete {
             let submit_js = r#"(async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const btn = document.querySelector(
@@ -1028,20 +1033,30 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
     let mut a = base_audit;
     match fill_result {
         Ok(r) => {
-            let filled = r.get("filled").cloned().unwrap_or(json!([]));
-            let not_found = r.get("not_found").cloned().unwrap_or(json!([]));
-            a["decision"] = json!("filled");
-            a["filled"] = filled.clone();
-            a["not_found"] = not_found.clone();
+            let o = fill_outcome(&r);
+            a["decision"] = json!(if o.complete { "filled" } else { "fill_incomplete" });
+            a["filled"] = o.filled.clone();
+            a["not_found"] = o.not_found.clone();
+            a["mismatched"] = o.mismatched.clone();
             a["page"] = r.get("url").cloned().unwrap_or(Value::Null);
             if let Some(ref sr) = submit_result {
                 a["submit"] = sr.clone();
             }
             audit(&home, a);
+            if !o.complete {
+                tracing::warn!(item = %id, session = %session, amount, merchant = %merchant,
+                    filled = %o.filled, not_found = %o.not_found, mismatched = %o.mismatched,
+                    auto_submit, measured = true, n_considered = 1, verdict = "order_fill_incomplete",
+                    "order form NOT filled by the harness; nothing was submitted (values not logged)");
+                return err(StatusCode::UNPROCESSABLE_ENTITY, json!({"ok": false, "error": o.why,
+                    "filled": o.filled, "not_found": o.not_found, "mismatched": o.mismatched,
+                    "payment_iframes": r.get("payment_iframes"), "page": r.get("url"),
+                    "submitted": false}));
+            }
             tracing::info!(item = %id, session = %session, amount, merchant = %merchant,
                 measured = true, n_considered = 1, verdict = "order_completed",
                 "order form filled by the harness (values not logged)");
-            let mut resp = json!({"ok": true, "filled": filled, "not_found": not_found,
+            let mut resp = json!({"ok": true, "filled": o.filled, "not_found": o.not_found,
                 "payment_iframes": r.get("payment_iframes"),
                 "note": "the harness filled the order form. Values are not returned."});
             if let Some(sr) = submit_result {
@@ -1161,6 +1176,29 @@ mod tests {
         assert!(v.contains("e***@runmixpeek.com"), "{v}");
         let routed = public_view(&item).to_string();
         assert!(!routed.contains("hunter2-secret"), "public_view must route logins to the login view: {routed}");
+    }
+
+    #[test]
+    fn the_fill_script_carries_the_values_at_its_one_placeholder() {
+        assert_eq!(FILL_SCRIPT_JS.matches("__AMUX_FILL_VALUES__").count(), 1,
+            "a second mention (a comment) would take the substitution instead of the code");
+        let s = fill_script(&json!({"number": "4242", "name": "a\"b"}));
+        assert!(!s.contains("__AMUX_FILL_VALUES__"));
+        assert!(s.contains(r#"const v = {"name":"a\"b","number":"4242"};"#) || s.contains(r#"const v = {"number":"4242","name":"a\"b"};"#), "{}", &s[..400.min(s.len())]);
+    }
+
+    #[test]
+    fn an_empty_or_mismatched_fill_is_not_a_filled_form() {
+        let empty = fill_outcome(&json!({"filled": [], "not_found": ["number"], "mismatched": []}));
+        assert!(!empty.complete);
+        assert!(empty.why.contains("not filled"), "{}", empty.why);
+        let bad = fill_outcome(&json!({"filled": ["name"], "not_found": [], "mismatched": [{"key": "number"}, {"key": "exp_month"}]}));
+        assert!(!bad.complete);
+        assert!(bad.why.contains("number, exp_month"), "{}", bad.why);
+        let missing = fill_outcome(&json!({"url": "x"}));
+        assert!(!missing.complete, "a result without fields is not a fill");
+        let ok = fill_outcome(&json!({"filled": ["number", "cvc"], "not_found": ["email"], "mismatched": []}));
+        assert!(ok.complete && ok.why.is_empty());
     }
 
     #[test]
