@@ -119,6 +119,15 @@ async function sendMail(env, to, subject, text) {
 }
 
 // ------------------------------------------------------------------ provisioning
+// First boot runs the bootstrap from main, fetched over the image's own checkout, so a server
+// created from an older golden image still gets today's setup. The image's copy is the fallback.
+const BOOT = [
+  'set -a; . /etc/amux/standalone.env; set +a',
+  'H=$(getent passwd amux | cut -d: -f6); B=$H/Dev/amux/cloud/desktop/bootstrap.sh',
+  'runuser -u amux -- git -C $H/Dev/amux pull -q --ff-only >/var/log/amux-standalone.log 2>&1 || echo CHECKOUT_PULL_FAILED >>/var/log/amux-standalone.log',
+  '[ -f $B ] || B=/opt/amux/bootstrap.sh',
+  'bash $B >>/var/log/amux-standalone.log 2>&1 || echo BOOTSTRAP_FAILED >>/var/log/amux-standalone.log',
+].join('; ');
 function userData(slug, email, pwHash) {
   // Standalone: the golden image's bootstrap gets its domain and its one owner login. The
   // password arrives already hashed (door.py scrypt format); nothing else about the customer.
@@ -131,7 +140,7 @@ write_files:
     content: |
 ${envFile.split('\n').map(l => '      ' + l).join('\n')}
 runcmd:
-  - [bash, -c, "set -a; . /etc/amux/standalone.env; set +a; bash /opt/amux/bootstrap.sh > /var/log/amux-standalone.log 2>&1 || echo BOOTSTRAP_FAILED >> /var/log/amux-standalone.log"]
+  - [bash, -c, "${BOOT}"]
 `;
 }
 
@@ -163,6 +172,9 @@ async function provision(env, session) {
     } catch (e) { lastErr = e; if (!['resource_unavailable', 'placement_error'].includes(e.code)) throw e; }
   }
   if (!srv) throw lastErr;
+  // Hetzner's daily backups (7 kept, +20% of the server price): a restorable copy of the whole disk
+  // without anything on the server to maintain. A failure here is logged and retried by the cron.
+  await hetzner(env, 'POST', `/servers/${srv.id}/actions/enable_backup`).catch(e => log('backup.enable_failed', { slug, error: String(e).slice(0, 200) }));
   const ip = srv.public_net.ipv4.ip;
   await cf(env, 'POST', `/zones/${env.CF_ZONE_ID}/dns_records`, { type: 'A', name: host(slug), content: ip,
     proxied: false, ttl: 60, comment: `amux cloud ${sub}` });
@@ -234,12 +246,61 @@ async function tick(env) {
       log('provision.ready', { slug, ms_since_create: Date.now() - Date.parse(s.created) });
     }
   }
+  await monitor(env, d.servers);
   const imgs = await hetzner(env, 'GET', '/images?type=snapshot&label_selector=amux-cloud-final=1');
   for (const i of imgs.images) {
     if (Number(i.labels['amux-expires'] || 0) * 1000 < Date.now()) {
       await hetzner(env, 'DELETE', `/images/${i.id}`);
       log('snapshot.expired', { image: i.id, slug: i.labels['amux-slug'] });
     }
+  }
+}
+
+// ------------------------------------------------------------------ monitor
+// Each ready server is checked every 10 minutes (staggered by id) through its public, secret-free
+// /_door/status: is it reachable, did its last self-update succeed, is the updater still running,
+// are backups on. Two bad checks in a row email the operator; recovery emails again. State lives
+// in the server's labels (amux-fail = consecutive bad checks, amux-alert = when we last emailed).
+const OPERATOR = 'hello@amux.io';
+async function serverProblem(env, s) {
+  if (!s.backup_window) return 'backups are off';
+  let st;
+  try {
+    const r = await fetch(`https://${host(s.labels['amux-slug'])}/_door/status`, { cf: { cacheTtl: 0 } });
+    if (r.status !== 200) return `status page answered HTTP ${r.status}`;
+    st = await r.json();
+  } catch (e) { return `unreachable (${String(e).slice(0, 80)})`; }
+  const age = Date.now() / 1000 - (st.checked_at || 0);
+  if (!st.live_commit) return 'amux-server is not answering behind the door';
+  if (st.verdict === 'unknown') return Date.now() - Date.parse(s.created) > 30 * 60e3 ? 'self-updater has never reported' : '';
+  if (age > 3 * 3600) return `self-updater last reported ${Math.round(age / 3600)}h ago`;
+  if (String(st.verdict).startsWith('failed')) return `self-update ${st.verdict}: ${st.detail || ''}`;
+  return '';
+}
+async function monitor(env, servers) {
+  const minute = new Date().getUTCMinutes();
+  for (const s of servers) {
+    if (s.labels['amux-ending'] || s.labels['amux-ready'] !== '1' || (s.id + minute) % 10) continue;
+    if (!s.backup_window) await hetzner(env, 'POST', `/servers/${s.id}/actions/enable_backup`).catch(() => {});
+    const problem = await serverProblem(env, s).catch(e => `monitor error ${String(e).slice(0, 80)}`);
+    const slug = s.labels['amux-slug'], fails = Number(s.labels['amux-fail'] || 0);
+    const alerted = Number(s.labels['amux-alert'] || 0), now = Math.floor(Date.now() / 1000);
+    const labels = { ...s.labels };
+    if (problem) {
+      labels['amux-fail'] = String(fails + 1);
+      log('monitor.problem', { slug, problem, consecutive: fails + 1, mode: env.MODE });
+      if (fails + 1 >= 2 && now - alerted > 6 * 3600) {
+        await sendMail(env, OPERATOR, `[amux cloud ${env.MODE}] ${slug}: ${problem}`.slice(0, 150),
+          `Server ${host(slug)} (Hetzner ${s.id}, plan ${s.labels['amux-plan']}) has failed ${fails + 1} checks in a row.\r\n\r\n` +
+          `Problem: ${problem}\r\n\r\nStatus page: https://${host(slug)}/_door/status`);
+        labels['amux-alert'] = String(now);
+      }
+    } else {
+      if (alerted) await sendMail(env, OPERATOR, `[amux cloud ${env.MODE}] ${slug} recovered`, `${host(slug)} passes its checks again.`);
+      delete labels['amux-fail']; delete labels['amux-alert'];
+      log('monitor.ok', { slug });
+    }
+    if (JSON.stringify(labels) !== JSON.stringify(s.labels)) await hetzner(env, 'PUT', `/servers/${s.id}`, { labels });
   }
 }
 

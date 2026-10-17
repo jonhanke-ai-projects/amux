@@ -48,6 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USERS_FILE = os.environ.get("DOOR_USERS", "/etc/amux-door/users")
 SECRET_FILE = os.environ.get("DOOR_SECRET", "/etc/amux-door/secret")
+UPDATE_STATUS = os.environ.get("DOOR_UPDATE_STATUS", "/var/lib/amux-update/status.json")
 COOKIE = "amux_door"
 # File previews run in a sandboxed iframe (an opaque origin), so their link
 # clicks are cross-site and never carry a SameSite=Lax cookie. This second,
@@ -357,6 +358,20 @@ class Door(BaseHTTPRequestHandler):
         if path.path == "/_door/login":
             q = urllib.parse.parse_qs(path.query)
             return self.page(q.get("next", ["/"])[0])
+        if path.path == "/_door/status":
+            # Public and secret-free: the self-updater's last outcome (cloud/desktop/update.sh) plus
+            # whether amux answers right now. cloud.amux.io's monitor reads it without signing in.
+            try:
+                st = json.load(open(UPDATE_STATUS))
+            except Exception:
+                st = {"verdict": "unknown"}
+            try:
+                st["live_commit"] = json.loads(_amux("GET", "/health", timeout=3)[1]).get("commit", "")
+            except Exception:
+                st["live_commit"] = ""
+            st["measured"] = True
+            return self.send(200, json.dumps(st).encode(), [("Content-Type", "application/json"),
+                                                             ("Cache-Control", "no-store")])
         if path.path == "/_door/refresh":
             q = urllib.parse.parse_qs(path.query)
             nxt = safe_next(q.get("next", ["/"])[0])

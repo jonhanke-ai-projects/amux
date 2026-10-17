@@ -603,6 +603,37 @@ sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >
 systemctl enable caddy >/dev/null
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
 
+# ── Self-updates for a standalone host (amux Cloud, cloud/start) ──
+# No control plane reaches these servers, so each one keeps itself current: hourly it follows the
+# CI-green image and the checkout, rolls back a build that fails /health, and restarts a dead
+# server (cloud/desktop/update.sh). AMUX_AUTO_UPDATE=0 turns it off.
+if [[ "$FLEET" == 0 && "$UPDATES" == image && "${AMUX_AUTO_UPDATE:-1}" == 1 ]]; then
+  cat > /etc/systemd/system/amux-update.service <<UNIT
+[Unit]
+Description=amux: follow the newest CI-green amux and keep the server up (cloud/desktop/update.sh)
+After=network-online.target docker.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/bin/bash $SRC/cloud/desktop/update.sh
+TimeoutStartSec=900
+UNIT
+  cat > /etc/systemd/system/amux-update.timer <<'UNIT'
+[Unit]
+Description=amux: hourly self-update and health check
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=10min
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now amux-update.timer >/dev/null
+  log "self-updates: amux-update.timer $(systemctl is-active amux-update.timer)"
+fi
+
 # ── Verify: every line below is computed, none asserted ──
 sleep 4
 LOCAL=$(curl -sk --max-time 5 https://127.0.0.1:8824/health | jq -r '.commit // empty' 2>/dev/null || true)
