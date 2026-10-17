@@ -3016,8 +3016,7 @@
        Focus mode and the keyboard-open state still hide it, like the dir row. */
     #peek-overlay #peek-task-row { justify-content: flex-start !important; padding: 0 6px; gap: 4px !important; }
     #peek-overlay #peek-task-label { font-size: 0.76rem !important; }
-    #peek-overlay.peek-focus #peek-task-row, .overlay.vv-compact #peek-task-row,
-    #peek-overlay.peek-focus #peek-task-history, .overlay.vv-compact #peek-task-history { display: none !important; }
+    #peek-overlay.peek-focus #peek-task-row, .overlay.vv-compact #peek-task-row { display: none !important; }
     #peek-overlay .peek-dir-bar { padding: 1px 6px; font-size: 0.68rem; }
     #peek-overlay .peek-tabs { padding: 0 0 0 4px; }   /* right stays 0, see .peek-tabs */
     #peek-overlay .peek-tab { padding: 3px 8px; min-height: 36px; font-size: 0.75rem; }
@@ -9647,6 +9646,5 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
    wraps instead of being cut with an ellipsis (Ethan, 2026-10-16). */
 .card-preview.card-task-full { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
 .peek-task-history-btn { font-size:0.72rem; padding:1px 8px; flex-shrink:0; }
-.peek-task-history { max-height:220px; overflow:auto; margin:4px 12px 0; font-size:0.8rem; }
-.peek-task-history-list { margin:0; padding-left:1.4em; display:flex; flex-direction:column; gap:3px; overflow-wrap:anywhere; }
 @media (max-width: 600px) { .peek-task-history-btn { min-height:44px; } }
+.task-history-list li { overflow-wrap:anywhere; }

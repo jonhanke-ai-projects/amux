@@ -7971,26 +7971,26 @@ function _activeTaskLink(worker, cardId, title) {
     + esc(cardId) + '</span></button>';
 }
 
-// A worker's task-name history (GET /api/sessions/{name}/task-history), shown
-// under the task line on the details page (Ethan, 2026-10-16).
+// A worker's task-name history (GET /api/sessions/{name}/task-history) in the
+// standard dialog, as a list (Ethan, 2026-10-16: "it should open a modal which
+// is a list").
 async function _peekTaskHistoryToggle(ev) {
   if (ev) ev.stopPropagation();
-  const box = document.getElementById('peek-task-history');
-  const btn = document.getElementById('peek-task-history-btn');
-  if (!box || !peekSession) return;
-  if (!box.hidden) { box.hidden = true; btn?.setAttribute('aria-expanded', 'false'); return; }
-  box.hidden = false; btn?.setAttribute('aria-expanded', 'true');
-  box.innerHTML = '<div class="ui-help">Loading…</div>';
-  const who = peekSession;
+  const who = peekSession; if (!who) return;
+  const opener = document.getElementById('peek-task-history-btn');
+  const modal = _chipDetailModal('task-history-modal', 'Task history', who, '<p class="ui-help">Loading\u2026</p>', { returnFocus: opener });
+  const body = modal.querySelector('.modal-body');
   try {
-    const d = await (await fetch(API + '/api/sessions/' + encodeURIComponent(who) + '/task-history?limit=30', { headers: _authHeaders() })).json();
-    if (who !== peekSession) return;
+    const d = await (await fetch(API + '/api/sessions/' + encodeURIComponent(who) + '/task-history?limit=100', { headers: _authHeaders() })).json();
+    if (!modal.isConnected) return;
     const rows = d.changes || [];
-    box.innerHTML = rows.length
-      ? '<ol class="peek-task-history-list">' + rows.map(c => '<li><span class="ui-help">' + esc(new Date((c.ts || 0) * 1000).toLocaleString()) + '</span> '
-          + esc(c.to || '') + (c.card ? ' <span class="ui-help">' + esc(c.card) + '</span>' : '') + '</li>').join('') + '</ol>'
-      : '<div class="ui-help">No task changes recorded yet.</div>';
-  } catch (e) { box.innerHTML = '<div class="ui-help">Could not load the task history.</div>'; }
+    body.innerHTML = rows.length
+      ? '<ol class="chip-detail-list task-history-list">' + rows.map(c => '<li><div>' + esc(c.to || '') + '</div><div class="ui-help">'
+          + esc(new Date((c.ts || 0) * 1000).toLocaleString()) + (c.card ? ' \u00b7 ' + esc(c.card) : '') + '</div></li>').join('') + '</ol>'
+      : '<p class="ui-help">No task changes recorded yet.</p>';
+    const foot = modal.querySelector('.modal-footer .ui-help');
+    if (foot) foot.textContent = rows.length ? rows.length + ' change' + (rows.length === 1 ? '' : 's') + ', newest first' : '';
+  } catch (e) { if (modal.isConnected) body.innerHTML = '<p class="ui-help">Could not load the task history.</p>'; }
 }
 
 function _bindPeekTaskIdentity(s, identity) {
@@ -8005,8 +8005,6 @@ function _bindPeekTaskIdentity(s, identity) {
     : (s.task_name || cardId || '');
   const showBoth = llmTask && boardTitle && llmTask !== boardTitle;
   row.style.display = (llmTask || boardTitle) ? 'flex' : 'none';
-  const hist = document.getElementById('peek-task-history');
-  if (hist && hist.dataset.worker !== s.name) { hist.hidden = true; hist.innerHTML = ''; hist.dataset.worker = s.name; document.getElementById('peek-task-history-btn')?.setAttribute('aria-expanded', 'false'); }
   if (showBoth) {
     label.innerHTML = esc(llmTask) + '<br><span style="font-size:0.82rem;color:var(--dim);font-weight:400;">'
       + (cardId ? esc(boardTitle) + ' <span class="task-id-chip" style="font-size:0.7rem;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:0 6px;">' + esc(cardId) + '</span>' : esc(boardTitle))

@@ -2786,9 +2786,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-task-row" style="display:none;align-items:center;justify-content:center;gap:6px;min-width:0;max-width:100%;">
       <span style="font-size:0.72rem;color:var(--dim);flex-shrink:0;">Task:</span>
       <span id="peek-task-label" style="font-size:0.82rem;font-weight:600;color:var(--text);white-space:normal;overflow-wrap:anywhere;flex:0 1 auto;min-width:0;cursor:pointer;"></span>
-      <button type="button" class="btn peek-task-history-btn" id="peek-task-history-btn" onclick="_peekTaskHistoryToggle(event)" aria-expanded="false" aria-controls="peek-task-history" title="This worker's task changes">History</button>
+      <button type="button" class="btn peek-task-history-btn" id="peek-task-history-btn" onclick="_peekTaskHistoryToggle(event)" aria-haspopup="dialog" title="This worker's task changes">History</button>
     </div>
-    <div id="peek-task-history" class="peek-task-history" hidden></div>
     <div class="peek-toolbar">
       <div class="peek-msg-nav" id="peek-msg-nav" role="group" aria-label="Terminal navigation">
         <div class="peek-msg-filter">
