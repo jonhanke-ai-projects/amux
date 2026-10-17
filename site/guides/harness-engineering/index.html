@@ -63,10 +63,9 @@
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
     </nav>
   </header>
   <main>
@@ -74,13 +73,6 @@
     <h1>Harness Engineering: The Complete Guide</h1>
     <p class="subtitle">The model is the horse. The harness is what makes it useful. This is the practitioner's guide to the discipline that replaced prompt engineering as the defining skill of AI-native development &mdash; from the formula that started it all to the multi-agent orchestration patterns that make it real.</p>
 
-    <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:18px 22px;margin:24px 0;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:.95rem;margin-bottom:3px;color:var(--fg)">Building a harness for a team of Claude Code, Codex, or Gemini CLI agents?</div>
-        <div style="color:var(--fg-dim);font-size:.875rem">amux is the open-source harness layer for AI agent fleets — orchestration, self-healing, kanban, and mobile monitoring in one dashboard.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp022_harness_topofpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
-    </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -134,10 +126,6 @@
       <strong>The model is a commodity. The harness is the moat.</strong> On <a href="https://www.swebench.com" target="_blank" rel="noopener">SWE-bench</a>, swapping the harness changes scores by 22 points, but swapping the model changes scores by only 1 point. <a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness" target="_blank" rel="noopener">LangChain</a> improved from 52.8% to 66.5% on Terminal Bench 2.0 by changing only the harness &mdash; same model, 13.7 points of pure architecture gain.
     </div>
 
-    <div class="cta-box cta-box--top" style="background:color-mix(in oklab,var(--green) 12%,var(--bg-2));border-color:color-mix(in oklab,var(--green) 40%,transparent);margin:1.5rem 0">
-      <strong>amux is a production-ready harness for Claude Code, Codex, and Gemini CLI</strong> &mdash; context pipelines, sensors, orchestration, memory, and self-healing in one open-source binary.
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" onclick="posthog.capture('exp124_harness_eng_midpage_cta_click')">Get amux on GitHub</a>
-    </div>
 
     <h2 id="evolution">Prompt &rarr; Context &rarr; Harness: The Evolution</h2>
     <p>Harness engineering didn't replace prompt engineering &mdash; it <strong>absorbed</strong> it. The hierarchy is additive, not competitive.</p>
@@ -435,13 +423,6 @@
       <p>This extends the ratchet principle to identity management: a failure mode that once required a human response is handled automatically. Unattended operation across multiple overnight windows is now practical for larger agent fleets.</p>
     </div>
 
-    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — the open-source harness for AI agent fleets (350★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Orchestration, sensors, self-healing watchdog, and mobile monitoring for parallel Claude Code sessions. One Rust binary.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
-    </div>
     <div class="cta-box"><h3>amux is the harness</h3><p>Orchestration, sensors, guides, memory, and self-healing for your AI agent fleet. Open source. One Rust binary.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

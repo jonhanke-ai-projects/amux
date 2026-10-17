@@ -763,3 +763,11 @@ footer, .site-footer {
   .site-header nav { gap: 8px; }
   .site-header nav a.nav-cta { padding: 5px 8px; font-size: 11px; }
 }
+
+/* Mobile: long inline code and wide tables must not widen the page */
+p code, li code, td code, dd code { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  main table { display: block; max-width: 100%; overflow-x: auto; }
+  .site-header nav a.nav-cta-primary { white-space: nowrap; }
+}
+video, img { max-width: 100%; height: auto; }

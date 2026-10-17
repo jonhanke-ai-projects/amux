@@ -89,6 +89,7 @@
       margin-bottom: 0.75rem;
     }
     .pricing-price {
+      white-space: nowrap;
       font-size: 2.5rem;
       font-weight: 700;
       letter-spacing: -0.03em;
@@ -106,8 +107,10 @@
       margin-bottom: 1.5rem;
     }
 
+    main { max-width: 1180px; }
     .pricing-features {
       list-style: none;
+      padding: 0;
       flex: 1;
       margin-bottom: 1.5rem;
     }
@@ -197,27 +200,19 @@
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav>
-      <a href="/pricing/">pricing</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/blog/" class="hide-mobile">blog</a>      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
     </nav>
   </header>
 
   <main>
-    <!-- EXP-049: pricing page top-of-page CTA -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:12px 20px;margin:1rem auto;max-width:900px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;font-size:.9rem">
-        <strong>amux is free and open-source.</strong> <span style="color:var(--muted)">Self-host with zero agent limits, no session fees, MIT licensed. Install in under 2 minutes.</span>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp049_pricing_topofpage_cta_click')" style="background:rgba(16,185,129,.15);color:var(--text);border:1px solid rgba(16,185,129,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
-    </div>
-
     <div class="pricing-hero">
       <h1>Simple, transparent pricing</h1>
-      <p>Self-host for free, or let us run it for you.</p>
+      <p>Self-host for free, or get your own always-on server.</p>
     </div>
 
     <div class="pricing-grid">
@@ -285,7 +280,7 @@
 
       <div class="pricing-faq-item">
         <div class="pricing-faq-q">What do I get with amux Cloud?</div>
-        <div class="pricing-faq-a">A dedicated server that runs amux for you and nobody else, at your own address (yourname.amux.io). Your workers keep running when your laptop is closed, and .</div>
+        <div class="pricing-faq-a">A dedicated server that runs amux for you and nobody else, at your own address (yourname.amux.io). Your workers keep running when your laptop is closed.</div>
       </div>
 
       <div class="pricing-faq-item">

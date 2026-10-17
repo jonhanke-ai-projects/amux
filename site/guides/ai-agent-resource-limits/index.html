@@ -61,10 +61,9 @@
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
     </nav>
   </header>
   <main>
@@ -72,13 +71,6 @@
     <h1>AI Agent Resource Limits: Worker Boundaries for Claude Code Fleets</h1>
     <p class="subtitle">One runaway agent can exhaust a machine and stall every other worker in the fleet. Declarative resource limits in <code>boundaries.toml</code> give each worker an explicit execution envelope the harness enforces from the outside.</p>
 
-    <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:18px 22px;margin:24px 0;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:.95rem;margin-bottom:3px;color:var(--fg)">Managing a fleet of Claude Code, Codex, or Gemini CLI agents?</div>
-        <div style="color:var(--fg-dim);font-size:.875rem">amux is the open-source control plane for AI agent fleets. Boundaries, task history, self-healing watchdog, kanban, and mobile monitoring in one binary.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp139_resource_limits_topofpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
-    </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -227,13 +219,6 @@ gainz               2%     0.4 GB  0.3 GB</div>
 
     <p>The harness accumulates resource policy the same way it accumulates behavioral policy in CLAUDE.md. Every entry in <code>boundaries.toml</code> traces to a real usage event, real or anticipated.</p>
 
-    <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:18px 22px;margin:32px 0;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:.95rem;margin-bottom:3px;color:var(--fg)">amux: open-source control plane for AI agent fleets</div>
-        <div style="color:var(--fg-dim);font-size:.875rem">Worker boundaries, self-healing watchdog, task history, account rotation, kanban board, and mobile monitoring. One Rust binary.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp139_resource_limits_midpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
-    </div>
 
     <h2 id="faq">FAQ</h2>
 

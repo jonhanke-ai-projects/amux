@@ -21,7 +21,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://amux.io/og-image.png">
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","alternateName":"Agent Control Plane","description":"Open-source control plane for AI agents. Run, monitor, and govern parallel agent sessions with a web dashboard, kanban board, and agent-to-agent orchestration. Self-healing, MIT licensed, single binary.","url":"https://amux.io","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","license":"https://opensource.org/licenses/MIT","offers":[{"@type":"Offer","name":"Open Source","price":"0","priceCurrency":"USD"},{"@type":"Offer","name":"amux Cloud Solo","price":"39","priceCurrency":"USD","url":"https://amux.io/start/?plan=solo","priceSpecification":{"@type":"UnitPriceSpecification","price":"39","priceCurrency":"USD","billingDuration":"P1M"}},{"@type":"Offer","name":"amux Cloud Team","price":"69","priceCurrency":"USD","url":"https://amux.io/start/?plan=team","priceSpecification":{"@type":"UnitPriceSpecification","price":"69","priceCurrency":"USD","billingDuration":"P1M"}},{"@type":"Offer","name":"amux Cloud Max","price":"129","priceCurrency":"USD","url":"https://amux.io/start/?plan=max","priceSpecification":{"@type":"UnitPriceSpecification","price":"129","priceCurrency":"USD","billingDuration":"P1M"}}],"author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"}}</script>
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is the open-source control plane for AI coding agents. It runs, coordinates, monitors, and recovers fleets of Claude Code, Codex CLI, and Gemini CLI sessions from one dashboard and a phone. Each agent is a named worker with its own repo, memory, and lane; a shared kanban board with atomic task claiming keeps them from colliding. MIT licensed, single Rust binary."}},{"@type":"Question","name":"How is amux different from an IDE with agents or an agent wrapper?","acceptedAnswer":{"@type":"Answer","text":"amux sits above the agent runtimes rather than replacing them. Your agents stay vanilla CLI tools (Claude Code, Codex, Gemini CLI) running in real terminal sessions; amux adds the layer they lack: a shared board with atomic claiming, origin-stamped messaging between agents, schedules, autonomous loops, model switching, and self-healing recovery. When the underlying models improve, amux gets better with them."}},{"@type":"Question","name":"Does amux work with Claude Code, Codex, and Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux runs Claude Code, Codex CLI, Gemini CLI, OpenCode, and Ollama-backed local agents side by side in the same fleet. Any CLI agent that runs in a terminal can be a worker, and you can switch a running worker between models and providers."}},{"@type":"Question","name":"How do agents avoid duplicating work?","acceptedAnswer":{"@type":"Answer","text":"Through the shared board. Every task is a card, and claiming is atomic (SQLite compare-and-swap), so two agents can never grab the same card. Cards carry per-status gates: done requires evidence of what was actually run, and verified requires a peer check. Dependencies between cards are declared with blocked_on, and GET /api/board/ready returns only the tasks whose dependencies have cleared."}},{"@type":"Question","name":"Can the agents talk to each other?","acceptedAnswer":{"@type":"Answer","text":"Yes. Every worker can list the fleet, peek at any peer's live terminal, and send origin-stamped messages: the server stamps the true sender identity, so a message can never be forged or misattributed. Agents delegate tasks, request reviews from each other, and coordinate through the board without a human in the loop."}},{"@type":"Question","name":"Can I run my agents from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux ships an iOS app and an installable PWA. From your phone you can watch every worker's live status, steer any session by typing into it, approve or answer blocked prompts, and receive owner alerts when something genuinely needs you. amux is built mobile-first."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is MIT-licensed open source and free to self-host, with the full feature set included. amux Cloud, your own dedicated amux server that runs 24/7 at yourname.amux.io, is $39, $69 or $129 a month."}}]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is the open-source control plane for AI coding agents. It runs, coordinates, monitors, and recovers fleets of Claude Code, Codex CLI, and Gemini CLI sessions from one dashboard and a phone. Each agent is a named worker with its own repo, memory, and lane; a shared kanban board with atomic task claiming keeps them from colliding. MIT licensed, single Rust binary."}},{"@type":"Question","name":"How is amux different from an IDE with agents or an agent wrapper?","acceptedAnswer":{"@type":"Answer","text":"amux sits above the agent runtimes rather than replacing them. Your agents stay vanilla CLI tools (Claude Code, Codex, Gemini CLI) running in real terminal sessions; amux adds the layer they lack: a shared board with atomic claiming, origin-stamped messaging between agents, schedules, autonomous loops, model switching, and self-healing recovery. When the underlying models improve, amux gets better with them."}},{"@type":"Question","name":"Does amux work with Claude Code, Codex, and Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux runs Claude Code, Codex CLI, Gemini CLI, OpenCode, and Ollama-backed local agents side by side in the same fleet. Any CLI agent that runs in a terminal can be a worker, and you can switch a running worker between models and providers."}},{"@type":"Question","name":"Can I run my agents from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux ships an iOS app and an installable PWA. From your phone you can watch every worker's live status, steer any session by typing into it, approve or answer blocked prompts, and receive owner alerts when something genuinely needs you. amux is built mobile-first."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is MIT-licensed open source and free to self-host, with the full feature set included. amux Cloud, your own dedicated amux server that runs 24/7 at yourname.amux.io, is $39, $69 or $129 a month."}}]}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -715,17 +715,37 @@
     #start { padding: 64px 0 24px; }
     .start-steps, .start-plans { grid-template-columns: 1fr; }
   }
+
+  /* ---------- KISS pass ---------- */
+  .hero-install { margin-top: 30px; }
+  .hero-install + .hero-cta { margin-top: 18px; }
+  .btn-count { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--fg-3); margin-left: 2px; }
+  .rt-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px 40px; padding: 0 20px; }
+  #features .fcard h3 { margin-bottom: 8px; }
+  .start-plans.four { grid-template-columns: repeat(4, 1fr); max-width: 1080px; }
+  .start-plan.free { cursor: default; }
+  .start-plan.free:hover { transform: none; border-color: var(--line); }
+  .install-line.mini { margin: 8px 0 4px; padding: 9px 10px; font-size: 11px; gap: 8px; max-width: 100%; }
+  .install-line.mini .copy-btn { padding: 5px 7px; font-size: 10px; }
+  #get { padding: 90px 0 70px; }
+  .nav-dl { white-space: nowrap; padding: 8px 16px; line-height: 1.2; }
+  .start-plan { min-width: 0; }
+  .install-line { overflow: hidden; }
+  .install-line > span { overflow-x: auto; min-width: 0; scrollbar-width: none; }
+  .install-line > span::-webkit-scrollbar { display: none; }
+  .install-line.mini { display: flex; width: 100%; }
+  @media (max-width: 1000px) { .start-plans.four { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) {
+    .start-plans.four { grid-template-columns: 1fr; }
+    .hero-install { display: flex; width: 100%; font-size: 11.5px; padding: 12px 14px; }
+    .cmp { min-width: 0; }
+    .demo-tab { padding: 8px 12px; font-size: 13px; }
+    .cmp th, .cmp td { padding: 12px 10px; font-size: 13px; }
+  }
 </style>
 <script src="/site.js"></script>
 </head>
 <body>
-
-<!-- =================== CONCIERGE PROMO =================== -->
-<a class="promo-bar" href="/concierge/">
-  <span class="promo-tag">Concierge</span>
-  <span>Want it run <b>for you</b>? Done-for-you automation for your business, from your phone<span class="promo-hide"> &middot; dental, skilled nursing &amp; more</span></span>
-  <span style="color:var(--accent);font-weight:700">Learn more &rarr;</span>
-</a>
 
 <!-- =================== NAV =================== -->
 <header class="site-header">
@@ -734,10 +754,9 @@
     <a href="/docs/" class="hide-mobile">Docs</a>
     <a href="/guides/" class="hide-mobile">Guides</a>
     <a href="/compare/" class="hide-mobile">Compare</a>
-    <a href="/changelog/" class="hide-mobile">Changelog</a>
-    <a href="/blog/" class="hide-mobile">Blog</a>
-    <a class="nav-star" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"><span class="st">★</span> <span class="gh-stars" id="gh-stars">378</span></a>
-    <a class="nav-dl" href="/start/">Start<span class="hide-mobile"> your server</span></a>
+    <a href="/pricing/" class="hide-mobile">Pricing</a>
+    <a class="nav-star" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" aria-label="Star amux on GitHub"><span class="st">★</span> <span class="gh-stars">539</span></a>
+    <a class="nav-dl" href="#get">Get started</a>
   </nav>
 </header>
 
@@ -746,34 +765,30 @@
   <div class="hero-grid-bg"></div>
   <div class="hero-glow"></div>
   <div class="container hero-inner">
-    <span class="hero-badge"><span class="pulse"></span> open source &middot; MIT &middot; single Rust binary</span>
-
+    <span class="hero-badge"><span class="pulse"></span> open source &middot; MIT &middot; self-hosted</span>
     <h1 class="headline">Run An <span class="accent">AI Engineering Team</span></h1>
+    <p class="lede">Run Claude Code, Codex and Gemini CLI agents in parallel from one dashboard or your phone.
+      They share a task board, message each other, recover from crashes, and keep shipping while you sleep.</p>
 
-    <!-- EXP-070: full redesign, headline shortened to display scale; dashboard claim moved to lede -->
-    <p class="lede">
-      <b>amux</b> is the open-source control plane for AI coding agents.
-      Run Claude Code, Codex, and Gemini CLI side by side as named workers with a shared board,
-      origin-stamped messaging, schedules, and self-healing recovery.
-      One dashboard, and your phone. <b>5 to 50 agents, zero coordination overhead.</b>
-    </p>
+    <div class="install-line hero-install">
+      <span><span class="pmt">$</span> curl -fsSL https://amux.io/install.sh | bash</span>
+      <button class="copy-btn" aria-label="Copy install command">copy</button>
+    </div>
 
     <div class="hero-cta">
-      <a class="btn btn-primary" href="/start/" id="hero-start">Start your amux server <span aria-hidden="true">&rarr;</span></a>
-      <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">
+      <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" id="hero-star">
         <svg class="ic" width="16" height="16" viewBox="0 0 24 24"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z" fill="currentColor" stroke="none"/></svg>
-        Self-host free
+        Star on GitHub <span class="btn-count gh-stars">539</span>
       </a>
+      <a class="btn btn-primary" href="/start/" id="hero-start">Run it in the cloud <span aria-hidden="true">&rarr;</span></a>
     </div>
-    <p class="hero-sub-cta">Your own server at <b>yourname.amux.io</b>, from $39/mo, cancel anytime &middot; or <a href="#get">install it yourself</a>, free and MIT</p>
+    <p class="hero-sub-cta">Free to self-host. Cloud is your own always-on server at <b>yourname.amux.io</b> from $39/mo.</p>
 
     <!-- hero demo tabs -->
     <div class="demo-tabs" id="demo-tabs" role="tablist" aria-label="Product demo views">
       <button class="demo-tab active" data-pane="fleet" role="tab" aria-selected="true">Run a fleet</button>
-      <button class="demo-tab" data-pane="board" role="tab" aria-selected="false">Coordinate on the board</button>
-      <button class="demo-tab" data-pane="steer" role="tab" aria-selected="false">Steer any worker</button>
-      <button class="demo-tab" data-pane="automate" role="tab" aria-selected="false">Automate everything</button>
-      <button class="demo-tab" data-pane="phone" role="tab" aria-selected="false">Work from your phone</button>
+      <button class="demo-tab" data-pane="board" role="tab" aria-selected="false">Shared board</button>
+      <button class="demo-tab" data-pane="phone" role="tab" aria-selected="false">From your phone</button>
     </div>
 
     <!-- app mockup -->
@@ -863,67 +878,6 @@
             </div>
           </div>
 
-          <!-- pane: steer -->
-          <div class="demo-pane" data-pane="steer">
-            <div class="steer-peek">
-              <span class="who">backend &middot; live terminal</span>
-              Refactoring the retry queue module. Next: extract the backoff<br/>
-              policy, then the persistence layer, then tests&hellip;
-            </div>
-            <div class="steer-input">
-              <div class="steer-field"><span class="steer-typing" id="steer-type"></span></div>
-              <button class="steer-send" tabindex="-1">Send</button>
-            </div>
-            <div class="steer-note"><span class="ok">✓</span> origin-stamped: the server records the true sender, misattribution impossible</div>
-            <div class="model-switch">
-              <span class="lbl">model</span>
-              <span class="model-pill on">opus</span>
-              <span class="model-pill">sonnet</span>
-              <span class="model-pill">codex</span>
-              <span class="model-pill">gemini</span>
-              <span class="model-pill">ollama</span>
-            </div>
-          </div>
-
-          <!-- pane: automate -->
-          <div class="demo-pane" data-pane="automate">
-            <div class="sched-row">
-              <div class="sched-l">
-                <div class="sched-ic">⏱</div>
-                <div>
-                  <div class="sched-t">Morning fleet review</div>
-                  <div class="sched-s">daily at 9:00 &middot; session: review</div>
-                </div>
-              </div>
-              <div class="sched-next"><span class="g">next in 6h 12m</span><br/>41 runs, 41 ok</div>
-            </div>
-            <div class="sched-row">
-              <div class="sched-l">
-                <div class="sched-ic">⟳</div>
-                <div>
-                  <div class="sched-t">Health tick + wedge sweep</div>
-                  <div class="sched-s">every 15m &middot; session: infra</div>
-                </div>
-              </div>
-              <div class="sched-next"><span class="g">next in 4m</span><br/>2,880 runs this month</div>
-            </div>
-            <div class="sched-row">
-              <div class="sched-l">
-                <div class="sched-ic">▦</div>
-                <div>
-                  <div class="sched-t">Changelog + docs sweep</div>
-                  <div class="sched-s">every weekday at 18:00 &middot; session: docs</div>
-                </div>
-              </div>
-              <div class="sched-next"><span class="g">next in 3h</span><br/>evidence attached</div>
-            </div>
-            <div class="loop-card">
-              <b>autonomous loop &middot; backend</b><br/>
-              Self-paced: the agent schedules its own next wakeup, works the ready queue,
-              and goes quiet when nothing needs it. Ran overnight: 7 cards closed, 0 interventions.
-            </div>
-          </div>
-
           <!-- pane: phone -->
           <div class="demo-pane" data-pane="phone">
             <div class="phone-wrap">
@@ -948,193 +902,29 @@
 
 <!-- =================== RUNTIMES =================== -->
 <div class="runtimes reveal">
-  <div class="kicker-line">Bring your own agent and subscription</div>
-  <div class="marquee">
-    <div class="marquee-track">
-      <span class="rt-item"><span class="rt-mk">✳</span> Claude Code</span>
-      <span class="rt-item"><span class="rt-mk">◎</span> Codex CLI</span>
-      <span class="rt-item"><span class="rt-mk">◆</span> Gemini CLI</span>
-      <span class="rt-item"><span class="rt-mk">▣</span> OpenCode</span>
-      <span class="rt-item"><span class="rt-mk">⬡</span> Ollama</span>
-      <span class="rt-item"><span class="rt-mk">▚</span> any CLI agent</span>
-      <span class="rt-item"><span class="rt-mk">✳</span> Claude Code</span>
-      <span class="rt-item"><span class="rt-mk">◎</span> Codex CLI</span>
-      <span class="rt-item"><span class="rt-mk">◆</span> Gemini CLI</span>
-      <span class="rt-item"><span class="rt-mk">▣</span> OpenCode</span>
-      <span class="rt-item"><span class="rt-mk">⬡</span> Ollama</span>
-      <span class="rt-item"><span class="rt-mk">▚</span> any CLI agent</span>
-    </div>
+  <div class="kicker-line">Works with the agents you already pay for</div>
+  <div class="rt-row">
+    <span class="rt-item"><span class="rt-mk">✳</span> Claude Code</span>
+    <span class="rt-item"><span class="rt-mk">◎</span> Codex CLI</span>
+    <span class="rt-item"><span class="rt-mk">◆</span> Gemini CLI</span>
+    <span class="rt-item"><span class="rt-mk">▣</span> OpenCode</span>
+    <span class="rt-item"><span class="rt-mk">⬡</span> Ollama</span>
   </div>
 </div>
 
-<!-- =================== START (amux Cloud signup) =================== -->
-<section id="start">
-  <div class="container">
-    <div class="section-head reveal">
-      <div class="kicker">// amux Cloud</div>
-      <h2>Your fleet, running while you sleep.</h2>
-      <p class="sub">A dedicated server with amux already set up, at your own address. Sign up, pay, and sign in.
-        No setup, no laptop that has to stay open.</p>
-    </div>
-    <ol class="start-steps reveal">
-      <li><b>Pick a name</b><span>yourname.amux.io, your email and a password.</span></li>
-      <li><b>Pay with Stripe</b><span>Monthly, cancel from the billing page whenever you like.</span></li>
-      <li><b>Sign in</b><span>Usually ready within a few minutes. We email you when it is.</span></li>
-    </ol>
-    <div class="start-plans reveal">
-      <a class="start-plan" href="/start/?plan=solo"><strong>Solo</strong><span class="start-price">$39<small>/mo</small></span><span class="start-spec">4 vCPU &middot; 8 GB RAM &middot; 80 GB</span><span class="start-go">Start with Solo &rarr;</span></a>
-      <a class="start-plan pop" href="/start/?plan=team"><strong>Team</strong><span class="start-price">$69<small>/mo</small></span><span class="start-spec">8 vCPU &middot; 16 GB RAM &middot; 160 GB</span><span class="start-go">Start with Team &rarr;</span></a>
-      <a class="start-plan" href="/start/?plan=max"><strong>Max</strong><span class="start-price">$129<small>/mo</small></span><span class="start-spec">16 vCPU &middot; 32 GB RAM &middot; 320 GB</span><span class="start-go">Start with Max &rarr;</span></a>
-    </div>
-    <p class="start-free reveal">Just trying amux? It is free and open source: <a href="#get">install it on your own machine</a>.
-      Bring your own Claude, Codex or Gemini subscription either way.</p>
-  </div>
-</section>
-
-<!-- =================== MOBILE COMPANION =================== -->
-<section id="mobile">
-  <div class="container reveal">
-    <div class="mobile-split">
-      <div>
-        <div class="kicker">// Mobile first</div>
-        <h2>Keep the fleet moving from your phone.</h2>
-        <p class="sub">Watch live worker status, steer any session by typing into it, answer blocked
-          prompts with one tap, and get an owner alert when something genuinely needs you.
-          The dashboard is an installable PWA, and the native iOS app is on the App Store.</p>
-        <div class="store-btns">
-          <a class="store-btn pri" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.6 12.7c0-2.4 1.9-3.5 2-3.6-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.6.9-.7 0-1.9-.8-3.1-.8-1.6 0-3.1.9-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.5.8 1.1 1.7 2.4 2.9 2.4 1.2 0 1.6-.8 3.1-.8s1.8.8 3.1.7c1.3 0 2.1-1.2 2.9-2.3.9-1.3 1.3-2.6 1.3-2.7-.1 0-2.5-1-2.5-3.9zM15.3 5.7c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1.1.1 2.1-.5 2.7-1.3z"/></svg>
-            Download on the App Store
-          </a>
-          <a class="store-btn sec" href="/docs/">Install the PWA &middot; docs</a>
-        </div>
-        <p class="store-note">Steering, approvals, and alerts work on both. <a href="/use-cases/ai-coding-while-you-sleep/">See the overnight workflow &rarr;</a></p>
-      </div>
-      <div class="phone-float">
-        <div class="phone" aria-hidden="true">
-          <div class="phone-notch"></div>
-          <div class="phone-alert"><b>owner alert</b>Push + iMessage when it truly cannot wait. Everything else stays on the board.</div>
-          <div class="phone-worker"><span class="worker-dot work"></span><div><div class="nm">backend</div>7 cards closed overnight</div></div>
-          <div class="phone-worker"><span class="worker-dot work"></span><div><div class="nm">frontend</div>PR up, review requested</div></div>
-          <div class="phone-worker"><span class="worker-dot sched"></span><div><div class="nm">gtm-ticker</div>next run 9:00</div></div>
-          <div class="phone-worker"><span class="worker-dot idle"></span><div><div class="nm">review</div>idle</div></div>
-          <div class="phone-btns">
-            <div class="phone-btn pri">Steer</div>
-            <div class="phone-btn sec">Peek</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- =================== FEATURE GRID =================== -->
+<!-- =================== FEATURES =================== -->
 <section id="features">
   <div class="container">
     <div class="section-head reveal">
-      <div class="kicker">// Coordination, end to end</div>
-      <h2>Everything a fleet needs. Nothing it fights.</h2>
-      <p class="sub">Every feature answers one question: what does a team of agents need that a single
-        agent never did? Board, messages, schedules, groups, recovery. All in one Rust binary.</p>
+      <h2>What your agents get.</h2>
     </div>
-
     <div class="fgrid">
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/></svg></div><h3>Atomic tasks</h3></div>
-        <p>Claiming is compare-and-swap in SQLite, so two workers can never grab the same card.
-          <span class="mono">done</span> requires evidence of what actually ran; <span class="mono">verified</span> requires a peer check.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 9v11M14 9v11"/></svg></div><h3>Shared board</h3></div>
-        <p>One kanban for the whole fleet. Dependencies via <span class="mono">blocked_on</span>;
-          <span class="mono">GET /api/board/ready</span> returns only tasks whose dependencies cleared.
-          <a href="/guides/splitting-work-across-ai-agents/">How teams split work &rarr;</a></p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/></svg></div><h3>Loops</h3></div>
-        <p>Autonomous loops pace themselves: the agent schedules its own next wakeup, drains the ready
-          queue, and goes quiet when nothing needs it. Overnight runs without babysitting.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div><h3>Schedules</h3></div>
-        <p>Cron-style recurring prompts in plain words: <span class="mono">daily at 9am</span>,
-          <span class="mono">every 15m</span>, <span class="mono">weekly on Monday</span>.
-          Run history and audit trail included.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="3.5"/><circle cx="16" cy="16" r="3.5"/><path d="M8 11.5v2A2.5 2.5 0 0 0 10.5 16h2"/></svg></div><h3>Groups</h3></div>
-        <p>Workers organize into lanes: canvas, gtm, ops, customers. Same-group peers share memory,
-          environment, and gates, so a lane behaves like a team instead of strangers.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></div><h3>Scope</h3></div>
-        <p>Settings resolve card &rarr; worker &rarr; group &rarr; global. Set a gate, an env var, or a
-          policy once at the right level and every worker below inherits it.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3"/><circle cx="5" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M12 11v2M7 15.5l3-2M17 15.5l-3-2"/></svg></div><h3>Worker awareness</h3></div>
-        <p>Every worker sees the fleet: who is live, what they own, what they are doing right now.
-          Peek into any peer's terminal before interrupting them.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.9 8.9 0 0 1-4-.9L3 20l1-4.5a8.3 8.3 0 0 1-1-4A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z"/></svg></div><h3>@ each other</h3></div>
-        <p>Workers message each other directly: delegate a task, request a review, report back.
-          The server stamps the true origin on every message, so provenance is a fact, never a claim.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19l6-6M14 5l6 6-9 9H5v-6z"/></svg></div><h3>Steering</h3></div>
-        <p>Type into any running session from the dashboard or your phone. Redirect mid-task,
-          answer a blocked prompt, or drop context without stopping the run.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v6M8 15v6M16 3v10M16 19v2M5 9h6M13 13h6"/></svg></div><h3>Model switching</h3></div>
-        <p>Swap the model or provider on a running worker: Claude, Codex, Gemini, or a local
-          Ollama model. Pick the brain per task, keep the worker and its context.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="19" cy="18" r="2"/></svg></div><h3>Message history</h3></div>
-        <p>Every prompt, reply, and delivery is a ledger row with an id you can fetch later.
-          When two accounts of an incident disagree, the history settles it.</p>
-      </div>
-      <div class="fcard reveal">
-        <div class="fcard-top"><div class="fcard-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.2 16.2l2.9 2.9M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.2 7.8l2.9-2.9"/></svg></div><h3>Self-healing</h3></div>
-        <p>The watchdog monitors context, auto-compacts, restarts crashed sessions, and replays the
-          last message. Your team wakes up to finished work instead of dead terminals.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- =================== ORCHESTRATION / API =================== -->
-<section id="orchestration">
-  <div class="container reveal">
-    <div class="split-2">
-      <div>
-        <div class="kicker">// Agent &harr; agent</div>
-        <h2>Agents that coordinate without you.</h2>
-        <p class="sub" style="margin-bottom: 18px;">Every session exposes a REST API. Agents discover peers, send tasks,
-          peek terminals, and atomically claim board items, coordinating fleets of dozens with no human in the loop.</p>
-        <p class="sub">The full API reference lands in each agent's memory at startup,
-          so plain-English orchestration just works: <i>&ldquo;ask worker-2 to add tests for the changes I just made.&rdquo;</i></p>
-      </div>
-      <div class="code-block">
-        <div class="code-head">
-          <span class="win-dot r"></span><span class="win-dot y"></span><span class="win-dot g"></span>
-          <span style="margin-left:8px">orchestration.sh</span>
-        </div>
-<pre><span class="cmt"># Send a task to another session (origin-stamped)</span>
-<span class="pmt">$</span> amux send worker-1 <span class="str">"implement /login and report back"</span>
-
-<span class="cmt"># Atomically claim a board item</span>
-<span class="pmt">$</span> curl -sk -X POST <span class="var">$AMUX_URL</span>/api/board/PROJ-5/claim
-<span class="str">{"ok":true,"claimed_by":"worker-2"}</span>
-
-<span class="cmt"># Only the tasks whose dependencies have cleared</span>
-<span class="pmt">$</span> curl -sk <span class="var">$AMUX_URL</span>/api/board/ready
-
-<span class="cmt"># Watch another session's live output</span>
-<span class="pmt">$</span> curl -sk <span class="var">$AMUX_URL</span>/api/sessions/worker-1/peek</pre>
-      </div>
+      <div class="fcard reveal"><h3>A shared task board</h3><p>One kanban for the whole fleet. Claiming is atomic, so two agents never grab the same task.</p></div>
+      <div class="fcard reveal"><h3>Messages to each other</h3><p>Workers hand off tasks, ask for reviews and report back, with the real sender stamped on every message.</p></div>
+      <div class="fcard reveal"><h3>Self-healing</h3><p>Context is compacted, crashed sessions restart, and the last message replays. Overnight runs finish.</p></div>
+      <div class="fcard reveal"><h3>Schedules and loops</h3><p>Recurring prompts in plain words, like <span class="mono">daily at 9am</span>. Agents pace their own work queue.</p></div>
+      <div class="fcard reveal"><h3>Your phone</h3><p>Watch, steer and answer any worker from the PWA or the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a>.</p></div>
+      <div class="fcard reveal"><h3>Any model</h3><p>Claude, Codex, Gemini or a local Ollama model per worker. Switch without losing context.</p></div>
     </div>
   </div>
 </section>
@@ -1143,46 +933,21 @@
 <section id="compare">
   <div class="container">
     <div class="section-head reveal">
-      <div class="kicker">// The control plane</div>
-      <h2>Built above the runtimes, on purpose.</h2>
-      <p class="sub">Wrappers replace your agent. amux coordinates the agents you already run,
-        so when the next model is better, your whole fleet is better.
-        <a href="/compare/">Full comparisons &rarr;</a></p>
+      <h2>Why not just terminal tabs?</h2>
+      <p class="sub">Tabs give you many agents. amux makes them a team. <a href="/compare/">All comparisons &rarr;</a></p>
     </div>
     <div class="cmp-wrap reveal">
       <table class="cmp">
-        <thead>
-          <tr>
-            <th>Capability</th>
-            <th class="hl">amux</th>
-            <th>Terminal tabs / tmux</th>
-            <th>IDE agent wrappers</th>
-          </tr>
-        </thead>
+        <thead><tr><th></th><th class="hl">amux</th><th>Terminal tabs / tmux</th></tr></thead>
         <tbody>
-          <tr><td>Parallel named workers</td><td class="yes hl-col">Yes, 5 to 50</td><td class="part">Manual panes</td><td class="part">Per window</td></tr>
-          <tr><td>Shared board with atomic claiming</td><td class="yes hl-col">Yes</td><td class="no">No</td><td class="no">No</td></tr>
-          <tr><td>Agent-to-agent messaging</td><td class="yes hl-col">Origin-stamped</td><td class="no">No</td><td class="no">No</td></tr>
-          <tr><td>Self-healing recovery</td><td class="yes hl-col">Watchdog + replay</td><td class="no">No</td><td class="part">Restart by hand</td></tr>
-          <tr><td>Schedules and loops</td><td class="yes hl-col">Built in</td><td class="part">cron + scripts</td><td class="no">No</td></tr>
-          <tr><td>Phone control + owner alerts</td><td class="yes hl-col">iOS app + PWA</td><td class="no">No</td><td class="no">No</td></tr>
-          <tr><td>Model switching per worker</td><td class="yes hl-col">Yes</td><td class="part">Relaunch</td><td class="part">Varies</td></tr>
-          <tr><td>Message ledger and audit trail</td><td class="yes hl-col">Every delivery</td><td class="no">No</td><td class="no">No</td></tr>
-          <tr><td>Open source</td><td class="yes hl-col">MIT</td><td class="yes">Yes</td><td class="part">Varies</td></tr>
+          <tr><td>Shared board, no duplicate work</td><td class="yes hl-col">Yes</td><td class="no">No</td></tr>
+          <tr><td>Agents message each other</td><td class="yes hl-col">Yes</td><td class="no">No</td></tr>
+          <tr><td>Restarts and recovers on its own</td><td class="yes hl-col">Yes</td><td class="no">No</td></tr>
+          <tr><td>Control from your phone</td><td class="yes hl-col">Yes</td><td class="no">No</td></tr>
+          <tr><td>Open source</td><td class="yes hl-col">MIT</td><td class="yes">Yes</td></tr>
         </tbody>
       </table>
     </div>
-  </div>
-</section>
-
-<!-- =================== STARS =================== -->
-<section class="stars-sec" style="padding-top: 40px;">
-  <div class="container reveal">
-    <div class="kicker">// Growth</div>
-    <h2 style="margin-bottom: 10px;">378 stars and climbing.</h2>
-    <p class="sub" style="margin-bottom: 30px;">amux shipped in early 2026. Every star is a developer who found
-      it solved a real problem with running agents in parallel.</p>
-    <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">★ Star on GitHub</a>
   </div>
 </section>
 
@@ -1216,21 +981,6 @@
           a running worker between models and providers.</p></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">How do agents avoid duplicating work?<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
-        <div class="faq-a"><p>Through the shared board. Every task is a card, and claiming is atomic (SQLite compare-and-swap),
-          so two agents can never grab the same card. Cards carry per-status gates: done requires evidence,
-          verified requires a peer check. Dependencies are declared with <span class="mono">blocked_on</span>, and the ready
-          endpoint returns only unblocked tasks.
-          <a href="/guides/splitting-work-across-ai-agents/">Read the guide &rarr;</a></p></div>
-      </div>
-      <div class="faq-item">
-        <button class="faq-q">Can the agents talk to each other?<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
-        <div class="faq-a"><p>Yes. Every worker can list the fleet, peek at any peer's live terminal, and send origin-stamped
-          messages: the server records the true sender, so a message can never be forged or misattributed.
-          Agents delegate tasks, request reviews from each other, and coordinate through the board with no
-          human in the loop.</p></div>
-      </div>
-      <div class="faq-item">
         <button class="faq-q">Can I run my agents from my phone?<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
         <div class="faq-a"><p>Yes. amux ships an <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a>
           and an installable PWA. From your phone you can watch every worker's live status, steer any session,
@@ -1247,24 +997,27 @@
   </div>
 </section>
 
-<!-- =================== FINAL CTA =================== -->
-<div class="final-cta" id="get">
-  <div class="hero-grid-bg"></div>
-  <div class="container reveal">
-    <h2 class="giant">Run The Fleet</h2>
-    <p class="final-sub">Free and open source. <b>One binary, no Docker, no build step.</b><br/>
-      Self-host in a minute, or <a href="/start/">start a server on amux Cloud</a> from $39/mo.</p>
-    <div class="install-line">
-      <span><span class="pmt">$</span> brew install mixpeek/amux/amux &amp;&amp; amux serve</span>
-      <button class="copy-btn" id="copy-install" aria-label="Copy install command">copy</button>
+<!-- =================== GET STARTED =================== -->
+<section id="get">
+  <div class="container">
+    <div class="section-head reveal">
+      <h2>Start free. Go always-on when you want.</h2>
+      <p class="sub">Bring your own Claude, Codex or Gemini subscription either way.</p>
     </div>
-    <div class="hero-cta" style="margin-top: 26px;">
-      <a class="btn btn-primary" href="/start/">Start your amux server <span aria-hidden="true">&rarr;</span></a>
-      <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">Get the iOS App</a>
+    <div class="start-plans four reveal">
+      <div class="start-plan free">
+        <strong>Self-host</strong><span class="start-price">Free</span>
+        <span class="start-spec">Your machine &middot; every feature &middot; MIT</span>
+        <div class="install-line mini"><span><span class="pmt">$</span> curl -fsSL https://amux.io/install.sh | bash</span><button class="copy-btn" aria-label="Copy install command">copy</button></div>
+        <a class="start-go" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">★ Star on GitHub</a>
+      </div>
+      <a class="start-plan" href="/start/?plan=solo"><strong>Solo</strong><span class="start-price">$39<small>/mo</small></span><span class="start-spec">4 vCPU &middot; 8 GB RAM</span><span class="start-go">Start with Solo &rarr;</span></a>
+      <a class="start-plan pop" href="/start/?plan=team"><strong>Team</strong><span class="start-price">$69<small>/mo</small></span><span class="start-spec">8 vCPU &middot; 16 GB RAM</span><span class="start-go">Start with Team &rarr;</span></a>
+      <a class="start-plan" href="/start/?plan=max"><strong>Max</strong><span class="start-price">$129<small>/mo</small></span><span class="start-spec">16 vCPU &middot; 32 GB RAM</span><span class="start-go">Start with Max &rarr;</span></a>
     </div>
-    <p class="final-note">MIT License &middot; <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a> &middot; <a href="/docs/">docs</a></p>
+    <p class="start-free reveal">Cloud plans are your own server at yourname.amux.io, running 24/7. Cancel anytime. <a href="/pricing/">Compare plans</a></p>
   </div>
-</div>
+</section>
 
 <!-- =================== FOOTER =================== -->
 <footer>
@@ -1334,7 +1087,7 @@
   var tabs = Array.prototype.slice.call(document.querySelectorAll('.demo-tab'));
   var panes = Array.prototype.slice.call(document.querySelectorAll('.demo-pane'));
   var urlBar = document.getElementById('win-url');
-  var routes = { fleet: '/sessions', board: '/board', steer: '/sessions/backend', automate: '/scheduler', phone: '/m' };
+  var routes = { fleet: '/sessions', board: '/board', phone: '/m' };
   var current = 0, userLock = 0;
 
   function activate(i) {
@@ -1346,7 +1099,6 @@
     var key = tabs[i].getAttribute('data-pane');
     panes.forEach(function (p) { p.classList.toggle('active', p.getAttribute('data-pane') === key); });
     if (urlBar) urlBar.innerHTML = '<span class="lock">•</span> https://localhost:8824' + routes[key];
-    if (key === 'steer') startTyping();
   }
 
   tabs.forEach(function (t, i) {
@@ -1364,22 +1116,6 @@
     }, 6500);
   }
 
-  /* Steer pane typing animation */
-  var typeEl = document.getElementById('steer-type');
-  var typeMsg = 'pause the refactor. ship the login fix first, tests after.';
-  var typeTimer = null;
-  function startTyping() {
-    if (!typeEl || reduced) { if (typeEl) typeEl.textContent = typeMsg; return; }
-    clearInterval(typeTimer);
-    typeEl.textContent = '';
-    var i = 0;
-    typeTimer = setInterval(function () {
-      i++;
-      typeEl.textContent = typeMsg.slice(0, i);
-      if (i >= typeMsg.length) clearInterval(typeTimer);
-    }, 38);
-  }
-
   /* FAQ accordion */
   document.querySelectorAll('.faq-q').forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -1391,18 +1127,15 @@
   });
 
   /* Copy install command */
-  var copyBtn = document.getElementById('copy-install');
-  if (copyBtn) {
-    copyBtn.addEventListener('click', function () {
-      var cmd = 'brew install mixpeek/amux/amux && amux serve';
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(cmd).then(function () {
-          copyBtn.textContent = 'copied';
-          setTimeout(function () { copyBtn.textContent = 'copy'; }, 1600);
-        });
-      }
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText('curl -fsSL https://amux.io/install.sh | bash').then(function () {
+        btn.textContent = 'copied';
+        setTimeout(function () { btn.textContent = 'copy'; }, 1600);
+      });
     });
-  }
+  });
 })();
 </script>
 </body>

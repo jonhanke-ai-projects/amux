@@ -37,10 +37,9 @@
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
     </nav>
   </header>
 
@@ -51,10 +50,6 @@
     <p class="subtitle">Receive real webhook events on your local machine without reconfiguring your webhook provider on every restart. <em>Updated August 2026.</em></p>
 
     <!-- EXP-046: top-of-page green CTA on webhook-testing use-case -->
-    <div style="background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-      <span style="font-size:.9rem;color:var(--text)">Stable webhook URL without the ngrok price tag — amux tunnel gives you a consistent HTTPS endpoint for your local server, zero setup.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp046_webhook_testing_topofpage_cta_click')" style="background:#10b981;color:#fff;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
-    </div>
 
     <div style="background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0">
       <p style="margin:0;font-size:.95rem;line-height:1.65">To test webhooks locally, you need a public HTTPS URL that routes to your machine. <strong>amux tunnel</strong> exposes any local port at a stable URL — <code>https://&lt;id&gt;.t.amux.io</code> — that survives machine restarts, network changes, and IP reassignments. Your machine dials out to the amux cloud gateway; the gateway forwards incoming webhook payloads to your local server. No inbound port, no firewall rule, no static IP. Register the URL with Stripe, GitHub, Twilio, or any webhook provider once and leave it there through your entire development cycle.</p>
