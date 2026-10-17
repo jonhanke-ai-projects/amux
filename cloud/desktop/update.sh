@@ -66,6 +66,19 @@ if [[ -f "$SRC/cloud/desktop/door.py" ]] && ! cmp -s "$SRC/cloud/desktop/door.py
   systemctl restart amux-door && say "door.py updated from the checkout"
 fi
 
+# Config fixes that bootstrap.sh now writes, applied to servers bootstrapped before them. Each is
+# idempotent, validated before it is used, and reverted if Caddy rejects it.
+CF=/etc/caddy/Caddyfile
+if [[ -f $CF ]] && grep -q 'header_up Cookie "amux_member=' $CF && ! grep -q 'header_up Host {host}' $CF; then
+  cp -p $CF $CF.prev
+  sed -i 's|^\( *\)header_up Cookie "amux_member=|\1header_up Host {host}\n\1header_up Cookie "amux_member=|' $CF
+  if runuser -u caddy -- caddy validate --config $CF --adapter caddyfile >/dev/null 2>&1 && systemctl reload caddy; then
+    say "caddy: amux now sees the public Host (team invite links)"
+  else
+    mv $CF.prev $CF; systemctl reload caddy; say "WARN caddy Host migration rejected; previous Caddyfile kept"
+  fi
+fi
+
 # 2. Newest green image.
 TOKEN=$(curl -fsS --max-time 20 "https://ghcr.io/token?scope=repository:$IMAGE_REPO:pull" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])' 2>/dev/null)
 LATEST=$(curl -fsSI --max-time 20 -H "Authorization: Bearer $TOKEN" \
