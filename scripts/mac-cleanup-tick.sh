@@ -1869,6 +1869,13 @@ keep_docker_context() { # <profile>
 reap_lane_tmp() { # <dry:0|1>
   local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0
   local small_kb=${LANE_TMP_KEEP_FILE_KB:-1024}
+  # A directory of a few small files is kept like a small file (mxp-gs12,
+  # 2026-10-17): ~/.amux/tmp/mxp-gs12/mvs-drill/standby_ok, a 1 KB manual gate a
+  # production MVS promote waits on, was reaped twice (10-14, 10-16) because
+  # only a TOP-LEVEL file was protected. Kept: at most LANE_TMP_KEEP_DIR_FILES
+  # files, none over LANE_TMP_KEEP_FILE_KB, LANE_TMP_KEEP_DIR_KB in all. Build
+  # trees, clones and dependency dirs still go: they hold big files or many.
+  local keep_dir_files=${LANE_TMP_KEEP_DIR_FILES:-64} keep_dir_kb=${LANE_TMP_KEEP_DIR_KB:-4096} n_small_dir=0 nf
   [ -d "$root" ] || { echo "mac-cleanup: lane tmp: no $root"; return 0; }
   db=${LANE_TMP_SCHED_DB:-${AMUX_HOME:-$HOME/.amux}/amux.db}
   # Every ~/.amux/tmp/<worker>/<entry> an enabled schedule names, as
@@ -1911,6 +1918,13 @@ reap_lane_tmp() { # <dry:0|1>
     if [ -f "$e" ] && [ ! -L "$e" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$small_kb" ] 2>/dev/null; then
       n_small=$((n_small+1)); continue
     fi
+    if [ -d "$e" ] && [ ! -L "$e" ] \
+       && [ -z "$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -type f -size +"${small_kb}"k -print -quit 2>/dev/null)" ]; then
+      nf=$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -type f 2>/dev/null | head -n $((keep_dir_files + 1)) | grep -c . || true)
+      if [ "$nf" -ge 1 ] && [ "$nf" -le "$keep_dir_files" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$keep_dir_kb" ] 2>/dev/null; then
+        n_small_dir=$((n_small_dir+1)); continue
+      fi
+    fi
     ce=$( (cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"); ce=${ce#/private}
     printf '%s\n' "$inuse" | awk -v p="$ce" '$0==p || index($0, p "/")==1 {f=1} END{exit !f}' && continue
     k=$(perl -e 'alarm shift; exec @ARGV' "$walk" du -sk "$e" 2>/dev/null | cut -f1)
@@ -1920,7 +1934,7 @@ reap_lane_tmp() { # <dry:0|1>
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K)$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>
