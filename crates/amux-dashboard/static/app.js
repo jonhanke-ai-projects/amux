@@ -1904,6 +1904,36 @@ function _connectionSecurityPending(on) {
     const node=document.getElementById(id); if(node) node.disabled=on;
   }
 }
+// The iOS app's native bridge (WebView.swift, `amuxApp`): "settings" opens the app's
+// Settings with amux Cloud sign-in; "switch-server" returns to its setup screen.
+function _appBridge(op) {
+  const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxApp;
+  if (!h) return false;
+  try { h.postMessage({op}); return true; } catch (e) { return false; }
+}
+function _connectionSessionControls() {
+  const inApp = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxApp);
+  const cloud = document.getElementById('connection-cloud-account');
+  if (cloud) cloud.style.display = inApp ? '' : 'none';
+  const out = document.getElementById('connection-sign-out');
+  if (out && inApp) out.textContent = 'Sign out and switch server';
+}
+// Sign out of this server on this device (2026-10-17). In the iOS app, back to its setup
+// screen (an address, or amux Cloud sign-in). On an amux Cloud server, the door's logout.
+// Elsewhere the owner/member cookies end and the page reloads to its sign-in.
+async function _connectionSignOut() {
+  if (_appBridge('switch-server')) return;
+  if (/\.amux\.io$/.test(location.hostname) && location.hostname !== 'cloud.amux.io') {
+    location.assign('/_door/logout');
+    return;
+  }
+  try {
+    const r = await fetch(location.origin + '/api/connection/session', {method: 'DELETE', credentials: 'same-origin',
+      cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000)});
+    if (!r.ok) { _connectionSecurityError('Sign out did not complete. Refresh and try again.'); return; }
+  } catch (e) { _connectionSecurityError('Sign out did not complete. ' + e.message); return; }
+  location.assign('/api/_clear_sw');
+}
 async function _connectionSignIn() {
   if(_connectionSecurityBusy) return;
   const input=document.getElementById('connection-owner-token');
@@ -7544,6 +7574,11 @@ function render() {
     s.name.toLowerCase().includes(q) ||
     (s.dir || '').toLowerCase().includes(q) ||
     (s.desc || '').toLowerCase().includes(q) ||
+    // Active task: the task name shown on the card and its board card id, so
+    // "which worker is on the billing bug" matches by what it is doing, not
+    // only by its name/description (Ethan, 2026-10-17).
+    (s.task_name || '').toLowerCase().includes(q) ||
+    _runtimeBoardPresentation(s).cardId.toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q)) ||
     (logSearchMode && s.name in _logMatches)
   ) : list;
@@ -25305,7 +25340,7 @@ function setLogSearchMode(on) {
   const btn = document.getElementById('log-search-btn');   // legacy toolbar button (may be absent)
   if (btn) btn.classList.toggle('active', logSearchMode);
   const si = document.getElementById('search-input');
-  if (si) si.placeholder = logSearchMode ? 'Search worker logs...' : 'Search workers...';
+  if (si) si.placeholder = logSearchMode ? 'Search worker logs...' : 'Search name, description, task...';
   _logMatches = {};
   if (logSearchMode && searchQuery) {
     clearTimeout(_logSearchTimer);
@@ -27340,12 +27375,11 @@ async function _fileSave() {
         _fileData._isNew = false;
         // Auto-name from first line if this was an auto-named scratchpad note
         if (_fileData._spAutoName) {
-          const firstLine = content.split('\n').find(l => l.trim());
-          if (firstLine) {
-            const slug = firstLine.trim().replace(/^#+\s*/, '').trim()
-              .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
-              .substring(0, 60) || 'untitled';
-            const newName = slug + '.md';
+          const slug = _spSlug(content);
+          if (slug) {
+            // Step the name (-2, -3) so a note never overwrites another with
+            // the same first line; _spUniqueName dedupes against the listing.
+            const newName = _spUniqueName(slug, '.md');
             const oldPath = _fileData.path;
             const dir = oldPath.substring(0, oldPath.lastIndexOf('/'));
             const newPath = dir + '/' + newName;
@@ -28743,6 +28777,16 @@ function _spStamp() {
   const d = new Date(), z = n => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + '-' + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds());
 }
+// A filename base derived from a note's own contents, no LLM: the first
+// non-empty line, markdown heading markers stripped, slugified, capped at 60
+// chars. Empty content returns '' so the caller falls back to a timestamp.
+function _spSlug(content) {
+  const firstLine = (content || '').split('\n').find(l => l.trim());
+  if (!firstLine) return '';
+  return firstLine.trim().replace(/^#+\s*/, '').trim()
+    .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
+    .substring(0, 60).replace(/^-+|-+$/g, '');
+}
 function _spUniqueName(base, ext) {
   const taken = new Set(((_spLastData && _spLastData.path === _spPath && _spLastData.data.entries) || []).map(e => e.name));
   let name = base + ext, n = 2;
@@ -28751,7 +28795,8 @@ function _spUniqueName(base, ext) {
 }
 async function _spCaptureSave(text) {
   if (!text || !text.trim()) return false;
-  const name = _spUniqueName(_spStamp(), '.md');
+  // Name the note from its own first line (no LLM), timestamp only if blank.
+  const name = _spUniqueName(_spSlug(text) || _spStamp(), '.md');
   const path = _spPath.replace(/\/$/, '') + '/' + name;
   const entry = { name, type: 'file', size: new Blob([text]).size, modified: Date.now() / 1000 };
   if (_spLastData && _spLastData.path === _spPath) {
@@ -47780,7 +47825,7 @@ function _settingsTab(name) {
   }
   try { localStorage.setItem('amux_settings_tab', name); } catch (e) {}
   menu.scrollTop = 0;
-  if(name==='integrations') _connectionSecurityLoad();
+  if(name==='integrations') { _connectionSessionControls(); _connectionSecurityLoad(); }
 }
 function toggleSettings() {
   const menu = document.getElementById('settings-menu');
