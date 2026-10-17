@@ -68,6 +68,7 @@ def main():
     ap.add_argument("--control", required=True, help="control plane URL, e.g. https://cp-test.amux.io")
     ap.add_argument("--live", action="store_true", help="create live objects with STRIPE_LIVE_SECRET_KEY")
     ap.add_argument("--promo", default="FIRSTMONTH", help="customer code for a free first month")
+    ap.add_argument("--portal-out", default="", help="write the amux billing portal configuration id here")
     ap.add_argument("--synth-code", default="", help="the synthetic customer's code (live mode pays with it)")
     a = ap.parse_args()
     if a.live:
@@ -107,6 +108,23 @@ def main():
     promo_code(key, a.promo, COUPON, first_time=True)
     if a.synth_code:
         promo_code(key, a.synth_code, COUPON, first_time=False)
+    if a.portal_out:
+        # The account's default portal is Mixpeek's. amux sessions name this one instead: amux
+        # headline and legal links, card and invoice changes, cancel at period end, no plan
+        # switching (a plan change would need a server resize, which is not built).
+        conf = {"business_profile": {"headline": "amux Cloud billing", "privacy_policy_url": "https://amux.io/privacy/",
+                                     "terms_of_service_url": "https://amux.io/terms/"},
+                "features": {"invoice_history": {"enabled": True}, "payment_method_update": {"enabled": True},
+                             "customer_update": {"enabled": True, "allowed_updates": ["email", "address", "tax_id"]},
+                             "subscription_cancel": {"enabled": True, "mode": "at_period_end"},
+                             "subscription_update": {"enabled": False}},
+                "default_return_url": "https://amux.io/start/billing/", "metadata": {"amux_cloud": "1"}}
+        got = [c for c in call(key, "GET", "/billing_portal/configurations", {"limit": 100, "active": "true"})["data"]
+               if (c.get("metadata") or {}).get("amux_cloud") == "1"]
+        c = call(key, "POST", f"/billing_portal/configurations/{got[0]['id']}" if got else "/billing_portal/configurations", conf)
+        print(f"billing portal {c['id']}: {'updated' if got else 'created'}", file=sys.stderr)
+        with open(a.portal_out, "w") as f:
+            f.write(c["id"] + "\n")
     url = a.control.rstrip("/") + "/webhooks/stripe"
     hooks = call(key, "GET", "/webhook_endpoints", {"limit": 100})["data"]
     if any(h["url"] == url for h in hooks):

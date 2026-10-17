@@ -296,7 +296,8 @@ async function route(req, env) {
     for (const c of custs) {
       const subs = (await stripe(env, 'GET', '/subscriptions', { customer: c.id, status: 'all', limit: 10 })).data;
       if (!subs.some(s => s.metadata?.slug)) continue;
-      const portal = await stripe(env, 'POST', '/billing_portal/sessions', { customer: c.id, return_url: `${SITE}/start/billing/` });
+      const portal = await stripe(env, 'POST', '/billing_portal/sessions', { customer: c.id, return_url: `${SITE}/start/billing/`,
+                                                                            ...(env.PORTAL_CONFIG ? { configuration: env.PORTAL_CONFIG } : {}) });
       await sendMail(env, email, 'Manage your amux Cloud billing',
         `Open this link within an hour to change your card, see invoices or cancel:\r\n\r\n${portal.url}`);
       break;

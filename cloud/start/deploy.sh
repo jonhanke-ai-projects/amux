@@ -28,9 +28,9 @@ else
   [[ -s "$S/start-test-key" ]] || { python3 -c 'import secrets;print(secrets.token_urlsafe(24))' > "$S/start-test-key"; chmod 600 "$S/start-test-key"; }
 fi
 # Stripe: products, prices, the FIRSTMONTH code, and this function's webhook (secret shown once).
-WF="$S/stripe-$MODE-webhook-secret-worker"
+WF="$S/stripe-$MODE-webhook-secret-worker"; PF="$S/stripe-$MODE-portal-config"
 NEW=$(STRIPE_TEST_SECRET_KEY="$KEY" STRIPE_LIVE_SECRET_KEY="$KEY" python3 "$HERE/../control/stripe_setup.py" \
-      --control "$URL" $([[ "$MODE" == live ]] && echo --live) )
+      --control "$URL" --portal-out "$PF" $([[ "$MODE" == live ]] && echo --live) )
 if [[ -n "$NEW" ]]; then (umask 077; printf '%s\n' "$NEW" > "$WF"); fi
 if [[ ! -s "$WF" && "$MODE" == live && -s "$S/stripe-live-webhook-secret-cloud" ]]; then
   cp "$S/stripe-live-webhook-secret-cloud" "$WF"; chmod 600 "$WF"   # same URL the control plane registered
@@ -38,9 +38,9 @@ fi
 [[ -s "$WF" ]] || { log "FATAL: the $MODE webhook exists but its secret is not in $WF"; exit 1; }
 GOLDEN=$(curl -fsS -H "Authorization: Bearer $HC" 'https://api.hetzner.cloud/v1/images?type=snapshot&label_selector=amux-golden&sort=created:desc' | python3 -c 'import json,sys;print(json.load(sys.stdin)["images"][0]["id"])')
 META=$(mktemp); trap 'rm -f "$META"' EXIT; chmod 600 "$META"
-python3 - "$META" "$MODE" "$KEY" "$(cat "$WF")" "$HC" "$CF" "$ZID" "$GOLDEN" "$HERE/../control/plans.json" "$S" <<'EOF'
+python3 - "$META" "$MODE" "$KEY" "$(cat "$WF")" "$HC" "$CF" "$ZID" "$GOLDEN" "$HERE/../control/plans.json" "$S" "$(cat "$PF")" <<'EOF'
 import base64, json, os, sys
-meta, mode, key, whs, hc, cf, zid, golden, plans, s = sys.argv[1:]
+meta, mode, key, whs, hc, cf, zid, golden, plans, s, portal = sys.argv[1:]
 gt = os.path.expanduser("~/.amux/gmail-tokens/hello@amux.io.json")
 b = [{"type": "secret_text", "name": "STRIPE_SECRET_KEY", "text": key},
      {"type": "secret_text", "name": "STRIPE_WEBHOOK_SECRET", "text": whs},
@@ -49,6 +49,7 @@ b = [{"type": "secret_text", "name": "STRIPE_SECRET_KEY", "text": key},
      {"type": "plain_text", "name": "CF_ZONE_ID", "text": zid},
      {"type": "plain_text", "name": "MODE", "text": mode},
      {"type": "plain_text", "name": "GOLDEN_IMAGE", "text": golden},
+     {"type": "plain_text", "name": "PORTAL_CONFIG", "text": portal},
      {"type": "plain_text", "name": "PLANS", "text": json.dumps(json.load(open(plans)))}]
 if os.path.exists(gt):
     b.append({"type": "secret_text", "name": "GMAIL_OAUTH", "text": base64.b64encode(open(gt, "rb").read()).decode()})
