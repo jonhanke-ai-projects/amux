@@ -1888,6 +1888,15 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/metrics/telemetry",
         methods: &["GET"],
     },
+    // Worker boundaries (boundaries.toml) and resource awareness.
+    RouteEntry {
+        path: "/api/boundaries",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/resources",
+        methods: &["GET"],
+    },
     // Agent trace archive (370787b2), pinned launchers and the credential vault.
     RouteEntry {
         path: "/api/traces",
