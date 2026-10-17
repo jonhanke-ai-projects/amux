@@ -3363,42 +3363,17 @@ fn confirmed_active_model(meta: &serde_json::Value, provider: &str) -> String {
     }
 }
 
-/// Pick the worker's task label and its source from the freshness verdicts.
+/// The task label for a worker, in precedence order: a fresh board card, a
+/// fresh generated summary, a stale board card, then the role description.
 ///
-/// Pure so the precedence — and especially the SUMMARY freshness gate — can be
-/// tested without a DB or meta files. The gate is the fix for the 2026-08-13
-/// "these task names are out of date" report: `summary` is a point-in-time label
-/// that nothing refreshes, so an ungated `!summary.is_empty()` let an unstamped
-/// relic outrank both the live board card and the honest desc, permanently. Both
-/// `board_fresh` and `summary_fresh` carry the SAME rule (`ts > 0 && age <= 24h`)
-/// so the two time-sensitive sources age out identically; a stale summary falls
-/// through to a stale board title, then to desc.
-/// "[09:28 AM] build a video like this @/Users/x/up.png" -> "build a video like this",
-/// one line, at most 140 characters. Slash commands and bare "continue"-style
-/// nudges say nothing about the task and yield "".
-fn task_label_from_message(text: &str) -> String {
-    let t = text.trim();
-    static STAMP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    static UPLOAD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let stamp = STAMP.get_or_init(|| regex::Regex::new(r"^\[\s*\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?\s*\]\s*").unwrap());
-    let upload = UPLOAD.get_or_init(|| regex::Regex::new(r"@?/[^\s]+\.(?:png|jpe?g|gif|webp|heic|pdf)\b").unwrap());
-    let t = stamp.replace(t, "");
-    let t = upload.replace_all(&t, "");
-    let one: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lower = one.to_lowercase();
-    if one.starts_with('/') || one.chars().count() < 12
-        || matches!(lower.as_str(), "continue" | "go" | "yes" | "ok" | "do both" | "you do it" | "you do it all")
-    {
-        return String::new();
-    }
-    let mut out: String = one.chars().take(140).collect();
-    if one.chars().count() > 140 {
-        out.push('\u{2026}');
-    }
-    out
-}
-
-#[cfg(test)]
+/// The owner's last message is deliberately NOT a source here (Ethan,
+/// 2026-10-17: "tasks should be the worker (like claude) task names, thats it,
+/// not messages" / "make sure the task name is Claude Code/LLM generated tasks
+/// NOT messages"). Claude Code's own ai-title (resolved by `claude_ai_title`
+/// and applied by the caller after this) is the real headline when present;
+/// this function only picks the honest fallback when it is absent. An earlier
+/// build ranked the owner's latest message above a stale card and the role
+/// (AMUX, 2026-09-25), which is exactly what put his last message on the card.
 fn resolve_task_name(
     board_title: Option<&str>,
     board_fresh: bool,
@@ -3406,19 +3381,22 @@ fn resolve_task_name(
     summary_fresh: bool,
     desc: &str,
 ) -> (String, &'static str) {
-    resolve_task_name_with(board_title, board_fresh, summary, summary_fresh, None, desc)
+    if board_fresh {
+        (board_title.unwrap_or_default().to_string(), "board")
+    } else if summary_fresh {
+        (summary.to_string(), "summary")
+    } else if let Some(t) = board_title {
+        (t.to_string(), "board")
+    } else {
+        (desc.to_string(), "desc")
+    }
 }
 
-/// `recent_message` is the owner's latest message to this worker within 24h.
-/// It outranks a stale card title and the role description (Ethan,
-/// 2026-09-25: "make sure the task names are up to date"; amux-helper, a
-/// worker with no card, showed its role text as its task).
 /// Claude Code names a conversation itself: it writes `{"type":"ai-title",
 /// "aiTitle":...}` records into the transcript and rewrites them as the work
 /// moves, even for a worker amux launched with a custom title (measured
 /// 2026-10-14: mixpeek-funnel held 1175, latest "Done cards awaiting
-/// verification"). Ethan: "this needs to be the task, I know Claude Code comes
-/// up with its own task naming. use that" — the card showed his last message.
+/// verification"). This title, when present, is the task headline.
 pub(crate) fn latest_ai_title(records: &[Value]) -> Option<String> {
     records.iter().rev()
         .find(|r| r["type"] == "ai-title")
@@ -3459,27 +3437,6 @@ fn claude_ai_title(name: &str, report: Option<&Value>) -> Option<String> {
 
 fn task_title_is_generated(source: Option<&str>) -> bool {
     source == Some("generated")
-}
-
-fn resolve_task_name_with(
-    board_title: Option<&str>,
-    board_fresh: bool,
-    summary: &str,
-    summary_fresh: bool,
-    recent_message: Option<&str>,
-    desc: &str,
-) -> (String, &'static str) {
-    if board_fresh {
-        (board_title.unwrap_or_default().to_string(), "board")
-    } else if summary_fresh {
-        (summary.to_string(), "summary")
-    } else if let Some(m) = recent_message.filter(|m| !m.trim().is_empty()) {
-        (m.to_string(), "message")
-    } else if let Some(t) = board_title {
-        (t.to_string(), "board")
-    } else {
-        (desc.to_string(), "desc")
-    }
 }
 
 /// Reconcile the runtime verdict with the board attribution exposed by the
@@ -5667,24 +5624,6 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             }
         }
     }
-    // The owner's latest message per worker in the last 24h, cleaned for a
-    // one-line task label (stamp and attachment paths removed).
-    let recent_owner_messages: BTreeMap<String, String> = {
-        let since_ms = (crate::runtime_jobs::registry::unix_now() as i64 - 86_400) * 1000;
-        let mut stmt = conn.prepare(
-            "SELECT session, text FROM cmd_history WHERE type = 'user' AND ts >= ?1
-             AND session IS NOT NULL ORDER BY ts ASC",
-        )?;
-        let rows = stmt.query_map([since_ms], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        let mut out = BTreeMap::new();
-        for (sess, text) in rows.flatten() {
-            let label = task_label_from_message(&text);
-            if !label.is_empty() {
-                out.insert(sess, label);
-            }
-        }
-        out
-    };
     // Board linkage per card, Python's exact query + precedence
     // (py:20187-20197, 20348-20365): ORDER BY updated ASC with dict
     // overwrite so the NEWEST-touched doing card wins (the 2026-07-22
@@ -5943,9 +5882,10 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             };
             if v["isolated"].as_bool() == Some(true) {
                 // Raw CLI status must not be rewritten by historical board claims.
-                // The owner's own latest message is not a board claim: it is
-                // what this worker was last asked to do, so it names the task
-                // better than the role description (amux-helper, 2026-09-25).
+                // The task label is Claude Code's own ai-title, then a generated
+                // summary, then the role description — never the owner's last
+                // message (Ethan, 2026-10-17: "task name is Claude Code/LLM
+                // generated tasks NOT messages").
                 let meta = load_meta(&name);
                 let generated = meta["task_summary"].as_str().unwrap_or("").to_string();
                 let generated_ts = meta["task_summary_ts"].as_i64().unwrap_or(0);
@@ -5962,9 +5902,6 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                     v["task_name"] = json!(generated);
                     v["task_source"] = json!("generated_title");
                     v["task_updated"] = json!(generated_ts);
-                } else if let Some(m) = recent_owner_messages.get(&name) {
-                    v["task_name"] = json!(m);
-                    v["task_source"] = json!("message");
                 } else {
                     v["task_name"] = v["desc"].clone();
                     v["task_source"] = json!("desc");
@@ -6085,12 +6022,11 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             // worker's role, which is honest rather than a wrong task claim.
             let summary_fresh = !summary.is_empty() && summary_ts > 0 && now - summary_ts <= 86400;
             let desc = v["desc"].as_str().unwrap_or("").to_string();
-            let (tname, tsrc) = resolve_task_name_with(
+            let (tname, tsrc) = resolve_task_name(
                 board.map(|(_, t, _)| t.as_str()),
                 board_fresh,
                 &summary,
                 summary_fresh,
-                recent_owner_messages.get(&name).map(String::as_str),
                 &desc,
             );
             v["task_name"] = json!(tname);
@@ -6198,6 +6134,23 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                     "checked_at": report.finished_at,
                 });
             }
+        }
+    }
+
+    // Self-announcing regression guard (Ethan, 2026-10-17: "task name is Claude
+    // Code/LLM generated tasks NOT messages"). "message" is no longer a value
+    // `resolve_task_name` or the isolated path can emit; if one ever reappears
+    // here a later edit reintroduced the owner's message as a task label, so a
+    // log sweep catches it without anyone re-reading this code.
+    {
+        let msg_sourced = out.iter().filter(|v| v["task_source"] == "message").count();
+        if msg_sourced > 0 {
+            tracing::warn!(
+                target: "amux::task_name",
+                count = msg_sourced,
+                "task_source=message reappeared on {} worker(s); task names must be Claude/LLM-generated, not owner messages",
+                msg_sourced
+            );
         }
     }
 
@@ -7452,18 +7405,26 @@ pub(crate) mod tests {
         assert_eq!(name, "just the role");
     }
 
+    /// The owner's last message is NOT a task source (Ethan, 2026-10-17: "task
+    /// name is Claude Code/LLM generated tasks NOT messages"). A worker with no
+    /// card and no ai-title shows its role description, never the last thing it
+    /// was asked. The guarantee is structural: `resolve_task_name` has no
+    /// message parameter, so "message" is not a value `task_source` can take.
     #[test]
-    fn a_worker_with_no_card_shows_the_owners_latest_message_not_its_role() {
-        let label = task_label_from_message(
-            "[10:43 AM] figure out why this task is stuck up ehtere. and make sure the task names are up to date @/Users/ethan/.amux/uploads/95fcc22b70cc-image.png");
-        assert_eq!(label, "figure out why this task is stuck up ehtere. and make sure the task names are up to date");
-        assert_eq!(task_label_from_message("continue"), "");
-        assert_eq!(task_label_from_message("/clear"), "");
-        let (name, src) = resolve_task_name_with(None, false, "", false, Some(&label), "Ethan's direct-request session");
-        assert_eq!((name.as_str(), src), (label.as_str(), "message"));
-        // A fresh card still wins; a stale card title does not beat a recent message.
-        assert_eq!(resolve_task_name_with(Some("AMUX-9 card"), true, "", false, Some(&label), "d").1, "board");
-        assert_eq!(resolve_task_name_with(Some("old card"), false, "", false, Some(&label), "d").1, "message");
+    fn a_worker_with_no_card_falls_back_to_its_role_never_a_message() {
+        // No board, no summary -> desc (the role), not any message text.
+        let (name, src) = resolve_task_name(None, false, "", false, "Ethan's direct-request session");
+        assert_eq!((name.as_str(), src), ("Ethan's direct-request session", "desc"));
+        // "message" is no longer in the source vocabulary at all.
+        for case in [
+            resolve_task_name(None, false, "", false, "role"),
+            resolve_task_name(Some("old card"), false, "", false, "role"),
+            resolve_task_name(Some("AMUX-9 card"), true, "s", true, "role"),
+        ] {
+            assert_ne!(case.1, "message", "message must never be a task source");
+        }
+        // A stale card title still beats the bare role (unchanged).
+        assert_eq!(resolve_task_name(Some("old card"), false, "", false, "role").1, "board");
     }
 
     /// ATE-92: a control/checkpoint turn does not release still-live causal
