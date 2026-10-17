@@ -1871,6 +1871,7 @@ impl LiveDeliverer {
             let owner = owner.clone();
             let vault_vals = vault_vals.clone();
             async move {
+                let _in_flight = ShellRunInFlight::enter(&sid);
                 let path = shell_run_log_path(&sid);
                 let fut = async {
                     use tokio::io::AsyncReadExt;
@@ -5246,5 +5247,60 @@ mod tests {
         let mut s = make_row("SCHED-3", "alpha", None, "2026-08-10T09:00");
         s.set("recurrence", Value::from("fortnightly"));
         assert_eq!(skip_next_run(&s), None);
+    }
+}
+
+/// Shell schedule runs executing in THIS process, so self-adoption can wait for
+/// them: an exec closes a run's output pipes and the run is recorded as "server
+/// restarted before this fire recorded a delivery outcome". The builder's own
+/// hold (rust-auto-build.sh SHELL-RUN DEFER) looks only before it builds, and
+/// SCHED-465 fired during the build at 17:18 and 18:18 on 2026-10-17, so both
+/// runs died at the adoption that followed.
+static SHELL_RUNS_IN_FLIGHT: std::sync::Mutex<Vec<(u64, String, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+static SHELL_RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) struct ShellRunInFlight(u64);
+
+impl ShellRunInFlight {
+    pub(crate) fn enter(schedule: &str) -> Self {
+        let id = SHELL_RUN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut v) = SHELL_RUNS_IN_FLIGHT.lock() {
+            v.push((id, schedule.to_string(), std::time::Instant::now()));
+        }
+        Self(id)
+    }
+}
+
+impl Drop for ShellRunInFlight {
+    fn drop(&mut self) {
+        if let Ok(mut v) = SHELL_RUNS_IN_FLIGHT.lock() {
+            v.retain(|(id, _, _)| *id != self.0);
+        }
+    }
+}
+
+/// Schedule ids of shell runs in flight that started less than `max_age` ago.
+pub(crate) fn shell_runs_in_flight(max_age: std::time::Duration) -> Vec<String> {
+    let mut ids: Vec<String> = SHELL_RUNS_IN_FLIGHT.lock().map(|v| {
+        v.iter().filter(|(_, _, t)| t.elapsed() < max_age).map(|(_, s, _)| s.clone()).collect()
+    }).unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+#[cfg(test)]
+mod shell_in_flight_tests {
+    use super::*;
+
+    #[test]
+    fn a_shell_run_is_in_flight_until_its_guard_drops() {
+        let hour = std::time::Duration::from_secs(3600);
+        let g = ShellRunInFlight::enter("SCHED-test-inflight");
+        assert!(shell_runs_in_flight(hour).contains(&"SCHED-test-inflight".to_string()));
+        assert!(!shell_runs_in_flight(std::time::Duration::ZERO).contains(&"SCHED-test-inflight".to_string()),
+            "a run older than the cap no longer holds adoption");
+        drop(g);
+        assert!(!shell_runs_in_flight(hour).contains(&"SCHED-test-inflight".to_string()));
     }
 }

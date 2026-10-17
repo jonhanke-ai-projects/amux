@@ -1035,11 +1035,36 @@ async fn async_main() {
             };
             let mut observed = meta.modified().ok();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            // An in-flight shell schedule run holds adoption, for at most
+            // AMUX_ADOPT_SHELL_DEFER_MAX_S (default 900, like the builder's).
+            let defer_max = std::time::Duration::from_secs(
+                std::env::var("AMUX_ADOPT_SHELL_DEFER_MAX_S").ok().and_then(|v| v.parse().ok()).unwrap_or(900));
+            let mut defer_since: Option<std::time::Instant> = None;
+            let mut defer_logged: Option<std::time::Instant> = None;
             loop {
                 interval.tick().await;
                 jobs::tick(jobs::ids::SELF_ADOPT);
                 let current = std::fs::metadata(&exe).ok().and_then(|m| m.modified().ok());
                 if current.is_some() && current != observed {
+                    let busy = runtime_jobs::scheduler::shell_runs_in_flight(defer_max);
+                    if !busy.is_empty() {
+                        let since = *defer_since.get_or_insert_with(std::time::Instant::now);
+                        if since.elapsed() < defer_max {
+                            if defer_logged.is_none_or(|t| t.elapsed().as_secs() >= 60) {
+                                defer_logged = Some(std::time::Instant::now());
+                                tracing::info!(verdict = "adoption_deferred_shell_run", runs = ?busy,
+                                    held_s = since.elapsed().as_secs(), max_s = defer_max.as_secs(),
+                                    measured = true, n_considered = busy.len(),
+                                    "self-adoption held: a shell schedule run is in flight and an exec would kill it");
+                            }
+                            continue;
+                        }
+                        tracing::warn!(verdict = "adoption_shell_defer_expired", runs = ?busy,
+                            held_s = since.elapsed().as_secs(), measured = true, n_considered = busy.len(),
+                            "self-adoption proceeding: shell schedule runs still in flight after the hold cap");
+                    }
+                    defer_since = None;
+                    defer_logged = None;
                     let path = exe.clone();
                     let candidate = match tokio::task::spawn_blocking(move || {
                         activation::Candidate::read(&path)
