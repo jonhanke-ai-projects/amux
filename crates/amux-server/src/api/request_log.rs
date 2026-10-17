@@ -2708,6 +2708,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/tags",
         methods: ANY,
     },
+    // -- tailnet join (api/tailnet_join.rs)
+    RouteEntry {
+        path: "/api/tailnet/status",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/tailnet/join",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/tailnet/leave",
+        methods: &["POST"],
+    },
     // -- journal / layout presets
     RouteEntry {
         path: "/api/journal",

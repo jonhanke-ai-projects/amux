@@ -3841,6 +3841,33 @@ pub async fn resolve_page_avoiding(
     };
     let tab_id = |t: &Value| t.get("id").and_then(Value::as_str).map(str::to_string);
 
+    // A JOINER DRIVES ONLY ITS OWN TAB. Every other tab in the browser belongs
+    // to the owner whether or not the owner has bound it, so the rebind rules
+    // below (prefer a real page, take an unclaimed one) must never run for a
+    // joiner. If its tab is gone or unreachable it gets a fresh one.
+    if let Some(own) = joined_tab(session) {
+        let alive = tabs
+            .iter()
+            .find(|t| tab_id(t).as_deref() == Some(own.as_str()))
+            .and_then(page_of)
+            .filter(|_| avoid != Some(own.as_str()));
+        let p = match alive {
+            Some(p) => p,
+            None => {
+                let t = cdp_new_tab(port, create_url.unwrap_or("about:blank")).await.map_err(DriverError::Cdp)?;
+                let p = page_of(&t).ok_or_else(|| DriverError::Cdp(anyhow::anyhow!("CDP /json/new returned no webSocketDebuggerUrl: {t}")))?;
+                if let Some(j) = JOINED.lock().expect("joined registry poisoned").get_mut(session) {
+                    j.tab = p.target_id.clone();
+                }
+                tracing::warn!(session, old_tab = %own, new_tab = %p.target_id, measured = true, n_considered = 1,
+                    verdict = "browser_join_tab_replaced", "a joined session's own tab was gone or unreachable; opened a new one rather than using the owner's");
+                p
+            }
+        };
+        NATIVE_TARGETS.lock().expect("native targets poisoned").insert(session.to_string(), p.target_id.clone());
+        return Ok(p);
+    }
+
     let (bound, claimed_by_others): (Option<String>, std::collections::HashSet<String>) = {
         let map = NATIVE_TARGETS.lock().expect("native targets poisoned");
         (
@@ -4058,12 +4085,24 @@ fn latest_started_by<'a>(
 // profile's live sign-ins. It never adopts the owner's tabs, never displaces
 // the owner, and its stop closes only its own tab.
 
-/// session -> profile it joined (a browser another session started).
-pub static JOINED: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+/// A session's join of a browser another session started.
+#[derive(Clone, Debug)]
+pub struct Join {
+    pub profile: String,
+    /// The tab this session opened. It is the ONLY tab a joiner drives and the
+    /// only one its stop closes. The general resolver rebinds a blank binding
+    /// to any unclaimed real page, and in a shared browser that is the
+    /// owner's tab: measured 2026-10-17, a joined session navigated and then
+    /// closed a tab it never opened while its own stayed on about:blank.
+    pub tab: String,
+}
+
+/// session -> its join.
+pub static JOINED: LazyLock<Mutex<std::collections::HashMap<String, Join>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 fn joined_port(g: &std::collections::HashMap<String, RunningBrowser>, session: &str) -> Option<(u16, String)> {
-    let profile = JOINED.lock().expect("joined registry poisoned").get(session).cloned()?;
+    let profile = JOINED.lock().expect("joined registry poisoned").get(session).map(|j| j.profile.clone())?;
     g.values().find(|r| r.profile == profile).map(|r| (r.cdp_port, r.profile.clone()))
 }
 
@@ -4086,7 +4125,8 @@ pub async fn join_running(session: &str, profile: &str, url: &str) -> Result<Dri
     if target_id.is_empty() || ws_url.is_empty() {
         return Err(DriverError::Cdp(anyhow::anyhow!("CDP /json/new returned no target: {t}")));
     }
-    JOINED.lock().expect("joined registry poisoned").insert(session.to_string(), profile.to_string());
+    JOINED.lock().expect("joined registry poisoned")
+        .insert(session.to_string(), Join { profile: profile.to_string(), tab: target_id.clone() });
     NATIVE_TARGETS.lock().expect("native targets poisoned").insert(session.to_string(), target_id.clone());
     tracing::info!(session, profile, cdp_port = port, target = %target_id, measured = true, n_considered = 1,
         verdict = "browser_joined", "a session joined the browser already running its profile, in its own tab");
@@ -4095,14 +4135,20 @@ pub async fn join_running(session: &str, profile: &str, url: &str) -> Result<Dri
 
 /// The profile `session` joined, if it is a joiner rather than an owner.
 pub fn joined_profile(session: &str) -> Option<String> {
-    JOINED.lock().expect("joined registry poisoned").get(session).cloned()
+    JOINED.lock().expect("joined registry poisoned").get(session).map(|j| j.profile.clone())
+}
+
+/// The tab `session` opened by joining, if it is a joiner.
+pub fn joined_tab(session: &str) -> Option<String> {
+    JOINED.lock().expect("joined registry poisoned").get(session).map(|j| j.tab.clone())
 }
 
 /// Release a joined session: close ONLY its own tab and forget the join. The
 /// browser and its owner's tabs keep running. Returns (profile, closed tab).
 pub async fn leave_joined(session: &str) -> Option<(String, Option<String>)> {
-    let profile = JOINED.lock().expect("joined registry poisoned").remove(session)?;
-    let target = NATIVE_TARGETS.lock().expect("native targets poisoned").remove(session);
+    let Join { profile, tab } = JOINED.lock().expect("joined registry poisoned").remove(session)?;
+    NATIVE_TARGETS.lock().expect("native targets poisoned").remove(session);
+    let target = Some(tab);
     let port = {
         let g = RUNNING.lock().expect("browser registry poisoned");
         g.values().find(|r| r.profile == profile).map(|r| r.cdp_port)

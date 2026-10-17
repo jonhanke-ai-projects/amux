@@ -29032,8 +29032,9 @@ function _spSlug(content) {
     .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
     .substring(0, 60).replace(/^-+|-+$/g, '');
 }
-function _spUniqueName(base, ext) {
+function _spUniqueName(base, ext, also) {
   const taken = new Set(((_spLastData && _spLastData.path === _spPath && _spLastData.data.entries) || []).map(e => e.name));
+  for (const n of also || []) taken.add(n);
   let name = base + ext, n = 2;
   while (taken.has(name)) name = base + '-' + (n++) + ext;
   return name;
@@ -29041,15 +29042,36 @@ function _spUniqueName(base, ext) {
 async function _spCaptureSave(text) {
   if (!text || !text.trim()) return false;
   // Name the note from its own first line (no LLM), timestamp only if blank.
-  const name = _spUniqueName(_spSlug(text) || _spStamp(), '.md');
-  const path = _spPath.replace(/\/$/, '') + '/' + name;
+  // The cached listing _spUniqueName reads can be missing or stale (a phone
+  // saving right after opening the tab), and a plain PUT then replaced an
+  // older note with the same first line. So read the folder fresh when online,
+  // and save with create_only: the server refuses an existing path with 409
+  // file_exists (verdict file_create_exists) and the name steps once more.
+  const base = _spSlug(text) || _spStamp();
+  const dir = _spPath.replace(/\/$/, '');
+  let fresh = [];
+  if (online) {
+    try {
+      const ls = await fetch(API + '/api/ls?path=' + encodeURIComponent(dir) + '&hidden=0', { headers: _authHeaders() });
+      if (ls.ok) fresh = ((await ls.json()).entries || []).map(e => e.name);
+    } catch (e) {}
+  }
+  let name = _spUniqueName(base, '.md', fresh);
   const entry = { name, type: 'file', size: new Blob([text]).size, modified: Date.now() / 1000 };
   if (_spLastData && _spLastData.path === _spPath) {
     _spLastData.data.entries = [entry, ...(_spLastData.data.entries || [])];
     _spRender(_spPath, _spLastData.data);
   }
-  const r = await apiCall(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, content: text }) });
+  let r = null;
+  for (let tries = 0; tries < 20; tries++) {
+    let exists = false;
+    r = await apiCall(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: dir + '/' + name, content: text, create_only: true }),
+      _onRefused: (status, body) => { exists = status === 409 && body && body.code === 'file_exists'; } });
+    if (r || !exists) break;
+    fresh.push(name);
+    name = entry.name = _spUniqueName(base, '.md', fresh);
+  }
   if (!r) { showToast(online ? 'Could not save ' + name : 'Saved offline: ' + name + ' syncs when you reconnect'); return !online; }
   const d = await r.json().catch(() => ({}));
   if (!d.ok) { showToast('Could not save ' + name + (d.error ? ': ' + d.error : '')); _scratchpadLoad(); return false; }
