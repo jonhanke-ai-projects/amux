@@ -2310,6 +2310,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiSaveDocNow": {
+      "kind": "command._mdaiSaveDocNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiSaveSettings": {
       "kind": "command._mdaiSaveSettings",
       "feedback_required": true,

@@ -217,6 +217,17 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     // race is checked every run instead of when the timing happens to hit.
     await page.evaluate(() => (window as any)._mdaiRender());
     await expect(page.locator('#mdai-fetch-url')).toHaveValue('');
+    // The file on disk changes before the save's response reaches the page,
+    // so the owner can type the next change while that save is in flight.
+    // Hold the response so this always happens: the late response must not
+    // wipe what was typed after it was sent.
+    let held = 0;
+    await page.route('**/api/files/mdai/doc', async (route) => {
+      if (route.request().method() !== 'PUT' || held++) return route.continue();
+      const res = await route.fetch();
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.fulfill({ response: res });
+    });
     await page.locator('#mdai-src-save').click();
     await expect.poll(() => fileText(file)).not.toContain('fetch:');
     await tab(page, 'edit');
@@ -224,6 +235,7 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await expect(page.locator('#mdai-save-btn')).toHaveText('Save');
     await page.locator('#mdai-save-btn').click();
     await expect.poll(() => fileText(file)).toContain('Keep it short.');
+    await page.unroute('**/api/files/mdai/doc');
     // Raw file mode edits the whole text; the server refuses a file that does not parse.
     await page.locator('#mdai-body .mdai-seg button[data-mode=raw]').click();
     await expect(page.locator('#mdai-body-ta')).toHaveValue(await fileText(file));
