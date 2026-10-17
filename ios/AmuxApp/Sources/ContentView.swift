@@ -3,6 +3,7 @@ import WebKit
 
 struct ContentView: View {
     @EnvironmentObject var serverManager: ServerManager
+    @EnvironmentObject var cloud: CloudAccount
     @State private var isLoading = false
     @State private var canGoBack = false
     @State private var canGoForward = false
@@ -20,7 +21,14 @@ struct ContentView: View {
                     canGoBack: $canGoBack,
                     canGoForward: $canGoForward,
                     loadError: $loadError,
-                    onNavigationAction: handleNavigation
+                    onNavigationAction: handleNavigation,
+                    onAppMessage: { op in
+                        switch op {
+                        case "settings": showSettings = true
+                        case "switch-server": serverManager.resetServer()
+                        default: break
+                        }
+                    }
                 )
                 .id(webViewId)
                 .ignoresSafeArea()
@@ -77,6 +85,7 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environmentObject(serverManager)
+                .environmentObject(cloud)
         }
     }
 
@@ -127,6 +136,7 @@ struct SettingsView: View {
         List {
             serversSection
             addSection
+            Section("amux Cloud") { CloudSignInSection() }
             LocationSettingsSection()
             resetSection
         }

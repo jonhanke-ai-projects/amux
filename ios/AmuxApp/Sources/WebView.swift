@@ -11,6 +11,11 @@ struct WebView: UIViewRepresentable {
     @Binding var canGoForward: Bool
     @Binding var loadError: String?
     let onNavigationAction: (WKNavigationAction) -> WKNavigationActionPolicy
+    /// The dashboard's Connect tab asks the app for things only the app can do (`amuxApp`):
+    /// "settings" opens the native Settings (servers, amux Cloud sign-in); "switch-server"
+    /// leaves this server for the setup screen. The web view swallows the long press that
+    /// opened Settings, so without this a connected user could never reach either (2026-10-17).
+    var onAppMessage: (String) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -71,6 +76,7 @@ struct WebView: UIViewRepresentable {
         // Map > Location history talks to the native recorder through this
         // bridge (AMUX-5458): status, enable, disable, upload.
         config.userContentController.add(context.coordinator, name: "amuxLocation")
+        config.userContentController.add(context.coordinator, name: "amuxApp")
         // Teleprompter selfie takes go to Photos through this bridge (AA-39).
         config.userContentController.addScriptMessageHandler(MediaBridge(), contentWorld: .page, name: "amuxMedia")
         config.userContentController.addUserScript(script)
@@ -190,6 +196,12 @@ struct WebView: UIViewRepresentable {
 
         // JS console → os_log bridge
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "amuxApp" {
+                let op = (message.body as? [String: Any])?["op"] as? String ?? ""
+                logger.info("amuxApp op=\(op)")
+                Task { @MainActor in self.parent.onAppMessage(op) }
+                return
+            }
             if message.name == "amuxLocation" {
                 let op = (message.body as? [String: Any])?["op"] as? String ?? "status"
                 Task { @MainActor in

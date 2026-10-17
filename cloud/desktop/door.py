@@ -365,7 +365,9 @@ class Door(BaseHTTPRequestHandler):
                 return self.send(302, headers=[("Location", "/_door/login?next=" + urllib.parse.quote(nxt, safe=""))])
             return self.send(302, headers=[("Location", nxt), ("Cache-Control", "no-store")] + session_cookies(user))
         if path.path == "/_door/logout":
-            return self.send(302, headers=[("Location", "/_door/login"),
+            # To "/", so the check decides: an amux Cloud server goes to cloud.amux.io sign-in,
+            # a password host to its login form (the dashboard's Sign out, 2026-10-17).
+            return self.send(302, headers=[("Location", "/"), ("Cache-Control", "no-store"),
                              ("Set-Cookie", "%s=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax" % COOKIE),
                              ("Set-Cookie", "%s=; Path=%s; Max-Age=0; HttpOnly; Secure; SameSite=None" % (VIEW_COOKIE, VIEW_PATH)),
                              ("Set-Cookie", "%s=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax" % VIEW_MARK)])
