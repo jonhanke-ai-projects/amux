@@ -140,7 +140,10 @@ async fn refuse_isolated_caller(
     let headers = req.headers();
     if super::org::local_member_actor(headers).is_none() {
         let name = crate::api::groups::hdr_worker(headers);
-        if !name.is_empty() && crate::api::session_verbs::session_is_isolated(&name) {
+        // An admin-group worker keeps the board even when isolated (Ethan, 2026-10-17).
+        if !name.is_empty() && crate::api::session_verbs::session_is_isolated(&name)
+            && !crate::api::session_verbs::is_admin_worker(&name)
+        {
             tracing::info!(
                 target: "amux::board",
                 session = %name,
@@ -5687,7 +5690,7 @@ pub async fn create_item(
         let allowed = match rule9 {
             Some(peer) => !peer,
             None => bs::board_delegation_allowed(Some(&hdr_session)) && bs::board_delegation_allowed(Some(target)),
-        };
+        } || super::session_verbs::speaks_for_owner(&hdr_session);
         if !allowed {
             tracing::warn!(marker="board_delegation_refused", requester=%hdr_session, target_lane=%target,
                 measured=true, n_considered=1, "worker owns its outcome; cross-board assignment refused");
@@ -5763,7 +5766,9 @@ pub async fn create_item(
             );
         }
     }
-    if request_to.is_none() && !hdr_session.is_empty() && session != hdr_session {
+    if request_to.is_none() && !hdr_session.is_empty() && session != hdr_session
+        && !super::session_verbs::speaks_for_owner(&hdr_session)
+    {
         tracing::warn!(
             caller = %hdr_session,
             requested_owner = %(if session.is_empty() { "(unassigned)" } else { session.as_str() }),
@@ -11112,7 +11117,9 @@ pub async fn patch_item(
             // able to reassign, while a verified worker may only name itself as
             // the destination. Peer collaboration belongs in reviewer,
             // shepherd, and evidence references instead of cross-board ownership or dependency edges.
-            if !caller_lane.is_empty() && map.contains_key("session") {
+            if !caller_lane.is_empty() && map.contains_key("session")
+                && !super::session_verbs::speaks_for_owner(&caller_lane)
+            {
                 let requested_owner = body_opt_str(&map, "session")
                     .flatten()
                     .filter(|owner| !owner.trim().is_empty());

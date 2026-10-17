@@ -9142,12 +9142,12 @@ async fn steer_enqueue_precond_with_id(
         );
         return Err("project controller owns executor prompts");
     }
-    // A chat's note or relay is owner input, not amux automation, so isolation,
+    // A chat's (or an admin-group worker's) note or relay is owner input, not amux automation, so isolation,
     // pause and contract gates treat it as the owner's own send.
-    let chat_input = chat_speaks_for_owner(sender);
+    let chat_input = speaks_for_owner(sender);
     if chat_input && session_is_isolated(name) {
         tracing::info!(session = name, sender, guard, measured = true, n_considered = 1,
-            verdict = "isolated_input_from_chat", "chat input delivered to an isolated worker as owner input");
+            verdict = "isolated_input_from_chat", "chat or admin-group input delivered to an isolated worker as owner input");
     }
     let automation = !chat_input && !guard.is_empty() && !(guard == "project-steering" && sender.is_empty());
     // SCHEDULES REACH ISOLATED WORKERS (Ethan, 2026-09-26: "isolated workers
@@ -19901,7 +19901,9 @@ fn roster_footer(n: usize) -> String {
             workers they share a group with.", open.join(", "))
     };
     format!(
-        "\n{n} discoverable peer worker(s). {WORKER_MESSAGING_POLICY}{open_line} To reach a worker outside \
+        "\n{n} discoverable peer worker(s). {WORKER_MESSAGING_POLICY}{open_line} Members of the \
+         `{ADMIN_GROUP}` group act with the owner's reach and may message any worker, isolated ones \
+         included. To reach a worker outside \
          your groups, ask the owner on your card (the owner can put you in a shared group); a \
          refused send is not retried or rerouted.\n"
     )
@@ -27447,6 +27449,7 @@ pub(crate) fn owner_mention_grant_allows(origin: &str, target: &str) -> bool {
 }
 
 pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInputRefusal> {
+    if speaks_for_owner(origin) { return None; }
     if let Some(reason) = peer_receive_refusal(origin, target) {
         return Some(PeerInputRefusal { code: "peer_receive_denied", reason });
     }
@@ -27463,7 +27466,7 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
 /// an env file cannot turn its pending message into owner input.
 fn queued_peer_input_refusal(sender: &str, target: &str) -> Option<PeerInputRefusal> {
     if sender.is_empty() || sender == "owner" || sender.starts_with("harness:") || sender == "browser-reaper" { return None; }
-    if chat_speaks_for_owner(sender) { return None; }
+    if speaks_for_owner(sender) { return None; }
     peer_input_refusal(sender, target)
 }
 
@@ -27473,6 +27476,9 @@ pub(crate) fn cross_group_policy_ok(origin: &str, target: &str) -> Result<&'stat
     }
     if chat_speaks_for_owner(origin) {
         return Ok("chat-for-owner");
+    }
+    if speaks_for_owner(origin) {
+        return Ok("admin-group");
     }
     // ISOLATED TARGET (AMUX-3232): a raw agent is not a peer/relay target. The
     // OWNER (empty origin) already returned above, so this refuses ONLY a PEER
@@ -27955,6 +27961,31 @@ pub(crate) fn chat_speaks_for_owner(origin: &str) -> bool {
             || crate::api::worker_exec::worker_type_of(origin).as_str() == "chat")
 }
 
+/// ADMIN GROUP (Ethan, 2026-10-17: "workers in the group called admin should
+/// have the ability to do anything. meaning even if its isolated work with
+/// other workers"). A member of `admin` (its `CC_TAGS`) acts with the owner's
+/// reach: it messages any worker across groups and receive policies, sends to
+/// isolated workers, and its input is never treated as amux automation. It
+/// does not stand in for the human on approvals (grants, spend), which stay
+/// dashboard-only.
+pub(crate) const ADMIN_GROUP: &str = "admin";
+
+pub(crate) fn is_admin_worker(origin: &str) -> bool {
+    !origin.is_empty() && lane_groups(origin).contains(ADMIN_GROUP)
+}
+
+/// Owner-equivalent worker input: a chat (see [`chat_speaks_for_owner`]) or an
+/// admin-group worker. Every gate that exempts the owner's own send reads this.
+pub(crate) fn speaks_for_owner(origin: &str) -> bool {
+    if chat_speaks_for_owner(origin) { return true; }
+    let admin = is_admin_worker(origin);
+    if admin {
+        tracing::info!(origin, verdict = "admin_group_owner_reach", measured = true, n_considered = 1,
+            "an admin-group worker passed an owner-only gate");
+    }
+    admin
+}
+
 async fn isolated_peer_refusal(
     state: &AppState,
     name: &str,
@@ -27973,6 +28004,11 @@ async fn isolated_peer_refusal(
     // worker if needed?"). Its turns are started only by the owner, and the tab
     // is part of the worker, not a peer (chat_worker.rs), so its send to its
     // own worker is owner input relayed through that worker's tab.
+    if is_admin_worker(&origin) {
+        tracing::info!(origin = %origin, target = %name, measured = true, n_considered = 1,
+            verdict = "isolated_send_from_admin", "an isolated worker took a send from an admin-group worker");
+        return None;
+    }
     if chat_speaks_for_owner(&origin) {
         let verdict = if chat_tab_of(&origin, name) { "isolated_send_from_own_chat_tab" } else { "isolated_send_from_chat" };
         tracing::info!(origin = %origin, target = %name, measured = true, n_considered = 1,
@@ -36504,6 +36540,34 @@ mod tests {
         }
         // Owner-free automation still never reaches the isolated worker.
         assert!(steer_enqueue(&st, "raw", "nudge", "commit-nudge", "").await.is_err());
+    }
+
+    /// Ethan, 2026-10-17: an `admin` group member can do anything a chat can:
+    /// reach isolated workers, cross every group boundary and receive policy.
+    #[tokio::test]
+    async fn an_admin_group_worker_has_owner_reach_and_its_peers_do_not() {
+        let (st, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("raw.env"), "CC_TAGS=alpha\nCC_ISOLATED=1\n").unwrap();
+        std::fs::write(sessions.join("closed.env"), "CC_TAGS=gamma\nCC_RECEIVE_DENY=*\n").unwrap();
+        // Isolation does not take admin reach away.
+        std::fs::write(sessions.join("boss.env"), "CC_TAGS=beta, Admin\nCC_ISOLATED=1\n").unwrap();
+        std::fs::write(sessions.join("peer.env"), "CC_TAGS=beta\n").unwrap();
+        for (sender, allowed) in [("boss", true), ("peer", false)] {
+            assert_eq!(is_admin_worker(sender), allowed, "{sender}");
+            for target in ["raw", "closed"] {
+                assert_eq!(cross_group_policy_ok(sender, target).is_ok(), allowed, "{sender} -> {target}");
+                assert_eq!(peer_input_refusal(sender, target).is_none(), allowed, "{sender} -> {target}");
+            }
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amux-worker", sender.parse().unwrap());
+            assert_eq!(isolated_peer_refusal(&st, "raw", &headers).await.is_none(), allowed, "{sender}");
+            let noted = steer_enqueue(&st, "raw", "[board note on X-1] note", "board-progress", sender).await;
+            assert_eq!(noted.is_ok(), allowed, "card note from {sender}: {noted:?}");
+        }
+        assert!(!is_admin_worker(""), "the owner is not a worker");
     }
 
     #[tokio::test]

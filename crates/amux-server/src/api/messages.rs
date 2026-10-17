@@ -118,6 +118,7 @@ pub(crate) fn native_peer_input_refusal(
             reason:"Pending worker input has no registered sender identity; membership cannot be verified.".into() }));
     };
     let Some(receiver) = queries::get_worker(conn, target)? else { return Ok(None); };
+    if super::session_verbs::speaks_for_owner(&source.display_name) { return Ok(None); }
     if let Some(reason) = super::session_verbs::peer_receive_refusal(&source.display_name, &receiver.display_name) {
         return Ok(Some(super::session_verbs::PeerInputRefusal { code:"peer_receive_denied", reason }));
     }
