@@ -64,6 +64,11 @@ PREEMPT_AT = float(os.environ.get("CLAUDE_PREEMPT_AT", "85"))
 # twenty minutes later and preempted straight back; both 5h windows reset at
 # 13:00, joinmixpeek ran out at 12:17 and the fleet stopped.
 PREEMPT_MARGIN = float(os.environ.get("CLAUDE_PREEMPT_MARGIN", "20"))
+# Past HOT_AT the current account is minutes from the limit, so any usable
+# account with more headroom beats holding. 2026-10-17: ethan@trymixpeek.com
+# reached 97% of its 5h window with "current_is_fine" because no other account
+# was cool() (every weekly window sat at 85% or more).
+HOT_AT = float(os.environ.get("CLAUDE_HOT_AT", "95"))
 # A worker already parked on Claude's limit prompt is resumed at most this often.
 RESUME_GAP_S = int(os.environ.get("CLAUDE_ROTATE_RESUME_GAP_S", "600"))
 # Readings arriving this soon after a switch may still describe the previous
@@ -420,6 +425,12 @@ def decide(current, rows, state, at=None, unreachable=()):
             if time.time() - float(state.get("switched_at") or 0) < MIN_SWITCH_GAP_S:
                 return None, "recent_switch"
             return roomier["email"], "preempt_limit"
+        # Roomiest first; a target over HOT_AT itself would be preempted straight back.
+        hot = max((r for r in rows if r["usable"] and r["email"] != current and r["headroom"] > cur["headroom"]
+                   and max(r["five_hour"] or 0, r["weekly"] or 0) < HOT_AT),
+                  key=lambda r: r["headroom"], default=None)
+        if peak >= HOT_AT and hot is not None:
+            return hot["email"], "preempt_hot"
     if best["email"] == current:
         return None, "current_is_best"
     if cur is None or not cur["usable"]:

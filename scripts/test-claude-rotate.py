@@ -52,6 +52,15 @@ rows = [row("a", 10, 88, "2026-10-17T00:00:00-04:00"), row("b", 0, 95, "2026-10-
 t, why = rot.decide("a", rows, old)
 expect(t is None, f"no account with more headroom: hold, got {(t, why)}")
 
+# Past HOT_AT with nothing cool(): take the roomiest usable account now, even
+# inside the switch gap (2026-10-17: 97% five-hour held as "current_is_fine").
+rows = [row("a", 97, 49, "2026-10-24T00:00:00-04:00"), row("b", 0, 94, "2026-10-21T00:00:00-04:00"),
+        row("c", 38, 85, "2026-10-23T00:00:00-04:00")]
+t, why = rot.decide("a", rows, {"switched_at": __import__("time").time() - 60})
+expect((t, why) == ("c", "preempt_hot"), f"97% five-hour takes the roomiest account, got {(t, why)}")
+t, why = rot.decide("c", [row("c", 40, 86), row("a", 97, 49)], old)
+expect(t is None, f"the hot account just left is not a target, got {(t, why)}")
+
 # A target that failed FAIL_BACKOFF_N switches inside the window is skipped
 # (2026-10-16: 98 of 101 switches to one account failed, ~4 min each, every 5 min).
 import time as _t
