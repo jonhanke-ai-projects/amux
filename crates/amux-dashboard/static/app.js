@@ -27364,12 +27364,11 @@ async function _fileSave() {
         _fileData._isNew = false;
         // Auto-name from first line if this was an auto-named scratchpad note
         if (_fileData._spAutoName) {
-          const firstLine = content.split('\n').find(l => l.trim());
-          if (firstLine) {
-            const slug = firstLine.trim().replace(/^#+\s*/, '').trim()
-              .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
-              .substring(0, 60) || 'untitled';
-            const newName = slug + '.md';
+          const slug = _spSlug(content);
+          if (slug) {
+            // Step the name (-2, -3) so a note never overwrites another with
+            // the same first line; _spUniqueName dedupes against the listing.
+            const newName = _spUniqueName(slug, '.md');
             const oldPath = _fileData.path;
             const dir = oldPath.substring(0, oldPath.lastIndexOf('/'));
             const newPath = dir + '/' + newName;
@@ -28767,6 +28766,16 @@ function _spStamp() {
   const d = new Date(), z = n => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + '-' + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds());
 }
+// A filename base derived from a note's own contents, no LLM: the first
+// non-empty line, markdown heading markers stripped, slugified, capped at 60
+// chars. Empty content returns '' so the caller falls back to a timestamp.
+function _spSlug(content) {
+  const firstLine = (content || '').split('\n').find(l => l.trim());
+  if (!firstLine) return '';
+  return firstLine.trim().replace(/^#+\s*/, '').trim()
+    .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
+    .substring(0, 60).replace(/^-+|-+$/g, '');
+}
 function _spUniqueName(base, ext) {
   const taken = new Set(((_spLastData && _spLastData.path === _spPath && _spLastData.data.entries) || []).map(e => e.name));
   let name = base + ext, n = 2;
@@ -28775,7 +28784,8 @@ function _spUniqueName(base, ext) {
 }
 async function _spCaptureSave(text) {
   if (!text || !text.trim()) return false;
-  const name = _spUniqueName(_spStamp(), '.md');
+  // Name the note from its own first line (no LLM), timestamp only if blank.
+  const name = _spUniqueName(_spSlug(text) || _spStamp(), '.md');
   const path = _spPath.replace(/\/$/, '') + '/' + name;
   const entry = { name, type: 'file', size: new Blob([text]).size, modified: Date.now() / 1000 };
   if (_spLastData && _spLastData.path === _spPath) {
