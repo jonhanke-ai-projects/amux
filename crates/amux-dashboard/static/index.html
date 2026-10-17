@@ -670,6 +670,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-projects" onclick="switchView('projects')"><span class="tab-ico">◈</span><span class="tab-lbl">Projects</span></button>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
+  <button id="tab-tasks" onclick="switchView('tasks')"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
   <button id="tab-groups" onclick="switchView('groups')"><span class="tab-ico">&#x2756;</span><span class="tab-lbl">Groups</span></button>
   <button id="tab-calendar" onclick="switchView('calendar')"><span class="tab-ico">🗓</span><span class="tab-lbl">Calendar</span></button>
   <button id="tab-scheduler" onclick="switchView('scheduler')"><span class="tab-ico">⏱</span><span class="tab-lbl">Scheduler</span></button>
@@ -1218,6 +1219,49 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 <div id="vault-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;"></div>
+<!-- Tasks: every request a worker received, oldest first and numbered, each
+     tagged with its worker; a row opens its delivery, board cards and the
+     other messages on them (app.js _tasksLoad). -->
+<div id="tasks-view" class="tasks-scope" style="display:none;flex-direction:column;flex:1;min-height:0;">
+  <style>
+    .tasks-scope .tasks-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--border); }
+    .tasks-scope .tasks-bar .input { min-height:44px; }
+    .tasks-scope .tasks-bar .tasks-search { flex:1 1 200px; min-width:0; }
+    .tasks-scope .tasks-amux { display:flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--dim); min-height:44px; }
+    .tasks-scope .tasks-count { font-size:0.8rem; color:var(--dim); padding:6px 12px 0; }
+    .tasks-scope .tasks-list { flex:1; min-height:0; overflow-y:auto; padding:6px 12px 12px; display:flex; flex-direction:column; gap:6px; }
+    .tasks-scope .tasks-day { font-size:0.72rem; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 2px; }
+    .tasks-scope .task-item { display:flex; gap:8px; align-items:flex-start; }
+    .tasks-scope .task-num { flex:0 0 auto; min-width:52px; text-align:right; font-size:0.74rem; font-variant-numeric:tabular-nums; color:var(--dim); padding-top:10px; }
+    .tasks-scope .task-main { flex:1; min-width:0; }
+    .tasks-scope .task-item.open .task-row { border-color:var(--accent) !important; }
+    .tasks-scope .task-detail { margin:4px 0 6px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--card); font-size:0.82rem; display:flex; flex-direction:column; gap:8px; }
+    .tasks-scope .task-detail[hidden] { display:none; }
+    .tasks-scope .task-facts { display:grid; gap:4px; }
+    .tasks-scope .tasks-dim { color:var(--dim); font-size:0.76rem; }
+    .tasks-scope .task-card { border-top:1px solid var(--border); padding-top:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+    .tasks-scope .task-card-open { background:none; border:none; color:var(--accent); cursor:pointer; padding:0; text-align:left; font-size:0.82rem; min-height:32px; }
+    .tasks-scope .task-card-msgs { flex-basis:100%; display:flex; flex-direction:column; gap:4px; }
+    .tasks-scope .task-card-msg { font-size:0.78rem; word-break:break-word; }
+    .tasks-scope .task-card-msg .btn, .tasks-scope .task-facts .btn { font-size:0.72rem; padding:2px 8px; }
+    .tasks-scope .msg-tag { font-size:0.66rem; padding:1px 6px; border-radius:3px; background:rgba(128,128,128,0.12); color:var(--dim); }
+    .tasks-scope .tasks-empty { color:var(--dim); padding:24px 0; text-align:center; }
+    .tasks-scope .tasks-pager { display:flex; gap:6px; align-items:center; justify-content:center; padding:8px 12px; border-top:1px solid var(--border); flex-wrap:wrap; }
+    .tasks-scope .tasks-page { font-size:0.8rem; color:var(--dim); padding:0 6px; }
+    @media (max-width: 600px) {
+      .tasks-scope .task-num { min-width:36px; font-size:0.68rem; }
+      .tasks-scope .tasks-bar .tasks-worker { flex:1 1 100%; }
+    }
+  </style>
+  <div class="tasks-bar">
+    <select id="tasks-worker" class="input tasks-worker" onchange="_tasksFilter('main')" aria-label="Filter by worker"><option value="">All workers</option></select>
+    <input id="tasks-search" class="input tasks-search" type="search" placeholder="Search tasks" aria-label="Search tasks" oninput="_tasksSearchInput('main')">
+    <label class="tasks-amux" title="Also list amux's own automatic nudges (board pickup, system)"><input id="tasks-amux" type="checkbox" onchange="_tasksFilter('main')"> amux nudges</label>
+  </div>
+  <div id="tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
+  <div id="tasks-list" class="tasks-list"></div>
+  <div id="tasks-pager" class="tasks-pager"></div>
+</div>
 <div id="connectors-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div class="cx-page">
     <div class="cx-top">
@@ -2868,6 +2912,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab" id="peek-tab-shell" onclick="setPeekTab('shell')" title="This worker's shell schedules: what runs on this machine for it, live and past output"><span class="tab-ico">$</span><span class="tab-lbl">Shell</span></button>
     <button class="peek-tab" id="peek-tab-scope" onclick="setPeekTab('scope')" title="Edit this worker's configuration and see which layer supplies each value"><span class="tab-ico">&#9707;</span><span class="tab-lbl">Configurations</span></button>
     <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this worker"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span><span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
+    <button class="peek-tab" id="peek-tab-tasks" onclick="setPeekTab('tasks')" title="Every task this worker received, in order, with its board cards"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
     <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text"><span class="tab-ico">🎤</span><span class="tab-lbl">Dictation</span><span class="peek-tab-count" id="peek-tab-dictation-count"></span></button>
     <button class="peek-tab" id="peek-tab-readalouds" onclick="setPeekTab('readalouds')" title="Past read-alouds — replay any; auto-clears after 30 days"><span class="tab-ico">&#x1F50A;</span><span class="tab-lbl">Read alouds</span><span class="peek-tab-count" id="peek-tab-readalouds-count"></span></button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span><span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
@@ -3115,6 +3160,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-scope-body" style="font-size:0.82rem;color:var(--dim);">Loading&hellip;</div>
   </div>
   
+  <!-- This worker's tasks, oldest first and numbered: the Tasks tab's list
+       fixed to peekSession (app.js _tasksScopes.peek). -->
+  <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope" style="padding:0;gap:0;flex-direction:column;">
+    <div class="tasks-bar">
+      <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">
+      <label class="tasks-amux" title="Also list amux's own automatic nudges (board pickup, system)"><input id="peek-tasks-amux" type="checkbox" onchange="_tasksFilter('peek')"> amux nudges</label>
+    </div>
+    <div id="peek-tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
+    <div id="peek-tasks-list" class="tasks-list"></div>
+    <div id="peek-tasks-pager" class="tasks-pager"></div>
+  </div>
   <div id="peek-messages-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
     <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
       <input type="search" id="peek-messages-search" placeholder="Search messages sent to this worker&hellip;" oninput="_peekMessagesRender()"
