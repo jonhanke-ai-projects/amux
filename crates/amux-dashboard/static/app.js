@@ -18188,8 +18188,16 @@ function _peekPressRelease() {
     if (window.getSelection && String(window.getSelection()) !== '') return;   // selecting: keep the nodes
     const body = document.getElementById('peek-body');
     if (!body) return;
-    const follow = _peekFollowBottom || _isScrolledToBottom(body);
+    // Following decides, never proximity: a reader who just released following
+    // with a small drag is still within a few pixels of the bottom, and pinning
+    // them there re-armed following through the scroll handler (main rust run
+    // 39072007559, terminal-product-contract.spec.ts:214 [ios-safari]).
+    const follow = _peekFollowBottom;
     const top = body.scrollTop;
+    if (!follow && _isScrolledToBottom(body)) {
+      _peekPollBeacon('press-release-kept-position', peekSession, { verdict: 'reader_not_following',
+        gap_px: Math.round(body.scrollHeight - body.scrollTop - body.clientHeight), measured: true, n_considered: 1 });
+    }
     _peekBufferedOutput = false;
     applyPeekSearch(false, false);
     body.scrollTop = follow ? body.scrollHeight : top;
