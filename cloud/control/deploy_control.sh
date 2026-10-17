@@ -2,7 +2,10 @@
 # Deploy the amux Cloud control plane to its own small Hetzner server
 # (docs/design/cloud-self-service.md section 3). Idempotent: run again to ship new code.
 #
-#   CONTROL_HOST=cp-test.amux.io cloud/control/deploy_control.sh
+#   CONTROL_HOST=cp-test.amux.io cloud/control/deploy_control.sh                         (Stripe test mode)
+#   CONTROL_HOST=cloud.amux.io CONTROL_STRIPE_MODE=live cloud/control/deploy_control.sh  (production)
+#
+# Live mode reads STRIPE_LIVE_SECRET_KEY from server.env (owner launch decision, 2026-10-17).
 #
 # Reads HCLOUD_TOKEN and AMUX_CLOUD_CF_TOKEN (else CLOUDFLARE_API_TOKEN) from ~/.amux/server.env. Keeps the control
 # plane's own secrets in ~/.amux/cloud/ (mode 600): control-secret, admin-token.
@@ -20,8 +23,11 @@ envv() { grep -E "^(export )?$1=" "$HOME/.amux/server.env" | head -1 | cut -d= -
 HC="$(envv HCLOUD_TOKEN)"; CF="$(envv AMUX_CLOUD_CF_TOKEN)"; [[ -n "$CF" ]] || CF="$(envv CLOUDFLARE_API_TOKEN)"
 [[ -n "$HC" && -n "$CF" ]] || { echo "HCLOUD_TOKEN and CLOUDFLARE_API_TOKEN must be in ~/.amux/server.env" >&2; exit 1; }
 mkdir -p "$HOME/.amux/cloud"; chmod 700 "$HOME/.amux/cloud"
+# One set of secrets per control plane: cp-test keeps the original file names, any other host
+# gets its own (production must not share an admin token or session key with the test plane).
+SFX=""; [[ "$HOST" == "cp-test.amux.io" ]] || SFX="-${HOST%%.*}"
 for f in control-secret admin-token; do
-  [[ -s "$HOME/.amux/cloud/$f" ]] || { python3 -c 'import secrets;print(secrets.token_urlsafe(32))' > "$HOME/.amux/cloud/$f"; chmod 600 "$HOME/.amux/cloud/$f"; }
+  [[ -s "$HOME/.amux/cloud/$f$SFX" ]] || { python3 -c 'import secrets;print(secrets.token_urlsafe(32))' > "$HOME/.amux/cloud/$f$SFX"; chmod 600 "$HOME/.amux/cloud/$f$SFX"; }
 done
 hapi() { curl -fsS -H "Authorization: Bearer $HC" -H 'Content-Type: application/json' "$@"; }
 capi() { curl -fsS -H "Authorization: Bearer $CF" -H 'Content-Type: application/json' "$@"; }
@@ -63,13 +69,20 @@ COPYFILE_DISABLE=1 tar --no-mac-metadata -C "$REPO" -czf - cloud/control | "${SS
 # Stripe test mode (T-PAY-1): with STRIPE_TEST_SECRET_KEY in server.env the control plane takes real
 # test-mode checkouts. stripe_setup.py makes the products, prices and webhook; the webhook secret
 # is shown once, so it is kept in ~/.amux/cloud/stripe-test-webhook-secret.
-STK="$(envv STRIPE_TEST_SECRET_KEY)"; WHS=""
+MODE="${CONTROL_STRIPE_MODE:-test}"
+if [[ "$MODE" == "live" ]]; then
+  STK="$(envv STRIPE_LIVE_SECRET_KEY || true)"
+  [[ "$STK" == sk_live_* || "$STK" == rk_live_* ]] || { log "FATAL: CONTROL_STRIPE_MODE=live needs STRIPE_LIVE_SECRET_KEY in server.env"; exit 1; }
+  WF="$HOME/.amux/cloud/stripe-live-webhook-secret$SFX"; SETUP=(--live)
+else
+  STK="$(envv STRIPE_TEST_SECRET_KEY || true)"; WF="$HOME/.amux/cloud/stripe-test-webhook-secret"; SETUP=()
+fi
+WHS=""
 if [[ -n "$STK" ]]; then
-  WF="$HOME/.amux/cloud/stripe-test-webhook-secret"
-  NEW=$(STRIPE_TEST_SECRET_KEY="$STK" python3 "$HERE/stripe_setup.py" --control "https://$HOST")
+  NEW=$(STRIPE_TEST_SECRET_KEY="$STK" STRIPE_LIVE_SECRET_KEY="$STK" python3 "$HERE/stripe_setup.py" --control "https://$HOST" ${SETUP[@]+"${SETUP[@]}"})
   if [[ -n "$NEW" ]]; then ( umask 077; printf '%s\n' "$NEW" > "$WF" ); fi
   WHS="$(cat "$WF" 2>/dev/null || true)"
-  [[ -n "$WHS" ]] || { log "FATAL: the Stripe test webhook exists but its secret is not in $WF; delete the endpoint in Stripe and rerun"; exit 1; }
+  [[ -n "$WHS" ]] || { log "FATAL: the Stripe $MODE webhook exists but its secret is not in $WF; delete the endpoint in Stripe and rerun"; exit 1; }
 fi
 # Sign in with Apple: the .p8 key travels base64-encoded. Its PEM has spaces and newlines, and
 # systemd reads a backslash in an unquoted value as an escape, so '\\n' arrived as 'n'.
@@ -79,8 +92,9 @@ GOLDEN="${AMUX_GOLDEN_IMAGE:-$(hapi 'https://api.hetzner.cloud/v1/images?type=sn
   echo "CONTROL_DB=/var/lib/amux-control/control.db"
   echo "CONTROL_PORT=8090"
   echo "CONTROL_PUBLIC_URL=https://$HOST"
-  echo "CONTROL_SECRET=$(cat "$HOME/.amux/cloud/control-secret")"
-  echo "CONTROL_ADMIN_TOKEN=$(cat "$HOME/.amux/cloud/admin-token")"
+  echo "CONTROL_SECRET=$(cat "$HOME/.amux/cloud/control-secret$SFX")"
+  echo "CONTROL_ADMIN_TOKEN=$(cat "$HOME/.amux/cloud/admin-token$SFX")"
+  echo "CONTROL_NAME=${HOST%%.*}"            # labels this plane's servers (lifecycle.CONTROL_LABEL)
   echo "CONTROL_PUBLIC_IPS=$IP"
   if [[ -n "$STK" ]]; then
     echo "CONTROL_FAKE_BILLING=0"; echo "STRIPE_SECRET_KEY=$STK"; echo "STRIPE_WEBHOOK_SECRET=$WHS"
@@ -183,4 +197,4 @@ for _ in $(seq 1 60); do curl -fsS "https://$HOST/health" >/dev/null 2>&1 && bre
 log "synthetic customer started (journalctl -u amux-synthetic on the control plane)"
 for _ in $(seq 1 60); do curl -fsS "https://$HOST/health" >/dev/null 2>&1 && break; sleep 5; done
 log "health: $(curl -fsS "https://$HOST/health" || echo UNREACHABLE)"
-log "admin: https://$HOST/admin (token in ~/.amux/cloud/admin-token)"
+log "admin: https://$HOST/admin (token in ~/.amux/cloud/admin-token$SFX)"

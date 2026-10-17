@@ -2,7 +2,7 @@
 
 Run: python3 -m unittest discover -s cloud/control -p 'test_*.py'
 """
-import os, sys, tempfile, unittest
+import os, sys, tempfile, unittest, unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lifecycle as lc  # noqa: E402
@@ -171,6 +171,15 @@ class LifeRules(unittest.TestCase):
         self.assertEqual(s["orphans"], [orphan["id"]])
         self.assertIn(unlabelled["id"], w.infra.servers)
         self.assertIn(orphan["id"], w.infra.servers)
+
+    def test_orphans_are_scoped_to_this_control_plane(self):
+        # cp-test and production share one Hetzner project (2026-10-17): each reports only its own.
+        w = World(n=1)
+        theirs = w.infra.create_server("prod-x", "cx33", "fsn1", "x", {"amux-cloud": "1", "amux-control": "cloud"}, "")
+        ours = w.infra.create_server("lost", "cx33", "fsn1", "x", {"amux-cloud": "1", "amux-control": "cp-test"}, "")
+        with unittest.mock.patch.dict(os.environ, {"CONTROL_NAME": "cp-test"}):
+            self.assertEqual(lc.report_orphans(w.store, w.infra), [ours["id"]])
+        self.assertIn(theirs["id"], w.infra.servers)
 
     def test_T_LIFE_6_shadow_records_and_replays(self):
         w = World(shadow=True)

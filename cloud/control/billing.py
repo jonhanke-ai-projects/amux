@@ -5,6 +5,8 @@ fakes.FakeBilling with the same methods. Standard library only.
 """
 import hashlib, hmac, json, time, urllib.error, urllib.parse, urllib.request
 
+FIRST_MONTH_COUPON = "amux_cloud_first_month_free"   # made by stripe_setup.py (COUPON)
+
 from lifecycle import ProviderError
 
 API = "https://api.stripe.com/v1"
@@ -85,7 +87,7 @@ class StripeBilling:
 
     # ---------------------------------------------------------- checkout
     def create_checkout(self, plan_id, signup_id, source, success_url, cancel_url, customer_email=None,
-                        customer_id=None):
+                        customer_id=None, synthetic_free=False):
         params = {
             "mode": "subscription",
             "line_items": [{"price": self.price_id(plan_id), "quantity": 1}],
@@ -98,6 +100,12 @@ class StripeBilling:
             "metadata": {"signup_id": signup_id, "plan": plan_id, "source": source or ""},
             "subscription_data": {"metadata": {"signup_id": signup_id, "plan": plan_id}},
         }
+        if synthetic_free:
+            # The synthetic customer in live mode has no real card: its first invoice is free and
+            # Checkout asks for no card. Customers with FIRSTMONTH still give one (always collected).
+            params.pop("allow_promotion_codes")
+            params["discounts"] = [{"coupon": FIRST_MONTH_COUPON}]
+            params["payment_method_collection"] = "if_required"
         if customer_id:
             params["customer"] = customer_id
             params["customer_update"] = {"address": "auto", "name": "auto"}

@@ -263,7 +263,9 @@ def r_start(h, _):
     sess = BILLING.create_checkout(plan, signup, q.get("source") or "direct",
                                    f"{PUBLIC}/welcome?session_id={{CHECKOUT_SESSION_ID}}", f"{SITE}/pricing/",
                                    customer_email=None if org else q.get("email"),
-                                   customer_id=org["stripe_customer_id"] if org else None)
+                                   customer_id=org["stripe_customer_id"] if org else None,
+                                   synthetic_free=q.get("source") == "synthetic" and payments_state() == "live"
+                                   and is_admin(h))
     STORE.event("cloud.checkout_started", org["id"] if org else None, plan=plan, source=q.get("source"))
     h.redirect(sess["url"])
 
@@ -837,7 +839,8 @@ Handler.do_OPTIONS = lambda self: self._route("OPTIONS")
 
 
 def install_fake_checkout(billing):
-    def create_checkout(plan_id, signup_id, source, success_url, cancel_url, customer_email=None, customer_id=None):
+    def create_checkout(plan_id, signup_id, source, success_url, cancel_url, customer_email=None, customer_id=None,
+                        synthetic_free=False):
         sid = "cs_" + signup_id[3:]
         amount = next(p["price_usd"] for p in PLANS["plans"] if p["id"] == plan_id) * 100
         billing.sessions[sid] = {"id": sid, "status": "open", "payment_status": "unpaid", "mode": "subscription",

@@ -3,9 +3,9 @@
 // which the weekly report reads. It deletes its own account at the end, so it leaves nothing.
 //
 //   CONTROL_URL=https://cloud.amux.io SYNTH_EMAIL=synthetic+<run>@amux.io CONTROL_ADMIN_TOKEN=... \
-//   [SYNTH_COUPON=SYNTH100] node cloud/control/synthetic.mjs
+//   node cloud/control/synthetic.mjs
 //
-// Checkout: Stripe test mode takes card 4242; live mode takes a 100% coupon (SYNTH_COUPON).
+// Checkout: Stripe test mode takes card 4242; live mode gets a free first invoice and no card (billing.py).
 // In CONTROL_FAKE mode the fake checkout page is used and the run stops at the door hand-off,
 // because there is no real server behind it.
 import { chromium } from 'playwright';
@@ -41,8 +41,10 @@ const health = await fetch(`${CP}/health`).then(r => r.json()).catch(() => ({}))
 const fakeInfra = health.fake === true;              // no real server behind the checkout
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
-if (ADMIN && health.payments !== 'live') {
-  // Payments not live: the control plane only lets the admin start a server.
+const LIVE = health.payments === 'live';
+if (ADMIN) {
+  // Not live: only the admin may start a server. Live: the admin cookie marks this checkout as the
+  // synthetic customer's, so its first invoice is free and Stripe asks for no card.
   await ctx.addCookies([{ name: 'amux_admin', value: ADMIN, url: CP }]);
 }
 const page = await ctx.newPage();
@@ -83,11 +85,7 @@ try {
       return 'fake checkout';
     }
     await page.fill('input[name=email]', EMAIL);
-    if (process.env.SYNTH_COUPON) {
-      await page.getByText('Add promotion code').click();
-      await page.fill('input[name=promotionCode]', process.env.SYNTH_COUPON);
-      await page.keyboard.press('Enter');
-    } else {
+    if (!LIVE) {
       const card = page.frameLocator('iframe[name^="__privateStripeFrame"]').first();
       await page.fill('#cardNumber', '4242424242424242').catch(() => card.locator('[name=cardnumber]').fill('4242424242424242'));
       await page.fill('#cardExpiry', '12 / 34');
@@ -96,7 +94,7 @@ try {
     }
     await Promise.all([page.waitForURL(/\/progress/, { timeout: 120_000 }), page.click('button[type=submit]')]);
     paidAt = Date.now();
-    return process.env.SYNTH_COUPON ? 'coupon' : 'test card';
+    return LIVE ? 'free first invoice, no card' : 'test card';
   });
   await step('server ready and door hand-off', async () => {
     doorUrl = await new Promise((resolve, reject) => {

@@ -7,7 +7,7 @@ a server without it.
 import base64, hashlib, hmac, json, os, re, time, urllib.error, urllib.parse, urllib.request
 from xml.sax.saxutils import escape as _xml_escape
 
-from lifecycle import ProviderError, LABEL
+from lifecycle import ProviderError, LABEL, CONTROL_LABEL, control_name
 from fakes import CapacityError
 
 HCLOUD = "https://api.hetzner.cloud/v1"
@@ -73,7 +73,7 @@ class Infra:
             page = nxt
 
     def create_server(self, name, server_type, location, image, labels, user_data):
-        labels = dict(labels, **{LABEL: "1"})
+        labels = dict(labels, **{LABEL: "1"}, **({CONTROL_LABEL: control_name()} if control_name() else {}))
         body = {"name": name, "server_type": server_type, "location": location, "image": image,
                 "labels": labels, "user_data": user_data, "start_after_create": True,
                 "public_net": {"enable_ipv4": True, "enable_ipv6": True}}

@@ -35,7 +35,8 @@ def make_slug(store, email, taken=None):
 # Names amux.io uses or will want: the site, its services, and anything that reads as ours.
 RESERVED = {"www", "api", "cloud", "control", "admin", "status", "mail", "app", "amux", "start", "docs", "blog", "help",
             "support", "billing", "accounts", "clerk", "clkmail", "demo", "sandbox", "login", "signin", "signup", "pricing",
-            "dashboard", "console", "staging", "dev", "test", "cdn", "static", "assets", "ios", "android", "team", "security"}
+            "dashboard", "console", "staging", "dev", "test", "cdn", "static", "assets", "ios", "android", "team", "security",
+            "cp-test", "concierge"}
 
 
 def start(store, org_id, subscription_id, plan, email, location=None, now=None, taken=None):

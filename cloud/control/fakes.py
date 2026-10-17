@@ -69,8 +69,9 @@ class FakeInfra:
     def list_servers(self, label_selector=None):
         out = list(self.servers.values())
         if label_selector:
-            k, v = label_selector.split("=")
-            out = [s for s in out if s["labels"].get(k) == v]
+            for term in label_selector.split(","):
+                k, v = term.split("=")
+                out = [s for s in out if s["labels"].get(k) == v]
         return out
 
     def create_server(self, name, server_type, location, image, labels, user_data):

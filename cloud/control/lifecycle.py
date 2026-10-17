@@ -18,7 +18,7 @@ on by itself after 30 days and 5 agreeing replays with no disagreement.
 Servers without our label are never touched; labelled servers without a row are
 reported, never deleted.
 """
-import json, math, time
+import os, json, math, time
 
 from store import new_id
 
@@ -32,6 +32,15 @@ DAILY_DELETE_CAP = 3
 BACKUP_MAX_AGE = 3600.0
 WEBHOOK_SILENCE = 6 * 3600.0
 LABEL = "amux-cloud"
+# Two control planes (cp-test and production) share one Hetzner project. Each labels its servers
+# with its own name so neither reports the other's servers as orphans.
+CONTROL_LABEL = "amux-control"
+
+
+def control_name():
+    return os.environ.get("CONTROL_NAME", "")
+
+
 MIN_WARNING = 3 * DAY
 
 ENDED = {"canceled", "unpaid", "incomplete_expired"}
@@ -261,7 +270,8 @@ def execute_delete(store, infra, a, now):
 def report_orphans(store, infra):
     """Rule 7: labelled servers we have no live row for are reported, never deleted."""
     try:
-        labelled = infra.list_servers(label_selector=f"{LABEL}=1")
+        sel = f"{LABEL}=1" + (f",{CONTROL_LABEL}={control_name()}" if control_name() else "")
+        labelled = infra.list_servers(label_selector=sel)
     except Exception as e:
         store.event("lifecycle.orphan_scan_failed", error=str(e))
         return []
