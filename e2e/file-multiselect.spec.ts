@@ -128,7 +128,9 @@ test('the scratchpad note list shares the selection component', async ({ page, r
     expect(selected.some((p: string) => p.endsWith(`/${marker}.md`))).toBe(true);
     await expect(page.locator('#fsel-bar .fsel-count')).toContainText('selected');
   } finally {
-    await request.delete('/api/fs/delete', { headers: { ...auth, 'Content-Type': 'application/json' },
-      data: { path: vpath } }).catch(() => {});
+    // Route cleanup through cleanup() so a teardown failure is reported, not
+    // substituted for the test's real error (e2e-teardown-ratchet guard).
+    await cleanup('delete scratchpad test note', () => request.delete('/api/fs/delete',
+      { headers: { ...auth, 'Content-Type': 'application/json' }, data: { path: vpath } }), info);
   }
 });
