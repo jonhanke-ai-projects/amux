@@ -1,6 +1,6 @@
 """In-memory providers for control-plane tests. Each can be made unhealthy or
 contradictory so the safety rules are exercised, not just the happy path."""
-import itertools
+import itertools, time
 from lifecycle import ProviderError
 
 
@@ -25,6 +25,14 @@ class FakeBilling:
         return dict(self.subs[sub_id])
 
     sessions = None
+
+    def subscribe_free_first_month(self, email, plan_id, metadata):
+        sub_id = "sub_synth_" + metadata["signup_id"]
+        self.subs[sub_id] = {"id": sub_id, "status": "active", "current_period_end": time.time() + 30 * 86400,
+                             "cancel_at_period_end": False, "metadata": dict(metadata)}
+        return {"id": f"synth_{sub_id}", "status": "complete", "payment_status": "no_payment_required",
+                "metadata": metadata, "customer_details": {"email": email}, "customer": "cus_synth",
+                "subscription": sub_id, "amount_total": 0}
 
     def get_checkout_session(self, session_id):
         self.reads += 1

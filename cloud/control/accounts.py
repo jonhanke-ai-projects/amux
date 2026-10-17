@@ -23,12 +23,13 @@ def _cust_id(c):
     return c["id"] if isinstance(c, dict) else c
 
 
-def complete_checkout(store, billing, session_id, now=None, name_taken=None):
+def complete_checkout(store, billing, session_id, now=None, name_taken=None, sess=None):
+    """sess: an already-completed session (the synthetic customer's server-side subscription)."""
     now = now or time.time()
     done = store.one("SELECT * FROM signups WHERE checkout_session_id=?", session_id)
     if done and done["server_id"]:
         return _result(store, done)
-    sess = billing.get_checkout_session(session_id)
+    sess = sess or billing.get_checkout_session(session_id)
     if sess.get("status") != "complete" or sess.get("payment_status") not in ("paid", "no_payment_required"):
         raise NotPaid(f"checkout {session_id} is {sess.get('status')}/{sess.get('payment_status')}")
     meta = sess.get("metadata") or {}

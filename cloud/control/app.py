@@ -263,11 +263,25 @@ def r_start(h, _):
     sess = BILLING.create_checkout(plan, signup, q.get("source") or "direct",
                                    f"{PUBLIC}/welcome?session_id={{CHECKOUT_SESSION_ID}}", f"{SITE}/pricing/",
                                    customer_email=None if org else q.get("email"),
-                                   customer_id=org["stripe_customer_id"] if org else None,
-                                   synthetic_free=q.get("source") == "synthetic" and payments_state() == "live"
-                                   and is_admin(h))
+                                   customer_id=org["stripe_customer_id"] if org else None)
     STORE.event("cloud.checkout_started", org["id"] if org else None, plan=plan, source=q.get("source"))
     h.redirect(sess["url"])
+
+
+def r_synthetic_subscribe(h, _):
+    """Live mode's synthetic customer: the admin-cookie browser gets a server-side subscription with
+    the free first month (billing.subscribe_free_first_month), then the normal signed-in progress page.
+    Only synthetic+ addresses, so it can never give a real customer a free month."""
+    q = h.query()
+    email = (q.get("email") or "").strip().lower()
+    plan = q.get("plan") or "solo"
+    if not is_admin(h) or not email.startswith("synthetic+") or plan not in PLAN_IDS:
+        return h.send(403, page("Forbidden", "<h1>Forbidden</h1>"))
+    signup = new_id("su")
+    meta = {"signup_id": signup, "plan": plan, "source": "synthetic"}
+    sess = BILLING.subscribe_free_first_month(email, plan, meta)
+    r = accounts.complete_checkout(STORE, BILLING, sess["id"], name_taken=INFRA.dns_name_taken, sess=sess)
+    h.redirect("/progress", h.session_cookie(r["user"]["id"]))
 
 
 def r_welcome(h, _):
@@ -825,7 +839,7 @@ def r_fake_checkout(h, path):
 
 ROUTES = [
     ("GET", "/health", r_health), ("GET", "/", r_root), ("GET", "/start", r_start), ("GET", "/welcome", r_welcome),
-    ("GET", "/progress", r_progress), ("GET", "/api/me", r_me), ("GET", "/go/", r_go),
+    ("GET", "/progress", r_progress), ("GET", "/synthetic/subscribe", r_synthetic_subscribe), ("GET", "/api/me", r_me), ("GET", "/go/", r_go),
     ("POST", "/webhooks/stripe", r_webhook), ("POST", "/api/fleet/", r_fleet),
     ("POST", "/api/notify", r_notify), ("OPTIONS", "/api/notify", r_notify_options),
     ("GET", "/invite/", r_invite), ("POST", "/api/apple/signin", r_apple_signin), ("GET", "/api/go-url/", r_go_url),
@@ -839,8 +853,7 @@ Handler.do_OPTIONS = lambda self: self._route("OPTIONS")
 
 
 def install_fake_checkout(billing):
-    def create_checkout(plan_id, signup_id, source, success_url, cancel_url, customer_email=None, customer_id=None,
-                        synthetic_free=False):
+    def create_checkout(plan_id, signup_id, source, success_url, cancel_url, customer_email=None, customer_id=None):
         sid = "cs_" + signup_id[3:]
         amount = next(p["price_usd"] for p in PLANS["plans"] if p["id"] == plan_id) * 100
         billing.sessions[sid] = {"id": sid, "status": "open", "payment_status": "unpaid", "mode": "subscription",

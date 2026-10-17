@@ -87,7 +87,7 @@ class StripeBilling:
 
     # ---------------------------------------------------------- checkout
     def create_checkout(self, plan_id, signup_id, source, success_url, cancel_url, customer_email=None,
-                        customer_id=None, synthetic_free=False):
+                        customer_id=None):
         params = {
             "mode": "subscription",
             "line_items": [{"price": self.price_id(plan_id), "quantity": 1}],
@@ -100,12 +100,6 @@ class StripeBilling:
             "metadata": {"signup_id": signup_id, "plan": plan_id, "source": source or ""},
             "subscription_data": {"metadata": {"signup_id": signup_id, "plan": plan_id}},
         }
-        if synthetic_free:
-            # The synthetic customer in live mode has no real card: its first invoice is free and
-            # Checkout asks for no card. Customers with FIRSTMONTH still give one (always collected).
-            params.pop("allow_promotion_codes")
-            params["discounts"] = [{"coupon": FIRST_MONTH_COUPON}]
-            params["payment_method_collection"] = "if_required"
         if customer_id:
             params["customer"] = customer_id
             params["customer_update"] = {"address": "auto", "name": "auto"}
@@ -115,6 +109,20 @@ class StripeBilling:
 
     def get_checkout_session(self, session_id):
         return self._req("GET", f"/checkout/sessions/{session_id}", {"expand": ["subscription", "customer"]})
+
+    def subscribe_free_first_month(self, email, plan_id, metadata):
+        """The synthetic customer in live mode. Stripe's hosted Checkout runs hCaptcha in live mode
+        and refuses a headless browser (2026-10-17), so its subscription is made here with the
+        first-month coupon; the first invoice is $0 and needs no card. Returns a completed-session
+        shape for accounts.complete_checkout. Real Checkout is covered by cp-test's journey."""
+        cust = self._req("POST", "/customers", {"email": email, "metadata": metadata},
+                         idempotency_key=f"synthcust:{metadata['signup_id']}")
+        sub = self._req("POST", "/subscriptions", {"customer": cust["id"], "items": [{"price": self.price_id(plan_id)}],
+                                                    "discounts": [{"coupon": FIRST_MONTH_COUPON}], "metadata": metadata},
+                        idempotency_key=f"synthsub:{metadata['signup_id']}")
+        return {"id": f"synth_{sub['id']}", "status": "complete", "payment_status": "no_payment_required",
+                "metadata": metadata, "customer_details": {"email": email}, "customer": cust["id"],
+                "subscription": sub, "amount_total": 0}
 
     def portal_url(self, customer_id, return_url):
         return self._req("POST", "/billing_portal/sessions", {"customer": customer_id, "return_url": return_url})["url"]

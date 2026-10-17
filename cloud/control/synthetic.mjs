@@ -5,7 +5,8 @@
 //   CONTROL_URL=https://cloud.amux.io SYNTH_EMAIL=synthetic+<run>@amux.io CONTROL_ADMIN_TOKEN=... \
 //   node cloud/control/synthetic.mjs
 //
-// Checkout: Stripe test mode takes card 4242; live mode gets a free first invoice and no card (billing.py).
+// Checkout: Stripe test mode takes card 4242. Live mode opens Checkout, then subscribes server-side
+// with the free first month (/synthetic/subscribe): live Checkout's hCaptcha refuses headless browsers.
 // In CONTROL_FAKE mode the fake checkout page is used and the run stops at the door hand-off,
 // because there is no real server behind it.
 import { chromium } from 'playwright';
@@ -43,8 +44,8 @@ const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
 const LIVE = health.payments === 'live';
 if (ADMIN) {
-  // Not live: only the admin may start a server. Live: the admin cookie marks this checkout as the
-  // synthetic customer's, so its first invoice is free and Stripe asks for no card.
+  // Not live: only the admin may start a server. Live: the admin cookie lets it use
+  // /synthetic/subscribe, because live Checkout's hCaptcha refuses a headless browser.
   await ctx.addCookies([{ name: 'amux_admin', value: ADMIN, url: CP }]);
 }
 const page = await ctx.newPage();
@@ -75,6 +76,7 @@ try {
   await step('open pricing link', async () => {
     await page.goto(`${CP}/?plan=solo&source=synthetic`);
     fake = page.url().includes('/fake/checkout/');
+    if (LIVE && !/checkout\.stripe\.com|\/c\/pay\/|pay\./.test(page.url())) throw new Error(`no Stripe Checkout: ${page.url()}`);
     return page.url().replace(/\?.*/, '');
   });
   await step('pay', async () => {
@@ -84,17 +86,35 @@ try {
       paidAt = Date.now();
       return 'fake checkout';
     }
+    if (LIVE) {
+      // Stripe's live Checkout runs hCaptcha, which refuses a headless browser (2026-10-17). The
+      // pricing link above proved Checkout opens; the subscription itself is made server-side.
+      await Promise.all([page.waitForURL(/\/progress/, { timeout: 60_000 }),
+        page.goto(`${CP}/synthetic/subscribe?plan=solo&email=${encodeURIComponent(EMAIL)}`)]);
+      paidAt = Date.now();
+      return 'server-side subscription, free first month';
+    }
     await page.fill('input[name=email]', EMAIL);
-    if (!LIVE) {
+    {   // test mode: Stripe's test card
       const card = page.frameLocator('iframe[name^="__privateStripeFrame"]').first();
       await page.fill('#cardNumber', '4242424242424242').catch(() => card.locator('[name=cardnumber]').fill('4242424242424242'));
       await page.fill('#cardExpiry', '12 / 34');
       await page.fill('#cardCvc', '123');
       await page.fill('#billingName', 'Synthetic Customer');
     }
+    // Checkout may ask for a full billing address for tax (the first live run timed out on it).
+    if (await page.locator('#billingName').isVisible()) await page.fill('#billingName', 'Synthetic Customer');
+    const manual = page.getByText('Enter address manually');
+    if (await manual.isVisible().catch(() => false)) await manual.click();
+    if (await page.locator('#billingAddressLine1').isVisible().catch(() => false)) {
+      await page.selectOption('#billingCountry', 'DE').catch(() => {});
+      await page.fill('#billingAddressLine1', 'Unter den Linden 1');
+      await page.fill('#billingPostalCode', '10117');
+      await page.fill('#billingLocality', 'Berlin');
+    }
     await Promise.all([page.waitForURL(/\/progress/, { timeout: 120_000 }), page.click('button[type=submit]')]);
     paidAt = Date.now();
-    return LIVE ? 'free first invoice, no card' : 'test card';
+    return 'test card';
   });
   await step('server ready and door hand-off', async () => {
     doorUrl = await new Promise((resolve, reject) => {
