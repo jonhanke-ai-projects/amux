@@ -381,10 +381,25 @@ def cool(r):
     return (r["five_hour"] or 0) < PREEMPT_AT - PREEMPT_MARGIN and (r["weekly"] or 0) < PREEMPT_AT
 
 
-def decide(current, rows, state, at=None):
-    """Return (target or None, reason)."""
+def dead_mailboxes():
+    """Connected mailboxes whose Gmail token no longer works (amux reports them
+    as needs_reauth). The sign-in link for that account lands where nothing can
+    read it, so a switch to it waits out the whole login page. 2026-10-17: the
+    hello@amux.io grant was ended by the amux.io Workspace session policy, the
+    link search answered empty rather than failing, and the policy picked
+    hello@amux.io (the only roomy account) on every tick for 4 minutes each
+    while ethan@trymixpeek.com climbed past 92%."""
+    try:
+        d = amux_get("/api/gmail/accounts") or {}
+    except Exception:
+        return set()
+    return {e.lower() for e in (d.get("needs_reauth") or []) if isinstance(e, str)}
+
+
+def decide(current, rows, state, at=None, unreachable=()):
+    """Return (target or None, reason). `unreachable` accounts are never targets."""
     at = at or now()
-    skip = backed_off(state) - {current}
+    skip = (backed_off(state) | {e.lower() for e in unreachable}) - {current}
     if skip:
         rows = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
     # A target already over the preempt line would be preempted on the next
@@ -532,8 +547,12 @@ def cmd_tick():
     current = current_email()
     rows = rank()
     state = load(STATE, {})
-    target, reason = decide(current, rows, state)
-    skipped = sorted(backed_off(state) - {current})
+    dead = dead_mailboxes() & {r["email"].lower() for r in rows}
+    if dead:
+        log("claude_rotate_mailbox_dead", measured=True, n_considered=len(rows), accounts=sorted(dead),
+            fix="GET /api/gmail/auth?account=<email>, open the url, approve")
+    target, reason = decide(current, rows, state, unreachable=dead)
+    skipped = sorted((backed_off(state) | dead) - {current})
     if not target:
         print(log("claude_rotate_hold", measured=True, n_considered=len(rows), current=current, reason=reason,
                   backed_off=skipped))
@@ -552,7 +571,7 @@ def cmd_tick():
     # The current account is spent and that target failed: try the next one now
     # rather than leaving the fleet stopped until the next tick.
     rows = [dict(r, usable=False) if r["email"] == target else r for r in rows]
-    target2, reason2 = decide(current, rows, load(STATE, {}))
+    target2, reason2 = decide(current, rows, load(STATE, {}), unreachable=dead)
     if not target2 or target2 == target:
         return rc
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
@@ -831,9 +850,13 @@ def enter_code(tab, code):
 
 
 def fill_email(tab, email):
-    """Type the address into an empty email field. Returns True if it typed."""
-    js = ('(() => { const i = document.querySelector("input[type=email]"); if (!i || i.value) return "skip";'
-          ' i.focus(); i.select(); return "ok" })()')
+    """Clear and type the address into the email field. Always retypes to
+    ensure React state matches (a login_hint prefill doesn't trigger the
+    synthetic change event the form needs)."""
+    js = ('(() => { const i = document.querySelector("input[type=email]");'
+          ' if (!i) return "none"; i.focus(); i.select();'
+          ' document.execCommand("selectAll"); document.execCommand("delete");'
+          ' return "ok" })()')
     if cdp("eval", tab, js, check=False).splitlines()[-1:] != ["ok"]:
         return False
     cdp("type", tab, email)
@@ -951,6 +974,18 @@ def _switch(target, reason):
                             gap.start()
                             steps.append("authorize")
                             time.sleep(4)
+                    elif steps.count("switch-account") >= 3 and steps[-1] == "switch-account":
+                        # Clicking "Switch account" keeps bouncing back to the
+                        # authorize page (session cookies auto-log the old
+                        # account). Clear claude.ai session cookies via CDP
+                        # so the next navigation hits the real login form.
+                        cdp("evalraw", tab, "Storage.clearDataForOrigin",
+                            json.dumps({"origin": "https://claude.ai", "storageTypes": "cookies"}),
+                            check=False)
+                        auth_url = open(url_file).read()
+                        cdp("nav", tab, auth_url, check=False)
+                        steps.append("force-login")
+                        time.sleep(4)
                     elif click_text(tab, r"^Switch account$"):
                         steps.append("switch-account")
                 elif "Sign in here instead" in text:
@@ -980,7 +1015,14 @@ def _switch(target, reason):
                                 steps.append("verify")
                                 time.sleep(4)
                             elif not code:
-                                raise RuntimeError("sign-in link showed no verification code")
+                                # Visiting the magic link often completes
+                                # the auth without a visible code (the
+                                # browser redirect finishes the PKCE flow).
+                                # Give the CLI a moment before giving up.
+                                steps.append("link-wait")
+                                time.sleep(8)
+                                if proc.poll() is not None:
+                                    break
                 elif "Continue with email" in text:
                     if steps.count("continue-email") >= 3:
                         raise RuntimeError("login page did not advance after 3 email submissions")

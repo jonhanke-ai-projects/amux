@@ -68,6 +68,12 @@ stale = {"switched_at": 0, "switch_failures": {"b": [nowt - 7 * 3600] * 3}}
 t, why = rot.decide("a", rows, stale)
 expect(t == "b", f"failures outside the window do not count, got {(t, why)}")
 two = {"switched_at": 0, "switch_failures": {"b": [nowt - 60, nowt - 400]}}
+# A target whose sign-in mailbox token is dead is skipped on the FIRST tick, not
+# after FAIL_BACKOFF_N four-minute failures (2026-10-17: hello@amux.io needs_reauth).
+t, why = rot.decide("a", rows, old, unreachable={"B"})
+expect(t == "c", f"an account whose sign-in link cannot be read is skipped, got {(t, why)}")
+t, why = rot.decide("b", rows, old, unreachable={"b"})
+expect(t != "b", f"the current account is never its own target, got {(t, why)}")
 expect(rot.decide("a", rows, two)[0] == "b", "two failures are not yet a backoff")
 expect(rot.backed_off(failed) == {"b"}, "backed_off names the account")
 
