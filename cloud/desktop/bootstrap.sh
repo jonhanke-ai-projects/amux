@@ -593,6 +593,9 @@ $TLS_LINE
       }
       # The ONLY cookie amux sees is the member cookie for the verified user,
       # so a client cannot present someone else's (and amux_door stays here).
+      # Caddy sends an HTTPS upstream its own address as Host by default; amux builds the links it
+      # hands out (team invites) from Host, so keep the public name (codex e2e round 2).
+      header_up Host {host}
       header_up Cookie "amux_member={http.request.header.X-Amux-Member}"
       header_up -X-Amux-Member
       header_up -Authorization
