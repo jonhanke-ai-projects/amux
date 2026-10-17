@@ -9597,6 +9597,20 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .fsel-bar .btn { min-height: 44px; flex: 1 1 auto; }
   .fsel-bar .fsel-count { flex: 1 0 100%; text-align: center; }
 }
+/* The shared row/header selection checkbox (Files, Split view, Scratchpad). One
+   reusable control, so a bulk action looks and works the same everywhere. */
+.fe-check, .fe-check-all {
+  flex: 0 0 auto; width: 15px; height: 15px; margin: 0 6px 0 0;
+  cursor: pointer; accent-color: var(--accent); vertical-align: middle;
+}
+.fe-col-hdr > .fe-check-all, .fe-cell-name > .fe-check-all { margin-right: 6px; }
+@media (max-width: 600px) {
+  /* Bigger hit area on touch; the whole row also long-presses to select. */
+  .fe-check, .fe-check-all { width: 20px; height: 20px; }
+}
+/* A real checkbox now stands in for the touch-mode circle on fe-rows; keep the
+   circle only on explore rows, which have no checkbox. */
+.fsel-mode .fe-row .fe-cell-name::before { content: none; }
 
 /* Phone tops for Email, Connectors, Scheduler and Board (Ethan, 2026-10-14:
    "do the same for the other mobile pages", after the MDAI header): the page's

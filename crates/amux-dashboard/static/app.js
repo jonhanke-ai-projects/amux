@@ -8013,27 +8013,10 @@ function _activeTaskLink(worker, cardId, title) {
     + esc(cardId) + '</span></button>';
 }
 
-// A worker's task-name history (GET /api/sessions/{name}/task-history) in the
-// standard dialog, as a list (Ethan, 2026-10-16: "it should open a modal which
-// is a list").
-async function _peekTaskHistoryToggle(ev) {
-  if (ev) ev.stopPropagation();
-  const who = peekSession; if (!who) return;
-  const opener = document.getElementById('peek-task-history-btn');
-  const modal = _chipDetailModal('task-history-modal', 'Task history', who, '<p class="ui-help">Loading\u2026</p>', { returnFocus: opener });
-  const body = modal.querySelector('.modal-body');
-  try {
-    const d = await (await fetch(API + '/api/sessions/' + encodeURIComponent(who) + '/task-history?limit=100', { headers: _authHeaders() })).json();
-    if (!modal.isConnected) return;
-    const rows = d.changes || [];
-    body.innerHTML = rows.length
-      ? '<ol class="chip-detail-list task-history-list">' + rows.map(c => '<li><div>' + esc(c.to || '') + '</div><div class="ui-help">'
-          + esc(new Date((c.ts || 0) * 1000).toLocaleString()) + (c.card ? ' \u00b7 ' + esc(c.card) : '') + '</div></li>').join('') + '</ol>'
-      : '<p class="ui-help">No task changes recorded yet.</p>';
-    const foot = modal.querySelector('.modal-footer .ui-help');
-    if (foot) foot.textContent = rows.length ? rows.length + ' change' + (rows.length === 1 ? '' : 's') + ', newest first' : '';
-  } catch (e) { if (modal.isConnected) body.innerHTML = '<p class="ui-help">Could not load the task history.</p>'; }
-}
+// The task-name history button was removed from the worker-details header
+// (Ethan, 2026-10-17: "remove the history button ... since we have a tasks
+// tab"). The GET /api/sessions/{name}/task-history endpoint and the Tasks tab
+// remain; only the redundant header control is gone.
 
 function _bindPeekTaskIdentity(s, identity) {
   const row = document.getElementById('peek-task-row');
@@ -28140,7 +28123,7 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
     : `<span class="fe-expand-spacer"></span>`;
   const indentStyle = depth ? ` style="padding-left:${depth * 16}px"` : '';
   row.innerHTML =
-    `<div class="fe-cell-name"${indentStyle}>${toggle}${icon}<span>${nameHtml}${slash}</span></div>` +
+    `<div class="fe-cell-name"${indentStyle}>${_feCheckHtml(entryPath)}${toggle}${icon}<span>${nameHtml}${slash}</span></div>` +
     `<div class="fe-cell-size">${sizeStr}</div>` +
     `<div class="fe-cell-date">${dateStr}</div>` +
     `<div class="fe-cell-date fe-cell-opened">${openedStr}</div>` +
@@ -28183,8 +28166,77 @@ function _feSelectRow(row) { _fselClick(row, {}); }
 // Esc clears; on touch, long-press enters selection and taps then toggle. One
 // selection at a time, in whichever list it was made. A bar at the bottom
 // carries the commands: Copy paths, Download, Move to..., Delete.
-const _FSEL_ROOTS = '#files-body, #psf-body, #explore-body';
+const _FSEL_ROOTS = '#files-body, #psf-body, #explore-body, #scratchpad-body';
+// Each list body and the Name header that carries its "select all" checkbox.
+const _FSEL_HEADERS = [
+  { head: '#fe-col-headers', body: '#files-body' },
+  { head: '#psf-col-headers', body: '#psf-body' },
+  { head: '#sp-col-headers', body: '#scratchpad-body' },
+];
 const _fsel = { root: null, paths: new Set(), anchor: null, mode: false, suppressClick: false };
+// A leading selection checkbox for a file/scratchpad row — the one reusable
+// affordance every fe-row list shares (Files, Split view, and the Scratchpad
+// note list). It sits INSIDE the shared `fe-cell-name` cell, so it needs no
+// per-grid column and every list gets it for free (Ethan, 2026-10-17: "add a
+// checkbox/select all standard thing ... re-usable for all file list views ...
+// same component for both ... and scratchpad list"). The click is stopped from
+// reaching the row's own open/navigate; selection is driven on `change`.
+function _feCheckHtml(path) {
+  return '<input type="checkbox" class="fe-check" tabindex="-1" aria-label="Select row"'
+    + ' onclick="event.stopPropagation()"'
+    + (_fsel.paths.has(path) ? ' checked' : '') + '>';
+}
+// Toggle one row from its own checkbox. A checked box shows the action bar even
+// for a single item (standard data-table behaviour), so it sets selection mode.
+function _fselCheckRow(row, checked) {
+  const root = row.closest(_FSEL_ROOTS);
+  if (!root) return;
+  if (_fsel.root !== root) { _fsel.root = root; _fsel.paths.clear(); _fsel.anchor = null; }
+  const p = row.dataset.path;
+  if (checked) { _fsel.paths.add(p); _fsel.mode = true; }
+  else { _fsel.paths.delete(p); if (!_fsel.paths.size) _fsel.mode = false; }
+  _fsel.anchor = p;
+  _fselApply();
+}
+// The header "select all" checkbox: check selects every row in that list, clear
+// empties it. `bodySel` identifies which list this header belongs to.
+function _fselHeaderToggle(cb, bodySel) {
+  const root = bodySel && document.querySelector(bodySel);
+  if (!root) return;
+  if (cb.checked) { _fsel.mode = true; _fselSelectAll(root); }
+  else if (_fsel.root === root) { _fselClear(); }
+}
+// Mirror the current selection onto every checkbox after any re-render or
+// selection change: row boxes reflect membership, each header box reflects
+// all/some/none of its own list (indeterminate = some).
+function _fselSyncChecks() {
+  document.querySelectorAll('.fe-check').forEach(cb => {
+    const row = cb.closest('[data-path][data-type]');
+    cb.checked = !!(row && row.closest(_FSEL_ROOTS) === _fsel.root && _fsel.paths.has(row.dataset.path));
+  });
+  _FSEL_HEADERS.forEach(h => {
+    const head = document.querySelector(h.head);
+    const all = head && head.querySelector('.fe-check-all');
+    if (!all) return;
+    const root = document.querySelector(h.body);
+    const rows = _fselRowsIn(root);
+    const sel = (root && root === _fsel.root) ? rows.filter(r => _fsel.paths.has(r.dataset.path)).length : 0;
+    all.checked = rows.length > 0 && sel === rows.length;
+    all.indeterminate = sel > 0 && sel < rows.length;
+  });
+}
+// A checkbox toggle (row or header) anywhere in a list. `change` is separate
+// from the `click` the row-open uses, so this never opens a file.
+document.addEventListener('change', (e) => {
+  const cb = e.target;
+  if (!cb || cb.tagName !== 'INPUT' || cb.type !== 'checkbox') return;
+  if (cb.classList.contains('fe-check')) {
+    const row = cb.closest('[data-path][data-type]');
+    if (row) _fselCheckRow(row, cb.checked);
+  } else if (cb.classList.contains('fe-check-all')) {
+    _fselHeaderToggle(cb, cb.dataset.fselBody || '');
+  }
+}, true);
 function _fselRowsIn(root) { return root ? [...root.querySelectorAll('[data-path][data-type]')] : []; }
 function _fselClick(row, ev) {
   const root = row.closest(_FSEL_ROOTS);
@@ -28225,6 +28277,7 @@ function _fselApply() {
   _fselRowsIn(root).forEach(r => { if (_fsel.paths.has(r.dataset.path)) { r.classList.add('fsel-selected'); present.add(r.dataset.path); } });
   _fsel.paths = present;
   document.querySelectorAll(_FSEL_ROOTS).forEach(el => el.classList.toggle('fsel-mode', el === root && (_fsel.mode || present.size > 1)));
+  _fselSyncChecks();
   _fselRenderBar();
 }
 function _fselSelected() {
@@ -28236,6 +28289,7 @@ function _fselRefreshView() {
   if (id === 'files-body') _fileViewRefresh();
   else if (id === 'psf-body') _psfLoad(_peekSplitPath || '/');
   else if (id === 'explore-body') loadExplore(_explorePath);
+  else if (id === 'scratchpad-body') _scratchpadLoad();
 }
 function _fselRenderBar() {
   let bar = document.getElementById('fsel-bar');
@@ -28318,7 +28372,7 @@ async function _fselDelete() {
 // whose rows open on a plain click (Split view, Explore): caught in capture so
 // the row's own open never runs for a selection gesture.
 document.addEventListener('click', (e) => {
-  const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+  const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type], #scratchpad-body [data-path][data-type]');
   if (!row || e.target.closest('button, a, input')) return;
   if (_fsel.suppressClick) { _fsel.suppressClick = false; e.preventDefault(); e.stopPropagation(); return; }
   const inMode = _fsel.mode && _fsel.root === row.closest(_FSEL_ROOTS);
@@ -28331,7 +28385,7 @@ document.addEventListener('click', (e) => {
   let timer = null, startX = 0, startY = 0;
   document.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'touch') return;
-    const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+    const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type], #scratchpad-body [data-path][data-type]');
     if (!row || e.target.closest('button, a, input')) return;
     startX = e.clientX; startY = e.clientY;
     clearTimeout(timer);
@@ -28738,6 +28792,10 @@ function _spMakeRow(path, entry) {
   const row = document.createElement('div');
   row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
   row.dataset.path = ep;
+  // data-type makes the row selectable by the shared _fsel engine (checkbox,
+  // select-all, bulk bar) — the same component the file views use.
+  row.dataset.type = entry.type === 'dir' ? 'dir' : 'file';
+  if (_fsel.paths.has(ep)) row.classList.add('fsel-selected');
   const icon = _fileTypeIcon(entry.name, entry.type);
   const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
   const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
@@ -28747,7 +28805,7 @@ function _spMakeRow(path, entry) {
   const displayName = title || entry.name;
   const showSubName = title && entry.type !== 'dir';
   row.innerHTML =
-    '<div class="fe-cell-name">' + icon +
+    '<div class="fe-cell-name">' + _feCheckHtml(ep) + icon +
     '<div style="min-width:0;overflow:hidden;">' +
     '<span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(displayName) + slash + '</span>' +
     (showSubName ? '<span style="display:block;font-size:0.72rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(entry.name) + '</span>' : '') +
