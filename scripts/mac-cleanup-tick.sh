@@ -507,6 +507,11 @@ LIMITS_CMD=${AMUX_CLEANUP_LIMITS_CMD:-limits_reading}
 CRASH_DIR=${AMUX_CLEANUP_CRASH_DIR:-$HOME/Library/Logs/DiagnosticReports}
 CRASH_LOOP_N=${AMUX_CLEANUP_CRASH_LOOP_N:-10}
 CRASH_KEEP_DAYS=${AMUX_CLEANUP_CRASH_KEEP_DAYS:-30}
+# A loop with no crash in the last CRASH_RECENT_MIN has stopped: it is reported,
+# not escalated. Over the whole 24h a fixed loop kept escalating every 6h until
+# its reports aged out (RCA crashes 20261017-022150: git x30, the last at 16:57
+# the day before, none after the 19:50 fix). Same 6h as the escalation cooldown.
+CRASH_RECENT_MIN=${AMUX_CLEANUP_CRASH_RECENT_MIN:-360}
 # Report-only probes: launchd jobs outside com.apple that last exited non-zero
 # and are not running, the default gateway's packet loss with DNS lookup time,
 # and macOS thermal/CPU-speed limits.
@@ -1017,10 +1022,16 @@ check_crash_reports() { # <dry:0|1>
   if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
   # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
   top=$(find "$CRASH_DIR" -maxdepth 1 -type f -mtime -1 2>/dev/null | sed 's#.*/##; s/[-_][0-9]\{4\}-[0-9][0-9]-[0-9][0-9].*//' | sort | uniq -c | sort -rn | head -3)
+  local recent
   while read -r cnt name; do
     [ -n "${cnt:-}" ] || continue
     if [ "$cnt" -ge "$CRASH_LOOP_N" ]; then
-      HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
+      recent=$(find "$CRASH_DIR" -maxdepth 1 -type f -mmin -"$CRASH_RECENT_MIN" -name "${name}[-_]*" 2>/dev/null | grep -c . || true)
+      if [ "$recent" -gt 0 ]; then
+        HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
+      else
+        echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h but none in the last $(( CRASH_RECENT_MIN / 60 ))h, so the loop has stopped; not a constraint (verdict=crash_loop_ended)"
+      fi
     fi
   done <<< "$top"
   old=$(find "$CRASH_DIR" -maxdepth 1 -type f \( -name '*.ips' -o -name '*.crash' -o -name '*.diag' -o -name '*.hang' -o -name '*.spin' \) -mtime +"$CRASH_KEEP_DAYS" 2>/dev/null | grep -c . || true)
