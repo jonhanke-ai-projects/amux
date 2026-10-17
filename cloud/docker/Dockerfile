@@ -88,6 +88,8 @@ COPY frustrations-archive.md frustrations-archive.md
 # The cache mounts make an incremental rebuild cheap, and they are also why the
 # binaries are copied to /out INSIDE this RUN: a cache mount is not part of the
 # layer, so anything left in /src/target vanishes when the step ends.
+# No .git in this context, so CI names the commit (build.rs reads it) and /health reports it.
+ARG AMUX_SOURCE_COMMIT=
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target,sharing=locked \
     cargo build --release -p amux-server -p amux-cli \

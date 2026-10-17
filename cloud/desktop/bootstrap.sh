@@ -504,9 +504,12 @@ CREDS_OUT=""
 for entry in $WEB_USERS; do
   IFS=: read -r u p email grant <<<"$entry"
   # Optional 4th field: group=<name> (or worker=<name>) limits the account to
-  # those workers, their cards and files. Absent means global access.
+  # those workers, their cards and files. Absent means global access. `owner`
+  # is the host owner (amux Cloud's paying customer): no member token, so amux
+  # treats them as the owner and Settings lets them invite teammates.
   case "${grant:-}" in
     "") scope=global ;;
+    owner) scope=owner ;;
     group=*|worker=*) scope="${grant%%=*}:${grant#*=}" ;;
     *) echo "user $u: 4th field must be group=<name> or worker=<name>" >&2; exit 1 ;;
   esac
@@ -522,7 +525,12 @@ for entry in $WEB_USERS; do
   else
     printf '%s\n' "$p" | python3 /opt/amux-door/door.py hash "$u" >> /etc/amux-door/users.new
   fi
-  member_token "$u" "$email" "$scope" >/dev/null
+  if [[ "$scope" == owner ]]; then
+    grep -v "^$u " "$MEMBERS" > "$MEMBERS.tmp" || true; mv "$MEMBERS.tmp" "$MEMBERS"
+    chown amux-door:amux-door "$MEMBERS"; chmod 600 "$MEMBERS"
+  else
+    member_token "$u" "$email" "$scope" >/dev/null
+  fi
 done
 if [[ "$FLEET" == 1 ]]; then
   member_token "$AMUX_OWNER_EMAIL" "$AMUX_OWNER_EMAIL" global >/dev/null   # the paying customer, by email
@@ -631,7 +639,10 @@ WantedBy=timers.target
 UNIT
   systemctl daemon-reload
   systemctl enable --now amux-update.timer >/dev/null
-  log "self-updates: amux-update.timer $(systemctl is-active amux-update.timer)"
+  # One run now, so a new server starts on the newest green build and its status page has a
+  # verdict before cloud.amux.io calls it ready (the Worker waits for one).
+  systemctl start amux-update.service || true
+  log "self-updates: amux-update.timer $(systemctl is-active amux-update.timer), first run: $(python3 -c 'import json;print(json.load(open("/var/lib/amux-update/status.json"))["verdict"])' 2>/dev/null || echo none)"
 fi
 
 # ── Verify: every line below is computed, none asserted ──

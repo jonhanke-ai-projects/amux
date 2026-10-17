@@ -1,0 +1,206 @@
+// Offline tests for worker.mjs: the real module against in-memory Hetzner, Cloudflare, Stripe and
+// Gmail fakes, with faults injected where production has failed or could. Run: node cloud/start/test-worker.mjs
+// Each case prints PASS/FAIL; the exit status is the number of failures.
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+
+const src = fs.readFileSync(new URL('./worker.mjs', import.meta.url), 'utf8');
+const { default: worker } = await import('data:text/javascript;base64,' + Buffer.from(src).toString('base64'));
+
+function world() {
+  const w = { servers: [], dns: [], subs: {}, sessions: [], mail: [], logs: [], images: [],
+              faults: { dns: 0, capacity: 0, mail: 0 }, n: 0 };
+  w.env = { MODE: 'test', TEST_KEY: 'k', GOLDEN_IMAGE: '1', CF_ZONE_ID: 'z', GMAIL_OAUTH: btoa(JSON.stringify({})),
+            STRIPE_WEBHOOK_SECRET: crypto.randomBytes(16).toString('hex'),
+            PLANS: JSON.stringify({ plans: [{ id: 'team', server_type: 'cx43', stripe_lookup_key: 'team' }] }) };
+  const ok = d => Response.json(d);
+  w.fetch = async (url, o = {}) => {
+    const u = new URL(String(url)), m = o.method || 'GET', p = u.pathname;
+    if (u.host === 'oauth2.googleapis.com') return ok({ access_token: 't' });
+    if (u.host === 'gmail.googleapis.com') {
+      if (w.faults.mail) { w.faults.mail--; return new Response('{}', { status: 503 }); }
+      w.mail.push(JSON.parse(o.body)); return ok({});
+    }
+    if (u.host === 'api.hetzner.cloud') {
+      const body = o.body ? JSON.parse(o.body) : {};
+      if (p === '/v1/servers' && m === 'GET') {
+        const sel = (u.searchParams.get('label_selector') || '').split(',').filter(Boolean).map(x => x.split('='));
+        return ok({ servers: w.servers.filter(s => sel.every(([k, v]) => s.labels[k] === v)) });
+      }
+      if (p === '/v1/servers' && m === 'POST') {
+        if (w.faults.capacity) { w.faults.capacity--; return Response.json({ error: { code: 'resource_unavailable', message: 'error during placement' } }, { status: 412 }); }
+        if (w.servers.some(s => s.name === body.name)) return Response.json({ error: { code: 'uniqueness_error', message: 'name' } }, { status: 409 });
+        const s = { id: ++w.n, name: body.name, labels: body.labels, user_data: body.user_data, created: new Date().toISOString(), backup_window: null,
+                    public_net: { ipv4: { ip: `192.0.2.${w.n}` } } };
+        w.servers.push(s); return ok({ server: s });
+      }
+      let mm;
+      if ((mm = p.match(/^\/v1\/servers\/(\d+)\/actions\/enable_backup$/))) { w.servers.find(s => s.id == mm[1]).backup_window = '22-02'; return ok({}); }
+      if ((mm = p.match(/^\/v1\/servers\/(\d+)$/)) && m === 'PUT') { const s = w.servers.find(s => s.id == mm[1]); s.labels = body.labels; return ok({ server: s }); }
+      if ((mm = p.match(/^\/v1\/servers\/(\d+)$/)) && m === 'DELETE') { w.servers = w.servers.filter(s => s.id != mm[1]); return ok({}); }
+      if (p === '/v1/images') return ok({ images: w.images });
+      throw new Error(`hetzner fake: ${m} ${p}`);
+    }
+    if (u.host === 'api.cloudflare.com') {
+      if (m === 'GET') return ok({ success: true, result: w.dns.filter(r => r.name === u.searchParams.get('name')) });
+      if (m === 'POST') {
+        if (w.faults.dns) { w.faults.dns--; return Response.json({ success: false, errors: [{ message: 'injected' }] }, { status: 503 }); }
+        const r = { id: 'r' + (++w.n), ...JSON.parse(o.body) }; w.dns.push(r); return ok({ success: true, result: r });
+      }
+      if (m === 'DELETE') { const id = p.split('/').pop(); w.dns = w.dns.filter(r => r.id !== id); return ok({ success: true, result: {} }); }
+    }
+    if (u.host === 'api.stripe.com') {
+      const f = new URLSearchParams(o.body || u.search.slice(1));
+      if (p === '/v1/prices') return ok({ data: [{ id: 'price_team' }] });
+      if (p === '/v1/checkout/sessions' && m === 'POST') {
+        const meta = {}; for (const [k, v] of f) { const x = k.match(/^metadata\[(.+)\]$/); if (x) meta[x[1]] = v; }
+        const s = { id: 'cs_test_' + (++w.n), url: 'https://checkout.test/' + w.n, status: 'open', created: Math.floor(Date.now() / 1000), metadata: meta };
+        w.sessions.push(s); return ok(s);
+      }
+      if (p === '/v1/checkout/sessions' && m === 'GET') return ok({ data: w.sessions.filter(s => s.status === f.get('status')) });
+      let mm;
+      if ((mm = p.match(/^\/v1\/checkout\/sessions\/([^/]+)\/expire$/))) { w.sessions.find(s => s.id === mm[1]).status = 'expired'; return ok({}); }
+      if ((mm = p.match(/^\/v1\/checkout\/sessions\/([^/]+)$/))) {
+        const s = w.sessions.find(s => s.id === mm[1]);
+        return s ? ok(s) : Response.json({ error: { message: `No such checkout.session: ${mm[1]}` } }, { status: 404 });
+      }
+      if (p === '/v1/subscriptions' && m === 'GET')
+        return ok({ data: Object.values(w.subs).filter(s => s.status === 'active').map(s => ({ ...s, customer: { email: s.email } })) });
+      if ((mm = p.match(/^\/v1\/subscriptions\/([^/]+)$/)) && m === 'POST') {
+        const s = w.subs[mm[1]]; for (const [k, v] of f) { const x = k.match(/^metadata\[(.+)\]$/); if (x) { if (v === '') delete s.metadata[x[1]]; else s.metadata[x[1]] = v; } }
+        return ok(s);
+      }
+      if ((mm = p.match(/^\/v1\/subscriptions\/([^/]+)$/)) && m === 'GET') return ok({ ...w.subs[mm[1]], customer: { email: w.subs[mm[1]].email } });
+      if ((mm = p.match(/^\/v1\/subscriptions\/([^/]+)$/)) && m === 'DELETE') { w.subs[mm[1]].status = 'canceled'; return ok({}); }
+      if (p === '/v1/customers') return ok({ data: [...new Set(Object.values(w.subs).filter(s => s.email === f.get('email')).map(s => s.customer_id))].map(id => ({ id })) });
+      if (p === '/v1/billing_portal/sessions') return ok({ url: 'https://portal.test/x' });
+    }
+    if (u.pathname === '/_door/status') return new Response('down', { status: 502 });
+    throw new Error(`fake: unexpected ${m} ${url}`);
+  };
+  return w;
+}
+
+function paid(w, slug, ageS = 0) {
+  const id = 'sub_' + slug;
+  w.subs[id] = { id, status: 'active', created: Math.floor(Date.now() / 1000) - ageS, email: `hello+${slug}@amux.io`, customer_id: 'cus_' + slug,
+                 metadata: { slug, plan: 'team', pw_hash: 'scrypt$x$y', email: `hello+${slug}@amux.io` } };
+  return id;
+}
+async function call(w, req) {
+  globalThis.fetch = w.fetch;
+  const orig = console.log; console.log = s => { try { w.logs.push(JSON.parse(s)); } catch { w.logs.push(s); } };
+  try { return await req(); } finally { console.log = orig; }
+}
+async function webhook(w, sub) {
+  const s = w.subs[sub];
+  const body = JSON.stringify({ type: 'checkout.session.completed', data: { object: { id: 'cs_test_x', mode: 'subscription', payment_status: 'paid',
+    subscription: sub, metadata: { ...s.metadata }, customer_details: { email: s.email } } } });
+  const t = Math.floor(Date.now() / 1000);
+  const sig = crypto.createHmac('sha256', w.env.STRIPE_WEBHOOK_SECRET).update(`${t}.${body}`).digest('hex');
+  return call(w, () => worker.fetch(new Request('https://w.test/webhooks/stripe', { method: 'POST', body, headers: { 'stripe-signature': `t=${t},v1=${sig}` } }), w.env));
+}
+const cron = w => call(w, () => new Promise((res, rej) => worker.scheduled({}, w.env, { waitUntil: p => p.then(res, rej) })));
+const api = (w, path, body, headers = {}) => call(w, () => worker.fetch(new Request('https://w.test' + path,
+  body ? { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...headers } } : {}), w.env));
+
+let failures = 0;
+async function test(name, fn) {
+  try { await fn(); console.log('PASS', name); }
+  catch (e) { failures++; console.log('FAIL', name, '-', e.message); }
+}
+const eq = (a, b, what) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${what}: got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`); };
+
+await test('C15-2 DNS write fails, Stripe redelivers: replay finishes it (one server, one record)', async () => {
+  const w = world(); const sub = paid(w, 'dnsfault'); w.faults.dns = 1;
+  eq((await webhook(w, sub)).status, 500, 'first delivery');
+  eq(w.subs[sub].metadata.pw_hash !== undefined, true, 'signup still marked unfinished');
+  eq((await webhook(w, sub)).status, 200, 'replay');
+  eq([w.servers.length, w.dns.length, w.subs[sub].metadata.pw_hash], [1, 1, undefined], 'servers, records, pw_hash');
+});
+
+await test('C15-2 DNS write fails and no redelivery: the cron finishes it', async () => {
+  const w = world(); const sub = paid(w, 'dnscron', 120); w.faults.dns = 1;
+  await webhook(w, sub); await cron(w);
+  eq([w.servers.length, w.dns.length, w.subs[sub].metadata.pw_hash], [1, 1, undefined], 'servers, records, pw_hash');
+});
+
+await test('C3-1 no capacity anywhere: webhook fails, cron creates the server when capacity returns', async () => {
+  const w = world(); const sub = paid(w, 'nocap', 120); w.faults.capacity = 3;
+  eq((await webhook(w, sub)).status, 500, 'webhook with no capacity');
+  eq(w.servers.length, 0, 'no server yet');
+  await cron(w);
+  eq([w.servers.length, w.dns.length], [1, 1], 'after cron');
+  eq(w.logs.some(l => l.event === 'provision.no_capacity'), true, 'no_capacity logged');
+});
+
+await test('C3-1 still no server after 10 minutes: operator emailed once', async () => {
+  const w = world(); const sub = paid(w, 'stuck', 700); w.faults.capacity = 9;
+  await cron(w); await cron(w); await cron(w);
+  const alerts = w.mail.filter(x => /paid order stuck has no server/.test(Buffer.from(x.raw, 'base64').toString()));
+  eq(alerts.length, 1, 'operator alerts');
+  eq(Boolean(w.subs[sub].metadata.alerted), true, 'alert recorded on the subscription');
+});
+
+await test('C3-1 the webhook gets 90 seconds before the cron touches a new order', async () => {
+  const w = world(); paid(w, 'fresh', 10); await cron(w);
+  eq(w.servers.length, 0, 'servers');
+});
+
+await test('replayed webhook after success: no second server', async () => {
+  const w = world(); const sub = paid(w, 'replay');
+  await webhook(w, sub); w.subs[sub].metadata.pw_hash = 'scrypt$x$y'; await webhook(w, sub);
+  eq([w.servers.length, w.dns.length], [1, 1], 'servers, records');
+});
+
+await test('forged webhook refused', async () => {
+  const w = world();
+  const r = await call(w, () => worker.fetch(new Request('https://w.test/webhooks/stripe', { method: 'POST', body: '{}',
+    headers: { 'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=${'0'.repeat(64)}` } }), w.env));
+  eq(r.status, 400, 'status');
+});
+
+await test('C15-1 the same signup submitted twice leaves one payable checkout', async () => {
+  const w = world(); const b = { plan: 'team', slug: 'twice', email: 'hello+twice@amux.io', pw_hash: 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44) };
+  const r1 = await (await api(w, '/api/checkout', b, { 'x-test-key': 'k' })).json();
+  const r2 = await (await api(w, '/api/checkout', b, { 'x-test-key': 'k' })).json();
+  eq(w.sessions.filter(s => s.status === 'open').length, 1, 'open sessions');
+  eq(r2.url, w.sessions.find(s => s.status === 'open').url, 'second answer is the open one');
+  eq(r1.url !== r2.url, true, 'first was replaced');
+});
+
+await test('C14-2 unknown order answers 404, not 500', async () => {
+  const w = world(); eq((await api(w, '/api/status?session_id=cs_test_nope')).status, 404, 'status');
+});
+
+await test('C14-1 billing email that cannot be sent is reported (502)', async () => {
+  const w = world(); paid(w, 'mailfail'); w.faults.mail = 1;
+  eq((await api(w, '/api/billing', { email: 'hello+mailfail@amux.io' })).status, 502, 'status');
+});
+
+await test('C14-1 billing for an unknown address still answers ok (reveals nothing)', async () => {
+  const w = world(); eq((await api(w, '/api/billing', { email: 'nobody@example.com' })).status, 200, 'status');
+});
+
+await test('C12 delete: link, confirm with the wrong name refused, right name erases server, DNS, subscription', async () => {
+  const w = world(); const sub = paid(w, 'gone'); await webhook(w, sub);
+  eq((await api(w, '/api/delete', { email: 'hello+gone@amux.io' })).status, 200, 'request');
+  const text = Buffer.from(w.mail.at(-1).raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString();
+  const t = decodeURIComponent(text.match(/\?t=([^&\s]+)/)[1]);
+  eq((await api(w, '/api/delete/confirm', { t, slug: 'other' })).status, 400, 'wrong name');
+  eq(w.servers.length, 1, 'still there');
+  const r = await api(w, '/api/delete/confirm', { t, slug: 'gone' });
+  eq([r.status, w.servers.length, w.dns.length, w.subs[sub].status], [200, 0, 0, 'canceled'], 'after confirm');
+});
+
+await test('C12 delete link with a forged token refused', async () => {
+  const w = world(); eq((await api(w, '/api/delete/confirm', { t: 'e30.AAAA', slug: 'x' })).status, 400, 'status');
+});
+
+await test('C8 the paying customer is the server owner (no member token)', async () => {
+  const w = world(); const sub = paid(w, 'owner'); await webhook(w, sub);
+  eq(/AMUX_WEB_USERS='hello\+owner@amux\.io:scrypt\$x\$y:hello\+owner@amux\.io:owner'/.test(w.servers[0].user_data), true, 'user_data owner grant');
+});
+
+process.exitCode = failures;
+console.log(failures ? `${failures} FAILED` : 'all passed');
