@@ -192,14 +192,19 @@ pub(crate) fn docker_vm_shim_dir() -> PathBuf {
 /// Write the shim as `colima` and `limactl` when the installed bytes differ.
 /// Atomic (rename), because a running shell may be executing the old copy.
 pub(crate) fn install_docker_vm_shims(dir: &Path) -> std::io::Result<()> {
+    install_shims(dir, &["colima", "limactl"], DOCKER_VM_SHIM)
+}
+
+/// Write `body` under each of `names` in `dir` when the installed bytes differ.
+fn install_shims(dir: &Path, names: &[&str], body: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    for name in ["colima", "limactl"] {
+    for name in names {
         let dst = dir.join(name);
-        if std::fs::read_to_string(&dst).ok().as_deref() == Some(DOCKER_VM_SHIM) {
+        if std::fs::read_to_string(&dst).ok().as_deref() == Some(body) {
             continue;
         }
         let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
-        std::fs::write(&tmp, DOCKER_VM_SHIM)?;
+        std::fs::write(&tmp, body)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -208,6 +213,40 @@ pub(crate) fn install_docker_vm_shims(dir: &Path) -> std::io::Result<()> {
         std::fs::rename(&tmp, &dst)?;
     }
     Ok(())
+}
+
+/// FLEET TMUX SHIM. Every worker's shell gets a `tmux` first on PATH
+/// (scripts/shims/tmux-fleet-shim.sh) that refuses `kill-server` and
+/// `kill-session -a` aimed at the fleet's server, and lets a caller-chosen
+/// TMUX_TMPDIR win over the pane's $TMUX.
+///
+/// 2026-10-17: a worker's demo reset script ran `TMUX_TMPDIR=$T tmux
+/// kill-server`. Inside a pane $TMUX beats TMUX_TMPDIR, so it killed the
+/// fleet's server and every lane, at 14:31 and again at 14:51. The command
+/// guard saw only `reset.sh`; a shim on PATH also covers what scripts run.
+pub(crate) const TMUX_FLEET_SHIM: &str = include_str!("../../../../scripts/shims/tmux-fleet-shim.sh");
+
+pub(crate) fn tmux_fleet_shim_dir() -> PathBuf {
+    home().join("shims").join("tmux-fleet")
+}
+
+/// The shell exports that put the fleet tmux shim first on a worker's PATH.
+/// Goes last in the launch line so a profile that reorders PATH cannot bury it.
+pub(crate) fn tmux_fleet_exports(name: &str) -> String {
+    let dir = tmux_fleet_shim_dir();
+    match install_shims(&dir, &["tmux"], TMUX_FLEET_SHIM) {
+        Ok(()) => format!(
+            "export AMUX_FLEET_TMUX_SOCKET={}; export PATH={}:\"$PATH\"; ",
+            sh_quote(&crate::backend::tmux_health::default_socket()),
+            sh_quote(&dir.to_string_lossy())
+        ),
+        Err(e) => {
+            tracing::warn!(session = name, error = %e, dir = %dir.display(), measured = true, n_considered = 1,
+                verdict = "tmux_fleet_shim_install_failed",
+                "the fleet tmux shim could not be installed; this worker can kill the fleet's tmux server");
+            String::new()
+        }
+    }
 }
 
 /// A colima profile name amux will put into a shell export: letters, digits,
@@ -265,6 +304,7 @@ pub(crate) fn surviving_shell_scope_rc(name: &str) -> String {
     }
     rc.push_str(&workspace_isolation_exports(name));
     rc.push_str(&docker_vm_exports(name));
+    rc.push_str(&tmux_fleet_exports(name));
     rc
 }
 
@@ -16088,6 +16128,7 @@ pub(crate) async fn start_session(
             sh_quote(&local_cli_dir.to_string_lossy())
         ));
     }
+    shell_rc.push_str(&tmux_fleet_exports(name));
     if provider != "codex"
         && provider != "gemini"
         && provider != "ollama"
@@ -54824,6 +54865,81 @@ mod agents_grace_tests {
         // The composer emptied: clear the record.
         assert_eq!(d(None, true, "raise to 6", 1000, 1700, 600), (None, Some((String::new(), 0))));
         assert_eq!(d(None, false, "", 0, 1700, 600), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod tmux_fleet_shim_tests {
+    use super::*;
+
+    /// Every launch path that runs in a pane puts the shim first on PATH and
+    /// names the fleet's socket; the installed bytes are the shipped shim.
+    #[test]
+    fn worker_shells_get_the_fleet_tmux_shim_first_on_path() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions").join("lane.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        let dir = tmux_fleet_shim_dir();
+        let ex = tmux_fleet_exports("lane");
+        assert!(ex.contains(&format!("export PATH={}:", sh_quote(&dir.to_string_lossy()))), "{ex}");
+        assert!(ex.contains("export AMUX_FLEET_TMUX_SOCKET="), "{ex}");
+        assert_eq!(std::fs::read_to_string(dir.join("tmux")).unwrap(), TMUX_FLEET_SHIM);
+        let rc = surviving_shell_scope_rc("lane");
+        assert!(rc.ends_with(&ex), "a restarted shell gets the shim last, so first on PATH: {rc}");
+    }
+
+    /// The shim itself, driven through bash with a fake real `tmux` behind it
+    /// that prints what it was given. The fake fleet socket is a path only.
+    #[test]
+    fn the_shim_refuses_fleet_kills_and_honours_a_chosen_tmux_tmpdir() {
+        let t = tempfile::tempdir().unwrap();
+        let shim = t.path().join("shim");
+        let real = t.path().join("real");
+        std::fs::create_dir_all(&shim).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        install_shims(&shim, &["tmux"], TMUX_FLEET_SHIM).unwrap();
+        let fake = real.join("tmux");
+        std::fs::write(&fake, "#!/bin/bash\necho \"REAL TMUX=${TMUX:-} ARGS=$*\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let fleet = t.path().join("fleet.sock").to_string_lossy().into_owned();
+        let other = t.path().join("other").to_string_lossy().into_owned();
+        let run = |cmd: &str| -> (i32, String) {
+            let out = std::process::Command::new("bash").arg("-c").arg(cmd)
+                .env("PATH", format!("{}:{}:/usr/bin:/bin", shim.display(), real.display()))
+                .env("TMUX", format!("{fleet},1,0"))
+                .env("AMUX_FLEET_TMUX_SOCKET", &fleet)
+                .env("AMUX_HOME", t.path())
+                .env_remove("TMUX_TMPDIR").env_remove("AMUX_URL")
+                .output().unwrap();
+            (out.status.code().unwrap_or(-1),
+             format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+        };
+        // The 2026-10-17 command: its own TMUX_TMPDIR wins, so the real tmux
+        // runs with no $TMUX and kills only that private server.
+        let (code, out) = run(&format!("TMUX_TMPDIR={other} tmux kill-server"));
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("REAL TMUX= ARGS=kill-server"), "TMUX must be dropped: {out}");
+        for cmd in ["tmux kill-server", "tmux kill-ser", "tmux kill-session -a -t keep",
+                    "tmux ls \\; kill-server", &format!("tmux -S {fleet} kill-server")] {
+            let (code, out) = run(cmd);
+            assert_eq!(code, 64, "{cmd} must be refused: {out}");
+            assert!(!out.contains("REAL"), "{cmd} reached the real tmux: {out}");
+            assert!(out.contains("refused"), "{out}");
+        }
+        for cmd in ["tmux ls", "tmux kill-session -t one", "tmux -L demo kill-server",
+                    &format!("tmux -S {}/p.sock kill-server", t.path().display())] {
+            let (code, out) = run(cmd);
+            assert_eq!(code, 0, "{cmd} must pass: {out}");
+            assert!(out.contains("REAL"), "{cmd}: {out}");
+        }
+        let log = std::fs::read_to_string(t.path().join("logs").join("tmux-fleet-shim.log")).unwrap();
+        assert_eq!(log.matches("verdict=fleet_kill_refused").count(), 5, "{log}");
+        assert_eq!(log.matches("verdict=tmux_tmpdir_honoured").count(), 1, "{log}");
     }
 }
 
