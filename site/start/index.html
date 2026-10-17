@@ -147,6 +147,7 @@ $('slug').addEventListener('input', () => {
   const v = $('slug').value = $('slug').value.toLowerCase().replace(/[^a-z0-9-]/g, '');
   slugOk = false; clearTimeout(slugTimer);
   if (v.length < 3) { $('slug-hint').className = 'hint'; $('slug-hint').textContent = '3 to 30 lowercase letters, digits or dashes.'; return; }
+  $('slug-hint').className = 'hint'; $('slug-hint').textContent = 'Checking ' + v + '.amux.io...';
   slugTimer = setTimeout(async () => {
     try {
       const d = await (await fetch(API + '/api/slug?name=' + encodeURIComponent(v))).json();
