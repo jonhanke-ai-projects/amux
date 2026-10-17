@@ -4685,7 +4685,7 @@ pub async fn create_session_legacy(
         )
             .into_response();
     }
-    let mut dir = s("dir");
+    let mut dir = requested_work_dir(&s("dir"));
     if dir.is_empty()
         && descriptor.project_dir != amux_core::worker_type::Requirement::Required
     {
@@ -7091,6 +7091,20 @@ pub(crate) mod tests {
     /// (Ethan, 2026-08-22). The four cells are separated because the single
     /// message this replaces was false about two of them.
     #[test]
+    fn a_tilde_dir_expands_to_home_before_it_is_checked() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(requested_work_dir("~/Dev/x"), format!("{home}/Dev/x"));
+        assert_eq!(requested_work_dir("~"), home);
+        assert_eq!(requested_work_dir(" /abs/path "), "/abs/path");
+        assert_eq!(requested_work_dir(""), "");
+        // ~user is not ours to resolve: it stays relative and is refused.
+        assert_eq!(requested_work_dir("~bob/x"), "~bob/x");
+        assert!(matches!(ensure_work_dir(&requested_work_dir("~bob/x")), WorkDirOutcome::Refused(_)));
+        // The expanded form passes the absolute-path gate for an existing dir.
+        assert!(matches!(ensure_work_dir(&requested_work_dir("~")), WorkDirOutcome::Ok));
+    }
+
+    #[test]
     fn a_missing_working_directory_is_created_not_refused() {
         use std::io::Write;
         let tmp = tempfile::tempdir().unwrap();
@@ -8142,6 +8156,22 @@ pub(crate) enum WorkDirOutcome {
     Created,
     /// Cannot be used, with the sentence the user sees.
     Refused(String),
+}
+
+/// The `dir` a create request named, with a leading `~` / `~/` expanded to
+/// `$HOME` (long-form-videos, 2026-10-17: typing `~/myrepo` in the new-worker
+/// dialog was refused as "not an absolute path"). Expanded HERE, before both
+/// the existence check and the env write, so the worker's stored dir is the
+/// absolute path rather than a `~` that every later cwd reader would have to
+/// expand again. `~user` is left alone and still refused as relative.
+pub(crate) fn requested_work_dir(raw: &str) -> String {
+    let raw = raw.trim();
+    let expanded = crate::api::fs::expanduser(raw).to_string_lossy().into_owned();
+    if expanded != raw {
+        tracing::info!(target: "amux::work_dir", raw = %raw, dir = %expanded,
+            "expanded ~ in new worker's working directory");
+    }
+    expanded
 }
 
 /// Resolve the working directory a new worker asked for, CREATING it when it is
