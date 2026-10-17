@@ -76,41 +76,38 @@ test('Tasks lists every task in order, tagged with its worker, and a task opens 
   await expect(page.locator('body')).toContainText('Tasks tab card ' + worker, { timeout: 10000 });
 });
 
-test("a worker's Tasks tab lists only that worker's tasks, in order", async ({ page }) => {
+test("a worker's Tasks tab lists the model's task names, newest first, never its messages", async ({ page }) => {
+  // Ethan, 2026-10-17: "the tasks tab is still wrong in the worker details
+  // page. it shows messages it should be task names from the model."
   const nonce = Date.now().toString(36);
   const worker = 'e2e-probe';
-  const texts = ['probe task one ' + nonce, 'probe task two ' + nonce];
+  const message = 'an owner message that is not a task name ' + nonce;
+  const names = ['Fix the tasks tab ' + nonce, 'Investigate the reminder ' + nonce];
+  await page.route(`**/api/sessions/${worker}/task-history**`, route => route.fulfill({ json: {
+    session: worker, measured: true, n_considered: 2, changes: [
+      { to: names[0], from: names[1], card: 'AMUX-1', source: 'generated_title', ts: Date.now() / 1000 - 60 },
+      { to: names[1], from: '', card: '', source: 'generated_title', ts: Date.now() / 1000 - 3600 },
+    ] } }));
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).openPeek === 'function', { timeout: 20000 });
-  const ok = await page.evaluate(async ({ worker, texts }) => {
-    const out: number[] = [];
-    for (const text of texts) {
-      out.push((await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, type: 'user', session: worker }) })).status);
-      await new Promise(res => setTimeout(res, 20));
-    }
-    // Another worker's task must not appear in this worker's tab.
-    out.push((await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'elsewhere ' + texts[0], type: 'user', session: 'e2e-tasks-other' }) })).status);
-    return out;
-  }, { worker, texts });
-  expect(ok.every(s => s === 200), String(ok)).toBe(true);
+  const status = await page.evaluate(async ({ worker, message }) => (await fetch('/api/history', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: message, type: 'user', session: worker }) })).status,
+    { worker, message });
+  expect(status).toBe(200);
 
   await page.evaluate((w) => (window as any).openPeek(w), worker);
   await expect(page.locator('#peek-overlay')).toBeVisible();
   await page.locator('#peek-tab-tasks').click();
   await expect(page.locator('#peek-tab-tasks')).toHaveClass(/active/);
   const panel = page.locator('#peek-tasks-panel');
-  await expect(panel).toBeVisible();
-  const items = panel.locator('.task-item');
-  await expect(items.last()).toContainText(texts[1], { timeout: 15000 });
-  const n = await items.count();
-  await expect(items.nth(n - 2)).toContainText(texts[0]);
-  const nums = await items.locator('.task-num').allTextContents();
-  const seq = nums.map(t => parseInt(t.replace('#', ''), 10));
-  expect(seq, 'numbered in order').toEqual(seq.slice().sort((a, b) => a - b));
-  for (const tag of await items.locator('.msg-sess-link').allTextContents()) expect(tag).toBe(worker);
-  await expect(panel).not.toContainText('elsewhere ' + texts[0]);
-  // A task opens its detail inside the worker's tab too.
-  const lastId = await items.last().getAttribute('data-task-id');
-  await items.last().locator('.task-row .msg-body').click();
-  await expect(page.locator('#peek-tasks-detail-' + lastId)).toContainText('Delivery');
+  const items = panel.locator('.task-name-item');
+  await expect(items).toHaveCount(2, { timeout: 15000 });
+  await expect(items.nth(0)).toContainText(names[0]);
+  await expect(items.nth(0)).toContainText('current');
+  await expect(items.nth(0).locator('.msg-card-chip')).toHaveText('AMUX-1');
+  await expect(items.nth(1)).toContainText(names[1]);
+  await expect(panel).not.toContainText(message);
+  await expect(page.locator('#peek-tasks-count')).toContainText('2 task names');
+  const box = await items.nth(0).locator('.task-row').boundingBox();
+  expect(box!.height, 'a 44px touch row').toBeGreaterThanOrEqual(44);
 });

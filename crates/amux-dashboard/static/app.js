@@ -12831,7 +12831,7 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-tasks')?.classList.toggle('active', tab === 'tasks');
   const tasksP = document.getElementById('peek-tasks-panel');
   if (tasksP) {
-    if (tab === 'tasks') { tasksP.classList.add('active'); _tasksScopes.peek.open.clear(); _tasksLoad('peek', true); }
+    if (tab === 'tasks') { tasksP.classList.add('active'); _peekTaskNamesLoad(); }
     else tasksP.classList.remove('active');
   }
   const messages = document.getElementById('peek-messages-panel');
@@ -52815,6 +52815,42 @@ function _tasksParams(sc, extra) {
 }
 // toEnd: open on the newest page (the sequence still reads oldest first).
 // A newer load supersedes an older one still in flight (seq).
+// A WORKER'S TASKS ARE THE MODEL'S OWN TASK NAMES (Ethan, 2026-10-17: "the
+// tasks tab ... shows messages it should be task names from the model"). The
+// worker's Messages tab already lists what it was sent; this lists what it
+// worked on, from GET /api/sessions/{name}/task-history (task.renamed rows),
+// newest first. The top-bar Tasks view keeps the request list.
+let _peekTaskNamesSeq = 0;
+async function _peekTaskNamesLoad() {
+  const name = (typeof peekSession !== 'undefined' && peekSession) || '';
+  const list = document.getElementById('peek-tasks-list');
+  const count = document.getElementById('peek-tasks-count');
+  if (!name || !list) return;
+  for (const id of ['peek-tasks-search', 'peek-tasks-pager']) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
+  const amuxToggle = document.getElementById('peek-tasks-amux');
+  if (amuxToggle && amuxToggle.closest('label')) amuxToggle.closest('label').style.display = 'none';
+  const seq = ++_peekTaskNamesSeq;
+  if (count) count.textContent = 'Loading task names';
+  let d = null;
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/task-history?limit=200');
+    d = r.ok ? await r.json() : { measured: false, why_unmeasured: 'HTTP ' + r.status };
+  } catch (e) { d = { measured: false, why_unmeasured: String(e && e.message || e) }; }
+  if (seq !== _peekTaskNamesSeq || peekSession !== name) return;
+  if (!d.measured) {
+    if (count) count.textContent = 'Task names could not be loaded: ' + (d.why_unmeasured || 'unknown error');
+    list.innerHTML = '';
+    _peekPollBeacon('task-names-unmeasured', name, { verdict: 'task_names_unmeasured', measured: false, n_considered: 0, why_unmeasured: d.why_unmeasured || '' });
+    return;
+  }
+  const rows = (d.changes || []).filter(c => (c.to || '').trim());
+  if (count) count.textContent = rows.length ? rows.length + ' task name' + (rows.length === 1 ? '' : 's') + ', newest first' : 'No task names recorded for this worker yet';
+  list.innerHTML = rows.map((c, i) => '<div class="task-item task-name-item" data-task-name-index="' + i + '">'
+    + '<div class="task-row"><div class="task-name-title">' + esc(c.to) + (i === 0 ? ' <span class="task-name-current">current</span>' : '') + '</div>'
+    + '<div class="task-name-meta">' + esc(timeAgo(Math.floor(c.ts || 0)))
+    + (c.card ? ' · <button type="button" class="msg-card-chip" onclick="event.stopPropagation();_msgOpenCard(\'' + escJs(c.card) + '\');">' + esc(c.card) + '</button>' : '')
+    + '</div></div></div>').join('');
+}
 async function _tasksLoad(sc, toEnd) {
   sc = sc || 'main';
   const s = _tasksScopes[sc];

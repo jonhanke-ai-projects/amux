@@ -9669,3 +9669,9 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
    wraps instead of being cut with an ellipsis (Ethan, 2026-10-16). */
 .card-preview.card-task-full { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
 .task-history-list li { overflow-wrap:anywhere; }
+
+/* Worker Tasks tab: the model's task names (AMUX-6169). */
+.task-name-item .task-row { display:flex; flex-direction:column; gap:2px; padding:10px 12px; min-height:44px; }
+.task-name-title { color:var(--text); font-size:14px; overflow-wrap:anywhere; }
+.task-name-current { font-size:11px; color:var(--accent); border:1px solid var(--accent); border-radius:8px; padding:0 6px; margin-left:6px; }
+.task-name-meta { color:var(--text-dim, var(--muted)); font-size:12px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
