@@ -6,7 +6,8 @@
 - the resources boundary's `heavy_block_examples` must be refused when the
   host is critical and pass when it is ok; `heavy_allow_examples` must pass
   when critical; an acknowledged heavy command passes and is logged
-- isolated workers and non-amux sessions are never refused
+- non-amux sessions are never refused; isolated workers are refused unless
+  the registry sets apply_to_isolated = false
 - an owner override in ~/.amux/boundaries.toml can disable a boundary
 
 Example strings: a Bash command as-is, or "<Tool> <path>" for a file tool,
@@ -105,7 +106,14 @@ def main() -> int:
         with open(os.path.join(home, "sessions", "iso.env"), "w") as fh:
             fh.write("CC_ISOLATED=1\n")
         code, _ = run(sample, home, {"AMUX_SESSION": "iso"})
-        expect("an isolated worker is not refused", code == 0, f"exit {code}")
+        expect("an isolated worker is refused (apply_to_isolated defaults on)", code == 2, f"exit {code}")
+        exempt = os.path.join(home, "exempt.toml")
+        with open(REGISTRY) as src, open(exempt, "w") as fh:
+            fh.write(src.read().replace("apply_to_isolated = true", "apply_to_isolated = false"))
+        code, _ = run(sample, home, {"AMUX_SESSION": "iso"}, registry=exempt)
+        expect("apply_to_isolated = false exempts an isolated worker", code == 0, f"exit {code}")
+        code, _ = run(sample, home, {"AMUX_SESSION": "boundary-test"}, registry=exempt)
+        expect("apply_to_isolated = false still refuses a non-isolated worker", code == 2, f"exit {code}")
 
         # Owner override: the same id with enabled = false turns it off.
         merged = os.path.join(home, "boundaries.toml")

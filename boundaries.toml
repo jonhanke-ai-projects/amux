@@ -36,6 +36,15 @@
 
 version = 1
 
+# Isolated workers (CLAUDE.md "Isolated workers") get no injected prompts,
+# routing or board, but these boundaries still hold for them: a refusal adds
+# no context and steers nothing, and the payment, email and credential risks
+# are the same whether or not a worker is isolated. Set false (here or in
+# ~/.amux/boundaries.toml) to exempt isolated workers from the guard. The rule
+# text is still never injected into an isolated worker; the refusal message
+# carries the reason.
+apply_to_isolated = true
+
 [[boundary]]
 id = "payments"
 title = "Every payment is authorized"

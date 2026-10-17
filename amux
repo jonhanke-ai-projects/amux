@@ -6305,9 +6305,13 @@ for b in d.get('boundaries') or []:
         print('  by      %s' % x)
     print('  24h     %s' % fired)
 iso = (d.get('not_covered_by_hook') or {}).get('isolated_workers') or []
+covered = (d.get('isolated') or {}).get('covered_by_hook')
 if iso:
     print('')
     print('Not covered by the guard (isolated): %d workers' % len(iso))
+elif covered:
+    print('')
+    print('Isolated workers: covered by the guard (%d workers)' % (d.get('isolated') or {}).get('n_workers', 0))
 PY
 )"
 }
