@@ -4047,14 +4047,88 @@ fn latest_started_by<'a>(
     mine.into_iter().max_by_key(|r| (r.started_at, r.pid))
 }
 
+// ---- joining a running browser ---------------------------------------------
+//
+// One Chrome runs per profile. A second session wanting the same profile used
+// to be refused with a 409, and the shared browser route then dropped to its
+// CDP rung: a headless COPY of the human's Chrome profile, made once and never
+// refreshed, so its sign-ins went stale (measured 2026-10-17: all 13 CDP
+// routes in two days followed exactly that refusal). Joining gives the second
+// session its own NEW tab in the running browser, which already holds the
+// profile's live sign-ins. It never adopts the owner's tabs, never displaces
+// the owner, and its stop closes only its own tab.
+
+/// session -> profile it joined (a browser another session started).
+pub static JOINED: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+fn joined_port(g: &std::collections::HashMap<String, RunningBrowser>, session: &str) -> Option<(u16, String)> {
+    let profile = JOINED.lock().expect("joined registry poisoned").get(session).cloned()?;
+    g.values().find(|r| r.profile == profile).map(|r| (r.cdp_port, r.profile.clone()))
+}
+
+/// Open a fresh tab for `session` in the browser already running `profile`
+/// and bind the session to it. Errors when that profile is not running.
+pub async fn join_running(session: &str, profile: &str, url: &str) -> Result<DriverPage, DriverError> {
+    if session.trim().is_empty() {
+        return Err(DriverError::Cdp(anyhow::anyhow!("joining a running browser needs an explicit session")));
+    }
+    let port = {
+        let g = RUNNING.lock().expect("browser registry poisoned");
+        g.values().find(|r| r.profile == profile).map(|r| r.cdp_port)
+    };
+    let Some(port) = port else { return Err(DriverError::NotRunning) };
+    let t = cdp_new_tab(port, if url.is_empty() { "about:blank" } else { url })
+        .await
+        .map_err(DriverError::Cdp)?;
+    let target_id = t.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+    let ws_url = t.get("webSocketDebuggerUrl").and_then(Value::as_str).unwrap_or_default().to_string();
+    if target_id.is_empty() || ws_url.is_empty() {
+        return Err(DriverError::Cdp(anyhow::anyhow!("CDP /json/new returned no target: {t}")));
+    }
+    JOINED.lock().expect("joined registry poisoned").insert(session.to_string(), profile.to_string());
+    NATIVE_TARGETS.lock().expect("native targets poisoned").insert(session.to_string(), target_id.clone());
+    tracing::info!(session, profile, cdp_port = port, target = %target_id, measured = true, n_considered = 1,
+        verdict = "browser_joined", "a session joined the browser already running its profile, in its own tab");
+    Ok(DriverPage { cdp_port: port, target_id, ws_url, url: url.to_string(), title: String::new() })
+}
+
+/// The profile `session` joined, if it is a joiner rather than an owner.
+pub fn joined_profile(session: &str) -> Option<String> {
+    JOINED.lock().expect("joined registry poisoned").get(session).cloned()
+}
+
+/// Release a joined session: close ONLY its own tab and forget the join. The
+/// browser and its owner's tabs keep running. Returns (profile, closed tab).
+pub async fn leave_joined(session: &str) -> Option<(String, Option<String>)> {
+    let profile = JOINED.lock().expect("joined registry poisoned").remove(session)?;
+    let target = NATIVE_TARGETS.lock().expect("native targets poisoned").remove(session);
+    let port = {
+        let g = RUNNING.lock().expect("browser registry poisoned");
+        g.values().find(|r| r.profile == profile).map(|r| r.cdp_port)
+    };
+    if let (Some(port), Some(t)) = (port, target.as_deref()) {
+        let _ = reqwest::Client::new()
+            .put(format!("http://127.0.0.1:{port}/json/close/{t}"))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
+    }
+    tracing::info!(session, profile = %profile, target = target.as_deref().unwrap_or(""), measured = true, n_considered = 1,
+        verdict = "browser_join_released", "a joined session closed its own tab; the shared browser keeps running");
+    Some((profile, target))
+}
+
 /// WHICH BROWSER A SESSION MEANS (AMUX-3828).
 ///
 /// 1. The one it STARTED. That is what a lane means by "my browser", and it is
 ///    what makes two workers on two profiles independent without either naming
 ///    a profile on every verb.
-/// 2. Otherwise, if exactly one is running, that one — an unambiguous situation
+/// 2. Otherwise the one it JOINED: a browser another session started on the
+///    profile it asked for, where it owns a tab of its own.
+/// 3. Otherwise, if exactly one is running, that one — an unambiguous situation
 ///    should not require a parameter.
-/// 3. Otherwise None. With several browsers and no claim on any of them, a
+/// 4. Otherwise None. With several browsers and no claim on any of them, a
 ///    guess would drive somebody else's page; the caller must name a profile.
 ///
 /// Ethan's requirement is BOTH shapes: workers on DIFFERENT browsers are served
@@ -4065,6 +4139,9 @@ pub fn port_for_session(session: &str) -> Option<u16> {
     let g = RUNNING.lock().expect("browser registry poisoned");
     if let Some(r) = latest_started_by(&g, session) {
         return Some(r.cdp_port);
+    }
+    if let Some((port, _)) = joined_port(&g, session) {
+        return Some(port);
     }
     if g.len() == 1 {
         return g.values().next().map(|r| r.cdp_port);
@@ -4079,6 +4156,9 @@ pub fn profile_for_session(session: &str) -> Option<String> {
     let g = RUNNING.lock().expect("browser registry poisoned");
     if let Some(r) = latest_started_by(&g, session) {
         return Some(r.profile.clone());
+    }
+    if let Some((_, profile)) = joined_port(&g, session) {
+        return Some(profile);
     }
     if g.len() == 1 {
         return g.values().next().map(|r| r.profile.clone());

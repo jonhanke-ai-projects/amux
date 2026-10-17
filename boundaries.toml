@@ -249,7 +249,9 @@ id = "boundaries-self"
 title = "Boundaries are the owner's to change"
 rule = """
 Do not edit, move or delete the boundary registry on this machine
-(~/.amux/boundaries.toml) or the installed guard (~/.amux/hooks/boundary-guard.py,
+(~/.amux/boundaries.toml), the browser methods override
+(~/.amux/browser-methods.toml, which decides where screenshots of signed-in
+pages are sent) or the installed guard (~/.amux/hooks/boundary-guard.py,
 ~/.amux/hooks/boundaries.toml), and do not remove the guard from Claude
 settings. Propose a change to boundaries.toml in the amux repo instead.
 """
@@ -257,14 +259,14 @@ enforced_by = ["hook: boundary-guard"]
 
 [[boundary.deny]]
 tools = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
-path = '\.amux/(hooks/)?(boundaries\.toml|boundary-guard\.py)$'
+path = '\.amux/(hooks/)?(boundaries\.toml|boundary-guard\.py|browser-methods\.toml)$'
 reason = "The installed boundary registry and guard are the owner's. Propose the change in the amux repo's boundaries.toml."
-block_examples = ["Write /Users/ethan/.amux/boundaries.toml", "Edit /Users/ethan/.amux/hooks/boundary-guard.py"]
+block_examples = ["Write /Users/ethan/.amux/boundaries.toml", "Edit /Users/ethan/.amux/hooks/boundary-guard.py", "Write /Users/ethan/.amux/browser-methods.toml"]
 allow_examples = ["Edit /Users/ethan/Dev/amux/boundaries.toml"]
 
 [[boundary.deny]]
 tools = ["Bash"]
-match_all = ['\.amux/(hooks/)?(boundaries\.toml|boundary-guard\.py)', '(>|\btee\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\bcp\b|\bmv\b|\brm\b|\bchmod\b|\btruncate\b|\bln\b)']
+match_all = ['\.amux/(hooks/)?(boundaries\.toml|boundary-guard\.py|browser-methods\.toml)', '(>|\btee\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\bcp\b|\bmv\b|\brm\b|\bchmod\b|\btruncate\b|\bln\b)']
 match_none = ['^\s*(cat|grep|rg|head|tail|less|diff)\b[^>|;&]*$']
 reason = "The installed boundary registry and guard are the owner's. Propose the change in the amux repo's boundaries.toml."
 block_examples = ["rm ~/.amux/hooks/boundary-guard.py", "echo x > ~/.amux/boundaries.toml", "sed -i '' 's/a/b/' ~/.amux/hooks/boundaries.toml"]

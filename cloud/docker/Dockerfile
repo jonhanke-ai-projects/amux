@@ -81,6 +81,8 @@ COPY frustrations-archive.md frustrations-archive.md
 # The worker boundary registry: api/boundaries.rs embeds it with include_str!
 # so a box without the installed copy still has the rule text.
 COPY boundaries.toml boundaries.toml
+# The browser methods registry: api/browser_routing.rs embeds it with include_str!.
+COPY browser-methods.toml browser-methods.toml
 
 # --release is REQUIRED, not a preference. `rust-embed` is built without the
 # `debug-embed` feature, so a DEBUG binary reads the dashboard from
