@@ -108,16 +108,49 @@ async function verifyStripe(env, body, header) {
 }
 
 // ------------------------------------------------------------------ email (Gmail API as hello@amux.io)
+// GMAIL_SA: a service account key with domain-wide delegation for gmail.send, so the Worker mints
+// its own hello@amux.io tokens and nothing expires. A user grant (GMAIL_OAUTH) dies whenever the
+// amux.io Workspace session policy ends it (2026-10-17: every customer email failed with 502).
+const MAIL_FROM = 'hello@amux.io';
+let mailToken = { value: '', exp: 0, cred: '' };
+const b64url = s => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+async function tokenRequest(via, cred) {
+  if (via === 'service_account') {
+    const k = JSON.parse(atob(cred)), now = Math.floor(Date.now() / 1000);
+    const unsigned = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' })) + '.' + b64url(JSON.stringify({ iss: k.client_email,
+      sub: MAIL_FROM, scope: 'https://www.googleapis.com/auth/gmail.send', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 }));
+    const der = Uint8Array.from(atob(k.private_key.replace(/-----[^-]+-----|\s/g, '')), c => c.charCodeAt(0));
+    const key = await crypto.subtle.importKey('pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+    const sig = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned)));
+    return { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: unsigned + '.' + b64url(String.fromCharCode(...sig)) };
+  }
+  const c = JSON.parse(atob(cred));
+  return { client_id: c.client_id, client_secret: c.client_secret, refresh_token: c.refresh_token, grant_type: 'refresh_token' };
+}
+async function mailAccessToken(env) {
+  // The service account first; the user grant still works while delegation is not yet approved.
+  const creds = [['service_account', env.GMAIL_SA], ['user_grant', env.GMAIL_OAUTH]].filter(([, c]) => c);
+  if (!creds.length) { log('email.not_configured', {}); return ''; }
+  for (const [via, cred] of creds) {
+    if (mailToken.cred === cred && mailToken.exp > Date.now() + 60e3) return mailToken.value;
+    const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', body: new URLSearchParams(await tokenRequest(via, cred)) });
+    const t = await r.json().catch(() => ({}));
+    if (t.access_token) {
+      mailToken = { value: t.access_token, exp: Date.now() + (t.expires_in || 0) * 1000, cred };
+      return t.access_token;
+    }
+    log('email.token_failed', { via, status: r.status, error: t.error || '' });
+  }
+  return '';
+}
 async function sendMail(env, to, subject, text) {
-  if (!env.GMAIL_OAUTH) { log('email.not_configured', { subject }); return false; }
-  const c = JSON.parse(atob(env.GMAIL_OAUTH));
-  const tok = await (await fetch(c.token_uri || 'https://oauth2.googleapis.com/token', { method: 'POST',
-    body: new URLSearchParams({ client_id: c.client_id, client_secret: c.client_secret, refresh_token: c.refresh_token,
-      grant_type: 'refresh_token' }) })).json();
+  const access = await mailAccessToken(env);
+  if (!access) return false;
   const msg = `From: amux Cloud <hello@amux.io>\r\nTo: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n\r\n-- \r\namux Cloud\r\n`;
   const raw = btoa(unescape(encodeURIComponent(msg))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const r = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', { method: 'POST',
-    headers: { authorization: `Bearer ${tok.access_token}`, 'content-type': 'application/json' }, body: JSON.stringify({ raw }) });
+    headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' }, body: JSON.stringify({ raw }) });
+  if (r.status === 401) mailToken = { value: '', exp: 0, cred: '' };
   log(r.ok ? 'email.sent' : 'email.failed', { subject, status: r.status });
   return r.ok;
 }

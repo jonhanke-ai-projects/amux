@@ -16,7 +16,7 @@ function world() {
   const ok = d => Response.json(d);
   w.fetch = async (url, o = {}) => {
     const u = new URL(String(url)), m = o.method || 'GET', p = u.pathname;
-    if (u.host === 'oauth2.googleapis.com') return ok({ access_token: 't' });
+    if (u.host === 'oauth2.googleapis.com') { w.tokenCalls = (w.tokenCalls || 0) + 1; return w.token ? w.token(new URLSearchParams(o.body)) : ok({ access_token: 't' }); }
     if (u.host === 'gmail.googleapis.com') {
       if (w.faults.mail) { w.faults.mail--; return new Response('{}', { status: 503 }); }
       w.mail.push(JSON.parse(o.body)); return ok({});
@@ -195,6 +195,41 @@ await test('C12 delete: link, confirm with the wrong name refused, right name er
 
 await test('C12 delete link with a forged token refused', async () => {
   const w = world(); eq((await api(w, '/api/delete/confirm', { t: 'e30.AAAA', slug: 'x' })).status, 400, 'status');
+});
+
+await test('mail: a revoked user grant is logged as email.token_failed and reported (502)', async () => {
+  const w = world(); paid(w, 'revoked');
+  w.token = () => Response.json({ error: 'invalid_grant' }, { status: 400 });
+  eq((await api(w, '/api/billing', { email: 'hello+revoked@amux.io' })).status, 502, 'status');
+  eq(w.logs.find(l => l.event === 'email.token_failed')?.error, 'invalid_grant', 'logged reason');
+});
+
+await test('mail: the service account signs its own hello@amux.io token (no user grant to expire)', async () => {
+  const w = world(); paid(w, 'sa1'); paid(w, 'sa2'); delete w.env.GMAIL_OAUTH;
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  w.env.GMAIL_SA = btoa(JSON.stringify({ client_email: 'mailer@p.iam.gserviceaccount.com',
+    private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) }));
+  let claims;
+  w.token = f => {
+    const [h, c, sig] = f.get('assertion').split('.');
+    const valid = crypto.verify('sha256', Buffer.from(h + '.' + c), publicKey, Buffer.from(sig, 'base64url'));
+    claims = { grant: f.get('grant_type'), valid, ...JSON.parse(Buffer.from(c, 'base64url')) };
+    return Response.json({ access_token: 'sa-token', expires_in: 3600 });
+  };
+  eq((await api(w, '/api/billing', { email: 'hello+sa1@amux.io' })).status, 200, 'first send');
+  eq((await api(w, '/api/billing', { email: 'hello+sa2@amux.io' })).status, 200, 'second send');
+  eq([claims.grant, claims.valid, claims.sub, claims.scope, claims.iss],
+     ['urn:ietf:params:oauth:grant-type:jwt-bearer', true, 'hello@amux.io', 'https://www.googleapis.com/auth/gmail.send', 'mailer@p.iam.gserviceaccount.com'], 'assertion');
+  eq([w.mail.length, w.tokenCalls], [2, 1], 'two emails, one token');
+});
+
+await test('mail: delegation not yet approved, the user grant still sends', async () => {
+  const w = world(); paid(w, 'fallback');
+  const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  w.env.GMAIL_SA = btoa(JSON.stringify({ client_email: 'm@p', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) }));
+  w.token = f => f.get('assertion') ? Response.json({ error: 'unauthorized_client' }, { status: 401 }) : Response.json({ access_token: 'u' });
+  eq((await api(w, '/api/billing', { email: 'hello+fallback@amux.io' })).status, 200, 'status');
+  eq(w.logs.find(l => l.event === 'email.token_failed')?.error, 'unauthorized_client', 'service account failure logged');
 });
 
 await test('C8 the paying customer is the server owner (no member token)', async () => {

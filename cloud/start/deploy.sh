@@ -51,8 +51,15 @@ b = [{"type": "secret_text", "name": "STRIPE_SECRET_KEY", "text": key},
      {"type": "plain_text", "name": "GOLDEN_IMAGE", "text": golden},
      {"type": "plain_text", "name": "PORTAL_CONFIG", "text": portal},
      {"type": "plain_text", "name": "PLANS", "text": json.dumps(json.load(open(plans)))}]
+# Mail: the service account key (domain-wide delegation, gmail.send as hello@amux.io) never expires.
+# The hello@amux.io user grant is the fallback; the amux.io session policy ends it within a day.
+sa = os.path.join(s, "gmail-sa.json")
+if os.path.exists(sa):
+    b.append({"type": "secret_text", "name": "GMAIL_SA", "text": base64.b64encode(open(sa, "rb").read()).decode()})
 if os.path.exists(gt):
     b.append({"type": "secret_text", "name": "GMAIL_OAUTH", "text": base64.b64encode(open(gt, "rb").read()).decode()})
+if not (os.path.exists(sa) or os.path.exists(gt)):
+    print("WARN no mail credential: billing, deletion and operator emails will fail", file=sys.stderr)
 if mode == "test":
     b.append({"type": "secret_text", "name": "TEST_KEY", "text": open(os.path.join(s, "start-test-key")).read().strip()})
 json.dump({"main_module": "worker.mjs", "compatibility_date": "2026-10-01", "bindings": b,
