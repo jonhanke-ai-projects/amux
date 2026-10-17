@@ -824,8 +824,11 @@ async fn put_file(req: Request) -> Response {
             Err(e) => return j(400, json!({"error": format!("content_base64 is not base64: {e}")})),
         },
         None => {
+            // Atomic like the binary path: std::fs::write truncates then writes,
+            // so a reader could get a half-written file (draw-tab.spec.ts:777 read
+            // Draw's recents mid-save and failed to parse it, rust run 38993495666).
             let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            std::fs::write(&p, content)
+            write_atomic(&p, content.as_bytes())
         }
     };
     match written {
