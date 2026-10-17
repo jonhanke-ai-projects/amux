@@ -8,9 +8,9 @@ boundaries.toml (repo root; installed beside this file as
 registry, refuses the tool calls a `deny` rule describes, and refuses heavy
 commands while the machine is critical (the `resources` boundary).
 
-Who it applies to: amux workers (AMUX_SESSION set) that are not isolated.
-CLAUDE.md "Isolated workers" promises an isolated worker no behavioral hooks,
-so it is skipped and GET /api/boundaries says so.
+Who it applies to: amux workers (AMUX_SESSION set), isolated ones included
+while the registry's top-level `apply_to_isolated` is true (the default; it
+is the named exception in CLAUDE.md "Isolated workers").
 
 Every decision other than a plain allow is appended to
 ~/.amux/logs/boundaries.jsonl (tokens redacted), which is what
@@ -74,16 +74,19 @@ def merge(base: list[dict], over: list[dict]) -> list[dict]:
     return [by_id[i] for i in order]
 
 
-def load_registry() -> list[dict]:
+def load_registry() -> tuple[list[dict], dict]:
+    """Enabled boundaries, and the top-level settings (later layers win)."""
     if tomllib is None:
         raise RuntimeError("python has no tomllib (needs 3.11+)")
     boundaries: list[dict] = []
+    settings: dict = {}
     for i, p in enumerate(registry_paths()):
         with open(p, "rb") as fh:
             data = tomllib.load(fh)
         layer = data.get("boundary") or []
         boundaries = layer if i == 0 else merge(boundaries, layer)
-    return [b for b in boundaries if b.get("enabled", True)]
+        settings.update({k: v for k, v in data.items() if k != "boundary"})
+    return [b for b in boundaries if b.get("enabled", True)], settings
 
 
 SECRET_PATTERNS = [
@@ -293,8 +296,6 @@ def main() -> None:
     session = os.environ.get("AMUX_SESSION", "")
     if not session and os.environ.get("AMUX_BOUNDARIES_FORCE") != "1":
         sys.exit(0)  # not an amux worker
-    if session and is_isolated(session) and os.environ.get("AMUX_BOUNDARIES_FORCE") != "1":
-        sys.exit(0)  # CLAUDE.md: isolated workers get no behavioral hooks
     tool = payload.get("tool_name") or ""
     ti = payload.get("tool_input") or {}
     command = (ti.get("command") or "") if tool == "Bash" else ""
@@ -303,11 +304,13 @@ def main() -> None:
     if tool == "MultiEdit":
         content += "\n".join(str(e.get("new_string") or "") for e in ti.get("edits") or [])
     try:
-        boundaries = load_registry()
+        boundaries, settings = load_registry()
     except Exception as e:
         log({"verdict": "boundary_registry_unloadable", "error": str(e)[:300], "measured": False, "n_considered": 0})
         sys.stderr.write(f"amux boundary-guard: registry did not load ({e}); boundaries are NOT enforced.\n")
         sys.exit(0)
+    if session and not settings.get("apply_to_isolated", True) and is_isolated(session):
+        sys.exit(0)  # the owner exempted isolated workers in the registry
     for b in boundaries:
         for i, rule in enumerate(b.get("deny") or []):
             try:

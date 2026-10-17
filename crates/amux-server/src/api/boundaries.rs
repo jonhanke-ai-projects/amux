@@ -98,6 +98,14 @@ pub fn load() -> (Vec<toml::Table>, Source, Vec<String>) {
     (merged, source, errors)
 }
 
+/// Top-level `apply_to_isolated` (default true), the override file winning.
+pub fn applies_to_isolated() -> bool {
+    let read = |t: &str| toml::from_str::<toml::Table>(t).ok().and_then(|t| t.get("apply_to_isolated").and_then(|v| v.as_bool()));
+    let base = std::fs::read_to_string(installed_registry()).ok().and_then(|t| read(&t)).or_else(|| read(DEFAULT_REGISTRY));
+    let over = std::fs::read_to_string(override_registry()).ok().and_then(|t| read(&t));
+    over.or(base).unwrap_or(true)
+}
+
 fn enabled(b: &toml::Table) -> bool {
     b.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true)
 }
@@ -207,6 +215,7 @@ async fn boundaries() -> impl IntoResponse {
         })
         .collect();
     let isolated = isolated_workers();
+    let covered = applies_to_isolated();
     Json(json!({
         "measured": true,
         "n_considered": items.len(),
@@ -218,9 +227,17 @@ async fn boundaries() -> impl IntoResponse {
         "boundaries": items,
         "guard_errors_24h": counts.get("_guard").cloned().unwrap_or(json!({})),
         "events_24h": { "n": n_events, "log_read": log_read, "log": log.display().to_string() },
+        "isolated": {
+            "covered_by_hook": covered,
+            "n_workers": isolated.len(),
+            "why": if covered {
+                "apply_to_isolated = true: the guard refuses the same calls for isolated workers (CLAUDE.md names this exception). Rule text is never injected into them."
+            } else {
+                "apply_to_isolated = false: isolated workers are exempt from the guard. Server gates (vault approval, email external-send hold) still apply."
+            },
+        },
         "not_covered_by_hook": {
-            "isolated_workers": isolated,
-            "why": "CLAUDE.md: isolated workers get no behavioral hooks. Server gates (vault approval, email external-send hold) still apply to them.",
+            "isolated_workers": if covered { Vec::new() } else { isolated },
         },
     }))
 }
@@ -336,6 +353,12 @@ mod tests {
         assert!(!enabled(&m[0]) && s(&m[0], "title") == "A");
         assert!(enabled(&m[1]));
         assert_eq!(s(&m[2], "id"), "c");
+    }
+
+    #[test]
+    fn the_committed_registry_applies_to_isolated_workers() {
+        let t: toml::Table = toml::from_str(DEFAULT_REGISTRY).unwrap();
+        assert_eq!(t.get("apply_to_isolated").and_then(|v| v.as_bool()), Some(true));
     }
 
     #[test]
