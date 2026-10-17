@@ -11657,9 +11657,6 @@ async function _scopeEditSave() {
 // `active` says whether it takes effect, and a row that is set but blocked by
 // its parent says so instead of looking like it works.
 const _BOARD_SWITCHES = [
-  { field: 'board_decompose', value: 'board_decompose', own: null, group: 'Your messages',
-    label: 'Plan my messages onto the board',
-    note: 'Each message you send this worker is also turned into board cards in the background. The message itself still reaches the worker right away.' },
   { field: 'board_force_adherence', value: 'board_force_adherence', own: null, group: 'The board and this worker',
     label: 'Board steers this worker',
     note: 'Lets the board type into this worker: start cards, nudge and remind it. With planning on, a task-like message is held until it becomes cards, and the worker gets the cards instead. Off: the board only keeps records.' },
