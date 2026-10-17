@@ -35,16 +35,22 @@ test('Scratchpad keeps typed text: a note closed before Save is saved, and captu
   };
   await expect.poll(found, { timeout: 15_000, message: 'the closed note was saved' }).toBe(1);
 
-  // An empty new note closed straight away adds no file (path-based, so it is
-  // robust when other specs write to the shared Scratchpad in parallel).
-  await page.evaluate(() => (window as any)._scratchpadNewNote());
-  await expect(page.locator('#file-edit-ta')).toBeVisible();
-  const emptyPath = await page.evaluate(() => (0, eval)('_fileData').path as string);
-  await page.locator('#file-overlay .btn', { hasText: '\u2715' }).first().click();
-  await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
-  await page.waitForTimeout(1000);
-  expect((await request.get('/api/file?path=' + encodeURIComponent(emptyPath), { headers: auth })).ok(),
-    'an empty note is not saved to disk').toBe(false);
+  // An empty new note closed straight away adds no file. This is client logic
+  // identical on every project, and a new note's path is always the shared
+  // `untitled.md` \u2014 which collides across the three projects writing to the one
+  // real Scratchpad (another project's pre-rename note sits at that same path).
+  // Prove it once on desktop so the check is deterministic rather than racing
+  // a co-tenant's untitled.md.
+  if (info.project.name === 'desktop') {
+    await page.evaluate(() => (window as any)._scratchpadNewNote());
+    await expect(page.locator('#file-edit-ta')).toBeVisible();
+    const emptyPath = await page.evaluate(() => (0, eval)('_fileData').path as string);
+    await page.locator('#file-overlay .btn', { hasText: '\u2715' }).first().click();
+    await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
+    await page.waitForTimeout(1000);
+    expect((await request.get('/api/file?path=' + encodeURIComponent(emptyPath), { headers: auth })).ok(),
+      'an empty note is not saved to disk').toBe(false);
+  }
 
   // Quick capture: typed (not yet saved) text survives a reload.
   await page.locator('#sp-capture').fill(`draft ${marker}`);
