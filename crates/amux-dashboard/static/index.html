@@ -703,7 +703,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="session-view">
 <div style="padding:0 12px;margin-top:4px;display:flex;align-items:center;gap:8px;">
   <div class="search-wrap" id="search-wrap" style="flex:1;">
-    <input class="search-input" id="search-input" type="text" placeholder="Search workers..." autocomplete="off" autocorrect="off"
+    <input class="search-input" id="search-input" type="text" placeholder="Search name, description, task..." aria-label="Search workers by name, description or active task" autocomplete="off" autocorrect="off"
       oninput="searchQuery=this.value;document.getElementById('search-wrap').classList.toggle('has-value',!!this.value);onSearchInput()">
     <button class="search-clear" onclick="event.stopPropagation();clearSearch()">&#x2715;</button>
   </div>

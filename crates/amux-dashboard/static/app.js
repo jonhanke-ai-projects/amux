@@ -7574,6 +7574,11 @@ function render() {
     s.name.toLowerCase().includes(q) ||
     (s.dir || '').toLowerCase().includes(q) ||
     (s.desc || '').toLowerCase().includes(q) ||
+    // Active task: the task name shown on the card and its board card id, so
+    // "which worker is on the billing bug" matches by what it is doing, not
+    // only by its name/description (Ethan, 2026-10-17).
+    (s.task_name || '').toLowerCase().includes(q) ||
+    _runtimeBoardPresentation(s).cardId.toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q)) ||
     (logSearchMode && s.name in _logMatches)
   ) : list;
@@ -25329,7 +25334,7 @@ function setLogSearchMode(on) {
   const btn = document.getElementById('log-search-btn');   // legacy toolbar button (may be absent)
   if (btn) btn.classList.toggle('active', logSearchMode);
   const si = document.getElementById('search-input');
-  if (si) si.placeholder = logSearchMode ? 'Search worker logs...' : 'Search workers...';
+  if (si) si.placeholder = logSearchMode ? 'Search worker logs...' : 'Search name, description, task...';
   _logMatches = {};
   if (logSearchMode && searchQuery) {
     clearTimeout(_logSearchTimer);
