@@ -3297,6 +3297,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["DELETE"],
     },
     RouteEntry {
+        path: "/api/tailnet/status",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/tailnet/join",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/tailnet/leave",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/reports/types",
         methods: &["GET"],
     },
