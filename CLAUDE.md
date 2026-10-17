@@ -92,6 +92,9 @@ Verify a hook by what it WROTE, not by the settings file.
 ## Workflow
 
 - **No auto-pull.** Shared checkout; the freshness hook reports staleness, the human decides.
+  Asked to bring a checkout current, run `amux sync-checkout` (`--check` to only report): it
+  fast-forwards when nothing can be lost and otherwise names the blockers in seconds. Do not
+  diff the tree by hand.
 - **Commit after every completed task.** Committing deploys locally (builder adopts within ~60s).
 - **Bash CLI ships via `make install-cli`** (also part of `install.sh`).
   `check-and-commit.sh` checks saves; installation validates the exact published bytes.

@@ -6141,6 +6141,7 @@ ${BOLD}Interaction:${RESET}
 
 ${BOLD}Coordination:${RESET}
   amux land [--branch main]      Rebase and push HEAD holding a per-repo lock, so lanes queue instead of racing
+  amux sync-checkout [--check]   Bring this checkout's branch current with origin when that loses nothing; else name what blocks it
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
                                  Raise it: clears every waiting card, wakes their lanes
@@ -8089,6 +8090,75 @@ _land_cancel() {
 # each its place for nothing.
 LAND_BEHAVIOR_VERSION="2026-10-08.55"
 
+# SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
+# origin and never moves the checkout's branch, so a shared checkout only drifts:
+# measured that day ~/Dev/mixpeek at 352 ahead / 10053 behind and ~/Dev/amux at
+# 75 / 794. A worker asked to "make sure local is up to date" had no sanctioned
+# verb and spent its turn diffing 28,737 paths by hand. This answers in seconds:
+# it fast-forwards only when nothing can be lost, and otherwise names the
+# blockers. It never resets, stashes, rebases or merges.
+#   - staged entries refuse: the shared index may hold a peer's staged work
+#   - local-only commits refuse unless each is patch-equivalent on origin
+#   - `git read-tree -m -u HEAD <origin>` carries uncommitted edits forward and
+#     refuses, touching nothing, when one sits on a path origin changed
+cmd_sync_checkout() {
+  local remote=origin branch="" check=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check) check=1; shift ;;
+      --remote) remote="${2:?}"; shift 2 ;;
+      --branch) branch="${2:?}"; shift 2 ;;
+      -h|--help) echo "usage: amux sync-checkout [--check] [--remote origin] [--branch <current>]"; return 0 ;;
+      *) die "amux sync-checkout: unknown argument $1" ;;
+    esac
+  done
+  git rev-parse --git-dir >/dev/null 2>&1 || die "amux sync-checkout: not inside a git repository"
+  local cur; cur="$(git symbolic-ref --short -q HEAD)" || die "amux sync-checkout: HEAD is detached; nothing to advance"
+  branch="${branch:-$cur}"
+  [ "$branch" = "$cur" ] || die "amux sync-checkout: on $cur, not $branch"
+  local log="$HOME/.amux/logs/sync-checkout.log" top; top="$(git rev-parse --show-toplevel)"
+  mkdir -p "${log%/*}"
+  _sc_log() { printf '%s %s repo=%s %s\n' "$(date -u +%FT%TZ)" "${AMUX_SESSION:-?}" "$top" "$*" >> "$log"; echo "amux sync-checkout: $*"; }
+  git fetch -q "$remote" "$branch" || { _sc_log "verdict=fetch_failed measured=false"; return 1; }
+  local head up ahead behind staged unlanded
+  head="$(git rev-parse HEAD)"; up="$(git rev-parse "$remote/$branch")"
+  behind="$(git rev-list --count "HEAD..$up")"; ahead="$(git rev-list --count "$up..HEAD")"
+  if [ "$behind" = 0 ]; then _sc_log "verdict=current measured=true behind=0 ahead=$ahead"; return 0; fi
+  staged="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+  unlanded="$(git log --cherry-pick --right-only --no-merges --format='%h %s' "$up...HEAD")"
+  local n_unl=0; [ -n "$unlanded" ] && n_unl="$(printf '%s\n' "$unlanded" | wc -l | tr -d ' ')"
+  if [ "$staged" != 0 ] || [ "$n_unl" != 0 ]; then
+    # Landing by replay can resolve a conflict, so a landed commit is not always
+    # patch-equivalent; one whose subject is on origin probably landed modified.
+    local subj same=0
+    if [ "$n_unl" != 0 ]; then
+      subj="$(git log --format=%s "$(git merge-base HEAD "$up")..$up")"
+      same="$(printf '%s\n' "$unlanded" | cut -d' ' -f2- | grep -cxF -f <(printf '%s\n' "$subj") || true)"
+    fi
+    _sc_log "verdict=blocked measured=true behind=$behind ahead=$ahead staged=$staged unlanded=$n_unl unlanded_same_subject_on_origin=$same"
+    [ "$staged" != 0 ] && echo "  $staged staged path(s): the index is shared, so they may be a peer's. git diff --cached --stat"
+    if [ "$n_unl" != 0 ]; then
+      echo "  $n_unl local commit(s) have no patch-equivalent on $remote/$branch ($same with the same subject there, probably landed modified):"
+      printf '%s\n' "$unlanded" | head -10 | sed 's/^/    /'
+      [ "$n_unl" -gt 10 ] && echo "    ... $((n_unl - 10)) more: git log --cherry-pick --right-only --no-merges --oneline $remote/$branch...HEAD"
+    fi
+    echo "  Nothing was changed. Read committed code with git show $remote/$branch:<path> meanwhile; reconciling this checkout is the owner's call."
+    return 3
+  fi
+  if [ "$check" = 1 ]; then _sc_log "verdict=would_advance measured=true behind=$behind ahead=$ahead"; return 0; fi
+  git update-ref "refs/amux/pre-sync/$(date -u +%Y%m%dT%H%M%SZ)" "$head"
+  local out
+  if ! out="$(git read-tree -m -u "$head" "$up" 2>&1)"; then
+    _sc_log "verdict=blocked_by_local_edits measured=true behind=$behind"
+    printf '%s\n' "$out" | head -10 | sed 's/^/  /'
+    echo "  Uncommitted edits sit on paths $remote/$branch changed. Nothing was changed."
+    return 3
+  fi
+  git update-ref -m "amux sync-checkout" "refs/heads/$branch" "$up" "$head" \
+    || { _sc_log "verdict=raced measured=true (HEAD moved during the sync; tree now matches $up, branch not moved)"; return 1; }
+  _sc_log "verdict=advanced measured=true from=$(git rev-parse --short "$head") to=$(git rev-parse --short "$up") behind=$behind"
+}
+
 cmd_land() {
   # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] | --cancel | --status
   #
@@ -9253,6 +9323,9 @@ $f"
       fi
       printf '%s\n' "$out" | tail -3
       date +%s > "$lock.lastpush" 2>/dev/null || true
+      # Land never moves this checkout's branch, so say how far behind it is.
+      local _lb; _lb="$(git rev-list --count "HEAD..$stack_tip" 2>/dev/null || echo 0)"
+      [ "${_lb:-0}" -gt 0 ] && _land_log "verdict=checkout_left_behind behind=$_lb: this checkout's $branch still points at the pre-land HEAD. amux sync-checkout advances it when that loses nothing"
       return 0
     fi
     if printf '%s' "$out" | grep -qE 'non-fast-forward|fetch first|\[rejected\]|cannot lock ref'; then
@@ -9452,6 +9525,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     board|b)          shift; cmd_board "$@" ;;
     signal)           shift; cmd_signal "$@" ;;
     land)             shift; cmd_land "$@" ;;
+    sync-checkout)    shift; cmd_sync_checkout "$@" ;;
     browser|br)      shift; cmd_browser "$@" ;;
     cdp)              shift; cmd_cdp "$@" ;;
     computer|cu)     shift; cmd_computer "$@" ;;
