@@ -15824,6 +15824,7 @@ pub(crate) async fn start_session(
     let rules_opts = worker_rules_shell(name, &provider, isolated);
     let cmd = match provider.as_str() {
         "codex" => {
+            codex_login_with_saved_key(name).await;
             // py:24380 — codex command construction (trust-db side effect not
             // ported).
             let codex_session_id = if skip_conv_id {
@@ -17027,6 +17028,56 @@ pub(crate) async fn start_session(
         queue_start_prompt(st2, n, instr, SendOrigin::Owner).await;
     }
     (true, "started".into())
+}
+
+/// Codex shows its own sign-in picker until its home holds a login, even with OPENAI_API_KEY in
+/// the worker's environment. A customer who saved an OpenAI key in Settings therefore met
+/// "Sign in with ChatGPT / Provide your own API key" on their first Codex worker (amux Cloud e2e,
+/// 2026-10-18). With a saved key and no Codex login, log Codex in with that key before launch.
+/// The key reaches `codex login --with-api-key` on stdin, never argv or the pane.
+async fn codex_login_with_saved_key(name: &str) {
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex"));
+    let key = super::settings::runtime_provider_env(&home())
+        .into_iter()
+        .find(|(k, _)| k == "OPENAI_API_KEY")
+        .map(|(_, v)| v);
+    let verdict = codex_api_key_login(launch_base_binary("codex"), &codex_home, key.as_deref()).await;
+    if verdict != "codex_already_signed_in" && verdict != "codex_no_saved_key" {
+        tracing::info!(session = name, measured = true, n_considered = 1, verdict,
+            "codex sign-in with the saved OpenAI key before launch");
+    }
+}
+
+async fn codex_api_key_login(bin: &str, codex_home: &std::path::Path, key: Option<&str>) -> &'static str {
+    if std::fs::metadata(codex_home.join("auth.json")).map(|m| m.len() > 2).unwrap_or(false) {
+        return "codex_already_signed_in";
+    }
+    let Some(key) = key.filter(|k| !k.trim().is_empty()) else {
+        return "codex_no_saved_key";
+    };
+    use tokio::io::AsyncWriteExt;
+    let child = tokio::process::Command::new(bin)
+        .args(["login", "--with-api-key"])
+        .env("CODEX_HOME", codex_home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let Ok(mut child) = child else {
+        return "codex_api_key_login_spawn_failed";
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(key.trim().as_bytes()).await;
+        let _ = stdin.write_all(b"\n").await;
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait()).await {
+        Ok(Ok(st)) if st.success() => "codex_api_key_login_ok",
+        Ok(_) => "codex_api_key_login_failed",
+        Err(_) => "codex_api_key_login_timed_out",
+    }
 }
 
 fn provider_command_in_workspace(work_dir: &str, command: &str, isolated: bool) -> String {
@@ -55486,5 +55537,35 @@ mod session_limit_banner_tests {
             api_count: 0,
         };
         assert!(matches!(auto_resume_decision(&inputs), AutoResume::Send { reason: "usage_reset", .. }));
+    }
+}
+
+#[cfg(test)]
+mod codex_saved_key_login_tests {
+    use super::codex_api_key_login;
+
+    /// A stub `codex` that records its arguments and stdin the way `codex login --with-api-key`
+    /// would store a login.
+    fn stub(dir: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("codex");
+        std::fs::write(&bin, "#!/bin/sh\nmkdir -p \"$CODEX_HOME\"\necho \"$*\" > \"$CODEX_HOME/args\"\ncat > \"$CODEX_HOME/auth.json\"\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin.to_string_lossy().into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_saved_openai_key_signs_codex_in_before_its_picker_can_appear() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (bin, home) = (stub(tmp.path()), tmp.path().join("codex-home"));
+        assert_eq!(codex_api_key_login(&bin, &home, None).await, "codex_no_saved_key");
+        assert!(!home.join("auth.json").exists(), "no key, no login");
+        assert_eq!(codex_api_key_login(&bin, &home, Some("sk-test-123")).await, "codex_api_key_login_ok");
+        assert_eq!(std::fs::read_to_string(home.join("args")).unwrap().trim(), "login --with-api-key");
+        assert_eq!(std::fs::read_to_string(home.join("auth.json")).unwrap().trim(), "sk-test-123", "key arrives on stdin");
+        // Signed in already (a ChatGPT login, or the one above): left alone.
+        std::fs::write(home.join("auth.json"), r#"{"tokens":{"x":1}}"#).unwrap();
+        assert_eq!(codex_api_key_login(&bin, &home, Some("sk-other")).await, "codex_already_signed_in");
+        assert!(std::fs::read_to_string(home.join("auth.json")).unwrap().contains("tokens"));
     }
 }
