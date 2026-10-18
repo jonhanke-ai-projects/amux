@@ -54,7 +54,8 @@ function world() {
       if (p === '/v1/prices') return ok({ data: [{ id: 'price_team' }] });
       if (p === '/v1/checkout/sessions' && m === 'POST') {
         const meta = {}; for (const [k, v] of f) { const x = k.match(/^metadata\[(.+)\]$/); if (x) meta[x[1]] = v; }
-        const s = { id: 'cs_test_' + (++w.n), url: 'https://checkout.test/' + w.n, status: 'open', created: Math.floor(Date.now() / 1000), metadata: meta };
+        const s = { id: 'cs_test_' + (++w.n), url: 'https://checkout.test/' + w.n, status: 'open', created: Math.floor(Date.now() / 1000), metadata: meta,
+                    params: [...f.keys()] };
         w.sessions.push(s); return ok(s);
       }
       if (p === '/v1/checkout/sessions' && m === 'GET') return ok({ data: w.sessions.filter(s => s.status === f.get('status')) });
@@ -167,6 +168,13 @@ await test('C15-1 the same signup submitted twice leaves one payable checkout', 
   eq(w.sessions.filter(s => s.status === 'open').length, 1, 'open sessions');
   eq(r2.url, w.sessions.find(s => s.status === 'open').url, 'second answer is the open one');
   eq(r1.url !== r2.url, true, 'first was replaced');
+});
+
+await test('checkout collects no tax (no EU VAT)', async () => {
+  const w = world();
+  await api(w, '/api/checkout', { plan: 'team', slug: 'notax', email: 'hello+notax@amux.io', pw_hash: 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44) }, { 'x-test-key': 'k' });
+  eq(w.sessions.length, 1, 'sessions');
+  eq(w.sessions[0].params.filter(k => k.startsWith('automatic_tax')), [], 'tax params');
 });
 
 await test('C14-2 unknown order answers 404, not 500', async () => {
