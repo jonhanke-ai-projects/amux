@@ -2918,15 +2918,15 @@ function showFormModal(title, innerHTML, confirmLabel = 'Save') {
   });
 }
 // Single-line prompt on the same chrome. Resolves the string, or null if cancelled.
-async function showPrompt(msg, placeholder = '') {
+async function showPrompt(msg, placeholder = '', value = '') {
   // Focused, and Enter submits: a prompt you must click into and then click
   // OK on invited pressing OK on an empty box (the bulk-delete "Delete
   // cancelled" report, 2026-09-24).
   const shown = showFormModal(msg,
-    '<input id="modal-prompt-input" class="dict-modal-input" placeholder="' + esc(placeholder) + '" style="width:100%"'
+    '<input id="modal-prompt-input" class="dict-modal-input" placeholder="' + esc(placeholder) + '" value="' + esc(value) + '" style="width:100%"'
     + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_modalClose(true)}">',
     'OK');
-  setTimeout(() => document.getElementById('modal-prompt-input')?.focus(), 30);
+  setTimeout(() => { const i = document.getElementById('modal-prompt-input'); if (i) { i.focus(); if (value) i.select(); } }, 30);
   const ok = await shown;
   if (!ok) return null;
   return (document.getElementById('modal-prompt-input')?.value || '').trim();
@@ -60857,7 +60857,9 @@ function _vxOnPeekOpen(name) {
 //   <folder>/<name>.excalidraw              the drawing itself (user's folder)
 //   <amux data dir>/draw/library.excalidrawlib   shared component library
 //   <amux data dir>/draw/recents.json        recent drawings + PNG thumbnails
-//   pref draw_settings / draw_dir / draw_last   snap toggles, folder, last file
+//   pref draw_settings / draw_dir / draw_last   snap toggles, default folder, last file
+//   localStorage amux_draw_draft:<path>      unsaved edits, written when the page
+//                                            hides or a save fails; restored on open
 //
 // The editor bundle (static/vendor/draw, scripts/build-draw.mjs) is imported
 // the first time the tab opens, so app boot never pays for it.
@@ -60879,7 +60881,7 @@ function _drawS() {
   if (!_draw) {
     _draw = {
       lib: null, loading: null, api: null, root: null, mounted: false,
-      path: '', dir: '', etag: null, savedVersion: null, curVersion: null,
+      path: '', dir: '', defaultDir: '', etag: null, retryMs: 0, retryTimer: null, savedVersion: null, curVersion: null,
       saving: false, saveAgain: false, saveTimer: null, status: 'idle', statusMsg: '',
       pollTimer: null, pollTick: 0, applying: false, conflict: null, opening: false, openSeq: 0, savedCount: 0,
       libItems: [], libHash: null, libEtag: null, libSaveTimer: null, libLoaded: false,
@@ -61044,6 +61046,19 @@ async function _drawEnter() {
     addEventListener('resize', () => { if (activeView === 'draw') { _drawFit(); _drawSyncOffsetsSoon('resize'); } });
     document.addEventListener('fullscreenchange', () => { if (activeView === 'draw') _drawSyncOffsetsSoon('fullscreen'); });
     addEventListener('scroll', () => _drawPinPage('scroll'), { passive: true });
+    // Unsaved strokes survive a closed tab, a killed phone browser or a server
+    // that is down: the page writes them to a local draft as it hides and
+    // saves at once, and the next open of the file restores the draft.
+    document.addEventListener('visibilitychange', () => { if (document.hidden) _drawOnHide('hidden'); });
+    addEventListener('pagehide', () => _drawOnHide('pagehide'));
+    addEventListener('online', () => _drawRetryNow('online'));
+    addEventListener('beforeunload', e => {
+      const dd = _draw;
+      if (!dd || !_drawDirty()) return;
+      _drawWriteDraft('beforeunload');
+      // A save that is failing is the only case worth stopping the close for.
+      if (dd.status === 'error' || dd.status === 'conflict') { e.preventDefault(); e.returnValue = ''; }
+    });
     // Anything above the view changing height (a banner, the header wrapping)
     // moves the space the view has to fit in.
     if (typeof ResizeObserver === 'function') {
@@ -61092,7 +61107,8 @@ async function _drawLoadSettings() {
   if (server) raw = server;
   try { if (raw) Object.assign(d.settings, JSON.parse(raw)); } catch (e) {}
   const dir = await _drawPrefGet('draw_dir');
-  d.dir = dir || d.dir || _drawDefaultDir();
+  d.defaultDir = dir || _drawDefaultDir();
+  d.dir = d.dir || d.defaultDir;
   d.settingsLoaded = true;
 }
 
@@ -61195,6 +61211,7 @@ async function _drawOnApi() {
   _drawRenderPenbar();
   _drawLoadLibrary();
   _drawLoadRecents();
+  _drawPruneDrafts();
   // A file requested before the editor existed (Files tab, path link) wins;
   // then the last drawing; otherwise a fresh untitled one in the folder.
   if (d.pendingOpen) { const p = d.pendingOpen; d.pendingOpen = null; await _drawOpen(p); return; }
@@ -61289,7 +61306,7 @@ async function _drawSave(opts) {
   // While a drawing opens, d.path already names the file being opened but the
   // canvas still holds the previous one. A save now would write the previous
   // drawing into the file being opened.
-  if (d.opening) return false;
+  if (d.opening || (d.deleting && d.deleting === d.path)) return false;
   // In a shared room only the saver writes; this tab's edits reach it live.
   if (_drawRtFollower()) { d.savedVersion = _drawSceneVersion(); _drawSetStatus('synced', _drawRtSaverLabel()); return true; }
   if (d.saving) { d.saveAgain = true; return false; }
@@ -61328,21 +61345,22 @@ async function _drawSave(opts) {
       await _drawShowConflict('save');
     } else if (!r.ok || res.error || !res.ok || res.queued || !res.etag) {
       const msg = res.error || (res.queued ? 'the server did not confirm the write' : 'HTTP ' + r.status);
-      _drawSetStatus('error', msg);
-      _drawBeacon('save-failed', { status: r.status, error: msg });
+      _drawSaveFailed(msg, { status: r.status });
     } else {
       d.etag = res.etag || null;
       d.savedVersion = version;
       d.savedCount = live.length;
       ok = true;
+      d.retryMs = 0;
+      if (d.retryTimer) { clearTimeout(d.retryTimer); d.retryTimer = null; }
+      if (d.curVersion === version) _drawDropDraft(path);
       _drawRtAfterSave(d.etag);
       _drawSetStatus(d.curVersion === version ? 'saved' : 'dirty');
       _drawRememberRecent(false);
     }
   } catch (e) {
     const msg = (e && e.name === 'TimeoutError') ? 'the server did not answer in 20s' : String(e && e.message || e);
-    _drawSetStatus('error', msg);
-    _drawBeacon('save-failed', { error: msg });
+    if (path === d.path) _drawSaveFailed(msg, {});
   } finally {
     d.saving = false;
   }
@@ -61351,6 +61369,104 @@ async function _drawSave(opts) {
   return ok;
 }
 function _drawSaveNow() { return _drawSave(); }
+
+// A failed write keeps the strokes in a local draft and tries again on its
+// own, backing off from 2s to 30s, and at once when the browser comes back
+// online. The status line says when the next try is.
+function _drawSaveFailed(msg, extra) {
+  const d = _draw;
+  _drawWriteDraft('save-failed');
+  d.retryMs = Math.min(30000, d.retryMs ? d.retryMs * 2 : 2000);
+  _drawSetStatus('error', msg + ' · retrying in ' + Math.round(d.retryMs / 1000) + 's');
+  _drawBeacon('save-failed', Object.assign({ error: msg, retry_ms: d.retryMs }, extra || {}));
+  if (d.retryTimer) clearTimeout(d.retryTimer);
+  d.retryTimer = setTimeout(() => {
+    d.retryTimer = null;
+    if (d.status === 'error' && !d.conflict && _drawDirty()) _drawSave({ background: true });
+  }, d.retryMs);
+}
+function _drawRetryNow(why) {
+  const d = _draw;
+  if (!d || d.status !== 'error' || d.conflict || !_drawDirty()) return;
+  if (d.retryTimer) { clearTimeout(d.retryTimer); d.retryTimer = null; }
+  _drawBeacon('save-retry', { why });
+  _drawSave({ background: true });
+}
+function _drawOnHide(why) {
+  const d = _draw;
+  if (!d || !d.api || !_drawDirty()) return;
+  _drawWriteDraft(why);
+  if (!d.saving) _drawSave({ background: true });
+}
+
+// ── Local draft of unsaved edits ──
+const _DRAW_DRAFT_PREFIX = 'amux_draw_draft:';
+const _DRAW_DRAFT_MAX_AGE_MS = 30 * 86400000;
+function _drawWriteDraft(why) {
+  const d = _draw;
+  if (!d || !d.api || !d.path || d.opening || d.deleting || !_drawDirty() || _drawSceneLost()) return;
+  if (_drawRtFollower()) return;   // the room's saver holds these edits
+  try {
+    const api = d.api;
+    const content = d.lib.X.serializeAsJSON(api.getSceneElements(), api.getAppState(), api.getFiles(), 'local');
+    localStorage.setItem(_DRAW_DRAFT_PREFIX + d.path, JSON.stringify({ path: d.path, base: d.etag || null, ts: Date.now(), content }));
+  } catch (e) {
+    _drawBeacon('draft-write-failed', { why, error: String(e && e.message || e) });
+  }
+}
+function _drawDraftGet(path) {
+  try {
+    const raw = localStorage.getItem(_DRAW_DRAFT_PREFIX + path);
+    const dr = raw ? JSON.parse(raw) : null;
+    return dr && typeof dr.content === 'string' ? dr : null;
+  } catch (e) { return null; }
+}
+function _drawDropDraft(path) {
+  try { localStorage.removeItem(_DRAW_DRAFT_PREFIX + path); } catch (e) {}
+}
+// Drafts of files never reopened would pile up; a month is the limit.
+function _drawPruneDrafts() {
+  let dropped = 0, n = 0;
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(_DRAW_DRAFT_PREFIX)) continue;
+      n++;
+      let ts = 0;
+      try { ts = JSON.parse(localStorage.getItem(k)).ts || 0; } catch (e) {}
+      if (Date.now() - ts > _DRAW_DRAFT_MAX_AGE_MS) { localStorage.removeItem(k); dropped++; }
+    }
+  } catch (e) {}
+  if (dropped) _drawBeacon('drafts-pruned', { dropped, measured: true, n_considered: n });
+}
+// Called while a file opens, after its disk copy is on the canvas. A draft
+// written on the same disk version is put back and saved; one written on an
+// older version is put on the canvas with the conflict bar, so the user picks.
+async function _drawRecoverDraft(path, diskText, diskEtag, stillWanted) {
+  const d = _draw;
+  const dr = _drawDraftGet(path);
+  if (!dr) return;
+  if (diskText !== null && dr.content === diskText) { _drawDropDraft(path); return; }
+  try {
+    if (!(await _drawApplyText(dr.content, true, stillWanted))) return;
+  } catch (e) {
+    _drawDropDraft(path);
+    _drawBeacon('draft-unreadable', { error: String(e && e.message || e) });
+    return;
+  }
+  d.savedVersion = 'draft';   // not what is on disk: autosave writes it
+  const sameBase = (dr.base || null) === (diskEtag || null);
+  _drawBeacon('draft-recovered', { same_base: sameBase, age_ms: Date.now() - (dr.ts || 0), measured: true, n_considered: 1 });
+  if (sameBase) {
+    _drawSetStatus('dirty');
+    _drawScheduleSave();
+    showToast('Recovered unsaved changes to ' + _drawBase(path));
+  } else {
+    d.conflict = { etag: diskEtag, text: diskText };
+    _drawSetStatus('conflict');
+    _drawShowConflictBar('Unsaved changes from an earlier session differ from the file on disk.');
+  }
+}
 
 // Write any pending change to the drawing on screen before it is replaced:
 // wait out a write already in flight (whose follow-up would otherwise be
@@ -61404,6 +61520,7 @@ async function _drawOpen(path) {
       _drawResetScene();
       d.etag = null;
       _drawSetStatus('new');
+      await _drawRecoverDraft(path, null, null, current);
     } else if (!r.ok) {
       const e = await r.json().catch(() => ({}));
       throw new Error(e.error || ('HTTP ' + r.status));
@@ -61413,7 +61530,9 @@ async function _drawOpen(path) {
       if (!(await _drawApplyText(text, true, current))) return;
       d.etag = r.headers.get('ETag');
       _drawSetStatus('saved');
+      await _drawRecoverDraft(path, text, d.etag, current);
     }
+    if (!current()) return;
     _drawPrefSet('draw_last', path);
     _drawRememberRecent(true);
     _drawRtJoin(path);
@@ -61471,7 +61590,7 @@ async function _drawUniquePath(dir, stem) {
   return dir.replace(/\/+$/, '') + '/' + stem + ' ' + Date.now() + '.excalidraw';
 }
 
-async function _drawNew(quiet) {
+async function _drawNew(quiet, inDir) {
   const d = _drawS();
   if (!d.api) return;
   if (!d.opening && !(await _drawFlush())) {
@@ -61480,7 +61599,9 @@ async function _drawNew(quiet) {
     return;
   }
   d.openSeq++; d.opening = false;   // an open still in flight must not land on the new drawing
-  const dir = d.dir || _drawDefaultDir();
+  // New drawings go to the default folder (Library > Drawings > Default
+  // folder); "New here" in the folder picker passes its own.
+  const dir = inDir || d.defaultDir || _drawDefaultDir();
   const path = await _drawUniquePath(dir, 'Untitled');
   d.conflict = null; _drawHideConflict();
   d.path = path; d.dir = dir; d.etag = null;
@@ -61546,7 +61667,7 @@ async function _drawPoll() {
   if (!d || !d.api || activeView !== 'draw' || document.hidden) return;
   d.pollTick++;
   if (d.pollTick % 5 === 0) _drawPollLibrary();
-  if (!d.path || d.saving || d.opening || d.conflict) return;
+  if (!d.path || d.saving || d.opening || d.conflict || d.deleting) return;
   if (_drawRtFollower()) return;   // the room's saver watches the file for us
   try {
     const headers = d.etag ? { 'If-None-Match': d.etag } : {};
@@ -61610,6 +61731,7 @@ async function _drawResolveConflict(choice) {
   _drawHideConflict();
   _drawBeacon('conflict-resolved', { choice });
   if (choice === 'disk') {
+    _drawDropDraft(d.path);
     if (c.text) { await _drawApplyText(c.text, false); d.etag = c.etag; _drawSetStatus('saved'); }
     else { d.etag = null; _drawSetStatus('missing'); }
   } else {
@@ -61657,6 +61779,8 @@ function _drawCloseMenus() {
   if (b) b.setAttribute('aria-expanded', 'false');
   const p = document.getElementById('draw-dir-pop');
   if (p) p.remove();
+  const im = document.getElementById('draw-item-menu');
+  if (im) im.remove();
 }
 function _drawToggleExportMenu(e) {
   if (e) e.stopPropagation();
@@ -61669,8 +61793,10 @@ function _drawToggleExportMenu(e) {
   if (open) setTimeout(() => document.addEventListener('click', _drawCloseMenus, { once: true }), 0);
 }
 
-// Folder picker: a small browser anchored to the breadcrumb.
-async function _drawDirPop(path, anchor) {
+// Folder picker: a small browser anchored to the breadcrumb. mode 'default'
+// picks the default folder for new drawings (Library > Drawings); it sticks
+// while the user walks folders inside the same pop.
+async function _drawDirPop(path, anchor, mode) {
   let pop = document.getElementById('draw-dir-pop');
   if (!pop) {
     pop = document.createElement('div');
@@ -61687,6 +61813,8 @@ async function _drawDirPop(path, anchor) {
     pop.style.top = (r.bottom - vr.top + 4) + 'px';
   }
   pop.dataset.path = path;
+  if (anchor) pop.dataset.mode = mode || '';
+  const pickDefault = pop.dataset.mode === 'default';
   pop.innerHTML = '<div class="draw-pop-path">' + esc(path) + '</div><div class="draw-pop-list">Loading…</div>';
   let data;
   try {
@@ -61707,8 +61835,33 @@ async function _drawDirPop(path, anchor) {
   }
   pop.innerHTML = '<div class="draw-pop-path">' + esc(path) + '</div>'
     + '<div class="draw-pop-list">' + (rows.join('') || '<div class="draw-pop-empty">Empty folder</div>') + '</div>'
-    + '<div class="draw-pop-foot"><button class="btn primary" data-path="' + esc(path) + '" onclick="_drawSaveInDir(this.dataset.path)" title="Saves this drawing into this folder; the old file is kept">Save here</button>'
-    + '<button class="btn" data-path="' + esc(path) + '" onclick="_drawNewInDir(this.dataset.path)">New here</button></div>';
+    + '<div class="draw-pop-foot">' + (pickDefault
+      ? '<button class="btn primary" data-path="' + esc(path) + '" onclick="_drawSetDefaultDir(this.dataset.path)" title="New drawings are created in this folder">Use as default</button>'
+      : '<button class="btn primary" data-path="' + esc(path) + '" onclick="_drawSaveInDir(this.dataset.path)" title="Saves this drawing into this folder; the old file is kept">Save here</button>'
+        + '<button class="btn" data-path="' + esc(path) + '" onclick="_drawNewInDir(this.dataset.path)">New here</button>')
+    + '<button class="btn" data-path="' + esc(path) + '" onclick="_drawOpenDirInFiles(this.dataset.path)" title="Open this folder in the Files tab">Open in Files</button></div>';
+}
+// Library > Drawings > Default folder.
+function _drawChangeDefaultDir(anchor) {
+  const d = _drawS();
+  _drawDirPop(d.defaultDir || _drawDefaultDir(), anchor, 'default');
+}
+function _drawSetDefaultDir(dir) {
+  const d = _drawS();
+  _drawCloseMenus();
+  if (!dir) return;
+  d.defaultDir = dir;
+  _drawPrefSet('draw_dir', dir).then(() => {});
+  showToast('New drawings go to ' + _drawShortPath(dir));
+  _drawLibRender();
+}
+function _drawShortPath(p) {
+  const home = (window._AMUX_HOME || '').replace(/\/+$/, '');
+  return home && (p === home || String(p).startsWith(home + '/')) ? '~' + String(p).slice(home.length) : String(p || '');
+}
+function _drawOpenDirInFiles(dir) {
+  _drawCloseMenus();
+  if (dir && typeof _openPathInFiles === 'function') _openPathInFiles(dir);
 }
 function _drawDirPopHere(anchor) {
   const d = _drawS();
@@ -61725,14 +61878,12 @@ function _drawPopOpen(path) {
 async function _drawNewInDir(dir) {
   _drawCloseMenus();
   _drawS().dir = dir;
-  _drawPrefSet('draw_dir', dir);
-  await _drawNew();
+  await _drawNew(false, dir);
 }
 async function _drawSaveInDir(dir) {
   const d = _drawS();
   _drawCloseMenus();
   d.dir = dir;
-  _drawPrefSet('draw_dir', dir);
   if (!d.api || !d.path) return;
   if (_drawDirOf(d.path) === dir) return;
   const target = await _drawUniquePath(dir, _drawTitleOf(d.path) || 'Untitled');
@@ -61816,6 +61967,26 @@ function _drawRenderSelbar() {
   const lock = document.getElementById('draw-lock-btn');
   if (lock) lock.textContent = d.selLocked ? 'Unlock' : 'Lock';
 }
+// The selection bar's Delete runs Excalidraw's own delete action (it unbinds
+// arrows and takes frame children and labels with it), through the same key
+// it listens for; if that did nothing, the elements are marked deleted here.
+// Either way it is one undo step.
+function _drawDeleteSelection() {
+  const d = _draw;
+  if (!d || !d.api) return;
+  const sel = _drawSelected();
+  if (!sel.length) return;
+  const ids = new Set(sel.map(e => e.id));
+  const host = document.querySelector('#draw-host .excalidraw');
+  if (host) host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', code: 'Delete', bubbles: true, cancelable: true }));
+  const left = d.api.getSceneElements().filter(e => ids.has(e.id));
+  if (left.length) {
+    const X = d.lib.X;
+    d.api.updateScene({ elements: d.api.getSceneElementsIncludingDeleted().map(e => ids.has(e.id) ? X.newElementWith(e, { isDeleted: true }) : e),
+      appState: { selectedElementIds: {} }, captureUpdate: X.CaptureUpdateAction.IMMEDIATELY });
+    _drawBeacon('delete-selection-fallback', { measured: true, n_considered: sel.length });
+  }
+}
 function _drawToggleLock() {
   const d = _draw;
   if (!d || !d.api) return;
@@ -61895,7 +62066,8 @@ async function _drawSaveLibrary(retried) {
       const rr = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(_drawLibPath()), { cache: 'no-store' });
       const theirs = rr.ok ? await d.lib.X.loadLibraryFromBlob(await rr.blob(), 'unpublished') : [];
       d.libEtag = rr.headers.get('ETag');
-      d.libItems = d.lib.X.mergeLibraryItems(items, theirs);
+      const gone = d.libDeleted || new Set();
+      d.libItems = d.lib.X.mergeLibraryItems(items, theirs).filter(i => !gone.has(i.id));
       return _drawSaveLibrary(true);
     }
     if (!r.ok || res.error || res.queued) throw new Error(res.error || ('HTTP ' + r.status));
@@ -61954,9 +62126,10 @@ function _drawLibRender() {
   // mousedown and mouseup (an autosave updating recents, a library echo)
   // removed the pressed tile and the tap never became a click.
   const fresh = _drawSetBody(body, '<div class="draw-lib-sub">My components</div><div class="draw-lib-grid">'
-    + items.map(i => '<button class="draw-lib-item" draggable="true" data-repeatable data-id="' + esc(i.id) + '" title="Drag onto the canvas, or tap to insert"'
+    + items.map(i => '<div class="draw-row draw-lib-cell"><button class="draw-lib-item" draggable="true" data-repeatable data-id="' + esc(i.id) + '" title="Drag onto the canvas, or tap to insert"'
       + ' onclick="_drawInsertLibItem(this.dataset.id)" ondragstart="_drawLibDragStart(event, this.dataset.id)">'
-      + '<span class="draw-lib-thumb" data-thumb="' + esc(i.id) + '"></span><span class="draw-lib-name">' + esc(i.name || 'Untitled') + '</span></button>').join('')
+      + '<span class="draw-lib-thumb" data-thumb="' + esc(i.id) + '"></span><span class="draw-lib-name">' + esc(i.name || 'Untitled') + '</span></button>'
+      + '<button class="draw-row-more" data-key="' + esc(i.id) + '" onclick="_drawItemMenu(event, \'component\', this.dataset.key)" aria-label="Component actions" title="Rename or delete">&#x22EF;</button>' + '</div>').join('')
     + '</div>');
   if (fresh || body.dataset.dark !== String(_drawIsDark())) { body.dataset.dark = String(_drawIsDark()); for (const i of items) _drawLibThumb(i); }
 }
@@ -62154,10 +62327,13 @@ async function _drawSaveRecents() {
 async function _drawRenderDrawings(body, q) {
   const d = _draw;
   const rec = d.recents.filter(x => !q || String(x.title || '').toLowerCase().includes(q));
-  const row = x => '<button class="draw-recent' + (x.path === d.path ? ' current' : '') + '" data-path="' + esc(x.path) + '" onclick="_drawPopOpen(this.dataset.path)" title="' + esc(x.path) + '">'
+  const row = x => '<div class="draw-row"><button class="draw-recent' + (x.path === d.path ? ' current' : '') + '" data-path="' + esc(x.path) + '" onclick="_drawPopOpen(this.dataset.path)" title="' + esc(x.path) + '">'
     + '<span class="draw-recent-thumb">' + (x.thumb ? '<img alt="" src="' + esc(x.thumb) + '">' : '') + '</span>'
     + '<span class="draw-recent-meta"><span class="draw-recent-title">' + esc(x.title || _drawTitleOf(x.path)) + '</span>'
-    + '<span class="draw-recent-when">' + (x.ts ? esc(timeAgo(x.ts / 1000)) : '') + '</span></span></button>';
+    + '<span class="draw-recent-when">' + (x.ts ? esc(timeAgo(x.ts / 1000)) : '') + '</span></span></button>'
+    + '<button class="draw-row-more" data-key="' + esc(x.path) + '" onclick="_drawItemMenu(event, \'drawing\', this.dataset.key)" aria-label="Drawing actions" title="Rename or delete">&#x22EF;</button>' + '</div>';
+  const dir = d.path ? _drawDirOf(d.path) : d.dir;
+  const defDir = d.defaultDir || _drawDefaultDir();
   // The folder rows are restored from the last listing's own HTML and
   // marked with it, so a listing that comes back unchanged is a no-op.
   // Restoring a serialized copy left the mark off, and the unchanged listing
@@ -62165,15 +62341,19 @@ async function _drawRenderDrawings(body, q) {
   // straddled that swap fired no click (draw-tab.spec.ts:356 on iOS).
   const keep = d.folderHtml || '<div class="draw-empty">Loading…</div>';
   const top = body.scrollTop;
-  if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
+  if (_drawSetBody(body, '<div class="draw-default-dir"><span class="draw-default-lbl">New drawings go to</span>'
+      + '<button class="draw-link-btn" data-path="' + esc(defDir) + '" onclick="_drawOpenDirInFiles(this.dataset.path)" title="Open ' + esc(defDir) + ' in Files">' + esc(_drawShortPath(defDir)) + '</button>'
+      + '<button class="draw-link-btn" id="draw-default-dir-btn" onclick="_drawChangeDefaultDir(this)" title="Choose the folder new drawings are created in">Change</button></div>'
+    + '<div class="draw-lib-sub">Recent drawings</div>'
     + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
-    + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
+    + '<div class="draw-lib-subrow"><span class="draw-lib-sub">In this folder</span>'
+    + '<button class="draw-link-btn" id="draw-folder-files" data-path="' + esc(dir) + '" onclick="_drawOpenDirInFiles(this.dataset.path)" title="Open ' + esc(dir) + ' in Files">Open in Files</button></div>'
+    + '<div id="draw-folder-list"></div>')) {
     _drawSetBody(document.getElementById('draw-folder-list'), keep);
     // The folder rows arrive after the body swap; restore the scroll again
     // now that the list is full height (it was clamped while they were absent).
     if (top) body.scrollTop = top;
   }
-  const dir = d.path ? _drawDirOf(d.path) : d.dir;
   try {
     const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dir), { signal: AbortSignal.timeout(8000) });
     const data = await r.json();
@@ -62182,11 +62362,131 @@ async function _drawRenderDrawings(body, q) {
     const files = (data.entries || []).filter(e => e.type !== 'dir' && /\.excalidraw$/i.test(e.name) && (!q || e.name.toLowerCase().includes(q)));
     const html = files.length ? files.map(e => {
       const p = dir.replace(/\/+$/, '') + '/' + e.name;
-      return '<button class="draw-pop-row draw-pop-file' + (p === d.path ? ' current' : '') + '" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>';
+      return '<div class="draw-row"><button class="draw-pop-row draw-pop-file' + (p === d.path ? ' current' : '') + '" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>'
+        + '<button class="draw-row-more" data-key="' + esc(p) + '" onclick="_drawItemMenu(event, \'drawing\', this.dataset.key)" aria-label="Drawing actions" title="Rename or delete">&#x22EF;</button>' + '</div>';
     }).join('') : '<div class="draw-empty">No drawings in this folder yet.</div>';
     if (!q) d.folderHtml = html;
     _drawSetBody(list, html);
   } catch (e) {}
+}
+
+// ── Rename / delete from the library ──
+// One menu element, anchored to the ⋯ that opened it.
+function _drawItemMenu(e, kind, key) {
+  if (e) e.stopPropagation();
+  const open = document.getElementById('draw-item-menu');
+  const again = open && open.dataset.key === key && open.dataset.kind === kind;
+  _drawCloseMenus();
+  if (again) return;
+  const view = document.getElementById('draw-view');
+  const m = document.createElement('div');
+  m.id = 'draw-item-menu'; m.className = 'draw-menu draw-item-menu'; m.setAttribute('role', 'menu');
+  m.dataset.kind = kind; m.dataset.key = key;
+  m.innerHTML = '<button role="menuitem" onclick="_drawItemAction(\'rename\')">Rename</button>'
+    + '<button role="menuitem" class="draw-menu-danger" onclick="_drawItemAction(\'delete\')">Delete</button>';
+  m.addEventListener('click', ev => ev.stopPropagation());
+  view.appendChild(m);
+  const r = e.currentTarget.getBoundingClientRect(), vr = view.getBoundingClientRect();
+  const w = m.offsetWidth || 160, h = m.offsetHeight || 90;
+  m.style.left = Math.max(8, Math.min(r.right - vr.left - w, vr.width - w - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(r.bottom - vr.top + 4, vr.height - h - 8)) + 'px';
+  setTimeout(() => document.addEventListener('click', function close() {
+    const x = document.getElementById('draw-item-menu'); if (x === m) m.remove();
+  }, { once: true }), 0);
+}
+function _drawItemAction(action) {
+  const m = document.getElementById('draw-item-menu');
+  if (!m) return;
+  const kind = m.dataset.kind, key = m.dataset.key;
+  m.remove();
+  if (kind === 'drawing') return action === 'rename' ? _drawRenamePath(key) : _drawDeletePath(key);
+  return action === 'rename' ? _drawRenameComponent(key) : _drawDeleteComponent(key);
+}
+
+async function _drawRenamePath(path) {
+  const d = _drawS();
+  const title = await showPrompt('Rename drawing', 'Name', _drawTitleOf(path));
+  if (title === null) return;
+  const clean = String(title).trim().replace(/\.excalidraw$/i, '').replace(/[/\0]/g, '-');
+  if (!clean || clean === _drawTitleOf(path)) return;
+  if (path === d.path) { await _drawRename(clean); _drawLibRender(); return; }
+  const newName = clean + '.excalidraw';
+  try {
+    const r = await fetch(API + '/api/fs/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, new_name: newName }), _skipOutbox: true });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok || res.error) throw new Error(res.error || ('HTTP ' + r.status));
+    const to = res.path || (_drawDirOf(path).replace(/\/+$/, '') + '/' + newName);
+    for (const x of d.recents) if (x.path === path) { x.path = to; x.title = _drawTitleOf(to); }
+    (d.recentsDropped = d.recentsDropped || new Set()).add(path);
+    const dr = _drawDraftGet(path);
+    if (dr) { _drawDropDraft(path); try { localStorage.setItem(_DRAW_DRAFT_PREFIX + to, JSON.stringify(Object.assign(dr, { path: to }))); } catch (e) {} }
+    d.folderHtml = null;
+    _drawSaveRecents();
+    _drawLibRender();
+    showToast('Renamed to ' + newName);
+  } catch (e) {
+    showToast('Rename failed: ' + (e.message || e));
+    _drawBeacon('rename-failed', { target: path, error: String(e && e.message || e) });
+  }
+}
+
+async function _drawDeletePath(path) {
+  const d = _drawS();
+  if (!(await showConfirm('Delete "' + _drawTitleOf(path) + '"? The file is removed from disk.', 'Delete', true))) return;
+  const isCur = path === d.path;
+  if (isCur) {
+    // No autosave may recreate the file while (or after) it is deleted.
+    d.deleting = path;
+    if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = null; }
+    if (d.retryTimer) { clearTimeout(d.retryTimer); d.retryTimer = null; }
+    for (let i = 0; d.saving && i < 400; i++) await new Promise(r => setTimeout(r, 50));
+  }
+  try {
+    const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }), _skipOutbox: true });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok && r.status !== 404) throw new Error(res.error || ('HTTP ' + r.status));
+  } catch (e) {
+    if (isCur) d.deleting = null;
+    showToast('Delete failed: ' + (e.message || e));
+    _drawBeacon('delete-failed', { target: path, error: String(e && e.message || e) });
+    return;
+  }
+  _drawDropDraft(path);
+  d.recents = d.recents.filter(x => x.path !== path);
+  (d.recentsDropped = d.recentsDropped || new Set()).add(path);
+  d.folderHtml = null;
+  _drawSaveRecents();
+  if (isCur) {
+    d.path = ''; d.etag = null; d.conflict = null; _drawHideConflict();
+    _drawResetScene();
+    d.deleting = null;
+    await _drawNew(true);
+  }
+  _drawLibRender();
+  showToast('Deleted ' + _drawBase(path));
+}
+
+async function _drawRenameComponent(id) {
+  const d = _draw;
+  const item = d && (d.libItems || []).find(i => i.id === id);
+  if (!item) return;
+  const name = await showPrompt('Rename component', 'Name', item.name || '');
+  if (name === null || !name || name === item.name) return;
+  // Excalidraw's library hash leaves names out, so clear ours or the
+  // change handler would see "unchanged" and never write the rename.
+  d.libHash = null;
+  await d.api.updateLibrary({ libraryItems: d.libItems.map(i => i.id === id ? Object.assign({}, i, { name }) : i), merge: false });
+}
+async function _drawDeleteComponent(id) {
+  const d = _draw;
+  const item = d && (d.libItems || []).find(i => i.id === id);
+  if (!item) return;
+  if (!(await showConfirm('Delete the component "' + (item.name || 'Untitled') + '" from the library?', 'Delete', true))) return;
+  // Remembered so a merge with another device's copy does not bring it back.
+  (d.libDeleted = d.libDeleted || new Set()).add(id);
+  await d.api.updateLibrary({ libraryItems: d.libItems.filter(i => i.id !== id), merge: false });
 }
 
 // ── Mermaid paste ──

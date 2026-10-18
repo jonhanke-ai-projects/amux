@@ -9181,6 +9181,27 @@ button.cv-sec:hover { color:var(--text); }
 .draw-recent-title { font-size:0.86rem; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .draw-recent-when { font-size:0.76rem; color:var(--dim); }
 .draw-lib-scrim { display:none; }
+/* A row or tile with a ⋯ menu (rename, delete) at its right edge. */
+.draw-row { position:relative; }
+.draw-row > .draw-recent, .draw-row > .draw-pop-row { padding-right:40px; }
+.draw-row-more { position:absolute; right:4px; top:50%; transform:translateY(-50%); min-width:32px; min-height:32px;
+  display:inline-flex; align-items:center; justify-content:center; background:none; border:1px solid transparent;
+  border-radius:var(--radius-control); color:var(--dim); font:inherit; font-size:1rem; cursor:pointer; }
+.draw-row > .draw-recent + .draw-row-more { top:calc(50% - 3px); }
+.draw-row-more:hover, .draw-row-more:focus-visible { color:var(--text); border-color:var(--border); background:var(--card); }
+.draw-lib-cell > .draw-lib-item { width:100%; }
+.draw-lib-cell > .draw-row-more { top:4px; right:4px; transform:none; }
+.draw-item-menu { min-width:160px; }
+/* Above the phone library sheet they open from; below dialogs. */
+#draw-view .draw-item-menu, #draw-view .draw-dir-pop { z-index:calc(var(--layer-dialog, 1100) - 1); }
+.draw-menu > button.draw-menu-danger { color:var(--red); }
+.draw-lib-subrow { display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); }
+.draw-link-btn { background:none; border:none; color:var(--accent); font:inherit; font-size:0.8rem; padding:4px 2px; cursor:pointer;
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.draw-link-btn:hover { text-decoration:underline; }
+.draw-default-dir { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:0.8rem; color:var(--dim);
+  padding:var(--space-2) 0; border-bottom:1px solid var(--border); }
+.draw-default-dir .draw-link-btn:first-of-type { flex:1 1 auto; max-width:100%; text-align:left; }
 
 .draw-main { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
 .draw-head { display:flex; align-items:center; gap:var(--space-3); padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); min-width:0; }
@@ -9335,6 +9356,7 @@ html.draw-active { overflow:hidden; }
   .draw-host .excalidraw { --sab:0px; }
   .draw-selbar { top:auto; bottom:calc(76px + env(safe-area-inset-bottom)); right:var(--space-2); }
   .draw-selbar .btn { min-height:44px; }
+  .draw-row-more, .draw-link-btn { min-width:44px; min-height:44px; }
   .draw-dir-pop { left:8px !important; right:8px; width:auto; }
 }
 
