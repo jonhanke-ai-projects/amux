@@ -89,3 +89,7 @@ CLAUDE.local.md
 
 # Cargo lifetime leases stay outside target/ so reclaim cannot remove their inode.
 .*.reclaim.lock
+
+# gtm/ is private GTM material (scripts, renders, drafts). It never ships in the OSS repo;
+# this used to live only in one machine's .git/info/exclude, so a fresh clone could commit it.
+/gtm/
