@@ -8893,8 +8893,10 @@ _ci_wait() {
   # shellcheck disable=SC2064  # expanded now: the lock is a local
   trap "[ \"\$(cat '$lock/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '$lock'" EXIT
   while :; do
-    # Take the poller role when nobody live holds it.
-    if [ "$role" = reader ]; then
+    # Take the poller role when nobody live holds it. A run the shared file
+    # already shows as concluded needs no poller: the previous one finished
+    # and freed the lock, and electing again costs a gh call per late reader.
+    if [ "$role" = reader ] && ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("status") == "completed" else 1)' "$state" 2>/dev/null; then
       if mkdir "$lock" 2>/dev/null; then
         echo $$ > "$lock/pid"; role=poller
       else
