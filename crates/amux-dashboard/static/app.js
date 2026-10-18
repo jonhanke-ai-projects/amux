@@ -38028,7 +38028,7 @@ function _sxGroupOf(s) {
   if (!s.enabled) return 'inactive';
   const c = _sxClass(s);
   if (c === 'loop') return 'loop';
-  if (c === 'weekly' || c === 'once') return 'weekly';
+  if (c === 'weekly' || c === 'once' || c === 'yearly') return 'weekly';   // yearly: a fixed-date cron (0125)
   return 'routine';   // routine, and unknown (flagged "Unparsed" on the row)
 }
 function _sxNextMs(s) {
@@ -38052,7 +38052,7 @@ function _sxStatus(s, runs) {
   if (latest && latest.status === 'running') return { key: 'running', label: 'Running' };
   // disabled_reason / lock_reason (0125): say WHY it is off, and that a
   // worker cannot turn an owner-locked schedule back on.
-  if (!s.enabled) return { key: 'paused', label: s.locked_by ? 'Locked' : ((s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused'),
+  if (!s.enabled) return { key: 'paused', label: (s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused',
     why: s.locked_by ? ('Disabled by the owner and locked: a worker cannot re-enable it. ' + (s.lock_reason || '')) : (s.disabled_reason || '') };
   if (_sxClass(s) === 'unknown') return { key: 'unparsed', label: 'Unparsed' };
   if (_sxIsFail(latest)) return { key: 'failing', label: 'Failing' };
