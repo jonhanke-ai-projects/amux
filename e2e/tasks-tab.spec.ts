@@ -110,7 +110,9 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   // checkout says its commits were not read rather than showing none.
   await expect(detail.locator('.task-handoff')).toContainText(seed.peer);
   await expect(detail.locator('.task-commits')).toContainText('Commits not read');
-  await detail.locator('.task-tick').click();
+  // Two ticks: the handoff and the message sent during the task.
+  await expect(detail.locator('.task-tick')).toHaveCount(2);
+  await detail.locator('.task-tick').last().click();
   await expect(detail.locator('.task-msg').first()).toBeVisible();
 
   // Search reaches the message text and shows where it hit; Names does not.
