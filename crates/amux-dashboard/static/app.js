@@ -38050,7 +38050,10 @@ function _sxIsFail(r) { return !!r && (r.status === 'error' || r.status === 'ref
 function _sxStatus(s, runs) {
   const latest = runs && runs[0];
   if (latest && latest.status === 'running') return { key: 'running', label: 'Running' };
-  if (!s.enabled) return { key: 'paused', label: (s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused' };
+  // disabled_reason / lock_reason (0125): say WHY it is off, and that a
+  // worker cannot turn an owner-locked schedule back on.
+  if (!s.enabled) return { key: 'paused', label: s.locked_by ? 'Locked' : ((s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused'),
+    why: s.locked_by ? ('Disabled by the owner and locked: a worker cannot re-enable it. ' + (s.lock_reason || '')) : (s.disabled_reason || '') };
   if (_sxClass(s) === 'unknown') return { key: 'unparsed', label: 'Unparsed' };
   if (_sxIsFail(latest)) return { key: 'failing', label: 'Failing' };
   const nx = _sxNextMs(s);
@@ -38066,7 +38069,7 @@ function _sxStatusPill(st) {
     paused: 'Disabled: this schedule does not fire',
     unparsed: 'The scheduler cannot parse this expression, so it will not fire. Edit it.',
   }[st.key] || '';
-  return `<span class="sx-pill sx-pill-${st.key}" title="${esc(why)}">${esc(st.label)}</span>`;
+  return `<span class="sx-pill sx-pill-${st.key}" title="${esc(st.why || why)}">${esc(st.label)}</span>`;
 }
 
 // ── Time and frequency labels ───────────────────────────────────────────────
@@ -38383,7 +38386,7 @@ async function _sxBulk(action) {
       ? await apiCall(API + '/api/schedules/' + encodeURIComponent(id) + '?by=dashboard', { method: 'DELETE' })
       : await apiCall(API + '/api/schedules/' + encodeURIComponent(id), {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: action === 'resume' ? 1 : 0, by: 'dashboard' }) });
+          body: JSON.stringify(action === 'resume' ? { enabled: 1, by: 'dashboard' } : { enabled: 0, by: 'dashboard', reason: 'paused from the dashboard (bulk)' }) });
     if (r) done++;
   }
   const verb = { pause: 'Paused', resume: 'Resumed', delete: 'Deleted' }[action];
@@ -39142,7 +39145,7 @@ async function toggleSchedEnabled(id, enabled) {
     method: 'PATCH', headers: {'Content-Type':'application/json'},
     // Tag UI toggles so an audit flip reads "dashboard", not UNATTRIBUTED
     // (the recurring-disabler mystery, AMUX-1765 — it was this control).
-    body: JSON.stringify({ enabled: enabled ? 1 : 0, by: 'dashboard' }),
+    body: JSON.stringify(enabled ? { enabled: 1, by: 'dashboard' } : { enabled: 0, by: 'dashboard', reason: 'paused from the dashboard' }),
     _onRefused: () => { if (s0) s0.enabled = prev; },
   });
   await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);

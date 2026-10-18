@@ -683,6 +683,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 124,
         name: "0124_pinned_notes_groups",
         sql: include_str!("../../migrations/0124_pinned_notes_groups.sql"),
+    },
+    Migration {
+        version: 125,
+        name: "0125_schedule_lifecycle",
+        sql: include_str!("../../migrations/0125_schedule_lifecycle.sql"),
     },];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

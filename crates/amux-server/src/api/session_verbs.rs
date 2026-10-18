@@ -18446,7 +18446,53 @@ async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
         return (false, "could not write session env".into());
     }
     archive_session_issues(state, name, 1).await;
-    (true, "archived".into())
+    let paused = pause_retired_worker_schedules(state, name, "archived").await;
+    (true, format!("archived; {}", crate::runtime_jobs::schedule_lifecycle::retired_sentence(&paused)))
+}
+
+/// Archiving or deleting a worker forces a decision on its schedules (GS-12
+/// finding 5: 33 enabled schedules kept firing into archived lanes, about
+/// 2,200 fires a day). The default is to pause each one, logged by name and
+/// returned to the caller; re-enabling is the owner's call after moving it to
+/// a live worker. Both verbs are human-initiated (`session_destructive_allowed`).
+pub(crate) async fn pause_retired_worker_schedules(
+    state: &AppState,
+    name: &str,
+    why: &'static str,
+) -> Vec<(String, String)> {
+    let n = name.to_string();
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let slot_w = slot.clone();
+    let res = state
+        .store
+        .write_async(move |conn| {
+            let paused = crate::runtime_jobs::schedule_lifecycle::pause_for_retired_worker(
+                conn,
+                &n,
+                why,
+                "owner",
+            )?;
+            let events = paused
+                .iter()
+                .map(|(id, _)| crate::db::PendingEvent {
+                    entity_type: amux_core::revision::EntityType::Schedule,
+                    entity_id: id.clone(),
+                    mutation: amux_core::revision::MutationKind::Updated,
+                    payload: None,
+                })
+                .collect::<Vec<_>>();
+            let applied = !events.is_empty();
+            *slot_w.lock().expect("paused slot") = paused;
+            Ok(crate::db::WriteOutcome { applied, events })
+        })
+        .await;
+    if let Err(e) = res {
+        tracing::warn!(session = name, why, error = %e, verdict = "schedule_retired_worker_sweep_failed",
+            measured = false, n_considered = 0,
+            "could not pause a retired worker's schedules; they may keep firing");
+    }
+    let out = slot.lock().expect("paused slot").clone();
+    out
 }
 
 /// The status half of archiving a lane, on a plain connection (AMUX-4715).
@@ -31621,7 +31667,13 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
             })
         })
         .await;
-    j200(json!({"ok": true, "message": "deleted"}))
+    let paused = pause_retired_worker_schedules(state, name, "deleted").await;
+    let ids: Vec<&str> = paused.iter().map(|(id, _)| id.as_str()).collect();
+    j200(json!({
+        "ok": true,
+        "message": format!("deleted; {}", crate::runtime_jobs::schedule_lifecycle::retired_sentence(&paused)),
+        "schedules_paused": ids,
+    }))
 }
 
 /// The model's context window, in tokens. `AMUX_CONTEXT_WINDOW`.
