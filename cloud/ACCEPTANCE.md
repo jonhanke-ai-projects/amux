@@ -48,16 +48,23 @@ amux-cloud worker. Its brief and evidence are under `~/.amux/cloud/codex-e2e/`.
 | 3 | Fixed, proven live | The Worker cron finishes any paid order without a server (c9f139760). Test order r2c1455 hit Hetzner capacity errors for about 4 minutes and was finished at 363 seconds. Readiness waits for the dashboard and first update. |
 | 4 | Pass | Codex round 1 |
 | 5 | Pass (API key) | Codex round 3: an OpenAI key saved in Vault drives real Codex turns. A saved key now also signs Codex in before its login picker (2f2f148f6) |
-| 6 | Fixed, awaiting retest | Round 3 C6-3: Codex's bubblewrap sandbox cannot start in the container, so every command failed. Launch now falls back to the container as the sandbox (d52cec2ad) |
-| 7 | Pass at 390px | Round 3: a phone-width Send started a model turn and got its ACK. A physical handset is not yet shown |
+| 6 | Pass, proven live | 2026-10-18 on the e2e server: a new Codex worker cloned mixpeek/amux and wrote `~/work/report.txt` with CLOUD_E2E_OK, the commit sha and the four workspace crates. The fix was on the host: Ubuntu 24.04 blocked the user namespaces Codex's sandbox needs; bootstrap.sh and the hourly update.sh now allow them (fe9ac3b56) |
+| 7 | Pass at 390px | 2026-10-18: steered that Codex worker from a 390px phone view by tapping Send; it appended STEER_OK_390 to its report. No horizontal overflow. A physical handset is not yet shown |
 | 8 | Fixed, awaiting retest | Round 3: invite, join and lockout pass. Revoking had no button (C8-3); Settings > People now has Remove, e2e `settings_team_member_remove` (d52cec2ad, 9b1b3c21f) |
 | 9 | Update path proven live | r2c1455 moved its checkout and its image (live_commit 17d4bef36bde) with no manual step (bbca9bcf7, 17d4bef36). Reboot recovery passed in round 1. TLS renewal relies on Caddy and is not yet observed. |
 | 10 | Partial | Hetzner daily backups are enabled on every server; a restore is not yet shown |
 | 11 | Pass | Round 3: deleted, then signed up again with the same email and name; the new server reached ready |
-| 12 | Proven live | 2026-10-18 on r2c1455 and twice in round 3. A name bought again was listed twice (C12-3), now once (d52cec2ad) |
+| 12 | Proven live | 2026-10-18 on r2c1455 and twice in round 3. A name bought again was listed twice (C12-3), now once (d52cec2ad). 2026-10-18 on e2efull-ba83: the Stripe webhook and the delete page raced and left the DNS record behind with no confirmation; erase now removes the address by name and treats 404 as done (595733e58). Re-confirming then reported success, sent the email, and the name returns NXDOMAIN |
 | 13 | Partial | Cancel keeps service to period end; 30-day snapshot expiry not yet observed |
 | 14 | Fixed | Email failures return 502 with a message; stuck orders email the operator once. Cloud mail uses a service account that never needs re-approval (097a9380c). |
 | 15 | Fixed | Duplicate checkouts are expired, webhook replays and DNS failures finish once. Round 3 C15-3: a paid name could open a second checkout before its server existed; now refused (d52cec2ad, offline suite `node cloud/start/test-worker.mjs`) |
 | 16 | Pass in a real browser | FIRSTMONTH shows $0.00 in real Chrome; headless browsers are refused by Stripe |
 
 Also found in the 2026-10-18 journey and fixed (7fac35d90): schedules never fired on a server without `AMUX_RS_SCHEDULER=1`, every Cloud server included (now on by default); `amux import` refused a real 239 MB export with 413 (now sent gzipped, 1 GiB limit), and imported schedules now arrive paused so a move cannot fire them twice.
+
+Also found 2026-10-18 after the move, fixed:
+
+- "Next run" was off by the time zone difference when the browser and server zones differ ("in 4h" for an every-minute schedule). The server now sends absolute instants (fe9ac3b56, e2e `scheduler-next-run-timezone`).
+- A new worker's first task waited the full 10 minute steering deadline. Codex 0.163's braille welcome logo read as a busy spinner, and Claude workers on Cloud never had amux's status hooks (52b20f811). Codex hooks stay off on Cloud because Codex holds new hooks behind a review screen.
+- Deleting an account could leave its DNS record behind when the webhook won the race (595733e58, offline tests C12-4).
+- main's rust run was red for hours from unrelated tests, and the image only publishes from a green run, so Cloud servers stopped updating. Fixed the failing tests (8582c5714 by another lane, c01af610c). A red main stalls every Cloud server's updates; that is by design, and it means main must stay green.
