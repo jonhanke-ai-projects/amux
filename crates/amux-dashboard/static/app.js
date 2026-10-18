@@ -15994,11 +15994,19 @@ function _peekAgentsPaint() {
   nav.hidden = isChat || (!state.items.length && !state.error);
   const index = state.selected ? state.items.findIndex(s=>s.id===state.selected.id && s.conversation===state.selected.conversation)+1 : 0;
   const label = document.getElementById('peek-agent-label');
-  label.textContent = state.error ? 'Agents unavailable' : (index ? 'Agent '+index : 'Main') + ' · '+(index+1)+'/'+(state.items.length+1);
-  label.title = state.error ? 'Use either arrow to retry' : state.selected?.description || state.selected?.id || 'Main worker';
+  const silent = state.items.filter(s => s.state === 'silent').length;
+  const sel = state.selected;
+  const quiet = sel?.state === 'silent' ? ' · silent '+_peekAgentSilentFor(sel.silent_s) : (!index && silent ? ' · '+silent+' silent' : '');
+  label.textContent = state.error ? 'Agents unavailable' : (index ? 'Agent '+index : 'Main') + ' · '+(index+1)+'/'+(state.items.length+1) + quiet;
+  label.title = state.error ? 'Use either arrow to retry'
+    : (sel?.description || sel?.id || 'Main worker') + (sel?.state === 'silent' ? ' (no transcript writes, waiting on '+(sel.waiting_on||'unknown')+')' : '');
   nav.querySelectorAll('button').forEach(b=>b.disabled=state.loading);
   const input=document.getElementById('peek-cmd-input');
   if (input) { input.placeholder = 'Message…'; input.setAttribute('aria-label', state.selected ? 'Message the main worker' : 'Message the worker'); }
+}
+function _peekAgentSilentFor(sec) {
+  const s = Number(sec) || 0;
+  return s >= 3600 ? Math.floor(s/3600)+'h' : Math.max(1, Math.floor(s/60))+'m';
 }
 async function _peekAgentsLoad(force=false) {
   const name = peekSession;
@@ -16017,7 +16025,8 @@ async function _peekAgentsLoad(force=false) {
     const known=new Set(ordered.map(ids));
     const all = ordered.concat(data.subagents.filter(s=>!known.has(ids(s))));
     const cutoff = Date.now() / 1000 - 300;
-    state.items = all.filter(s => s.last_active > cutoff);
+    // A silent subagent stays listed: Claude Code can show it running for hours (MSG-90283).
+    state.items = all.filter(s => s.last_active > cutoff || s.state === 'silent');
     state.error=false; state.loadedAt=Date.now();
     _peekAgentsLog('list',{count:state.items.length});
   } catch(e) {
