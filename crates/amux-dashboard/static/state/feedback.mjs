@@ -1,11 +1,41 @@
 import { createElement, Activity, ChevronDown } from 'lucide';
 import { settled, phaseLabels } from './interactions.mjs';
-import registry from './control-registry.json';
 import { actionFromHandler } from './controls.mjs';
 
-export function installFeedback(interactions, ui, diagnostic = () => {}) {
+// The command registry is generated from app.js (scripts/build-state.mjs) and
+// fetched at runtime instead of bundled, so kernel.js only changes when the
+// state/ sources do. Bundling it made kernel.js, a minified one-line file,
+// change on almost every app.js edit, and every pair of dashboard PRs then
+// conflicted on it. The service worker precaches this URL for offline use.
+export const CONTROL_REGISTRY_URL = '/state/control-registry.json';
+
+export function installFeedback(interactions, ui, diagnostic = () => {}, registryUrl = CONTROL_REGISTRY_URL) {
+  // Empty until the fetch below lands. A control declared before then gets its
+  // registry-derived action and kind when the registry arrives (see refresh).
+  let commandHandlers = {};
+  const derivedAction = new WeakSet();
   const controls = new Map();
-  let source = null;
+  // The control whose click/change/submit is being dispatched, and that event.
+  // A request is the press's only while that event is still the CURRENT event
+  // (window.event), i.e. it was issued from the press's own listeners or the
+  // microtasks they ran. The old rule, "until a setTimeout(0) clears it", let
+  // every task already queued ahead of that timer through: a background
+  // fetchBoard continuation whose response landed in that gap issued
+  // GET /api/board/changes and became the press's receipt, relabelling a Save
+  // as board.get (interaction-receipts e2e, runs 38944452996, 38947919221).
+  let source = null, sourceEvent = null;
+  const dispatchVisible = 'event' in globalThis;
+  const foreignReported = new WeakSet();
+  function pressSource() {
+    if (!source) return null;
+    if (!dispatchVisible || globalThis.event === sourceEvent) return source;
+    if (sourceEvent && !foreignReported.has(sourceEvent)) {
+      foreignReported.add(sourceEvent);
+      diagnostic({verdict:'press_bind_skipped_foreign_task', measured:true, n_considered:1,
+        action:source.dataset.action, current_event:globalThis.event?.type || null});
+    }
+    return null;
+  }
   const hub = document.createElement('details');
   hub.id = 'interaction-feedback';
   const summary = document.createElement('summary');
@@ -47,14 +77,35 @@ export function installFeedback(interactions, ui, diagnostic = () => {}) {
   const selectors = 'button, [role="button"], input, select, textarea, a[href], [onclick], [onchange]';
   function declare(element) {
     if (element.closest('#interaction-feedback')) return;
-    const handler = actionFromHandler(element.getAttribute('onclick') || element.getAttribute('onchange'), registry.command_handlers);
-    element.dataset.action ||= handler || element.id || element.getAttribute('name') || element.tagName.toLowerCase();
-    const declaration = registry.command_handlers[element.dataset.action];
+    const handler = actionFromHandler(element.getAttribute('onclick') || element.getAttribute('onchange'), commandHandlers);
+    if (!element.dataset.action) {
+      element.dataset.action = handler || element.id || element.getAttribute('name') || element.tagName.toLowerCase();
+      derivedAction.add(element);
+    }
+    const declaration = commandHandlers[element.dataset.action];
     if (declaration) element.dataset.interactionKind ||= declaration.kind;
     element.dataset.feedbackRequired ||= 'true';
     element.dataset.targetId ||= element.closest('[data-session], [data-id]')?.dataset.session || element.closest('[data-id]')?.dataset.id || element.id || element.dataset.action;
   }
   document.querySelectorAll(selectors).forEach(declare);
+  // Re-derive the actions THIS layer chose before the registry was known.
+  // An action written in markup is the author's and is left alone.
+  function refresh(element) {
+    if (derivedAction.has(element)) {
+      if (element.dataset.targetId === element.dataset.action) delete element.dataset.targetId;
+      delete element.dataset.action;
+      derivedAction.delete(element);
+    }
+    declare(element);
+  }
+  fetch(registryUrl, {credentials:'same-origin'})
+    .then(response => response.ok ? response.json() : Promise.reject(new Error('HTTP ' + response.status)))
+    .then(registry => {
+      commandHandlers = registry?.command_handlers || {};
+      document.querySelectorAll(selectors).forEach(refresh);
+    })
+    .catch(error => diagnostic({verdict:'control_registry_unavailable', measured:false, n_considered:0,
+      why_unmeasured:String(error?.message || error)}));
   new MutationObserver(records => {
     for (const record of records) for (const node of record.addedNodes) {
       if (node.nodeType !== 1 || node.closest('#interaction-feedback')) continue;
@@ -128,11 +179,13 @@ export function installFeedback(interactions, ui, diagnostic = () => {}) {
     declare(element);
     if (eventName === 'click' && isCommand(element)) armed = {element, at:Date.now(), bound:false};
     source = element;
+    sourceEvent = event;
     element.classList.add('action-responded');
     setTimeout(() => element.classList.remove('action-responded'), 450);
     // Only synchronous dispatch is causal. A later unrelated poll must never
     // borrow the most recently clicked button as its alleged origin.
-    setTimeout(() => { if (source === element) source = null; }, 0);
+    // pressSource() is the causal gate; this only drops the reference.
+    setTimeout(() => { if (source === element) { source = null; sourceEvent = null; } }, 0);
   }, true);
   function render(receipt) {
     if (receipt && controls.has(receipt.id)) {
@@ -343,9 +396,10 @@ export function installFeedback(interactions, ui, diagnostic = () => {}) {
       if (armed && !armed.bound) diagnostic({verdict:'press_bind_skipped_background', measured:true,
         n_considered:1, action:armed.element.dataset.action, path:receipt.request?.path});
     } else if (receipt.phase === 'accepted') {
-      if (source) {
-        bind(source, receipt);
-        if (armed?.element === source) armed.bound = true;
+      const pressed = pressSource();
+      if (pressed) {
+        bind(pressed, receipt);
+        if (armed?.element === pressed) armed.bound = true;
       } else if (armed && !armed.bound && armed.element.isConnected && Date.now() - armed.at < ARM_MS) {
         armed.bound = true;
         bind(armed.element, receipt);
@@ -358,9 +412,9 @@ export function installFeedback(interactions, ui, diagnostic = () => {}) {
     if (element && !['accepted','sending','running'].includes(receipt.phase)) settle(element, receipt);
   });
   render();
-  return {render, source:() => source, coverage:() => {
+  return {render, source:pressSource, coverage:() => {
     const all = [...document.querySelectorAll(selectors)].filter(e => !e.closest('#interaction-feedback'));
-    const commands = all.filter(e => e.dataset.interactionKind || e.dataset.commandObserved || registry.command_handlers[e.dataset.action]);
+    const commands = all.filter(e => e.dataset.interactionKind || e.dataset.commandObserved || commandHandlers[e.dataset.action]);
     return {measured:true, n_considered:all.length, declared:all.filter(e => e.dataset.action && e.dataset.feedbackRequired && e.dataset.targetId).length,
       declared_command_controls:commands.filter(e => e.dataset.interactionKind).length,
       observed_command_controls:commands.filter(e => e.dataset.commandObserved).length,

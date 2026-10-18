@@ -21,10 +21,13 @@ on:
 # what let one of them rot unnoticed — hence a single env var rather than a
 # second literal.
 env:
-  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+  CLOUD_HOST: ${{ vars.CLOUD_HOST }}
 
 jobs:
   backup:
+    # No cloud host is configured while cloud.amux.io is offline (the GCP VM is
+    # deleted and its address released); skip instead of failing every run.
+    if: vars.CLOUD_HOST != ''
     runs-on: ubuntu-latest
     steps:
       - name: Set up SSH

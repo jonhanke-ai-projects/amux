@@ -646,8 +646,43 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 117,
-        name: "0117_pinned_notes_groups",
-        sql: include_str!("../../migrations/0117_pinned_notes_groups.sql"),
+        name: "0117_skills_created",
+        sql: include_str!("../../migrations/0117_skills_created.sql"),
+    },
+    Migration {
+        version: 118,
+        name: "0118_conversations",
+        sql: include_str!("../../migrations/0118_conversations.sql"),
+    },
+    Migration {
+        version: 119,
+        name: "0119_history_fts",
+        sql: include_str!("../../migrations/0119_history_fts.sql"),
+    },
+    Migration {
+        version: 120,
+        name: "0120_schedule_failure_notice",
+        sql: include_str!("../../migrations/0120_schedule_failure_notice.sql"),
+    },
+    Migration {
+        version: 121,
+        name: "0121_mdai_run_usage",
+        sql: include_str!("../../migrations/0121_mdai_run_usage.sql"),
+    },
+    Migration {
+        version: 122,
+        name: "0122_steering_deliver_at",
+        sql: include_str!("../../migrations/0122_steering_deliver_at.sql"),
+    },
+    Migration {
+        version: 123,
+        name: "0123_file_opens",
+        sql: include_str!("../../migrations/0123_file_opens.sql"),
+    },
+    Migration {
+        version: 124,
+        name: "0124_pinned_notes_groups",
+        sql: include_str!("../../migrations/0124_pinned_notes_groups.sql"),
     },];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

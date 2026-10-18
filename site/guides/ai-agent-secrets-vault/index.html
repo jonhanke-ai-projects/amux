@@ -21,24 +21,16 @@
 <body>
 
 <header class="site-header">
-  <nav class="nav-inner">
-    <a href="/" class="nav-logo">
-      <img src="/icon.svg" alt="amux" width="24" height="24">
-      <span>amux</span>
-    </a>
-    <ul class="nav-links">
-      <li><a href="/docs/">Docs</a></li>
-      <li><a href="/guides/">Guides</a></li>
-      <li><a href="/compare/">Compare</a></li>
-      <li><a href="/changelog/">Changelog</a></li>
-      <li><a href="/blog/">Blog</a></li>
-    </ul>
-    <div class="nav-actions">
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
-    </div>
-  </nav>
-</header>
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+    </nav>
+  </header>
 
 <main class="prose-wrap">
   <nav class="breadcrumb" aria-label="Breadcrumb">
@@ -50,10 +42,6 @@
   </nav>
 
   <!-- EXP-113: top-of-page GitHub CTA on secrets-vault guide (Oct 2026) -->
-  <div style="background:#1a4d2e;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-    <span style="font-size:.9rem;color:#fff">Encrypted, scoped secrets for AI agent fleets. Open source, single binary, MIT licensed.</span>
-    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp113_secrets_vault_topofpage_cta_click')" style="background:#fff;color:#1a4d2e;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub &#9733;</a>
-  </div>
 
   <h1>AI Agent Secrets Management: Securely Pass API Keys to Coding Agents</h1>
   <p style="font-family:var(--font-mono);font-size:11px;color:var(--fg-mute);margin:0 0 1.5rem">Updated October 2026</p>

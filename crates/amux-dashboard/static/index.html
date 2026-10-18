@@ -32,6 +32,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>/* UI font before first paint: no flash of the system font */try{var f=localStorage.getItem('amux_font');if(f)document.documentElement.dataset.font=f;}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <!-- status-bar-style: 'default' (not black-translucent). black-translucent asked iOS to
@@ -108,7 +109,7 @@
 <link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="/state/feedback.css">
 <!-- AMUX-BOOTSTRAP-BEGIN (see extraction note at top of file) -->
-<script>window._AMUX_S3_ICAL_URL="";window._AMUX_AUTH_TOKEN="";window._AMUX_HOME="";window._AMUX_POSTHOG_KEY="";window._AMUX_POSTHOG_HOST="https://us.i.posthog.com";window._AMUX_USER_EMAIL="";window._AMUX_USER_ID="";window._AMUX_UI_TOKEN="";window._AMUX_DEFAULT_MODEL="sonnet";window._AMUX_AUTH_WITHHELD=false;</script>
+<script>window._AMUX_S3_ICAL_URL="";window._AMUX_AUTH_TOKEN="";window._AMUX_HOME="";window._AMUX_POSTHOG_KEY="";window._AMUX_POSTHOG_HOST="https://us.i.posthog.com";window._AMUX_USER_EMAIL="";window._AMUX_USER_ID="";window._AMUX_UI_TOKEN="";window._AMUX_DEFAULT_MODEL="sonnet";window._AMUX_AUTH_WITHHELD=false;window._AMUX_DATA_DIR="";</script>
 <!-- AMUX-BOOTSTRAP-END -->
 </head>
 <body>
@@ -130,15 +131,30 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:32px;max-width:440px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.6);position:relative;color:#e8e8e8;">
     <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#ccc;font-size:1.2rem;cursor:pointer;padding:4px;" title="Close">&#x2715;</button>
     <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px;color:#fff;">Get started</div>
-    <div style="font-size:0.85rem;color:#ccc;margin-bottom:20px;line-height:1.5;">
-      Choose how to authenticate with Claude:
+    <div style="font-size:0.85rem;color:#ccc;margin-bottom:16px;line-height:1.5;">
+      Sign in with the plan you already pay for. Your sign-in stays on this server.
     </div>
-    <button id="apikey-login-btn" onclick="apikeySetupLogin()"
-      style="width:100%;padding:12px;border-radius:7px;border:1px solid #6366f1;background:#312e81;color:#e0e7ff;font-size:0.95rem;font-weight:600;cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:8px;">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v6m0 0l2.5-2.5M8 7L5.5 4.5M2 10v2a2 2 0 002 2h8a2 2 0 002-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      Log in with Claude account
-    </button>
-    <div style="font-size:0.78rem;color:#b0b0b0;text-align:center;margin-bottom:16px;">Recommended — uses your Claude.ai account (Pro, Max, or Team)</div>
+    <div id="model-login-choices" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">
+      <button class="btn primary" id="model-login-claude" onclick="modelLogin('claude')" style="min-height:44px;justify-content:center;">Sign in with Claude</button>
+      <button class="btn" id="model-login-codex" onclick="modelLogin('codex')" style="min-height:44px;justify-content:center;">Sign in with ChatGPT</button>
+      <button class="btn" id="model-login-gemini" onclick="modelLogin('gemini')" style="min-height:44px;justify-content:center;">Sign in with Google (Gemini)</button>
+    </div>
+    <div id="model-login-panel" style="display:none;margin-bottom:14px;padding:12px;border:1px solid #333;border-radius:8px;" aria-live="polite">
+      <div id="model-login-status" style="font-size:0.85rem;color:#e8e8e8;margin-bottom:10px;"></div>
+      <a id="model-login-link" class="btn primary" target="_blank" rel="noopener" style="display:none;min-height:44px;justify-content:center;margin-bottom:10px;">Open the sign-in page</a>
+      <div id="model-login-code-wrap" style="display:none;margin-bottom:10px;">
+        <div style="font-size:0.78rem;color:#b0b0b0;">Enter this code on that page:</div>
+        <div id="model-login-code" style="font:600 1.4rem monospace;letter-spacing:2px;user-select:all;"></div>
+      </div>
+      <div id="model-login-paste-wrap" style="display:none;gap:8px;">
+        <input id="model-login-paste" type="text" autocomplete="off" spellcheck="false" placeholder="Paste the code from the sign-in page"
+          style="flex:1;min-width:0;box-sizing:border-box;min-height:44px;padding:0 12px;border-radius:7px;border:1px solid #555;background:#111;color:#e8e8e8;font-family:monospace;"
+          onkeydown="if(event.key==='Enter')modelLoginSubmitCode()">
+        <button class="btn" id="model-login-paste-btn" onclick="modelLoginSubmitCode()" style="min-height:44px;">Continue</button>
+      </div>
+      <div id="model-login-err" style="color:#f87171;font-size:0.8rem;min-height:18px;margin-top:6px;"></div>
+      <button class="btn" onclick="modelLoginCancel()" style="min-height:44px;margin-top:6px;">Choose another way</button>
+    </div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
       <div style="flex:1;height:1px;background:#333;"></div>
       <span style="font-size:0.75rem;color:#9ca3af;">or use an API key</span>
@@ -255,10 +271,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="settings-menu" id="settings-menu">
         <div class="settings-tabs" id="settings-tabs">
           <button class="settings-tab-btn active" data-stab="account" onclick="event.stopPropagation();_settingsTab('account')">Account</button>
-          <button class="settings-tab-btn" data-stab="workers" onclick="event.stopPropagation();_settingsTab('workers')">Workers</button>
-          <button class="settings-tab-btn" data-stab="notifications" onclick="event.stopPropagation();_settingsTab('notifications')">Alerts</button>
           <button class="settings-tab-btn" data-stab="integrations" onclick="event.stopPropagation();_settingsTab('integrations')">Connect</button>
           <button class="settings-tab-btn" data-stab="device" onclick="event.stopPropagation();_settingsTab('device')">Device</button>
+          <button class="settings-tab-btn" data-stab="workers" onclick="event.stopPropagation();_settingsTab('workers')">Workers</button>
+          <button class="settings-tab-btn" data-stab="notifications" onclick="event.stopPropagation();_settingsTab('notifications')">Alerts</button>
         </div>
         <div class="settings-tab-panel active" id="stab-account" data-stab="account">
         <div class="settings-section" id="settings-usage-section">
@@ -346,13 +362,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;" id="crossgroup-default-note">Workers may message only workers in a shared group. Owner input remains permitted.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
-            <span style="font-size:0.85rem;">Auto-drain backlog for all workers</span>
+            <span style="font-size:0.85rem;">Refill To Do from Backlog, all workers</span>
             <label class="theme-toggle">
               <input type="checkbox" id="board-drain-default-checkbox" onchange="toggleBoardDrainDefault(this.checked)" checked>
               <span class="theme-track"><span class="theme-thumb"></span></span>
             </label>
           </div>
-          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Default ON: when To Do is empty, promote the oldest eligible Backlog card and keep driving it. Human-owned, triggered, epic, watch, and tripwire cards remain parked; a group or worker configuration can opt out.</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">The fleet-wide default for each worker’s “Refill To Do from Backlog” switch: when To Do is empty, the oldest Backlog card the worker can do moves into To Do. It only takes effect on workers whose “Board steers this worker” and “Start To Do cards when idle” are on. Human-owned, triggered, epic, watch and tripwire cards are never moved.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">Auto-answer resume dialog</span>
             <label class="theme-toggle">
@@ -436,11 +452,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section" id="standing-approvals-section">
-          <div class="settings-section-label">Standing approvals</div>
+          <details class="settings-fold"><summary class="settings-section-label">Standing approvals</summary>
           <div style="font-size:0.68rem;color:var(--dim);margin-bottom:8px;line-height:1.4;">Asks you already answered. A worker ask covered here is answered for you and never pages you; you get an FYI below instead. Add with <code>amux approvals add --stdin</code>.</div>
           <div id="standing-approvals-list" style="font-size:0.78rem;">Loading…</div>
           <div style="font-weight:600;font-size:0.8rem;margin:10px 0 6px;">Recent auto-answers</div>
           <div id="standing-approvals-uses" style="font-size:0.74rem;color:var(--dim);"></div>
+          </details>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section" id="needs-input-auto-section">
@@ -450,8 +467,59 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </div>
         </div>
         <div class="settings-tab-panel" id="stab-integrations" data-stab="integrations">
+        <div class="settings-section" id="settings-connections-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div class="settings-section-label" style="margin:0;">Connections</div>
+            <button id="add-conn-btn" onclick="event.stopPropagation();_toggleAddConnectionForm()" style="background:none;border:1px solid var(--border);border-radius:4px;padding:1px 8px;font-size:0.7rem;color:var(--dim);cursor:pointer;">+ Add</button>
+          </div>
+          <div id="settings-connections-list" style="display:flex;flex-direction:column;gap:4px;"></div>
+          <div id="add-conn-form" style="display:none;margin-top:8px;padding:8px;background:var(--bg3);border-radius:6px;" onclick="event.stopPropagation()">
+            <div style="display:flex;gap:4px;margin-bottom:6px;">
+              <button onclick="event.stopPropagation();_addConnPreset('Cloud','https://cloud.amux.io')" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.68rem;color:var(--dim);cursor:pointer;">&#x2601; cloud.amux.io</button>
+              <button onclick="event.stopPropagation();_addConnPreset('Local','https://localhost:8824')" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.68rem;color:var(--dim);cursor:pointer;">&#x1F4BB; localhost</button>
+            </div>
+            <input id="add-conn-name" type="text" placeholder="Name (e.g. Cloud)" autocomplete="off"
+              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
+            <input id="add-conn-url" type="text" placeholder="URL (e.g. https://cloud.amux.io)" autocomplete="off"
+              onkeydown="if(event.key==='Enter')_addConnectionSave()"
+              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
+            <input id="add-conn-user" type="text" placeholder="Username (only for a password-protected host)" autocomplete="off" autocapitalize="none" spellcheck="false"
+              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
+            <input id="add-conn-pass" type="password" placeholder="Password" autocomplete="new-password"
+              onkeydown="if(event.key==='Enter')_addConnectionSave()"
+              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:6px;outline:none;">
+            <div style="font-size:0.68rem;color:var(--dim);margin-bottom:6px;">A username and password are kept on this device only and are never sent to your other amux servers.</div>
+            <div style="display:flex;gap:6px;">
+              <button onclick="event.stopPropagation();_addConnectionSave()" style="flex:1;background:var(--accent);color:#000;border:none;border-radius:4px;padding:3px 0;font-size:0.75rem;cursor:pointer;font-weight:600;">Add</button>
+              <button onclick="event.stopPropagation();_toggleAddConnectionForm(false)" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 0;font-size:0.75rem;color:var(--dim);cursor:pointer;">Cancel</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-sep"></div>
+        <section class="settings-section" id="connection-session">
+          <button class="btn" id="connection-sign-out" onclick="_connectionSignOut()">Sign out of this server</button>
+          <button class="btn" id="connection-cloud-account" style="display:none" onclick="_appBridge('settings')">amux Cloud account</button>
+          <p class="connection-help" id="connection-sign-out-help">Ends this connection on this device. Then sign in again, or connect to another server by its address.</p>
+        </section>
+        <div class="settings-sep"></div>
+        <section class="settings-section" id="tailnet-join">
+          <details class="settings-fold" ontoggle="if(this.open)tailnetJoinRefresh()"><summary class="settings-section-label">Your tailnet</summary>
+          <p>Add this server to your own Tailscale tailnet so you and your devices reach it privately. Nothing about your tailnet passes through amux Cloud.</p>
+          <p id="tailnet-join-status" role="status">Open to check.</p>
+          <a id="tailnet-join-link" class="btn primary" target="_blank" rel="noopener" style="display:none;min-height:44px;">Approve this server in Tailscale</a>
+          <button class="btn primary" id="tailnet-join-btn" onclick="tailnetJoin()" style="min-height:44px;">Add to my tailnet</button>
+          <details><summary>Use an auth key instead</summary>
+            <label class="connection-control">Auth key
+              <input id="tailnet-join-key" type="password" autocomplete="off" spellcheck="false" class="search-input" placeholder="tskey-auth-…" onkeydown="if(event.key==='Enter')tailnetJoin()">
+            </label>
+          </details>
+          <button class="btn" id="tailnet-leave-btn" onclick="tailnetLeave()" style="display:none;min-height:44px;">Remove from my tailnet</button>
+          <p id="tailnet-join-error" role="status" class="connection-help"></p>
+          </details>
+        </section>
+        <div class="settings-sep"></div>
         <section class="settings-section" id="connection-security">
-          <div class="settings-section-label">Connection &amp; security</div>
+          <details class="settings-fold"><summary class="settings-section-label">Connection &amp; security</summary>
           <p>These actions apply only to this server. Tokens and keys are never saved in the connection list.</p>
           <pre id="connection-security-status">Open Connect to read active security status.</pre>
           <button class="btn" onclick="_connectionSecurityLoad()">Refresh security status</button>
@@ -469,23 +537,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           </fieldset>
           <p id="connection-security-error" role="status"></p>
           <details><summary>Browser blocks HTTPS before sign-in?</summary><p>On the server machine, open <code>http://localhost:&lt;this server's port&gt;/connection-setup</code> for local trust and install instructions. This page cannot grant OS/browser trust. Ask the operator to provide a trusted certificate; do not disable TLS checks.</p></details>
+          </details>
         </section>
-        <div class="settings-sep"></div>
+        </div>
+        <!-- Moved out of Settings > Connect (Ethan, 2026-10-14: "remove vault and secrets (this will be in a
+             separate vault tab) remove chatgpt connector, api keys"). Kept hidden, not deleted: their scripts
+             look these ids up, and the Vault tab will host them. -->
+        <div id="settings-moved-out" hidden>
         <section class="settings-section" id="settings-vault-section">
           <div class="settings-section-label">Vault</div>
-          <p class="connection-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above an item's limit waits for your approval in the approvals banner.</p>
-          <div id="vault-items">Loading…</div>
-          <div class="settings-section-label vault-sub-label">Secrets</div>
-          <p class="connection-help ui-help" id="vault-secrets-help">Values workers receive as environment variables when they start, encrypted on this machine. The most specific scope wins: worker, then group, then global. A saved value is never shown again; replace it to change it.</p>
-          <div id="vault-secrets">Loading…</div>
-          <form id="vault-secret-form" class="vault-secret-form" onsubmit="event.preventDefault();_vaultSecretAdd()">
-            <label class="ui-field">Key <input id="vault-secret-key" class="input" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="GITHUB_TOKEN" aria-describedby="vault-secret-error"></label>
-            <label class="ui-field">Scope <select id="vault-secret-scope" class="input" onchange="_vaultSecretScopeChanged()"><option value="global">Global (every worker)</option><option value="group">A group</option><option value="worker">One worker</option></select></label>
-            <label class="ui-field" id="vault-secret-target-row" hidden>Which <select id="vault-secret-target" class="input"></select></label>
-            <label class="ui-field">Value <input id="vault-secret-value" class="input" type="password" autocomplete="new-password" spellcheck="false"></label>
-            <p id="vault-secret-error" class="ui-error" role="status"></p>
-            <button class="btn primary" type="submit" id="vault-secret-add-btn">Add secret</button>
-          </form>
+          <p class="connection-help ui-help">Secrets workers receive as environment variables, scoped to everyone, a group or one worker, and the cards workers use without seeing. Encrypted on this machine; values never appear in logs.</p>
+          <button class="btn primary" id="vault-open-btn" onclick="event.stopPropagation();openVault('secrets')">Open Vault</button>
         </section>
         <div class="settings-sep"></div>
         <section class="settings-section" id="settings-chatgpt-section">
@@ -533,35 +595,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </div>
           </div>
         </div>
-        <div class="settings-sep"></div>
-        <div class="settings-section" id="settings-connections-section">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <div class="settings-section-label" style="margin:0;">Connections</div>
-            <button id="add-conn-btn" onclick="event.stopPropagation();_toggleAddConnectionForm()" style="background:none;border:1px solid var(--border);border-radius:4px;padding:1px 8px;font-size:0.7rem;color:var(--dim);cursor:pointer;">+ Add</button>
-          </div>
-          <div id="settings-connections-list" style="display:flex;flex-direction:column;gap:4px;"></div>
-          <div id="add-conn-form" style="display:none;margin-top:8px;padding:8px;background:var(--bg3);border-radius:6px;" onclick="event.stopPropagation()">
-            <div style="display:flex;gap:4px;margin-bottom:6px;">
-              <button onclick="event.stopPropagation();_addConnPreset('Cloud','https://cloud.amux.io')" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.68rem;color:var(--dim);cursor:pointer;">&#x2601; cloud.amux.io</button>
-              <button onclick="event.stopPropagation();_addConnPreset('Local','https://localhost:8824')" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.68rem;color:var(--dim);cursor:pointer;">&#x1F4BB; localhost</button>
-            </div>
-            <input id="add-conn-name" type="text" placeholder="Name (e.g. Cloud)" autocomplete="off"
-              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
-            <input id="add-conn-url" type="text" placeholder="URL (e.g. https://cloud.amux.io)" autocomplete="off"
-              onkeydown="if(event.key==='Enter')_addConnectionSave()"
-              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
-            <input id="add-conn-user" type="text" placeholder="Username (only for a password-protected host)" autocomplete="off" autocapitalize="none" spellcheck="false"
-              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
-            <input id="add-conn-pass" type="password" placeholder="Password" autocomplete="new-password"
-              onkeydown="if(event.key==='Enter')_addConnectionSave()"
-              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:6px;outline:none;">
-            <div style="font-size:0.68rem;color:var(--dim);margin-bottom:6px;">A username and password are kept on this device only and are never sent to your other amux servers.</div>
-            <div style="display:flex;gap:6px;">
-              <button onclick="event.stopPropagation();_addConnectionSave()" style="flex:1;background:var(--accent);color:#000;border:none;border-radius:4px;padding:3px 0;font-size:0.75rem;cursor:pointer;font-weight:600;">Add</button>
-              <button onclick="event.stopPropagation();_toggleAddConnectionForm(false)" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 0;font-size:0.75rem;color:var(--dim);cursor:pointer;">Cancel</button>
-            </div>
-          </div>
-        </div>
         </div>
         <div class="settings-tab-panel" id="stab-device" data-stab="device">
         <div class="settings-section" style="padding:10px 14px;">
@@ -589,6 +622,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </select>
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Counts stay visible in every mode</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px;">
+            <label for="settings-font-select" style="font-size:0.85rem;">Font</label>
+            <select id="settings-font-select" onchange="saveUiFont(this.value)"
+              style="min-height:44px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.82rem;">
+              <option value="">System</option>
+              <option value="geist">Geist</option>
+              <option value="inter">Inter</option>
+              <option value="plex">IBM Plex Sans</option>
+            </select>
+          </div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:8px;">
             <span style="font-size:0.85rem;">Zoom</span>
             <div style="display:flex;align-items:center;gap:6px;">
@@ -640,10 +683,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </div>
           </div>
         </div>
+        <div class="settings-sep"></div>
+        <div class="settings-section"><button class="btn" id="style-guide-btn" onclick="openStyleGuide()">Style guide</button></div>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section" style="text-align:center;display:flex;flex-direction:column;gap:8px;">
-          <button class="btn" id="style-guide-btn" onclick="openStyleGuide()">Style guide</button>
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openAbout();closeSettings()">About amux &amp; token stats</span>
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openDevtools();closeSettings()">&#x1F6E0; Developer tools</span>
           <span id="logout-btn" style="font-size:0.7rem;color:var(--dim);cursor:pointer;display:none;" onclick="window.location='/api/cloud-logout'">&#x2192; Sign out</span>
@@ -657,6 +701,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-projects" onclick="switchView('projects')"><span class="tab-ico">◈</span><span class="tab-lbl">Projects</span></button>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
+  <button id="tab-tasks" onclick="switchView('tasks')"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
   <button id="tab-groups" onclick="switchView('groups')"><span class="tab-ico">&#x2756;</span><span class="tab-lbl">Groups</span></button>
   <button id="tab-calendar" onclick="switchView('calendar')"><span class="tab-ico">🗓</span><span class="tab-lbl">Calendar</span></button>
   <button id="tab-scheduler" onclick="switchView('scheduler')"><span class="tab-ico">⏱</span><span class="tab-lbl">Scheduler</span></button>
@@ -667,10 +712,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-proxies" onclick="switchView('proxies')"><span class="tab-ico">⇄</span><span class="tab-lbl">Proxies</span></button>
   <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
+  <button id="tab-vault" onclick="switchView('vault')"><span class="tab-ico">&#x1F510;</span><span class="tab-lbl">Vault</span></button>
   <button id="tab-logs" onclick="switchView('logs')"><span class="tab-ico">≡</span><span class="tab-lbl">Logs</span></button>
   <button id="tab-grid" onclick="enterGridMode()"><span class="tab-ico">▣</span><span class="tab-lbl">Workspace</span></button>
   <button id="tab-messages" onclick="switchView('messages')"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span></button>
   <button id="tab-skills" onclick="switchView('skills')"><span class="tab-ico">⚙</span><span class="tab-lbl">Skills</span></button>
+  <button id="tab-draw" onclick="switchView('draw')"><span class="tab-ico">&#x270E;</span><span class="tab-lbl">Draw</span></button>
   <button id="tab-sql" onclick="switchView('sql')"><span class="tab-ico">⛁</span><span class="tab-lbl">Database</span></button>
   <button id="tab-map" onclick="switchView('map')"><span class="tab-ico">◈</span><span class="tab-lbl">Map</span></button>
   <button id="tab-metrics" onclick="switchView('metrics')"><span class="tab-ico">↗</span><span class="tab-lbl">Metrics</span></button>
@@ -688,7 +735,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="session-view">
 <div style="padding:0 12px;margin-top:4px;display:flex;align-items:center;gap:8px;">
   <div class="search-wrap" id="search-wrap" style="flex:1;">
-    <input class="search-input" id="search-input" type="text" placeholder="Search workers..." autocomplete="off" autocorrect="off"
+    <input class="search-input" id="search-input" type="text" placeholder="Search name, description, task..." aria-label="Search workers by name, description or active task" autocomplete="off" autocorrect="off"
       oninput="searchQuery=this.value;document.getElementById('search-wrap').classList.toggle('has-value',!!this.value);onSearchInput()">
     <button class="search-clear" onclick="event.stopPropagation();clearSearch()">&#x2715;</button>
   </div>
@@ -778,20 +825,49 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="fc-container" style="width:100%;padding:0;"></div>
 </div>
 <!-- Scheduler view -->
-<div id="scheduler-view" style="display:none;">
-  <div style="padding:10px 12px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);">
-    <span style="font-weight:600;font-size:0.9rem;">Scheduler</span>
-    <span id="sched-stats" style="font-size:0.7rem;color:var(--dim);flex:1;"></span>
-    <button class="btn" onclick="openSchedModal()" style="font-size:0.78rem;padding:4px 10px;">+ New</button>
-  </div>
-  <div style="padding:8px 12px 0;">
-    <div class="search-wrap" id="sched-search-wrap" style="width:100%;">
-      <input class="search-input" id="sched-search" type="text" placeholder="Search schedules — title, worker, command, cadence…" autocomplete="off"
-        oninput="schedSearchQuery=this.value;document.getElementById('sched-search-wrap').classList.toggle('has-value',!!this.value);renderScheduler()">
-      <button class="search-clear" onclick="document.getElementById('sched-search').value='';schedSearchQuery='';document.getElementById('sched-search-wrap').classList.remove('has-value');renderScheduler()">&#x2715;</button>
+<div id="scheduler-view" class="sx-all" style="display:none;">
+  <div class="sx-head">
+    <div class="sx-head-title">
+      <h2>Scheduler</h2>
+      <span id="sched-stats" class="sx-summary"></span>
     </div>
+    <button class="btn primary sx-new" onclick="openSchedModal()" aria-label="New schedule">+<span class="sx-new-text"> New schedule</span></button>
   </div>
-  <div id="scheduler-list" style="padding:10px 12px;display:flex;flex-direction:column;gap:6px;overflow-y:auto;"></div>
+  <!-- Segmented filter: one pill per group, with counts. Rendered by
+       _sxRenderPills so the counts come from the same predicate the groups use. -->
+  <div class="sx-pills" id="sched-pills" role="tablist" aria-label="Schedule groups"></div>
+  <div class="sx-toolbar">
+    <div class="search-wrap sx-search" id="sched-search-wrap">
+      <input class="search-input" id="sched-search" type="text" placeholder="Search schedules..." autocomplete="off" aria-label="Search schedules by title, worker, command, cadence or id"
+        oninput="schedSearchQuery=this.value;document.getElementById('sched-search-wrap').classList.toggle('has-value',!!this.value);renderScheduler()">
+      <button class="search-clear" aria-label="Clear search" onclick="document.getElementById('sched-search').value='';schedSearchQuery='';document.getElementById('sched-search-wrap').classList.remove('has-value');renderScheduler()">&#x2715;</button>
+    </div>
+    <select id="sched-f-worker" class="input sx-filter" aria-label="Filter by worker" onchange="_sxFilters.worker=this.value;renderScheduler()"><option value="">All workers</option></select>
+    <select id="sched-f-type" class="input sx-filter" aria-label="Filter by type" onchange="_sxFilters.type=this.value;renderScheduler()">
+      <option value="">All types</option>
+      <option value="tmux">Trigger a worker</option>
+      <option value="shell">Run a command</option>
+    </select>
+    <select id="sched-f-status" class="input sx-filter" aria-label="Filter by status" onchange="_sxFilters.status=this.value;renderScheduler()">
+      <option value="">All statuses</option>
+      <option value="running">Running</option>
+      <option value="scheduled">Scheduled</option>
+      <option value="failing">Failing</option>
+      <option value="overdue">Overdue</option>
+      <option value="paused">Paused</option>
+      <option value="unparsed">Unparsed</option>
+    </select>
+  </div>
+  <!-- Bulk bar: appears when rows are selected. Every action here is the
+       same per-row endpoint, called once per selected schedule. -->
+  <div class="sx-bulk" id="sched-bulk" hidden>
+    <span id="sched-bulk-n"></span>
+    <button class="btn" onclick="_sxBulk('pause')">Pause</button>
+    <button class="btn" onclick="_sxBulk('resume')">Resume</button>
+    <button class="btn danger" onclick="_sxBulk('delete')">Delete</button>
+    <button class="btn" onclick="_sxClearSelection()">Clear</button>
+  </div>
+  <div id="scheduler-list" class="sx-list"></div>
   <!-- SYSTEM JOBS (AMUX-2703) — amux's own background loops, below the user's
        schedules and visually separated from them. They are NOT schedules:
        no run-now, no edit, no delete. See runtime_jobs/registry.rs. -->
@@ -800,6 +876,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <span class="sysjob-head-title">System</span>
       <span class="sysjob-head-sub">amux&rsquo;s own background jobs</span>
       <span class="sysjob-head-count" id="system-jobs-count"></span>
+      <a href="#" class="sx-viewall sysjob-viewall" onclick="event.preventDefault();_sxSetGroup('system')">View all &rarr;</a>
     </div>
     <div class="sysjob-head-note">Internal plumbing, not schedules &mdash; amux runs these and you cannot edit or delete them. A job whose last tick is far past its interval reads as <b>STALLED</b>.</div>
     <div id="system-jobs-list"></div>
@@ -859,9 +936,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="btn sp-capture-save" onclick="_spCaptureSaveTyped()" title="Save what is typed (Ctrl/⌘+Enter)">Save</button>
   </div>
   <div class="fe-col-headers" id="sp-col-headers" style="display:none;">
-    <div class="fe-cell-name fe-col-hdr" onclick="_spSortBy('name')">Name <span id="sp-sort-name"></span></div>
+    <div class="fe-cell-name fe-col-hdr" onclick="_spSortBy('name')"><input type="checkbox" class="fe-check-all" data-fsel-body="#scratchpad-body" title="Select all" aria-label="Select all" onclick="event.stopPropagation()">Name <span id="sp-sort-name"></span></div>
     <div class="fe-cell-size fe-col-hdr" onclick="_spSortBy('size')">Size <span id="sp-sort-size"></span></div>
     <div class="fe-cell-date fe-col-hdr" onclick="_spSortBy('modified')">Modified <span id="sp-sort-modified"></span></div>
+    <div class="fe-cell-date fe-col-hdr" onclick="_spSortBy('opened')">Opened <span id="sp-sort-opened"></span></div>
     <div class="fe-cell-actions"></div>
   </div>
   <div id="sp-breadcrumb" class="fe-breadcrumb" style="padding:0 12px;font-size:0.78rem;display:none;"></div>
@@ -1036,9 +1114,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
        header staying aligned, instead of those columns being hidden. -->
   <div id="fe-scroll" class="fe-scroll">
     <div id="fe-col-headers" class="fe-col-headers" style="display:none;">
-      <div class="fe-col-hdr" id="fe-hdr-name" onclick="_filesSetSort('name')">Name</div>
-      <div class="fe-col-hdr" id="fe-hdr-size" onclick="_filesSetSort('size')">Size</div>
-      <div class="fe-col-hdr" id="fe-hdr-modified" onclick="_filesSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" id="fe-hdr-name" data-sort-col="name" onclick="_filesSetSort('name')"><input type="checkbox" class="fe-check-all" data-fsel-body="#files-body" title="Select all" aria-label="Select all" onclick="event.stopPropagation()">Name</div>
+      <div class="fe-col-hdr" id="fe-hdr-size" data-sort-col="size" onclick="_filesSetSort('size')">Size</div>
+      <div class="fe-col-hdr" id="fe-hdr-modified" data-sort-col="modified" onclick="_filesSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" id="fe-hdr-opened" data-sort-col="opened" onclick="_filesSetSort('opened')" title="Last opened in amux">Opened</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
     <div id="files-body"></div>
@@ -1069,21 +1148,46 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- MDAI view: global list of every .mdai computed node (global-only: a top-bar
      tab in ALL_TABS/switchView, never in the per-worker peek overlay). -->
 <div id="mdai-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
-  <div class="fe-toolbar">
-    <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">
-      <span style="font-weight:600;font-size:0.88rem;white-space:nowrap;">Computed nodes</span>
-      <span id="mdai-count" style="font-size:0.72rem;color:var(--dim);white-space:nowrap;"></span>
+  <!-- List page: every .mdai node under the MDAI folder, with its last run -->
+  <div id="mdai-list-page" class="mdai-page-wrap" style="display:flex">
+    <div class="mdai-list-head">
+      <div class="mdai-list-titles"><h2 class="mdai-h">MDAI</h2><span id="mdai-count" class="mdai-dim"></span></div>
+      <input class="input mdai-search" id="mdai-search" type="search" placeholder="Search nodes" aria-label="Search MDAI nodes" oninput="_mdaiListSearch(this.value)" autocomplete="off">
+      <button class="btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Refresh" aria-label="Refresh">&#8635;<span class="mdai-btn-lbl"> Refresh</span></button>
+      <button class="btn primary" id="mdai-new-btn" onclick="_mdaiCreatePage()">+ New MDAI</button>
     </div>
-    <button class="fe-tb-btn" onclick="_mdaiNewFile()" title="Create a new .mdai computed node">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 6.6 7 7.9 8.3 8.4 7 8.9 6.5 10.2 6 8.9 4.7 8.4 6 7.9Z" fill="currentColor"/></svg>
-      <span>New .mdai</span>
-    </button>
-    <button class="fe-tb-btn" onclick="_mdaiTabLoad()" title="Reload the node list">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-      <span>Refresh</span>
-    </button>
+    <div id="mdai-list" class="mdai-list-body"></div>
   </div>
-  <div id="mdai-list" style="overflow-y:auto;flex:1;min-height:0;"></div>
+  <!-- Create page: every field of a node, as controls -->
+  <div id="mdai-create-page" class="mdai-page-wrap" style="display:none">
+    <div class="mdai-create">
+      <div class="mdai-list-head"><button class="btn" onclick="_mdaiCreateCancel()">&#8249; All nodes</button><h2 class="mdai-h">New MDAI</h2></div>
+      <div class="mdai-form-row">
+        <label class="mdai-lbl">Name<input class="input" id="mdai-new-name" placeholder="Workstreams" autocomplete="off"
+          onkeydown="if(event.key==='Enter')_mdaiCreateSubmit(false)"><span class="mdai-hint">Saved as <b>&lt;name&gt;.mdai</b></span></label>
+        <label class="mdai-lbl">Folder<span class="mdai-folder"><span id="mdai-new-root" class="mdai-dim"></span><input class="input" id="mdai-new-folder" placeholder="(top level)" autocomplete="off"></span></label>
+      </div>
+      <label class="mdai-lbl">Title <span class="mdai-hint">optional, shown in the list</span><input class="input" id="mdai-new-title" maxlength="200" autocomplete="off"></label>
+      <fieldset class="mdai-fs"><legend>Sources</legend>
+        <div class="mdai-hint">What the model reads on every run: your amux message history, files and folders, or other MDAI nodes' output.</div>
+        <div id="new-sources" class="mdai-src-list"></div>
+      </fieldset>
+      <div class="mdai-form-row">
+        <label class="mdai-lbl">Model<select class="input" id="mdai-new-model" onchange="_mdaiModelPick(this,'mdai-new-model-custom')"></select>
+          <input class="input" id="mdai-new-model-custom" placeholder="model id, e.g. claude-sonnet-4-6" style="display:none" autocomplete="off"></label>
+        <label class="mdai-lbl">Timeout per model call (s)<input class="input" type="number" min="30" max="3600" inputmode="numeric" id="mdai-new-timeout" placeholder="900"></label>
+      </div>
+      <label class="mdai-check"><input type="checkbox" id="mdai-new-refresh"> Run when its page is opened <span class="mdai-hint">Off by default: runs only when you press Run.</span></label>
+      <div class="mdai-lbl">Instruction<span class="mdai-hint">What the model should write from the sources. Markdown.</span>
+        <div class="mdai-seg" role="group" aria-label="Instruction view"><button type="button" data-mode="write" class="active" aria-pressed="true" onclick="_mdaiNewBodyMode('write')">Write</button><button type="button" data-mode="preview" aria-pressed="false" onclick="_mdaiNewBodyMode('preview')">Preview</button></div>
+        <textarea class="input mdai-code" id="mdai-new-body" rows="14" spellcheck="true" aria-label="Instruction" placeholder="# Weekly brief&#10;&#10;Summarize what changed this week and what needs attention next."></textarea>
+        <div id="mdai-new-preview" class="mdai-output md-content" style="display:none"></div></div>
+      <div id="mdai-new-error" class="mdai-bad" role="alert"></div>
+      <div class="mdai-row-end"><button class="btn" onclick="_mdaiCreateCancel()">Cancel</button>
+        <button class="btn mdai-create-go" onclick="_mdaiCreateSubmit(false)">Create</button>
+        <button class="btn primary mdai-create-go" onclick="_mdaiCreateSubmit(true)">Create and run</button></div>
+    </div>
+  </div>
 </div>
 
 <div id="proxies-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
@@ -1125,12 +1229,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <div id="email-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div style="padding:12px 16px;">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <div class="email-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <div style="font-size:1.05rem;font-weight:700;">Email</div>
       <button class="btn" onclick="_emailLoad()">Refresh</button>
       <button class="btn" onclick="_emailThemesRefresh(this)" title="Re-infer what matters to you from your recent messages to amux">Re-learn priorities</button>
+      <button class="btn email-about-btn" onclick="document.getElementById('email-view').classList.toggle('email-about-open')" aria-label="How this inbox is ranked" title="How this inbox is ranked">&#9432;</button>
     </div>
-    <div style="font-size:0.75rem;color:var(--dim);line-height:1.5;margin:6px 0 10px;">
+    <div class="email-about" style="font-size:0.75rem;color:var(--dim);line-height:1.5;margin:6px 0 10px;">
       Ranked by what amux infers you care about, learned from the messages you send it and
       recomputed periodically with the <b>Meta-task model</b> from Settings. Scoring itself is
       arithmetic over those themes, so opening this costs nothing.
@@ -1144,6 +1249,53 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="email-list"></div>
   </div>
 </div>
+<div id="vault-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;"></div>
+<!-- Tasks: every request a worker received, oldest first and numbered, each
+     tagged with its worker; a row opens its delivery, board cards and the
+     other messages on them (app.js _tasksLoad). -->
+<div id="tasks-view" class="tasks-scope" style="display:none;flex-direction:column;flex:1;min-height:0;">
+  <style>
+    .tasks-scope .tasks-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--border); }
+    .tasks-scope .tasks-bar .input { min-height:44px; }
+    .tasks-scope .tasks-bar .tasks-search { flex:1 1 200px; min-width:0; }
+    .tasks-scope .task-row { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:6px; padding:8px 12px; background:var(--card); cursor:pointer; min-height:44px; display:flex; flex-direction:column; gap:4px; }
+    .tasks-scope .task-title { font-size:0.9rem; font-weight:600; color:var(--text); word-break:break-word; }
+    .tasks-scope .task-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:0.76rem; color:var(--dim); }
+    .tasks-scope .task-current { color:var(--accent); }
+    .tasks-scope .task-msgs { display:flex; flex-direction:column; gap:6px; }
+    .tasks-scope .tasks-count { font-size:0.8rem; color:var(--dim); padding:6px 12px 0; }
+    .tasks-scope .tasks-list { flex:1; min-height:0; overflow-y:auto; padding:6px 12px 12px; display:flex; flex-direction:column; gap:6px; }
+    .tasks-scope .tasks-day { font-size:0.72rem; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 2px; }
+    .tasks-scope .task-item { display:flex; gap:8px; align-items:flex-start; }
+    .tasks-scope .task-num { flex:0 0 auto; min-width:52px; text-align:right; font-size:0.74rem; font-variant-numeric:tabular-nums; color:var(--dim); padding-top:10px; }
+    .tasks-scope .task-main { flex:1; min-width:0; }
+    .tasks-scope .task-item.open .task-row { border-color:var(--accent) !important; }
+    .tasks-scope .task-detail { margin:4px 0 6px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--card); font-size:0.82rem; display:flex; flex-direction:column; gap:8px; }
+    .tasks-scope .task-detail[hidden] { display:none; }
+    .tasks-scope .task-facts { display:grid; gap:4px; }
+    .tasks-scope .tasks-dim { color:var(--dim); font-size:0.76rem; }
+    .tasks-scope .task-card { border-top:1px solid var(--border); padding-top:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+    .tasks-scope .task-card-open { background:none; border:none; color:var(--accent); cursor:pointer; padding:0; text-align:left; font-size:0.82rem; min-height:32px; }
+    .tasks-scope .task-card-msgs { flex-basis:100%; display:flex; flex-direction:column; gap:4px; }
+    .tasks-scope .task-card-msg { font-size:0.78rem; word-break:break-word; }
+    .tasks-scope .task-card-msg .btn, .tasks-scope .task-facts .btn { font-size:0.72rem; padding:2px 8px; }
+    .tasks-scope .msg-tag { font-size:0.66rem; padding:1px 6px; border-radius:3px; background:rgba(128,128,128,0.12); color:var(--dim); }
+    .tasks-scope .tasks-empty { color:var(--dim); padding:24px 0; text-align:center; }
+    .tasks-scope .tasks-pager { display:flex; gap:6px; align-items:center; justify-content:center; padding:8px 12px; border-top:1px solid var(--border); flex-wrap:wrap; }
+    .tasks-scope .tasks-page { font-size:0.8rem; color:var(--dim); padding:0 6px; }
+    @media (max-width: 600px) {
+      .tasks-scope .task-num { min-width:36px; font-size:0.68rem; }
+      .tasks-scope .tasks-bar .tasks-worker { flex:1 1 100%; }
+    }
+  </style>
+  <div class="tasks-bar">
+    <select id="tasks-worker" class="input tasks-worker" onchange="_tasksFilter('main')" aria-label="Filter by worker"><option value="">All workers</option></select>
+    <input id="tasks-search" class="input tasks-search" type="search" placeholder="Search tasks" aria-label="Search tasks" oninput="_tasksSearchInput('main')">
+  </div>
+  <div id="tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
+  <div id="tasks-list" class="tasks-list"></div>
+  <div id="tasks-pager" class="tasks-pager"></div>
+</div>
 <div id="connectors-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div class="cx-page">
     <div class="cx-top">
@@ -1153,11 +1305,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="cx-titlebar">
       <div>
         <div class="cx-h1">Your connections</div>
-        <div class="cx-dim">Manage your integrations and add new ones. Every worker shares these grants.</div>
+        <div class="cx-dim cx-intro">Manage your integrations and add new ones. Every worker shares these grants.</div>
       </div>
       <div class="cx-actions">
         <button class="btn" onclick="_connectorsTabLoad()">Refresh</button>
-        <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()">＋ Add connector</button>
+        <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()" aria-label="Add connector">＋ Add<span class="cx-add-noun"> connector</span></button>
       </div>
     </div>
     <!-- AMUX-3993: declare a connector without a rebuild. The registry is a const
@@ -1363,6 +1515,18 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button class="map-open-btn" id="map-open-btn" onclick="_mapToggleSidebar()" title="Open sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
   <div class="map-main">
     <div id="map-container"></div>
+    <section class="map-sw" id="map-sw" hidden aria-label="Stopwatch">
+      <div class="map-sw-time" id="map-sw-time" role="timer" aria-live="off">0:00</div>
+      <div class="map-sw-stats"><span id="map-sw-dist">0.00 km</span><span id="map-sw-pace">&ndash; /km</span></div>
+      <p class="ui-help map-sw-gps" id="map-sw-gps"></p>
+      <div class="map-sw-btns">
+        <button class="btn primary" id="map-sw-start" onclick="_mapSwStart()">Start</button>
+        <button class="btn" id="map-sw-lap" onclick="_mapSwLap()" hidden>Lap</button>
+        <button class="btn danger" id="map-sw-stop" onclick="_mapSwStop()" hidden>Stop</button>
+      </div>
+      <ol class="map-sw-laps" id="map-sw-laps"></ol>
+      <div class="map-sw-past" id="map-sw-past"></div>
+    </section>
     <div class="map-drop-hint" id="map-drop-hint">&#x1F4CD; Click anywhere on the map to place a pin &mdash; Esc to cancel</div>
     <div class="map-toolbar">
       <button class="btn map-drop-btn" id="map-drop-btn" onclick="_mapToggleDropMode()" style="font-size:0.78rem;padding:3px 9px;" title="Drop a pin by clicking the map">&#x1F4CD; Drop Pin</button>
@@ -1376,6 +1540,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <option value="terrain">Terrain</option>
       </select>
       <button class="btn" id="map-pins-btn" onclick="_mapTogglePins()" aria-pressed="false" style="font-size:0.78rem;padding:3px 9px;" title="Hide pins on the map (the list stays)">Hide pins</button>
+      <button class="btn" id="map-sw-btn" onclick="_mapSwToggle()" aria-pressed="false" aria-controls="map-sw" style="font-size:0.78rem;padding:3px 9px;" title="Stopwatch for time trials: time, distance, pace and splits from your phone's GPS">&#x23F1; Stopwatch</button>
       <span class="map-coords" id="map-coords"></span>
     </div>
   </div>
@@ -1587,7 +1752,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
-<div id="messages-view" style="display:none;flex-direction:column;flex:1;min-height:0;padding:12px 16px;">
+<div id="messages-view" style="display:none;flex-direction:row;flex:1;min-height:0;">
   <style>
     #messages-view .msg-row { display:flex; align-items:flex-start; gap:10px; padding:9px 12px; background:var(--card);
       border:1px solid var(--border); border-radius:8px; cursor:pointer; transition:border-color .15s; }
@@ -1640,6 +1805,48 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       line-height:1.45; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
     #messages-view .msg-locate { flex-shrink:0; font-size:0.72rem; padding:4px 10px; align-self:center; }
   </style>
+  <!-- Conversations (conversations.rs): channels are groups, plus direct
+       messages with people and one shared thread per worker. The original
+       message log stays below as "All messages". -->
+  <aside id="cv-side" aria-label="Conversations">
+    <div class="cv-side-head">
+      <span class="cv-side-title">Messages</span>
+      <button type="button" class="cv-side-toggle" id="cv-side-toggle" onclick="_cvToggleSide()" aria-expanded="true" aria-controls="cv-side" title="Collapse the sidebar">&#xAB;</button>
+    </div>
+    <div class="cv-search"><input class="input" id="cv-search" type="search" placeholder="Search messages…" autocomplete="off"
+      onkeydown="if(event.key==='Enter')_cvSearch(this.value)"></div>
+    <nav class="cv-nav">
+      <button class="cv-item" data-cv="@mentions" onclick="_cvSelect('@mentions')"><span class="cv-ico">@</span><span class="cv-lbl">Mentions</span><span class="cv-badge cv-badge-red" id="cv-mentions-n"></span></button>
+      <button class="cv-item" data-cv="@unread" onclick="_cvSelect('@unread')"><span class="cv-ico">&#x25CB;</span><span class="cv-lbl">Unread</span><span class="cv-badge" id="cv-unread-n"></span></button>
+      <button class="cv-item" data-cv="@all" id="cv-all-item" onclick="_cvSelect('@all')"><span class="cv-ico">&#x2709;</span><span class="cv-lbl">All messages</span></button>
+    </nav>
+    <button type="button" class="cv-sec" data-sec="channels" onclick="_cvToggleSec('channels')" aria-expanded="true" aria-controls="cv-channels"><span class="cv-sec-caret" aria-hidden="true">&#x25BE;</span>Channels</button><div id="cv-channels" class="cv-nav"></div>
+    <button type="button" class="cv-sec" data-sec="people" id="cv-people-sec" onclick="_cvToggleSec('people')" aria-expanded="true" aria-controls="cv-people"><span class="cv-sec-caret" aria-hidden="true">&#x25BE;</span>People</button><div id="cv-people" class="cv-nav"></div>
+    <button type="button" class="cv-sec" data-sec="workers" onclick="_cvToggleSec('workers')" aria-expanded="true" aria-controls="cv-workers"><span class="cv-sec-caret" aria-hidden="true">&#x25BE;</span>Workers</button><div id="cv-workers" class="cv-nav"></div>
+  </aside>
+  <section id="cv-pane" style="display:none;" ondragover="cardDragOver(event)" ondragleave="cardDragLeave(event)" ondrop="cardDrop(_CV_FILES, event)">
+    <header class="cv-head">
+      <button class="btn cv-back" onclick="_cvBack()" aria-label="Back to conversations">&#x2039;</button>
+      <div class="cv-head-main">
+        <div class="cv-head-title" id="cv-title"></div>
+        <div class="cv-head-meta" id="cv-meta"></div>
+      </div>
+      <div class="cv-head-people" id="cv-head-people"></div>
+    </header>
+    <div id="cv-posts" class="cv-posts" aria-live="polite"></div>
+    <div id="cv-typing" class="cv-typing"></div>
+    <div class="peek-attach-bar card-attach-bar cv-attach-bar" id="card-attach-__messages__"></div>
+    <div class="cv-compose" id="cv-compose">
+      <div id="cv-ac" class="cv-ac" role="listbox"></div>
+      <button type="button" class="btn cv-attach" onclick="document.getElementById('cv-file').click()" aria-label="Attach files" title="Attach files">&#x1F4CE;</button>
+      <input type="file" id="cv-file" multiple style="display:none" onchange="_cvAttach(this.files); this.value=''">
+      <textarea id="cv-input" class="input" rows="1" placeholder="Message"
+        oninput="_cvOnInput(this)" onkeydown="_cvOnKey(event)" onpaste="_cvPaste(event)"></textarea>
+      <button class="btn primary cv-send" id="cv-send" onclick="_cvSend()" aria-label="Send">&#x27A4;</button>
+    </div>
+    <div class="cv-hint" id="cv-hint"><span>@person to notify a teammate</span><span>@worker to give a worker a task</span><span>Shift + Enter for a new line</span></div>
+  </section>
+  <div id="msgs-log-pane">
   <div style="display:flex;gap:6px;margin-bottom:10px;flex-shrink:0;">
     <button class="msg-mode-btn active" id="msgmode-messages" onclick="_msgSetMode('messages')">Messages</button>
     <button class="msg-mode-btn" id="msgmode-trends" onclick="_msgSetMode('trends')">&#x1F4C8; Trends</button>
@@ -1659,6 +1866,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <select id="msgs-session-filter" onchange="_msgsCounts=null;_messagesLoad(true,this.value)" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
       <option value="">All workers</option>
+    </select>
+    <!-- Who SENT it (Ethan 2026-10-11). Options come from the server's
+         senders facet, so it only offers names that select something. -->
+    <select id="msgs-sender-filter" aria-label="Filter by sender" title="Who sent the message" onchange="_msgsSetSender(this.value)" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+      <option value="">From anyone</option>
     </select>
     <input type="date" id="msgs-date-jump" class="amux-dp" onchange="_msgsJumpToDate(this.value)" title="Jump to a date" style="font-size:0.82rem;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);color-scheme:dark;">
     <span id="msgs-count" style="font-size:0.75rem;color:var(--dim);white-space:nowrap;"></span>
@@ -1690,6 +1902,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <!-- AMUX-4666: pages, not an endless "Load older". -->
   <div id="msgs-pager" style="flex-shrink:0;padding-top:8px;display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:wrap;"></div>
+  </div>
 </div>
 
 <div id="terminal-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
@@ -2069,7 +2282,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <option value="">All workers</option>
           </select>
           <select id="skills-sort" class="input sk-select" aria-label="Sort skills" onchange="_skillsSortSet(this.value)">
-            <option value="used">Sort: Usage</option><option value="recent">Sort: Recent</option><option value="name">Sort: Name</option>
+            <option value="used">Sort: Usage</option><option value="recent">Sort: Recently used</option><option value="created">Sort: Recently created</option><option value="edited">Sort: Recently edited</option><option value="name">Sort: Name</option>
           </select>
           <div class="sk-viewtoggle" role="group" aria-label="Layout">
             <button class="btn" id="skills-view-list" aria-pressed="true" onclick="_skillsLayoutSet('list')">&#x2630; List</button>
@@ -2106,132 +2319,248 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
-<!-- Schedule modal -->
-<div id="sched-overlay" class="board-edit-overlay" onclick="if(event.target===this)closeSchedModal()" style="display:none;">
-  <div class="board-edit-box" style="max-width:640px;width:100%;height:auto;max-height:92dvh;padding:0;overflow:hidden;display:flex;flex-direction:column;">
-    <!-- Header: title, mode, session -->
-    <div style="padding:12px 16px 8px;flex-shrink:0;border-bottom:1px solid var(--border);">
-      <div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x23F0; Scheduled Task</div>
-      <div class="field-group" style="margin-bottom:8px;">
-        <label class="field-label">Title</label>
-        <input id="sched-title" type="text" placeholder="What should run?" autocomplete="off">
-      </div>
-      <div class="sched-mode-seg" style="margin-bottom:8px;">
-        <button type="button" class="sched-mode-btn" data-mode="loop" onclick="setSchedMode('loop')"><span class="sched-mode-ico">&#x21BB;</span>Loop</button>
-        <button type="button" class="sched-mode-btn" data-mode="routine" onclick="setSchedMode('routine')"><span class="sched-mode-ico">&#x2600;</span>Routine</button>
-        <!-- A "Trigger" mode sat here (wake on session_idle / board change).
-             It wrote trigger_on/trigger_cooldown/trigger_sessions, which this
-             server reads nowhere — the Python event loop was never ported, and
-             across 20,618 recorded runs not one was ever sourced `trigger:*`,
-             so it never fired under Python either. Removed rather than left
-             offered; the capability is carded (AMUX-2680) to be rebuilt as a
-             runtime job with a named consumer, not as columns on a form. -->
-        <button type="button" class="sched-mode-btn" data-mode="once" onclick="setSchedMode('once')"><span class="sched-mode-ico">&#x25B6;</span>Once</button>
-      </div>
-      <div style="display:flex;gap:10px;align-items:flex-end;">
-        <div id="sched-session-group" style="flex:1;">
-          <label class="field-label">Worker</label>
-          <select id="sched-session" class="board-detail-session-select" style="width:100%;margin-bottom:0;"></select>
-        </div>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.72rem;color:var(--dim);white-space:nowrap;padding-bottom:7px;" title="Run a shell command on the host instead of sending to a Claude worker">
-          <input type="checkbox" id="sched-kind-shell" style="width:auto;accent-color:var(--accent);" onchange="updateSchedKindUI()">
-          shell cmd
-        </label>
-        <select id="sched-kind" style="display:none;"><option value="tmux"></option><option value="shell"></option></select>
-      </div>
+<!-- Draw tab: freehand diagrams on Excalidraw, saved as .excalidraw files in a
+     folder you choose. The editor bundle (static/vendor/draw, built by
+     scripts/build-draw.mjs) loads the first time this tab opens. -->
+<div id="draw-view" class="draw-view" style="display:none;">
+  <aside id="draw-lib" class="draw-lib" aria-label="Drawing library">
+    <div class="draw-lib-head">
+      <h3>Library</h3>
+      <button class="draw-icon-btn" onclick="_drawToggleLib(false)" aria-label="Hide library" title="Hide library">&#x2039;</button>
     </div>
-    <!-- Command: the primary editing area — grows with the viewport, drag-resizable -->
-    <div id="sched-command-section" style="flex:1 1 auto;display:flex;flex-direction:column;padding:10px 16px;min-height:140px;overflow:hidden;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-shrink:0;gap:8px;">
-        <label class="field-label" id="sched-command-label" style="margin-bottom:0;">Command</label>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span id="sched-command-count" style="font-size:0.66rem;color:var(--dim);"></span>
-          <button type="button" class="sched-expand-btn" id="sched-expand-btn" onclick="toggleSchedCmdFullscreen()" title="Expand editor (fills the modal)">&#x2922;</button>
-          <div class="notes-mode-tabs" id="sched-command-tabs" style="margin:0;">
-            <button class="notes-mode-tab active" id="sched-cmd-tab-edit" onclick="schedCmdSwitchMode('edit')">Edit</button>
-            <button class="notes-mode-tab" id="sched-cmd-tab-preview" onclick="schedCmdSwitchMode('preview')">Preview</button>
+    <input class="input draw-lib-search" id="draw-lib-search" type="search" placeholder="Search components" aria-label="Search the library" autocomplete="off" oninput="_drawLibRender()">
+    <div class="draw-lib-tabs" role="tablist">
+      <button role="tab" id="draw-libtab-components" class="active" aria-selected="true" onclick="_drawLibTab('components')">Components</button>
+      <button role="tab" id="draw-libtab-drawings" aria-selected="false" onclick="_drawLibTab('drawings')">Drawings</button>
+    </div>
+    <div class="draw-lib-body" id="draw-lib-body"></div>
+    <div class="draw-lib-foot">
+      <button class="btn draw-lib-save" id="draw-lib-save" onclick="_drawSaveSelectionToLib()">+ Save selection</button>
+      <button class="btn" onclick="_drawPickImport()">&#x2191; Import files</button>
+      <input type="file" id="draw-import-input" multiple accept=".excalidraw,.excalidrawlib,.json,image/*" hidden onchange="_drawImportInput(this)">
+    </div>
+  </aside>
+  <div class="draw-lib-scrim" id="draw-lib-scrim" onclick="_drawToggleLib(false)"></div>
+  <section class="draw-main">
+    <header class="draw-head">
+      <button class="draw-icon-btn draw-lib-open" id="draw-lib-open" onclick="_drawToggleLib(true)" aria-label="Show library" title="Library">&#x2630;</button>
+      <div class="draw-title-wrap">
+        <div class="draw-title-row">
+          <input id="draw-title" class="draw-title" aria-label="Drawing name" spellcheck="false" onkeydown="_drawTitleKey(event)" onchange="_drawRename(this.value)">
+          <span id="draw-save-state" class="draw-save-state" role="status" aria-live="polite"></span>
+        </div>
+        <div class="draw-crumbs" id="draw-crumbs" aria-label="Folder"></div>
+      </div>
+      <div class="draw-actions">
+        <button class="btn draw-act" onclick="_drawNew()" title="New drawing" aria-label="New drawing"><span class="draw-act-ico">+</span><span class="draw-act-lbl">New</span></button>
+        <button class="btn draw-act draw-act-folder" id="draw-folder-btn" onclick="_drawDirPopHere(this)" title="Folder" aria-label="Choose folder"><span class="draw-act-ico">&#x1F4C1;</span></button>
+        <button class="btn draw-act" id="draw-live-btn" onclick="_drawToggleLive()" title="Live mode: canvas only, compact pen" aria-label="Live mode"><span class="draw-act-ico">&#x25C9;</span><span class="draw-act-lbl">Live mode</span></button>
+        <button class="btn draw-act" onclick="_drawOpenSend()" title="Send to a worker" aria-label="Send to worker"><span class="draw-act-ico">&#x27A4;</span><span class="draw-act-lbl">Send to worker</span></button>
+        <div class="draw-menu-wrap">
+          <button class="btn draw-act" id="draw-export-btn" onclick="_drawToggleExportMenu(event)" aria-haspopup="menu" aria-expanded="false" title="Export" aria-label="Export"><span class="draw-act-ico">&#x21E9;</span><span class="draw-act-lbl">Export &#x25BE;</span></button>
+          <div id="draw-export-menu" class="draw-menu" role="menu" hidden>
+            <button role="menuitem" onclick="_drawExport('png')">PNG image</button>
+            <button role="menuitem" onclick="_drawExport('svg')">SVG image</button>
+            <button role="menuitem" onclick="_drawExport('excalidraw')">.excalidraw file</button>
+            <button role="menuitem" onclick="_drawExport('library')">Library (.excalidrawlib)</button>
+            <button role="menuitem" onclick="_drawOpenInFiles()">Show in Files</button>
           </div>
         </div>
       </div>
-      <div id="sched-command-editor-wrap" style="flex:1;display:flex;min-height:0;">
-        <textarea id="sched-command" placeholder="e.g. /status, npm run build, or a full multi-paragraph prompt…" autocomplete="off" spellcheck="false"
-          oninput="_schedCmdCount()"
-          style="flex:1;resize:vertical;box-sizing:border-box;font-size:0.86rem;line-height:1.6;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;min-height:0;width:100%;tab-size:2;"></textarea>
-      </div>
-      <div id="sched-command-preview" class="md-content" style="display:none;flex:1;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow-y:auto;font-size:0.88rem;line-height:1.65;color:var(--text);min-height:0;"></div>
+    </header>
+    <div class="draw-conflict" id="draw-conflict" role="alert" hidden>
+      <span id="draw-conflict-msg">This file changed on disk while you were editing.</span>
+      <button class="btn" onclick="_drawResolveConflict('disk')">Load disk version</button>
+      <button class="btn primary" onclick="_drawResolveConflict('mine')">Keep mine</button>
     </div>
-    <!-- Footer: mode-specific schedule panels + buttons (scrollable) -->
-    <div class="sched-modal-footer" style="flex-shrink:1;min-height:0;border-top:1px solid var(--border);overflow-y:auto;max-height:300px;padding:12px 16px 14px;">
-      <!-- LOOP -->
-      <div id="sched-panel-loop" class="sched-panel" style="display:none;">
-        <label class="field-label">Repeat every</label>
-        <div class="sched-chip-row" id="sched-loop-chips">
-          <button type="button" class="sched-chip" data-every="15m" onclick="setLoopEvery('15m')">15m</button>
-          <button type="button" class="sched-chip" data-every="30m" onclick="setLoopEvery('30m')">30m</button>
-          <button type="button" class="sched-chip" data-every="1h" onclick="setLoopEvery('1h')">1h</button>
-          <button type="button" class="sched-chip" data-every="2h" onclick="setLoopEvery('2h')">2h</button>
-          <button type="button" class="sched-chip" data-every="4h" onclick="setLoopEvery('4h')">4h</button>
-          <input id="sched-loop-every" type="text" placeholder="custom (e.g. 45m)" autocomplete="off"
-            style="width:120px;font-size:0.72rem;padding:5px 8px;" oninput="markLoopChipActive(this.value)">
-        </div>
-        <!-- "Stop when output matches" (done_pattern + done_action) lived
-             here. It promised the loop would end itself when a regex matched
-             the worker's pane; nothing in this server reads either column, so
-             the box saved and did nothing. Not re-implemented as written
-             either: regex-matching a rendered terminal to guess whether a
-             model has finished is exactly the scraping the harness is meant
-             to stop doing, and a worker can already report its own completion
-             (POST /api/sessions/<name>/report). See AMUX-2680. -->
-        <div class="sched-mode-help"><b>Loop</b> — sends the command to the worker over and over on a fixed interval. Disable it here, or have the worker disable it, when the work is done.</div>
+    <div class="draw-canvas-wrap" id="draw-canvas-wrap">
+      <div id="draw-host" class="draw-host"></div>
+      <div class="draw-loading" id="draw-loading">Loading the editor&#x2026;</div>
+      <div class="draw-selbar" id="draw-selbar" hidden>
+        <span class="draw-selbar-lbl" id="draw-selbar-lbl">Selection</span>
+        <button class="btn" onclick="_drawSaveSelectionToLib()">Save to library</button>
+        <button class="btn" id="draw-lock-btn" onclick="_drawToggleLock()">Lock</button>
       </div>
-      <!-- ROUTINE -->
-      <div id="sched-panel-routine" class="sched-panel" style="display:none;">
-        <label class="field-label">When</label>
-        <input id="sched-expr" type="text" placeholder='e.g. "daily at 9am", "every weekday at 9am", "0 9 * * 1-5"' autocomplete="off">
-        <div class="sched-chip-row" id="sched-routine-chips">
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('daily at 9am')">daily 9am</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('daily at 6pm')">daily 6pm</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('every weekday at 9am')">weekdays 9am</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('every morning')">mornings</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('weekly on monday at 09:00')">weekly Mon</button>
-          <button type="button" class="sched-chip" onclick="setRoutineExpr('0 9,17 * * 1-5')">2&times;/weekday</button>
-        </div>
-        <div class="sched-mode-help"><b>Routine</b> — runs on a fixed daily or weekly schedule. Accepts natural language ("daily at 9am") or cron.</div>
+      <div class="draw-snapbar" id="draw-snapbar" role="toolbar" aria-label="Snapping">
+        <button class="draw-snap" data-repeatable id="draw-snap-grid" aria-pressed="false" onclick="_drawToggleSnap('grid')" title="Snap to grid (hold Ctrl/Cmd to bypass)"><span class="draw-snap-ico">#</span><span class="draw-snap-lbl">Grid</span><span class="draw-snap-state"></span></button>
+        <button class="draw-snap" data-repeatable id="draw-snap-align" aria-pressed="false" onclick="_drawToggleSnap('align')" title="Snap to other objects (hold Ctrl/Cmd to bypass)"><span class="draw-snap-ico">&#x2261;</span><span class="draw-snap-lbl">Align</span><span class="draw-snap-state"></span></button>
+        <button class="draw-snap" data-repeatable id="draw-snap-connect" aria-pressed="false" onclick="_drawToggleSnap('connect')" title="Arrows bind to shapes (hold Ctrl/Cmd to bypass)"><span class="draw-snap-ico">&#x2194;</span><span class="draw-snap-lbl">Connect</span><span class="draw-snap-state"></span></button>
+        <button class="draw-snap draw-snap-fs" onclick="_drawFullscreen()" title="Full screen" aria-label="Full screen"><span class="draw-snap-ico">&#x26F6;</span></button>
       </div>
-      <!-- ONCE -->
-      <div id="sched-panel-once" class="sched-panel" style="display:none;">
-        <label class="field-label">Run at</label>
-        <input id="sched-run-at" type="datetime-local" class="board-detail-session-select amux-dp" style="width:100%;margin-bottom:0;">
-        <div class="sched-mode-help"><b>Once</b> — runs a single time, then disables itself.</div>
+      <div class="draw-penbar" id="draw-penbar" role="toolbar" aria-label="Pen" hidden>
+        <div class="draw-pen-colors" id="draw-pen-colors"></div>
+        <div class="draw-pen-widths" id="draw-pen-widths"></div>
+        <button class="draw-pen-tool" data-repeatable id="draw-pen-freedraw" onclick="_drawPenTool('freedraw')" title="Pen" aria-label="Pen">&#x270E;</button>
+        <button class="draw-pen-tool" data-repeatable id="draw-pen-eraser" onclick="_drawPenTool('eraser')" title="Eraser" aria-label="Eraser">&#x232B;</button>
+        <button class="draw-pen-tool" data-repeatable id="draw-pen-laser" onclick="_drawPenTool('laser')" title="Laser pointer" aria-label="Laser pointer">&#x2726;</button>
+        <button class="draw-pen-tool" data-repeatable onclick="_drawToggleLive()" title="Exit live mode" aria-label="Exit live mode">&#x2715;</button>
       </div>
-      <!-- The hidden sched-watch / sched-watch-timeout carriers were here.
-           They existed only to keep two dead columns in the save payload. -->
-      <!-- Execution mode toggles -->
-      <div id="sched-exec-modes" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
-        <label class="field-label" style="font-size:0.68rem;">Model for child workers</label>
-          <select id="sched-fan-out-model" style="font-size:0.76rem;padding:4px 8px;">
-            <option value="haiku">haiku (fast/cheap)</option>
-            <option value="sonnet">sonnet</option>
-            <option value="opus">opus</option>
-          </select>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.78rem;color:var(--text);" title="Create an ephemeral worktree for each firing, commit/push results, then tear down">
-          <input type="checkbox" id="sched-worktree" style="width:auto;accent-color:var(--accent);">
-          <span>Worktree isolation</span>
-          <span style="font-size:0.66rem;color:var(--dim);">(ephemeral per firing)</span>
-        </label>
-      </div><!-- /schedule panels (scrollable) -->
-    <!-- Action row — PINNED, and a SIBLING of the scrolling panel region
-         rather than its last child. As a child it scrolled out of view: at
-         1280x720 the panel region is squeezed to 112px with 189px of content,
-         so Save laid out at y=713 on a 720px viewport and the only way to
-         reach it was to zoom the browser out. That is the reported bug.
-         flex-shrink:0 holds it on desktop, where the box is a capped flex
-         column; position:sticky holds it on mobile, where the box itself is
-         the scroller (see the max-width:600px block). -->
+    </div>
+    <footer class="draw-status">
+      <span id="draw-status-text" class="draw-status-text"></span>
+      <button class="draw-status-retry" id="draw-status-retry" onclick="_drawSaveNow()" hidden>Retry</button>
+      <span class="draw-status-fmt">.excalidraw &#xB7; autosave</span>
+    </footer>
+  </section>
+</div>
+
+<!-- Schedule details: a side panel on desktop, a full-screen sheet on phones.
+     One panel for the Scheduler tab AND the worker peek's Schedules tab, so the
+     two can never show a schedule differently. Rendered by openSchedDetail. -->
+<div id="sched-detail" class="sx-detail-overlay" hidden onclick="if(event.target===this)closeSchedDetail()">
+  <aside class="sx-detail" role="dialog" aria-modal="true" aria-labelledby="sched-detail-title">
+    <div class="sx-detail-head">
+      <span class="sx-detail-ico" aria-hidden="true">&#x25B6;</span>
+      <code class="sched-id-badge" id="sched-detail-id" title="Schedule id: click to copy"></code>
+      <span id="sched-detail-status"></span>
+      <button class="modal-close sx-detail-close" onclick="closeSchedDetail()" aria-label="Close details">&#x2715;</button>
+    </div>
+    <h3 id="sched-detail-title" class="sx-detail-title"></h3>
+    <div class="sx-tabs" role="tablist" aria-label="Schedule detail sections">
+      <button role="tab" class="sx-tab active" data-tab="details" onclick="_sxDetailTab('details')">Details</button>
+      <button role="tab" class="sx-tab" data-tab="history" onclick="_sxDetailTab('history')">History</button>
+      <button role="tab" class="sx-tab" data-tab="runs" onclick="_sxDetailTab('runs')">Runs</button>
+      <button role="tab" class="sx-tab" data-tab="logs" onclick="_sxDetailTab('logs')">Logs</button>
+    </div>
+    <div class="sx-detail-body" id="sched-detail-body"></div>
+  </aside>
+</div>
+<!-- The row and detail "more" menu. One element, re-anchored to whichever
+     trigger opened it. -->
+<div id="sched-menu" class="sx-menu" role="menu" hidden></div>
+
+<!-- Schedule modal: create AND edit (openSchedModal(id) edits). -->
+<div id="sched-overlay" class="board-edit-overlay" onclick="if(event.target===this)closeSchedModal()" style="display:none;">
+  <div class="board-edit-box sx-create" role="dialog" aria-modal="true" aria-labelledby="sched-modal-title">
+    <div class="sx-create-head">
+      <div class="sx-create-head-text">
+        <h3 id="sched-modal-title">Create Schedule</h3>
+        <p id="sched-modal-sub">Set up a new scheduled task to run a command or trigger a worker.</p>
+      </div>
+      <button class="modal-close" onclick="closeSchedModal()" aria-label="Close">&#x2715;</button>
+    </div>
+    <div class="sx-create-main">
+      <nav class="sx-create-nav" aria-label="Schedule form sections">
+        <button type="button" class="sx-nav-btn active" data-sec="basic" onclick="_sxCreateSection('basic')"><b>Basic</b><span>Common options</span></button>
+        <button type="button" class="sx-nav-btn" data-sec="advanced" onclick="_sxCreateSection('advanced')"><b>Advanced</b><span>Expression, isolation</span></button>
+        <button type="button" class="sx-nav-btn" data-sec="template" id="sched-nav-template" onclick="_sxCreateSection('template')"><b>From Template</b><span>Use a prebuilt template</span></button>
+      </nav>
+      <div class="sx-create-body">
+        <!-- BASIC -->
+        <section class="sx-sec" id="sched-sec-basic">
+          <div class="ui-field">
+            <label class="field-label" for="sched-title">Name <span class="sx-req">*</span></label>
+            <input id="sched-title" class="input" type="text" placeholder="e.g. Nightly backup check" autocomplete="off">
+          </div>
+          <div class="ui-field">
+            <span class="field-label" id="sched-type-label">Type</span>
+            <div class="sx-type-cards" role="radiogroup" aria-labelledby="sched-type-label">
+              <label class="sx-type-card" for="sched-kind-shell">
+                <input type="radio" name="sched-kind" id="sched-kind-shell" value="shell" onchange="updateSchedKindUI()">
+                <span class="sx-type-ico sx-ico-shell" aria-hidden="true">$</span>
+                <span class="sx-type-text"><b>Run a command</b><span>Execute a shell command on this machine. No model turn, no cost per run.</span></span>
+              </label>
+              <label class="sx-type-card" for="sched-kind-tmux">
+                <input type="radio" name="sched-kind" id="sched-kind-tmux" value="tmux" checked onchange="updateSchedKindUI()">
+                <span class="sx-type-ico sx-ico-tmux" aria-hidden="true">&#x2709;</span>
+                <span class="sx-type-text"><b>Trigger a worker</b><span>Send a message to a worker. Every run is a full model turn, which costs money.</span></span>
+              </label>
+            </div>
+          </div>
+          <div class="ui-field">
+            <div class="sx-cmd-bar">
+              <label class="field-label" id="sched-command-label" for="sched-command">Message <span class="sx-req">*</span></label>
+              <span id="sched-command-count" class="sx-dim-sm"></span>
+              <button type="button" class="sched-expand-btn" id="sched-copy-btn" onclick="_sxCopyCommand()" title="Copy" aria-label="Copy command">&#x2398;</button>
+              <button type="button" class="sched-expand-btn" id="sched-expand-btn" onclick="toggleSchedCmdFullscreen()" title="Expand editor (fills the modal)" aria-label="Expand editor">&#x2922;</button>
+              <div class="notes-mode-tabs" id="sched-command-tabs">
+                <button type="button" class="notes-mode-tab active" id="sched-cmd-tab-edit" onclick="schedCmdSwitchMode('edit')">Edit</button>
+                <button type="button" class="notes-mode-tab" id="sched-cmd-tab-preview" onclick="schedCmdSwitchMode('preview')">Preview</button>
+              </div>
+            </div>
+            <div id="sched-command-editor-wrap" class="sx-cmd-wrap">
+              <span class="sx-cmd-prefix" id="sched-cmd-prefix" aria-hidden="true">$</span>
+              <textarea id="sched-command" placeholder="e.g. /status, or a full multi-paragraph prompt" autocomplete="off" spellcheck="false" oninput="_schedCmdCount()"></textarea>
+            </div>
+            <div id="sched-command-preview" class="md-content sx-cmd-preview" style="display:none;"></div>
+          </div>
+          <div class="ui-field">
+            <label class="field-label" id="sched-session-label" for="sched-session">Worker</label>
+            <select id="sched-session" class="input"></select>
+            <span class="ui-help" id="sched-session-help"></span>
+          </div>
+          <div class="ui-field">
+            <span class="field-label" id="sched-preset-label">Schedule</span>
+            <div class="sx-presets" role="radiogroup" aria-labelledby="sched-preset-label" id="sched-presets">
+              <button type="button" class="sx-preset" data-preset="minute" onclick="_sxSetPreset('minute')">Every minute</button>
+              <button type="button" class="sx-preset" data-preset="everyN" onclick="_sxSetPreset('everyN')">Every N minutes</button>
+              <button type="button" class="sx-preset" data-preset="hour" onclick="_sxSetPreset('hour')">Every hour</button>
+              <button type="button" class="sx-preset" data-preset="daily" onclick="_sxSetPreset('daily')">Daily</button>
+              <button type="button" class="sx-preset" data-preset="weekdays" onclick="_sxSetPreset('weekdays')">Weekdays</button>
+              <button type="button" class="sx-preset" data-preset="weekly" onclick="_sxSetPreset('weekly')">Weekly</button>
+              <button type="button" class="sx-preset" data-preset="monthly" onclick="_sxSetPreset('monthly')">Monthly</button>
+              <button type="button" class="sx-preset" data-preset="once" onclick="_sxSetPreset('once')">Once</button>
+              <button type="button" class="sx-preset" data-preset="custom" onclick="_sxSetPreset('custom')">Custom (cron)</button>
+            </div>
+            <div class="sx-preset-fields">
+              <label class="sx-pf" data-for="everyN">Every
+                <input id="sched-every-n" class="input sx-num" type="number" min="1" max="999" value="30" oninput="_sxSchedTouched()">
+                <select id="sched-every-unit" class="input sx-unit" onchange="_sxSchedTouched()"><option value="m">minutes</option><option value="h">hours</option><option value="d">days</option></select>
+              </label>
+              <label class="sx-pf" data-for="weekly">Day
+                <select id="sched-weekday" class="input" onchange="_sxSchedTouched()">
+                  <option value="monday">Monday</option><option value="tuesday">Tuesday</option><option value="wednesday">Wednesday</option>
+                  <option value="thursday">Thursday</option><option value="friday">Friday</option><option value="saturday">Saturday</option><option value="sunday">Sunday</option>
+                </select>
+              </label>
+              <label class="sx-pf" data-for="monthly">Day of month
+                <input id="sched-monthday" class="input sx-num" type="number" min="1" max="28" value="1" oninput="_sxSchedTouched()">
+              </label>
+              <label class="sx-pf" data-for="daily weekdays weekly monthly">Time
+                <input id="sched-time" class="input" type="time" value="09:00" oninput="_sxSchedTouched()">
+              </label>
+              <label class="sx-pf sx-pf-wide" data-for="once">Run at
+                <input id="sched-run-at" type="datetime-local" class="input amux-dp" oninput="_sxSchedTouched()">
+              </label>
+              <label class="sx-pf sx-pf-wide" data-for="custom">Expression
+                <input id="sched-expr" class="input sx-mono" type="text" placeholder='"0 9 * * 1-5", "every 45m", "every morning"' autocomplete="off" oninput="_sxSchedTouched()">
+              </label>
+              <div class="sx-tz" id="sched-tz"></div>
+            </div>
+            <div class="sx-preview" id="sched-preview" aria-live="polite"></div>
+          </div>
+        </section>
+        <!-- ADVANCED: only what the server stores AND reads. -->
+        <section class="sx-sec" id="sched-sec-advanced" hidden>
+          <div class="ui-field">
+            <label class="field-label" for="sched-expr-adv">Schedule expression</label>
+            <input id="sched-expr-adv" class="input sx-mono" type="text" autocomplete="off" placeholder="0 9 * * 1-5" oninput="_sxAdvExpr(this.value)">
+            <span class="ui-help">Typing here switches the schedule to Custom. Accepted: <code>every Nm/Nh/Nd</code>, <code>daily at HH:MM</code>, <code>every weekday at HH:MM</code>, <code>weekly on monday at HH:MM</code>, <code>monthly on 1-28 at HH:MM</code>, <code>every morning/evening</code>, or 5-field cron (minute hour day month weekday).</span>
+          </div>
+          <label class="sx-check">
+            <input type="checkbox" id="sched-worktree">
+            <span><b>Worktree isolation</b><span class="ui-help">Create an ephemeral worktree for each run, commit and push the result, then tear it down.</span></span>
+          </label>
+          <div class="ui-help sx-unsupported">Retries, timeouts, environment variables and notifications are not settings this scheduler has, so they are not offered here. A shell command reports a failure to its owner worker on a non-zero exit.</div>
+        </section>
+        <!-- TEMPLATES: client-side prefills; nothing is saved until Create. -->
+        <section class="sx-sec" id="sched-sec-template" hidden>
+          <div class="sx-templates" id="sched-templates"></div>
+          <div class="ui-field">
+            <label class="field-label" for="sched-template-copy">Or start from an existing schedule</label>
+            <select id="sched-template-copy" class="input" onchange="_sxTemplateFromExisting(this.value)"></select>
+          </div>
+        </section>
+      </div>
+    </div>
+    <!-- Action row: PINNED, and a SIBLING of the scrolling body rather than
+         its last child. As a child it scrolled out of view at 1280x720 (the
+         original "I have to zoom out to reach Save" report). flex-shrink:0
+         holds it on desktop; on phones the box is a full-screen flex column
+         and the row sits above the home indicator via the safe-area inset. -->
     <div class="sched-modal-foot">
       <button class="btn" onclick="closeSchedModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSchedModal()" id="sched-save-btn">Save</button>
+      <button class="btn primary" onclick="saveSchedModal()" id="sched-save-btn">Create Schedule</button>
     </div>
   </div>
 </div>
@@ -2297,7 +2626,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="board-detail-status-row" id="bd-status-row"></div>
     <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
     <section id="bd-answer" class="bd-answer" hidden aria-label="Answer this card">
-      <div class="bd-answer-head"><span>Waiting on you</span><button type="button" class="bd-answer-x" id="bd-answer-cancel" aria-label="Cancel: close without answering" title="Close without answering. Nothing is sent; the card stays waiting." onclick="_bdAnswerCancel()"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
+      <div class="bd-answer-head"><span>Waiting on you</span><button type="button" class="bd-answer-x" id="bd-answer-cancel" aria-label="Dismiss this ask for good" title="Dismiss this ask for good. Asks you to confirm, then the card stops waiting on you and the worker is told to carry on." onclick="_bdAnswerCancel()"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
       <div id="bd-answer-ask" class="bd-answer-ask"></div>
       <textarea id="bd-answer-text" class="input bd-answer-text" rows="3" placeholder="Your answer…" aria-label="Your answer"></textarea>
       <div class="bd-answer-actions">
@@ -2383,6 +2712,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button type="button" id="create-provider-grok" class="btn provider-btn" onclick="_selectProvider('grok')">Grok</button>
         <button type="button" id="create-provider-ollama" class="btn provider-btn" onclick="_selectProvider('ollama')">Ollama</button>
         <button type="button" id="create-provider-muse" class="btn provider-btn" onclick="_selectProvider('muse')">Muse Code</button>
+        <button type="button" id="create-provider-opencode" class="btn provider-btn" onclick="_selectProvider('opencode')">OpenCode</button>
       </div>
     </div>
     <div class="field-group" id="create-model-field">
@@ -2466,6 +2796,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </label>
       <div id="create-isolated-info" style="display:none;margin-top:6px;font-size:0.78rem;color:var(--dim);background:rgba(240,136,62,0.08);border-radius:6px;padding:8px 10px;line-height:1.5;">
         Direct CLI messages, unchanged. No boards, task creation, automated prompts, or MCP tools; peers cannot discover or message it.
+        Scoped memory and rules (global, group or worker) never reach it; scoped environment variables still do.
         You can still peek and send to it yourself. Set at creation because an isolated worker must
         start that way &mdash; a worker isolated later has already launched with the harness attached.
       </div>
@@ -2539,7 +2870,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-needs-input-row" class="peek-needs-input-row" hidden></div>
     <div id="peek-task-row" style="display:none;align-items:center;justify-content:center;gap:6px;min-width:0;max-width:100%;">
       <span style="font-size:0.72rem;color:var(--dim);flex-shrink:0;">Task:</span>
-      <span id="peek-task-label" style="font-size:0.82rem;font-weight:600;color:var(--text);white-space:nowrap;overflow-x:auto;overflow-y:hidden;flex:0 1 auto;min-width:0;-webkit-overflow-scrolling:touch;scrollbar-width:none;touch-action:pan-x;overscroll-behavior-x:contain;cursor:pointer;"></span>
+      <span id="peek-task-label" style="font-size:0.82rem;font-weight:600;color:var(--text);white-space:normal;overflow-wrap:anywhere;flex:0 1 auto;min-width:0;cursor:pointer;"></span>
     </div>
     <div class="peek-toolbar">
       <div class="peek-msg-nav" id="peek-msg-nav" role="group" aria-label="Terminal navigation">
@@ -2591,9 +2922,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="peek-find-wrap" id="peek-search-wrap" hidden>
       <input class="search-input" id="peek-search" type="search" placeholder="Find in terminal…" aria-label="Find in terminal" autocomplete="off" autocorrect="off"
         oninput="peekSearchQuery=this.value;document.getElementById('peek-search-wrap').classList.toggle('has-value',!!this.value);applyPeekSearch()"
-        onkeydown="if(event.key==='Enter'){event.preventDefault();event.shiftKey?peekSearchPrev():peekSearchNext();}else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();togglePeekFind(false);}">
+        onkeydown="if(event.key==='Enter'){event.preventDefault();if(!_peekMatches.length){_peekDeepSearch();}else{event.shiftKey?peekSearchPrev():peekSearchNext();}}else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();togglePeekFind(false);}">
       <span class="peek-find-count" id="peek-search-count" aria-live="polite"></span>
       <button class="search-clear" onclick="clearPeekSearch();document.getElementById('peek-search').focus()" title="Clear search" aria-label="Clear terminal search">&#x2715;</button>
+      <div class="peek-deep-results" id="peek-deep-results" hidden></div>
     </div>
   </div>
   <!-- Focus mode minimal bar (visible only in focus mode) -->
@@ -2607,11 +2939,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
     <button class="peek-tab" id="peek-tab-simple" onclick="setPeekTab('simple')" title="Translate this worker's output — plain English by default, or your own prompt"><span class="tab-ico">◍</span><span class="tab-lbl">Translate</span></button>
     <button class="peek-tab" id="peek-tab-chat" onclick="setPeekTab('chat')" title="Chat about this worker's work: ask its status in plain language and direct it"><span class="tab-ico">&#128172;</span><span class="tab-lbl">Chat</span></button>
+    <button class="peek-tab" id="peek-tab-converse" onclick="setPeekTab('converse')" title="Talk with this worker hands-free by voice; every conversation is logged to replay and expires automatically"><span class="tab-ico">&#x1F399;</span><span class="tab-lbl">Converse</span></button>
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')"><span class="tab-ico">⇉</span><span class="tab-lbl">Steering</span><span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')"><span class="tab-ico">⏱</span><span class="tab-lbl">Schedules</span><span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
     <button class="peek-tab" id="peek-tab-shell" onclick="setPeekTab('shell')" title="This worker's shell schedules: what runs on this machine for it, live and past output"><span class="tab-ico">$</span><span class="tab-lbl">Shell</span></button>
     <button class="peek-tab" id="peek-tab-scope" onclick="setPeekTab('scope')" title="Edit this worker's configuration and see which layer supplies each value"><span class="tab-ico">&#9707;</span><span class="tab-lbl">Configurations</span></button>
     <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this worker"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span><span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
+    <button class="peek-tab" id="peek-tab-tasks" onclick="setPeekTab('tasks')" title="The task names this worker has worked on, newest first, as the model named them"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
     <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text"><span class="tab-ico">🎤</span><span class="tab-lbl">Dictation</span><span class="peek-tab-count" id="peek-tab-dictation-count"></span></button>
     <button class="peek-tab" id="peek-tab-readalouds" onclick="setPeekTab('readalouds')" title="Past read-alouds — replay any; auto-clears after 30 days"><span class="tab-ico">&#x1F50A;</span><span class="tab-lbl">Read alouds</span><span class="peek-tab-count" id="peek-tab-readalouds-count"></span></button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span><span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
@@ -2749,9 +3083,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="togglePeekSplit()">&#x2715;</button>
     </div>
     <div class="fe-col-headers psf-col-headers" id="psf-col-headers">
-      <div class="fe-col-hdr" onclick="_psfSetSort('name')">Name</div>
+      <div class="fe-col-hdr" onclick="_psfSetSort('name')"><input type="checkbox" class="fe-check-all" data-fsel-body="#psf-body" title="Select all" aria-label="Select all" onclick="event.stopPropagation()">Name</div>
       <div class="fe-col-hdr" onclick="_psfSetSort('size')">Size</div>
       <div class="fe-col-hdr" onclick="_psfSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" onclick="_psfSetSort('opened')">Opened</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
     <div id="psf-body" class="peek-split-files-body"></div>
@@ -2858,6 +3193,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-scope-body" style="font-size:0.82rem;color:var(--dim);">Loading&hellip;</div>
   </div>
   
+  <!-- This worker's tasks, oldest first and numbered: the Tasks tab's list
+       fixed to peekSession (app.js _tasksScopes.peek). -->
+  <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope" style="padding:0;gap:0;flex-direction:column;">
+    <div class="tasks-bar">
+      <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">
+    </div>
+    <div id="peek-tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
+    <div id="peek-tasks-list" class="tasks-list"></div>
+    <div id="peek-tasks-pager" class="tasks-pager"></div>
+  </div>
   <div id="peek-messages-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
     <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
       <input type="search" id="peek-messages-search" placeholder="Search messages sent to this worker&hellip;" oninput="_peekMessagesRender()"
@@ -2933,6 +3278,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div id="peek-simple-body" style="padding:16px;line-height:1.6;color:var(--text);"></div>
   </div>
+  <!-- Converse: hands-free voice conversations with the worker, a replayable
+       log of each, expired after AMUX_CONVERSE_RETENTION_DAYS (Ethan 2026-10-11).
+       Rendered by _vxRender in app.js; stored by api/converse.rs. -->
+  <div id="peek-converse-panel" class="peek-tasks-panel vx-panel"></div>
   <!-- Past read-alouds: replay any clip; auto-flushes after 30 days (Ethan 2026-08-13). -->
   <div id="peek-readalouds-panel" class="peek-tasks-panel" style="padding:0;gap:0;overflow-y:auto;-webkit-overflow-scrolling:touch;">
     <div id="peek-readalouds-list" class="ra-list"></div>
@@ -2951,14 +3300,14 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <!-- Memory editor panel -->
   <div id="peek-memory-panel" class="peek-memory-editor">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
-      <div class="board-detail-tabs" style="border-bottom:none;margin:0;">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;flex-wrap:wrap;gap:6px;">
+      <div class="board-detail-tabs" style="border-bottom:none;margin:0;min-width:0;overflow-x:auto;">
         <button class="board-detail-tab active" id="pm-tab-edit" onclick="peekMemoryTab('edit')">Worker</button>
         <button class="board-detail-tab" id="pm-tab-preview" onclick="peekMemoryTab('preview')">Preview</button>
         <button class="board-detail-tab" id="pm-tab-global" onclick="peekMemoryTab('global')" title="Global memory shared by all workers">Global</button>
         <button class="board-detail-tab" id="pm-tab-inherited" onclick="peekMemoryTab('inherited')" title="CLAUDE.md files this worker inherits from its directory chain — loaded by Claude Code, not composed by amux">Inherited</button>
       </div>
-      <div style="display:flex;gap:6px;">
+      <div style="display:flex;gap:6px;margin-left:auto;">
         <button class="btn" id="peek-memory-pull" onclick="pullPeekMemory()" title="Pull latest from Claude's memory file">↻</button>
         <button class="btn primary" id="peek-memory-save" onclick="savePeekMemory()">Save</button>
       </div>
@@ -3212,13 +3561,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button class="ab-btn" id="ab-play-btn" onclick="_abTogglePlay()">&#x25B6;</button>
   <div class="ab-info">
     <div class="ab-title" id="ab-title">—</div>
-    <div class="ab-time"><span id="ab-cur">0:00</span> / <span id="ab-dur">0:00</span></div>
+    <div class="ab-time"><span id="ab-cur">0:00</span> / <span id="ab-dur">0:00</span> <span class="ab-state" id="ab-state" role="status" aria-live="polite"></span></div>
   </div>
   <div class="ab-progress"><input type="range" id="ab-seek" min="0" max="100" value="0" step="0.1" oninput="_abSeekInput(this.value)" onmousedown="_abSeekStart()" onmouseup="_abSeekEnd()" ontouchstart="_abSeekStart()" ontouchend="_abSeekEnd()"></div>
   <button class="ab-speed" id="ab-speed" onclick="_abCycleSpeed()">1x</button>
   <button class="ab-btn" onclick="_abClose()" title="Close player">&times;</button>
 </div>
-<audio id="amux-audio" preload="auto"></audio>
+<audio id="amux-audio" preload="metadata" playsinline></audio>
 
 <!-- Toast -->
 <div id="toast" class="toast"></div>
@@ -3436,21 +3785,37 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <!-- MDAI node overlay: open a .mdai node, run its chain, browse run history, and
      edit its edge prompts + body. Reuses .file-overlay layout (mobile-tested). -->
-<div id="mdai-overlay" class="file-overlay" style="z-index:300;">
-  <div class="file-overlay-header">
-    <div class="file-title-wrap">
+<div id="mdai-overlay" class="file-overlay mdai-detail" style="z-index:300;" role="dialog" aria-labelledby="mdai-title">
+  <header class="mdai-dhead">
+    <button class="btn mdai-back" onclick="closeMdaiNode()" aria-label="Back to all nodes">&#8249;</button>
+    <span class="mdai-dicon" aria-hidden="true">&#9672;</span>
+    <div class="mdai-dtitles">
       <h2 id="mdai-title">node</h2>
       <div id="mdai-subpath" class="file-subpath"></div>
+      <div id="mdai-badges" class="mdai-badges"></div>
     </div>
-    <!-- NOT .file-actions: that container is display:none until the file
-         viewer's own toggle opens it, so Run, Raw and the menu were never shown. -->
     <div class="mdai-actions">
-      <button id="mdai-run-btn" class="file-view-tab" onclick="_mdaiRun()" title="Run the DAG chain">Run</button>
-      <button id="mdai-menu-btn" class="file-menu-btn" onclick="event.stopPropagation();_mdaiMenu(this)" title="Copy, export, raw file, read aloud" aria-label="More actions">&#x22EF;</button>
+      <span class="mdai-split"><button id="mdai-run-btn" class="btn" data-repeatable onclick="_mdaiRun({show:true})" title="Run this node and everything it reads">&#9655; Run</button><button class="btn mdai-split-more" onclick="event.stopPropagation();_mdaiRunMenu(this)" aria-label="Run options">&#9662;</button></span>
+      <button id="mdai-menu-btn" class="btn" onclick="event.stopPropagation();_mdaiMenu(this)" title="Copy, export, raw file, read aloud" aria-label="More actions">&#x22EF;</button>
+      <button id="mdai-save-btn" class="btn" onclick="_mdaiSave()">Saved</button>
     </div>
-    <button class="btn" onclick="closeMdaiNode()" style="flex-shrink:0;">&#x2715;</button>
+  </header>
+  <nav class="mdai-tabs" role="tablist">
+    <button class="mdai-tab" role="tab" data-tab="edit" onclick="_mdaiSetTab('edit')"><span class="mdai-tab-ico" aria-hidden="true">&#9998;</span>Edit</button>
+    <button class="mdai-tab" role="tab" data-tab="preview" onclick="_mdaiSetTab('preview')"><span class="mdai-tab-ico" aria-hidden="true">&#128065;</span>Preview</button>
+    <button class="mdai-tab" role="tab" data-tab="chat" onclick="_mdaiSetTab('chat')"><span class="mdai-tab-ico" aria-hidden="true">&#128172;</span>Chat<span class="mdai-tab-n"></span></button>
+    <button class="mdai-tab" role="tab" data-tab="sources" onclick="_mdaiSetTab('sources')"><span class="mdai-tab-ico" aria-hidden="true">&#9636;</span>Sources<span class="mdai-tab-n"></span></button>
+    <button class="mdai-tab" role="tab" data-tab="runs" onclick="_mdaiSetTab('runs')"><span class="mdai-tab-ico" aria-hidden="true">&#9719;</span>Runs<span class="mdai-tab-n"></span></button>
+    <button class="mdai-tab" role="tab" data-tab="settings" onclick="_mdaiSetTab('settings')"><span class="mdai-tab-ico" aria-hidden="true">&#9881;</span>Settings</button>
+  </nav>
+  <div class="mdai-cols">
+    <div id="mdai-body" class="mdai-node-body mdai-main" role="tabpanel"></div>
+    <aside id="mdai-side" class="mdai-side" aria-label="Graph and runs"></aside>
   </div>
-  <div id="mdai-body" class="mdai-node-body"></div>
+  <form id="mdai-chatbar" class="mdai-chatbar" onsubmit="event.preventDefault();_mdaiChatSend()">
+    <textarea id="mdai-chat-input" class="input" rows="1" maxlength="4000" placeholder="Ask for a change, e.g. add a column for lifecycle work" aria-label="Tell this node what to change" oninput="_mdaiChatGrow(this)" onkeydown="_mdaiChatKey(event)"></textarea>
+    <button id="mdai-chat-send" type="submit" class="btn primary" data-repeatable aria-label="Send to the model">Send</button>
+  </form>
 </div>
 
 <!-- File explorer overlay -->

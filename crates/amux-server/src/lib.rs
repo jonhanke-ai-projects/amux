@@ -121,6 +121,7 @@ pub mod provider;
 pub mod push;
 pub mod reconciliation;
 pub mod runtime_jobs;
+pub mod search_firehose;
 pub mod tls;
 
 use std::sync::Arc;
@@ -344,6 +345,14 @@ async fn async_main() {
     tracing::info!(port = cfg.port, db = %cfg.db_path.display(), pid = std::process::id(),
         commit = env!("AMUX_BUILD_COMMIT_FULL"), build = %running_build,
         self_adopted = std::env::var("AMUX_SELF_ADOPTED").is_ok(), "starting amux-rust");
+    // Resolve the dashboard source now, so an unreadable AMUX_DASHBOARD_DIR
+    // fails at startup instead of on the first page load, and say which
+    // bytes this process serves. Production never sets it (embedded).
+    if let Some(o) = amux_dashboard::dir_override() {
+        tracing::info!(verdict = "dashboard_assets_from_dir", dir = %o.dir.display(),
+            version = %o.version, embedded_version = amux_dashboard::ASSET_VER, measured = true,
+            n_considered = 1, "dashboard assets served from AMUX_DASHBOARD_DIR, not the embedded copy");
+    }
     let home = cfg.amux_home.canonicalize().unwrap_or(cfg.amux_home.clone());
     let temp = std::env::temp_dir()
         .canonicalize()
@@ -626,6 +635,8 @@ async fn async_main() {
     // exists. If every worker in the fleet is dead, the cards still get filed
     // and wait. Noticing is infrastructure; fixing is work.
     drop(runtime_jobs::autofix::spawn(state.clone()));
+    // MDAI runs cut off by the restart that started this process resume here.
+    crate::api::mdai::resume_interrupted(state.store.clone());
     // AMUX-3579: enrol /api/board/commit-mentions, which had zero consumers.
     drop(runtime_jobs::commit_mention_notes::spawn(state.clone()));
     // AMUX-5238: close auto-captured intake cards on cited evidence and tag
@@ -653,6 +664,7 @@ async fn async_main() {
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
     drop(runtime_jobs::host_guard::spawn());
     drop(runtime_jobs::goal_keeper::spawn(state.clone()));
+    drop(runtime_jobs::task_titles::spawn(state.clone()));
     // Record tab transcripts (AMUX-4624): the folder is the work list, so a
     // restart or a late model install resolves on the next tick.
     drop(runtime_jobs::recordings_transcribe::spawn(state.clone()));
@@ -697,6 +709,19 @@ async fn async_main() {
     drop(runtime_jobs::contract_watch::spawn(state.clone()));
     // Contract rule 5 (AH-380): the server-owned land queue.
     drop(runtime_jobs::land_queue::spawn(state.clone()));
+    // Install the passive status observer BEFORE the listener binds, so a
+    // healthy /health implies the hook script is on disk. It used to arrive
+    // only on status_history's first tick (a spawn_blocking task), which can
+    // lose the race to /health: a server killed right after turning healthy
+    // left no native-status.py, and a provider hook firing while it was down
+    // had nothing to run (restart_persistence CI runs 38917609108,
+    // 38845948860: "python3: can't open file .../native-status.py"). The tick
+    // still repairs drift later; this makes the first install unconditional,
+    // including on servers where that job is disabled.
+    if let Err(error) = api::native_status::ensure_observer(&config::amux_home()) {
+        tracing::warn!(%error, measured = false, n_considered = 1, verdict = "native_status_observer_startup_install_failed",
+            "passive observer could not be installed at startup; status_history's tick will retry");
+    }
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));
@@ -717,6 +742,8 @@ async fn async_main() {
     // ProviderAdapter::models() serve the vendor's real current list instead
     // of only the hand-typed, dated fallback in provider::model_catalog.
     drop(runtime_jobs::model_catalog_refresh::spawn());
+    // Converse tab: delete voice conversations past AMUX_CONVERSE_RETENTION_DAYS.
+    drop(runtime_jobs::converse_retention::spawn());
 
     // THE SCHEDULE FIRING LOOP (AMUX-2647). `run_scheduler` existed, was
     // documented, was gated behind `AMUX_RS_SCHEDULER=1` — and had ZERO call
@@ -1008,11 +1035,36 @@ async fn async_main() {
             };
             let mut observed = meta.modified().ok();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            // An in-flight shell schedule run holds adoption, for at most
+            // AMUX_ADOPT_SHELL_DEFER_MAX_S (default 900, like the builder's).
+            let defer_max = std::time::Duration::from_secs(
+                std::env::var("AMUX_ADOPT_SHELL_DEFER_MAX_S").ok().and_then(|v| v.parse().ok()).unwrap_or(900));
+            let mut defer_since: Option<std::time::Instant> = None;
+            let mut defer_logged: Option<std::time::Instant> = None;
             loop {
                 interval.tick().await;
                 jobs::tick(jobs::ids::SELF_ADOPT);
                 let current = std::fs::metadata(&exe).ok().and_then(|m| m.modified().ok());
                 if current.is_some() && current != observed {
+                    let busy = runtime_jobs::scheduler::shell_runs_in_flight(defer_max);
+                    if !busy.is_empty() {
+                        let since = *defer_since.get_or_insert_with(std::time::Instant::now);
+                        if since.elapsed() < defer_max {
+                            if defer_logged.is_none_or(|t| t.elapsed().as_secs() >= 60) {
+                                defer_logged = Some(std::time::Instant::now());
+                                tracing::info!(verdict = "adoption_deferred_shell_run", runs = ?busy,
+                                    held_s = since.elapsed().as_secs(), max_s = defer_max.as_secs(),
+                                    measured = true, n_considered = busy.len(),
+                                    "self-adoption held: a shell schedule run is in flight and an exec would kill it");
+                            }
+                            continue;
+                        }
+                        tracing::warn!(verdict = "adoption_shell_defer_expired", runs = ?busy,
+                            held_s = since.elapsed().as_secs(), measured = true, n_considered = busy.len(),
+                            "self-adoption proceeding: shell schedule runs still in flight after the hold cap");
+                    }
+                    defer_since = None;
+                    defer_logged = None;
                     let path = exe.clone();
                     let candidate = match tokio::task::spawn_blocking(move || {
                         activation::Candidate::read(&path)
@@ -1074,6 +1126,14 @@ async fn async_main() {
     // STOP IDLE COMPUTER-USE SANDBOXES (AMUX-5300). Each is a 4 GB Docker
     // desktop; idle, exited, duplicate and unowned ones are removed by label.
     runtime_jobs::computer_reaper::spawn();
+
+    // REAP ORPHAN ZOMBIES (Mac RCA 2026-10-13: 616 unreaped children). A self-
+    // exec keeps the pid, so the previous build's children are ours to wait on.
+    runtime_jobs::zombie_reaper::spawn();
+
+    // SEARCH INDEX FOR LOGS AND TRANSCRIPTS. Incremental FTS5 ingest into
+    // ~/.amux/search-firehose.db; /api/log-search and /api/search read it.
+    runtime_jobs::search_ingest::spawn();
 
     // MAC PROCESS HEALTH (2026-08-30). Reaps orphaned Ray workers and logs
     // when the claude-process count exceeds the ceiling. Neither the browser

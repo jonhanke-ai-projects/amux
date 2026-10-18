@@ -14,6 +14,7 @@ TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane
 export AMUX_CLEANUP_FSEVENTSD_CMD=true   # the live fseventsd must not decide a test (DESKT-81)
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
+export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp"   # never the live session temp tree (DESKT-77)
 trap 'rm -rf -- "${FIX:?}"' EXIT
 mkdir -p "$FIX/tmp" "$FIX/bin"
@@ -455,6 +456,18 @@ echo "13. the defaults the scheduler runs with"
 check "the amux shared target is protected by default"  "yes" "$(printf '%s' "$DEFAULT_KEEP" | grep -Eq "\.amux/rust-build-target(:|\$)" && echo yes || echo no)"
 check "the ao shared target is protected by default"    "yes" "$(printf '%s' "$DEFAULT_KEEP" | grep -Eq "\.ao/data/cargo-target-shared(:|\$)" && echo yes || echo no)"
 check "the per-session scratchpads are scanned by default" "yes" "$(printf '%s' "$DEFAULT_ROOTS" | grep -q "/private/tmp/claude-$(id -u)@" && echo yes || echo no)"
+# Disk RCA 20261011-174748: the amux home's side targets (~/.amux/rust-build-target-*)
+# were outside every root. Default list, the depth that reaches them, and the shared one kept.
+check "the amux home's side targets are scanned by default" "yes" "$(printf '%s' "$DEFAULT_ROOTS" | grep -q ":$HOME/.amux@2:" && echo yes || echo no)"
+check "per-agent and per-worker-TMPDIR targets under ~/.amux/tmp are scanned deep enough, and before anything else (disk RCAs 2026-10-13/14)" "$HOME/.amux/tmp@9" "$(printf '%s' "$DEFAULT_ROOTS" | cut -d: -f1)"
+check "the shared amux target stays protected" "yes" "$(printf '%s' "$DEFAULT_KEEP" | grep -q "$HOME/.amux/rust-build-target\(:\|$\)" && echo yes || echo no)"
+mkdir -p "$FIX/ahome/rust-build-target-side" "$FIX/ahome/logs/deep/x"
+cp "$FIX/sig.tag" "$FIX/ahome/rust-build-target-side/CACHEDIR.TAG" 2>/dev/null || printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "$FIX/ahome/rust-build-target-side/CACHEDIR.TAG"
+echo '{}' > "$FIX/ahome/rust-build-target-side/.rustc_info.json"
+find_cargo_targets "$FIX/ahome@2" 8 30 > "$FIX/ahome.out"
+check "a side target in an amux home is found at depth 2" "yes" "$(grep -qx "$FIX/ahome/rust-build-target-side" "$FIX/ahome.out" && echo yes || echo no)"
+find_cargo_targets "$FIX/ahome@1" 8 30 > "$FIX/ahome1.out"
+check "depth 1 would miss it (the @2 is load-bearing)" "no" "$(grep -qx "$FIX/ahome/rust-build-target-side" "$FIX/ahome1.out" && echo yes || echo no)"
 if [ "$(uname)" = Darwin ]; then
   # The path goes in the environment, never as $1: a sourced tick parses its own positional args.
   unset_roots=$(TICK_PATH="$TICK" env -u TMPDIR bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"; printf "%s" "$TARGET_ROOTS"' 2>/dev/null) || unset_roots=""
@@ -484,6 +497,23 @@ if [ "$(uname)" = Darwin ]; then
 else
   echo "  skip macOS-only cell (the tick's probes are macOS commands): not run on $(uname)"
 fi
+
+echo "claude tmp depth: the default root reaches a target under scratchpad/work/<clone>/"
+fresh_root cdepth
+cdep=$(printf '%s' "$DEFAULT_ROOTS" | tr ':' '\n' | grep '^/private/tmp/claude-' | sed 's/.*@//')
+mk_target "$R/-proj/sid/scratchpad/work/clone/target" old
+find_cargo_targets "$R@${cdep:-0}" 8 30 > "$FIX/found.txt"
+check "the default claude tmp depth finds the nested target" "yes" "$(yn grep -qx "$R/-proj/sid/scratchpad/work/clone/target" "$FIX/found.txt")"
+
+echo "fair budget: a slow first root does not starve the roots after it"
+fresh_root slow; SLOW=$R; mk_target "$SLOW/p/target" old
+fresh_root fast; mk_target "$R/p/target" old
+mkdir -p "$FIX/slowbin"
+printf '#!/bin/sh\ncase "$1" in %s) sleep 30 ;; esac\nexec /usr/bin/find "$@"\n' "$SLOW" > "$FIX/slowbin/find"; chmod +x "$FIX/slowbin/find"
+PATH="$FIX/slowbin:$PATH" find_cargo_targets "$SLOW:$R" 8 6 > "$FIX/found.txt"
+check "the root after the slow one is still scanned"   "yes" "$(yn grep -qx "$R/p/target" "$FIX/found.txt")"
+check "both roots count as scanned"                    "2"   "$TARGET_ROOTS_SCANNED"
+check "the cut-off scan still says incomplete"         "no"  "$TARGET_SCAN_COMPLETE"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-targets — all checks passed"; exit 0; fi

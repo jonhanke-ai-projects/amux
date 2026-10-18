@@ -122,41 +122,36 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
         worker?.auto_pickup, worker?.auto_pickup_own];
     }, settled).toEqual([false, true, false, true]);
 
-    // Explicit opt-in path, from the Board tab (7f9c835f): turn backlog drain
-    // on without changing To Do pickup or the master switch, then off again.
+    // ONE BOARD SWITCH (Ethan, 2026-10-17: "a single toggle enable/disable
+    // board. that should do all the board stuff"). The Board tab shows one
+    // switch; On turns on every board key and Off turns every one off.
     await page.locator('#peek-tab-issues').click();
     const boardConfig = page.locator('#peek-board-config');
-    for (const label of ['Auto-drain backlog', 'Auto-pickup', 'Continue non-terminal', 'Pickup / continue master']) {
-      await expect(boardConfig).toContainText(label);
-    }
-    // Each checkbox sits directly before ITS OWN label (Ethan, 2026-10-04:
-    // "when I uncheck these they revert back"). It used to sit at the far
-    // right of its half of the two-column panel, next to the NEXT row's label,
-    // so the box beside "Auto-pickup" toggled Auto-drain.
-    const pairing = await boardConfig.evaluate(el => [...el.querySelectorAll('.pbc-row')].map(r => {
-      const box = r.querySelector('input')!.getBoundingClientRect();
-      const lab = r.querySelector('.pbc-label')!.getBoundingClientRect();
-      return { label: r.textContent?.trim(), gap: Math.round(lab.left - box.right),
-        sameLine: Math.abs((box.top + box.bottom) / 2 - (lab.top + lab.bottom) / 2) < 8 };
-    }));
-    expect(pairing.length).toBeGreaterThan(3);
-    for (const p of pairing) expect(p.gap >= 0 && p.gap <= 20 && p.sameLine, JSON.stringify(p)).toBe(true);
-    const backlog = boardConfig.locator('.pbc-row', { hasText: 'Auto-drain backlog' }).locator('input[type=checkbox]');
-    await expect(backlog).not.toBeChecked();
-    await Promise.all([configWrite(), backlog.check()]);
-    await expect.poll(async () => {
+    const sw = boardConfig.locator('.board-one-switch');
+    await expect(sw).toHaveCount(1);
+    await expect(boardConfig.locator('.pbc-row, details.settings-fold')).toHaveCount(0);
+    const allBoard = async () => {
       const rows = await getSessionsResilient(request, auth);
-      const worker = (await rows.json()).find((s: any) => s.name === name);
-      return [worker?.auto_drain_backlog, worker?.auto_drain_backlog_own, worker?.auto_pickup];
-    }, settled).toEqual([true, true, false]);
-    await Promise.all([configWrite(), backlog.uncheck()]);
-    await expect.poll(async () => {
-      const rows = await getSessionsResilient(request, auth);
-      return (await rows.json()).find((s: any) => s.name === name)?.auto_drain_backlog;
-    }, settled).toBe(false);
-    // The Board tab toggles write the worker layer only; it has no Inherit
-    // control (7f9c835f), so returning to the fleet default is not a UI path
-    // this spec can drive any more.
+      const w = (await rows.json()).find((s: any) => s.name === name);
+      return [w?.board_force_adherence, w?.board_decompose, w?.auto_pickup, w?.auto_continue, w?.auto_drain_backlog];
+    };
+    const agrees = async (on: boolean) => {
+      await expect(sw).toHaveText(on ? 'On' : 'Off');
+      await expect(sw).toHaveAttribute('aria-checked', String(on));
+      if (on) await expect(sw).toHaveClass(/primary/); else await expect(sw).not.toHaveClass(/primary/);
+    };
+    await agrees(false);
+    const box = await sw.boundingBox();
+    expect(box!.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+    await Promise.all([configWrite(), sw.click()]);
+    await expect.poll(allBoard, settled).toEqual([true, true, true, true, true]);
+    await agrees(true);
+    // A rebuild from fresh data keeps what the server holds.
+    await page.evaluate(async () => { await (window as any).fetchSessions(); const el = document.getElementById('peek-board-config') as any; el._pbcHtml = ''; (window as any)._peekBoardPolicySync(); });
+    await agrees(true);
+    await Promise.all([configWrite(), sw.click()]);
+    await expect.poll(allBoard, settled).toEqual([false, false, false, false, false]);
+    await agrees(false);
 
     // Mobile guard: the longer tab name and configuration controls must not widen the
     // page beyond the viewport on any browser project.

@@ -140,7 +140,25 @@ async fn refuse_isolated_caller(
     let headers = req.headers();
     if super::org::local_member_actor(headers).is_none() {
         let name = crate::api::groups::hdr_worker(headers);
-        if !name.is_empty() && crate::api::session_verbs::session_is_isolated(&name) {
+        // An admin-group worker keeps the board even when isolated (Ethan, 2026-10-17).
+        // A worker with every Board tab switch off has no board either (same day:
+        // "if all these are off, the board is not used").
+        let unused = !name.is_empty() && !crate::api::session_verbs::session_is_isolated(&name)
+            && crate::api::board_lifecycle::board_unused(&name)
+            && !crate::api::session_verbs::is_admin_worker(&name);
+        if unused {
+            tracing::info!(target: "amux::board", session = %name, method = %req.method(), path = %req.uri().path(),
+                measured = true, n_considered = 1, verdict = "board_unused_refused",
+                "board: refused a request from a worker whose board switches are all off");
+            return err(StatusCode::FORBIDDEN, json!({
+                "error": format!("'{name}' has every board switch off, so it has no board"),
+                "code": "board_off",
+                "how": "Keep task state in your own files. The owner can turn the board back on in the worker's Board tab.",
+            }));
+        }
+        if !name.is_empty() && crate::api::session_verbs::session_is_isolated(&name)
+            && !crate::api::session_verbs::is_admin_worker(&name)
+        {
             tracing::info!(
                 target: "amux::board",
                 session = %name,
@@ -5687,7 +5705,7 @@ pub async fn create_item(
         let allowed = match rule9 {
             Some(peer) => !peer,
             None => bs::board_delegation_allowed(Some(&hdr_session)) && bs::board_delegation_allowed(Some(target)),
-        };
+        } || super::session_verbs::speaks_for_owner(&hdr_session);
         if !allowed {
             tracing::warn!(marker="board_delegation_refused", requester=%hdr_session, target_lane=%target,
                 measured=true, n_considered=1, "worker owns its outcome; cross-board assignment refused");
@@ -5763,7 +5781,9 @@ pub async fn create_item(
             );
         }
     }
-    if request_to.is_none() && !hdr_session.is_empty() && session != hdr_session {
+    if request_to.is_none() && !hdr_session.is_empty() && session != hdr_session
+        && !super::session_verbs::speaks_for_owner(&hdr_session)
+    {
         tracing::warn!(
             caller = %hdr_session,
             requested_owner = %(if session.is_empty() { "(unassigned)" } else { session.as_str() }),
@@ -8991,7 +9011,7 @@ mod overlap_reconciliation_tests {
         let home = tempfile::tempdir().unwrap();
         let _home_guard = crate::api::settings::test_env::set_home(home.path());
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
-        std::fs::write(home.path().join("sessions/handoff-producer-0907.env"), "CC_TAGS=test\n").unwrap();
+        std::fs::write(home.path().join("sessions/handoff-producer-0907.env"), "CC_TAGS=test\nCC_AUTO_PICKUP=1\n").unwrap();
         let db = store();
         let producer = seed_card(&db, "handoff-producer-0907");
         let consumer = seed_card(&db, "handoff-consumer-0907");
@@ -9026,7 +9046,7 @@ mod overlap_reconciliation_tests {
         // worker's env file or whichever AMUX_HOME another test selected.
         std::fs::write(
             home.path().join("sessions/handoff-consumer-0907.env"),
-            "CC_TAGS=\"test\"\n",
+            "CC_TAGS=\"test\"\nCC_AUTO_PICKUP=1\n",
         )
         .unwrap();
         let (status, reply) = post(&app, "handoff-producer-0907", payload.clone()).await;
@@ -9080,7 +9100,7 @@ mod overlap_reconciliation_tests {
         for worker in ["handoff-producer-0907", "handoff-consumer-0907"] {
             std::fs::write(
                 home.path().join(format!("sessions/{worker}.env")),
-                "CC_TAGS=\"test\"\n",
+                "CC_TAGS=\"test\"\nCC_AUTO_PICKUP=1\n",
             )
             .unwrap();
         }
@@ -9227,7 +9247,7 @@ mod overlap_reconciliation_tests {
         let _home = crate::api::settings::test_env::set_home(dir.path());
         std::fs::create_dir_all(dir.path().join("sessions")).expect("sessions");
         std::fs::write(dir.path().join("sessions/raw.env"), "CC_ISOLATED=\"1\"\n").expect("w");
-        std::fs::write(dir.path().join("sessions/normal.env"), "CC_TAGS=\"amux\"\n").expect("w");
+        std::fs::write(dir.path().join("sessions/normal.env"), "CC_TAGS=\"amux\"\nCC_AUTO_PICKUP=1\n").expect("w");
         assert!(crate::api::session_verbs::session_is_isolated("raw"), "premise");
         assert!(!crate::api::session_verbs::session_is_isolated("normal"), "premise");
 
@@ -11112,7 +11132,9 @@ pub async fn patch_item(
             // able to reassign, while a verified worker may only name itself as
             // the destination. Peer collaboration belongs in reviewer,
             // shepherd, and evidence references instead of cross-board ownership or dependency edges.
-            if !caller_lane.is_empty() && map.contains_key("session") {
+            if !caller_lane.is_empty() && map.contains_key("session")
+                && !super::session_verbs::speaks_for_owner(&caller_lane)
+            {
                 let requested_owner = body_opt_str(&map, "session")
                     .flatten()
                     .filter(|owner| !owner.trim().is_empty());

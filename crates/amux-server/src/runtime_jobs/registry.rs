@@ -96,6 +96,7 @@ pub mod ids {
     pub const TRACE_ARCHIVE: &str = "trace-archive";
     pub const HOST_GUARD: &str = "host-guard";
     pub const GOAL_KEEPER: &str = "goal-keeper";
+    pub const TASK_TITLES: &str = "task-titles";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
     pub const PROJECT_EXECUTION: &str = "project-execution";
     pub const EVENT_PROCESSORS: &str = "event-processors";
@@ -107,6 +108,8 @@ pub mod ids {
     pub const TUNNEL: &str = "tunnel-relay";
     pub const BROWSER_REAPER: &str = "browser-idle-reaper";
     pub const COMPUTER_REAPER: &str = "computer-sandbox-reaper";
+    pub const ZOMBIE_REAPER: &str = "orphan-zombie-reaper";
+    pub const SEARCH_INGEST: &str = "search-ingest";
     // The PeriodicTask ids below are NOT referenced by any spawn site — they
     // register themselves through `spawn_periodic_every` under the name their
     // own module passes. They are listed here only so CATALOG rows and tests
@@ -139,6 +142,7 @@ pub mod ids {
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
     pub const LAND_QUEUE: &str = "land-queue";
+    pub const CONVERSE_RETENTION: &str = "converse-retention";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -164,6 +168,8 @@ pub const ALL_IDS: &[&str] = &[
     ids::TUNNEL,
     ids::BROWSER_REAPER,
     ids::COMPUTER_REAPER,
+    ids::ZOMBIE_REAPER,
+    ids::SEARCH_INGEST,
     ids::AUTOFIX,
     ids::BOARD_DRIVE,
     ids::CDC_POLLER,
@@ -183,6 +189,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::TRACE_ARCHIVE,
     ids::HOST_GUARD,
     ids::GOAL_KEEPER,
+    ids::TASK_TITLES,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
@@ -196,6 +203,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
     ids::LAND_QUEUE,
+    ids::CONVERSE_RETENTION,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -469,6 +477,30 @@ pub const CATALOG: &[Doc] = &[
         detail: None,
     },
     Doc {
+        id: ids::SEARCH_INGEST,
+        name: "Search ingest",
+        purpose: "Indexes new session-log and transcript bytes into ~/.amux/search-firehose.db (FTS5) for /api/search types log/transcript, /api/log-search and peek search. Incremental by byte offset; a rotated or rewritten file is re-read.",
+        env: &[
+            EnvControl {
+                var: "AMUX_SEARCH_INGEST",
+                effect: "0 stops the job; searches then scan the files directly",
+                off: Some("0"),
+            },
+            EnvControl {
+                var: "AMUX_SEARCH_INGEST_TICK_S",
+                effect: "seconds between ingest passes (default 10)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_SEARCH_INGEST_BUDGET_MB",
+                effect: "most new bytes indexed per pass (default 64)",
+                off: None,
+            },
+        ],
+        pref: None,
+        detail: Some("/api/search/status"),
+    },
+    Doc {
         id: ids::COMPUTER_REAPER,
         name: "Computer sandbox reaper",
         purpose: "Removes amux-labelled CUA computer-use containers that are idle, exited, duplicated for one lane, or unowned. Never starts Docker; finds containers by the amux-computer label only.",
@@ -486,6 +518,18 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: Some("/api/computer/status"),
+    },
+    Doc {
+        id: ids::ZOMBIE_REAPER,
+        name: "Orphan zombie reaper",
+        purpose: "Reaps this server's zombie children that nobody waits on: children of a build it exec'd over (self-adoption keeps the pid), or a spawn that dropped its handle. Reaps only zombies seen on two ticks in a row. Logs verdict=orphan_zombies_reaped.",
+        env: &[EnvControl {
+            var: "AMUX_ZOMBIE_REAP_TICK_S",
+            effect: "sweep interval in seconds (default 60); 0 turns the reaper off",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: None,
     },
     Doc {
         id: ids::BROWSER_REAPER,
@@ -721,6 +765,18 @@ pub const CATALOG: &[Doc] = &[
         detail: None,
     },
     Doc {
+        id: ids::TASK_TITLES,
+        name: "Card task titles",
+        purpose: "Keeps every running Claude worker's card title current. Claude Code titles only unnamed conversations and amux names every worker, so the card shows a generated title; this refreshes it from the worker's recent conversation when the transcript moved since the title and the title is older than the interval, a few workers per tick, oldest first. Covers isolated workers too: the title is a display label in amux meta and nothing reaches the worker. KEEP re-stamps the current title.",
+        env: &[
+            EnvControl { var: "AMUX_TASK_TITLE_SECS", effect: "seconds between ticks, default 60; 0 disables the refresh", off: Some("0") },
+            EnvControl { var: "AMUX_TASK_TITLE_REFRESH_S", effect: "minimum age of a title before it is refreshed, default 900", off: None },
+            EnvControl { var: "AMUX_TASK_TITLE_PER_TICK", effect: "titles generated per tick at most, default 3", off: None },
+        ],
+        pref: None,
+        detail: None,
+    },
+    Doc {
         id: ids::HOST_GUARD,
         name: "Host guard",
         purpose: "Every 30s computes one host pressure level (ok/strained/critical) from load per core, memory pressure and free disk. At critical, automated loops that start work (board dispatch, schedule fires, automated worker starts) skip their tick and retry on the next; owner actions never wait on it. While strained or worse, a worker's tool process that has averaged most of a core for 15+ minutes is reniced, never killed.",
@@ -823,6 +879,25 @@ pub const CATALOG: &[Doc] = &[
         }],
         pref: None,
         detail: Some("/api/recordings/config"),
+    },
+    Doc {
+        id: ids::CONVERSE_RETENTION,
+        name: "Converse retention",
+        purpose: "Deletes Converse-tab voice conversations (transcript and recorded audio under AMUX_HOME/converse) once they are older than the retention window, and logs one verdict line per sweep. Without it expired conversations are hidden but their files stay on disk.",
+        env: &[
+            EnvControl {
+                var: "AMUX_CONVERSE_RETENTION_SECS",
+                effect: "tick seconds (default 3600); 0 disables the job",
+                off: Some("0"),
+            },
+            EnvControl {
+                var: "AMUX_CONVERSE_RETENTION_DAYS",
+                effect: "days a conversation is kept (default 30), read on every tick",
+                off: None,
+            },
+        ],
+        pref: None,
+        detail: Some("/api/converse/config"),
     },
     Doc {
         id: ids::MODEL_CATALOG_REFRESH,

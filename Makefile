@@ -25,7 +25,7 @@ run:
 # Run against a scratch DB for local development (no migration risk to live data).
 dev:
 	./scripts/safe-cargo.sh build -p amux-server
-	AMUX_DB=/tmp/amux-dev.db AMUX_RS_PORT=$(PORT) "$(CARGO_TARGET_DIR)/debug/amux-server"
+	AMUX_DB=/tmp/amux-scratch.db AMUX_RS_PORT=$(PORT) "$(CARGO_TARGET_DIR)/debug/amux-server"
 
 # Syntax + type checks (fast, no link).
 check:

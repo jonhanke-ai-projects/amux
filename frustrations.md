@@ -5918,3 +5918,103 @@ CARD: none (user authorized PRs only; no live board write)
 SYMPTOM: The declared connector Forget button still uses native confirm(), despite the shared app modal explicitly replacing it for standalone/PWA browsers. The real in-app browser validation loses focus after this action and cannot complete deletion. The text also omits saved-account disconnect and pending-consent cancellation.
 COST: A valid owner deletion cannot be completed/verified reliably through the browser, and its credential consequences are hidden.
 FIX: Use the shared asynchronous danger confirmation, describe the actual account/pending effects and retained environment values, and emit measured connector-forget cancelled/removed/refused/failed receipts. Real browser regression covers Cancel without a DELETE, confirmed deletion, unrelated config/keys preservation, old-grant tombstones, rejected late callback and no resurrection after redeclaration.
+
+## Browser profile reports a dead Google session as live, so every "Continue with Google" stops at a password
+AREA: browser profiles
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-13
+SESSION: mixpeek-general (asked by Ethan: "figure out why u weren't able to do it yourself and tell @amux")
+CARD: none (workers may create board items only on their own board; amux-frustrations to card it)
+SYMPTOM: `amux browser for https://accounts.google.com` prints "google.com: login-cookie evidence (verify live access), login expires in 399.4 day(s)" for profile ethan, yet myaccount.google.com in that profile lands on the signed-out "About Google Account" page. On 2026-10-12 the CUA sandbox, loaded with the same profile's 811 cookies, showed ethan@mixpeek.com as "Signed out" and asked for the password. zapier.com shows the same false positive ("login-cookie evidence, 390 days") while /app/home redirects to /app/login.
+COST: Every third-party sign-in that goes through Google (OpenAI plugin portal, Zapier, Microsoft Partner Center) ends at a password prompt, so a worker that should finish the job hands it to Ethan instead. Three asks in two days (MG-1988, MG-2071, MG-2079).
+FIX: Judge a session by loading the account page and reporting signed in or signed out, not by a cookie's expiry. The Chrome sync should warn when Google's session arrives dead (likely rotated or device-bound session cookies that do not survive copying).
+
+## Headless profile browser never passes Cloudflare's check on platform.openai.com
+AREA: browser profiles
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-13
+SESSION: mixpeek-general
+CARD: none (see above)
+SYMPTOM: The ethan profile browser starts headless; platform.openai.com stays on "Just a moment..." with a challenges.cloudflare.com turnstile frame (2026-10-12 and 2026-10-13). Rung 2 did not help: the CDP relay's Chrome had no Google or OpenAI session on 2026-10-12 (Google showed a blank email field, no account chooser), and on 2026-10-13 its only tab was a platform.claude.com OAuth callback.
+COST: The OpenAI plugin portal (ChatGPT app submission, MG-1988) cannot be reached from rung 1 or rung 2.
+FIX: Start the profile browser headed (or with a real display) for sites behind Cloudflare, and confirm the CDP relay attaches to the Chrome profile Ethan actually signs in with.
+
+## A standing approval matched on one word swallows unrelated owner asks
+AREA: board / standing approvals
+SEVERITY: wrong
+STATUS: open
+DATE: 2026-10-13
+SESSION: mixpeek-general
+CARD: none (see above)
+SYMPTOM: SA-6 (an amux ChatGPT-directory decision) has require_terms developer, directory, chatgpt. `amux board needsyou` then refused the status move on MG-2071 (enroll in Microsoft Partner Center and buy a Microsoft 365 Copilot tenant) and MG-2079 (create a Zapier account) as covered_by_standing_approval, with "Do not escalate this again". The ask is recorded but the card never reaches Ethan's needsyou list.
+COST: Owner-only asks (account creation, spend) are marked approved by an unrelated decision and stay invisible to Ethan; the worker is told not to escalate.
+FIX: Match a standing approval on the decision it records, not a keyword; never apply one to an ask that creates an account or spends money it did not name.
+
+## The activity reaper closes a browser parked for the owner to finish a sign-up
+AREA: browser profiles
+SEVERITY: friction
+STATUS: open
+DATE: 2026-10-13
+SESSION: mixpeek-general
+CARD: none (see above)
+SYMPTOM: I left the ethan browser at zapier.com/sign-up for Ethan to complete from the needsyou resume link; amux closed it after 6 min with no activity (window 5 min).
+COST: The owner's handoff window disappears before they open it, and the resume link points at nothing.
+FIX: Exempt a browser named by an open needsyou card's resume link from the activity reaper until the card leaves needsyou.
+
+## Semantic intake folds UNRELATED creates into the caller's newest open card
+AREA: board
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-15
+SESSION: amux
+CARD: AMUX-4776
+SYMPTOM: Three creates in 20 minutes, each about different work (a Mac disk RCA, a
+  deploy CI gate, a PWA IndexedDB fix), all came back 200 with id AMUX-6047, a
+  backlog card about schedule-failure auto-fix. Intake appended or "updated" their
+  text into 6047's desc. AMUX-4776's entry above calls the 2026-09-17 folds
+  defensible (same work); these were not. The only open card the caller had was
+  6047, and every create was judged to be it.
+COST: About 12 tool calls: three wrong writes onto my own card, two desc_shrink_ack
+  cleanups, and reading board_intake.rs to learn that any STRUCTURED_KEYS field
+  (tags worked) forces a create. A caller that reads only `id` would have reported
+  three cards that never existed.
+FIX: When the caller has exactly one open candidate, require the comparison to name
+  shared work, not shared lane, before folding; and document `tags` (or a real
+  `create` opt-out) in the CLAUDE.md board recipe beside the 201/200 check.
+
+## A bare `tmux kill-server` from any lane kills the whole fleet, and nothing guards it
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-17
+SESSION: long-form-videos
+CARD: LFV-15
+SYMPTOM: A demo-server reset script ran `TMUX_TMPDIR=/tmp/lfvd.X tmux kill-server`
+  to stop a private test socket. Inside a pane, $TMUX wins over TMUX_TMPDIR, so it
+  killed /private/tmp/tmux-501/default at 18:51Z: every lane, the caller included
+  (exit 137). Ran twice before the cause was clear. The git-shared-guard hook
+  blocks `git add -A` in a shared checkout; no hook looks at tmux verbs.
+COST: 36 lanes dropped mid-turn; 19 still down after auto-restore stopped at 17
+  (see the swap-gate entry below). Owner paged.
+FIX: A PreToolUse guard that refuses `tmux kill-server` / `kill-session -a` unless
+  the command names `-S <socket>` or `-L <name>` that is not the fleet socket, and
+  unsets $TMUX for any tmux call that sets TMUX_TMPDIR. Same guard shape as
+  git-shared-guard.py.
+
+## Worker start refuses on stale swap while memory pressure is normal
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-17
+SESSION: long-form-videos
+CARD: LFV-15
+SYMPTOM: After the fleet tmux server died, auto-restore brought back 17 lanes and
+  stopped. POST /api/workers/gtm-videos/start: "host is out of memory headroom",
+  swap_used_mb 20832 > AMUX_MEM_SWAP_DENY_MB 8192, while the same reply said
+  "pressure":"normal" and memory_pressure reported 87% free of 96 GB.
+COST: 19 lanes stay down until a human raises the threshold or reboots; recovery
+  after a crash is exactly when swap is high and lanes most need starting.
+FIX: Gate on current pressure (memory_pressure level, or swapins rate) rather than
+  cumulative swap_used, or let swap count only while pressure is warn/critical.

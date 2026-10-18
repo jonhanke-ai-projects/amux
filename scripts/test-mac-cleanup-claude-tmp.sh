@@ -11,6 +11,7 @@ TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane
 export AMUX_CLEANUP_FSEVENTSD_CMD=true   # the live fseventsd must not decide a test (DESKT-81)
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
+export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 trap 'rm -rf -- "$FIX"' EXIT
 fails=0
 [ -x "$TICK" ] || { echo "FAIL: $TICK missing or not executable, no cell below ran"; exit 1; }
@@ -120,6 +121,81 @@ out=$(reap_claude_tmp "$R" 48 0)
 check "an idle entry over the size floor is removed" gone    "$(has "$S/old-big")"
 check "an idle entry under the size floor stays"     present "$(has "$S/old-note.py")"
 check "the session is still named OVER QUOTA"        yes     "$(printf '%s' "$out" | grep -q "OVER QUOTA .*$R/proj/livet" && echo yes || echo no)"
+
+echo "8. a container folder over quota is opened: its idle children are candidates, a clone with local work is kept"
+build
+S="$R/proj/livet/scratchpad/work"
+mb "$S/old-copy/a.tar" 4; mb "$S/fresh-copy/a.tar" 1
+# a full clone (.git DIR) holding a commit no remote has: somebody's only copy
+git clone -q "$FIX/repo" "$S/ahead-clone" 2>/dev/null; mb "$S/ahead-clone/big" 3
+git -C "$S/ahead-clone" add big; git -C "$S/ahead-clone" -c user.email=t@t -c user.name=t commit -q -m local
+# a full clone with nothing local: safe to drop when idle
+git clone -q "$FIX/repo" "$S/clean-clone" 2>/dev/null; mb "$S/clean-clone/scratch.out" 3; printf 'scratch.out\n' >> "$S/clean-clone/.git/info/exclude"
+age "$S/old-copy" "$S/ahead-clone" "$S/clean-clone"; touch "$P/proj/livet.jsonl"
+CLAUDE_TMP_QUOTA_KB=$(( 2 * 1024 )); CLAUDE_TMP_ENTRY_IDLE_H=6
+out=$(reap_claude_tmp "$R" 48 0)
+check "an idle child of the container is removed"   gone    "$(has "$S/old-copy")"
+check "a recent child stays"                         present "$(has "$S/fresh-copy")"
+check "a clone with an unpushed commit stays"        present "$(has "$S/ahead-clone/big")"
+check "an idle clone with nothing local is removed"  gone    "$(has "$S/clean-clone")"
+check "the container folder itself stays"            present "$(has "$S")"
+
+echo "9. a child too big to size in time is reported as uncounted, never claimed recent"
+build
+S="$R/proj/livet/scratchpad/work"; mb "$S/huge/a.tar" 3; age "$S/huge"; touch "$P/proj/livet.jsonl"
+CLAUDE_TMP_QUOTA_KB=$(( 1 * 1024 ))
+eval "real_$(declare -f du_kb)"
+du_kb() { case "$1" in */huge|*/work|*/livet) return 0 ;; *) real_du_kb "$@" ;; esac; }
+out=$(reap_claude_tmp "$R" 48 0)
+eval "$(declare -f real_du_kb | sed 's/^real_du_kb/du_kb/')"
+check "an unsized child is not removed"              present "$(has "$S/huge")"
+check "the line says it was not counted"            yes     "$(printf '%s' "$out" | grep -q "NOT counted and NOT considered" && echo yes || echo no)"
+
+echo "10. the quota pass keeps its own budget after the session pass spends its share"
+build
+rm -rf -- "${R:?}/proj/dead" "${R:?}/proj/dirty" "${R:?}/proj/livef" "${R:?}/proj/open"
+S="$R/proj/livet/scratchpad"; mb "$S/old-big/a.tar" 4; age "$S/old-big"; touch "$P/proj/livet.jsonl"
+CLAUDE_TMP_QUOTA_KB=$(( 2 * 1024 )); CLAUDE_TMP_ENTRY_IDLE_H=6
+saved_b=$CLAUDE_TMP_BUDGET_S saved_q=$CLAUDE_TMP_QUOTA_BUDGET_S
+# Budgets are compared with whole-second `date +%s`, so a 1s budget expires at the
+# next second boundary, after anywhere from 0 to 1s (flaky in CI, 2 of 5 local runs).
+# 3s still flaked on a loaded CI runner (077b3ef1f, 2026-10-16: the quota pass's
+# walk outlasted the 2-3 real seconds it got). Now the session share is 5s and the
+# stub below sleeps 6s, so it is exhausted; the quota pass gets its own 6s (5+ real
+# seconds for a sub-second walk). Were the quota pass on the session's clock it
+# would have no time left and miss old-big, which is what this cell must catch.
+CLAUDE_TMP_BUDGET_S=11; CLAUDE_TMP_QUOTA_BUDGET_S=6
+eval "real_$(declare -f any_recent)"
+any_recent() { if [ "$1" = 48 ]; then sleep 6; fi; real_any_recent "$@"; }   # the session pass outlasts its share and the quota budget
+out=$(reap_claude_tmp "$R" 48 0)
+eval "$(declare -f real_any_recent | sed 's/^real_any_recent/any_recent/')"
+CLAUDE_TMP_BUDGET_S=$saved_b; CLAUDE_TMP_QUOTA_BUDGET_S=$saved_q
+check "an idle entry is still removed by the quota pass" gone "$(has "$S/old-big")"
+
+echo "11. a session pass that runs out of time resumes there next tick, so every dir is reached"
+build
+rm -rf -- "${R:?}/proj"
+for n in a b c d e f; do mb "$R/rot/$n/scratchpad/x" 1; touch "$P/rot.$n.jsonl"; done
+mkdir -p "$P/rot"; for n in a b c d e f; do mv "$P/rot.$n.jsonl" "$P/rot/$n.jsonl"; done
+age "$R/rot" "$P/rot"
+touch "$P/rot/a.jsonl" "$P/rot/b.jsonl" "$P/rot/c.jsonl" "$P/rot/d.jsonl"   # a-d are live and always kept: they are the time sink at the front
+CLAUDE_TMP_QUOTA_KB=0
+saved_b=$CLAUDE_TMP_BUDGET_S saved_q=$CLAUDE_TMP_QUOTA_BUDGET_S
+CLAUDE_TMP_BUDGET_S=3; CLAUDE_TMP_QUOTA_BUDGET_S=0
+eval "real_$(declare -f any_recent)"
+any_recent() { if [ "$1" = 48 ]; then sleep 1; fi; real_any_recent "$@"; }   # each judged session costs a second
+reached=""
+for tick in 1 2 3 4 5 6; do
+  reap_claude_tmp "$R" 48 0 > "$FIX/rot.out"
+  reached="$reached$(grep -o 'removed [^ ]* [^ ]*/rot/[a-f] ' "$FIX/rot.out" | sed 's#.*/rot/##' | tr -d ' ' || true)"
+  [ "$(ls "$R/rot" 2>/dev/null | tr -d '\n')" = abcd ] && break
+done
+eval "$(declare -f real_any_recent | sed 's/^real_any_recent/any_recent/')"
+CLAUDE_TMP_BUDGET_S=$saved_b; CLAUDE_TMP_QUOTA_BUDGET_S=$saved_q
+check "both idle dirs behind the live ones are removed within six short ticks" abcd "$(ls "$R/rot" 2>/dev/null | tr -d '\n')"
+check "the last dir in order is reached, not starved" yes "$(printf '%s' "$reached" | grep -q f && echo yes || echo no)"
+check "the live dirs are kept" abcd "$(ls "$R/rot" 2>/dev/null | tr -d '\n')"
+check "a pass that stops early says where the next one starts" yes "$(grep -q 'the next tick starts at' "$FIX/rot.out" && echo yes || echo no)"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-claude-tmp — all checks passed"; exit 0; fi

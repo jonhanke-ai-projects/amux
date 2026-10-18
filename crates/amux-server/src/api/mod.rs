@@ -8,6 +8,7 @@ pub mod alerts;
 pub mod aliases;
 pub mod auth;
 pub mod board;
+pub mod boundaries;
 pub mod contract;
 pub mod scratchpad;
 pub mod prompt_block;
@@ -30,6 +31,7 @@ pub mod calendar;
 pub mod channels;
 pub mod chat_stream;
 pub mod chat_delegate;
+pub mod chat_context;
 pub mod chat_worker;
 pub mod commit_mentions;
 pub mod computer;
@@ -47,6 +49,7 @@ pub mod email_approval;
 pub mod email_intel;
 pub mod env_config;
 pub mod file_viewer;
+pub mod media_hls;
 pub mod files;
 pub mod fs;
 pub mod git_guard;
@@ -123,10 +126,14 @@ pub mod speedtest;
 pub mod sql;
 pub mod sse;
 pub mod typing;
+pub mod rt;
+pub mod conversations;
+pub mod converse;
 pub mod static_files;
 pub mod stats;
 pub mod sync;
 pub mod telegram;
+pub mod tailnet_join;
 pub mod terminal;
 pub mod torrents;
 pub mod tts;
@@ -142,6 +149,7 @@ pub mod worker_create;
 pub mod worker_exec;
 pub mod workers;
 mod worker_messaging;
+mod mention_grants;
 pub mod workers_deadletters;
 
 use crate::db::SharedStore;
@@ -199,6 +207,9 @@ pub fn router_with_connector_transport(
             axum::routing::get(workers::ollama_models),
         )
         .route("/api/models", axum::routing::get(workers::model_catalog))
+        .route("/api/peek/steps", axum::routing::get(session_verbs::peek_steps))
+        .route("/api/sessions/{name}/task-history", axum::routing::get(sessions_legacy::task_history))
+        .route("/api/task-history", axum::routing::get(sessions_legacy::task_list))
         .route("/api/scratchpad/config", axum::routing::get(scratchpad::get_config).put(scratchpad::put_config))
         .nest("/api/memories", memories::routes())
         .nest("/api/traces", traces::routes())
@@ -269,6 +280,11 @@ pub fn router_with_connector_transport(
         // guard moved into the module's dispatch.
         .merge(session_verbs::routes())
         .merge(typing::routes())
+        .merge(boundaries::routes())
+        // Realtime rooms (api/rt.rs): one WebSocket per tab multiplexing
+        // ephemeral per-resource rooms, with an SSE + POST fallback.
+        .merge(rt::routes())
+        .merge(conversations::routes())
         // Identity is config-introspection over server.env + ~/.claude.json
         // this server already reads — NATIVE, not a fleet capability
         // (AMUX-2597 addendum: the SPA's _initIdentity boot call 404'd here).
@@ -373,6 +389,7 @@ pub fn router_with_connector_transport(
         // Workspace tab web-terminal panes: local-shell PTY over base64 I/O +
         // long-poll output (AMUX-2885 — every keystroke 404'd since cutover).
         .nest("/api/terminal", terminal::routes())
+        .nest("/api/tailnet", tailnet_join::routes())
         // Metrics tab report cards: CRUD + registry + ops-server refresh
         // (AMUX-2884 — the table kept its rows, the routes never mounted).
         .nest("/api/reports", reports::routes())
@@ -389,6 +406,9 @@ pub fn router_with_connector_transport(
         // Record tab (AMUX-4624): device recordings synced into a folder and
         // transcribed locally. The folder is the store; see the module docs.
         .nest("/api/recordings", recordings::routes())
+        // Converse tab: the log of hands-free voice conversations with a
+        // worker, replay and expiry. The folder is the store (api/converse.rs).
+        .merge(converse::routes())
         .nest("/api/dictation", dictation::routes())
         // Transcription lives at the TOP-LEVEL /api/dictate (python parity);
         // the dictation module owns it and answers NATIVELY (AMUX-2598:
@@ -975,6 +995,20 @@ static CLIENT_DEBUG_RING: std::sync::Mutex<Vec<serde_json::Value>> =
     std::sync::Mutex::new(Vec::new());
 const CLIENT_DEBUG_RING_MAX: usize = 500;
 
+/// The client beacons of one `kind` still in the ring, oldest first, or None
+/// when the ring could not be read (so a caller can say "unmeasured" rather
+/// than report zero). Used by `/api/debug/rt` to join the client half
+/// (socket failed, fell back, resynced) with the server's counters.
+pub(crate) fn client_debug_of_kind(kind: &str) -> Option<Vec<serde_json::Value>> {
+    let ring = CLIENT_DEBUG_RING.lock().ok()?;
+    Some(
+        ring.iter()
+            .filter(|v| v.get("kind").and_then(|k| k.as_str()) == Some(kind))
+            .cloned()
+            .collect(),
+    )
+}
+
 async fn client_debug_post(
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
@@ -1076,6 +1110,9 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
     let mut has_key_in_env = false;
     let mut base = String::new();
     let mut tok = String::new();
+    let env_text_all = std::fs::read_to_string(home.join("server.env")).unwrap_or_default();
+    let user_home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let model_auth = model_auth_status(&env_text_all, &user_home);
     if let Ok(env_text) = std::fs::read_to_string(home.join("server.env")) {
         for l in env_text.lines() {
             let l = l.trim();
@@ -1120,12 +1157,77 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         "is_local_member": is_local_member,
         "access_scope": access_scope,
         "team": team,
-        "has_api_key": has_key_in_env || has_oauth || has_proxy,
+        "has_api_key": has_key_in_env || has_oauth || has_proxy
+            || model_auth["claude"]["subscription_token"].as_bool().unwrap_or(false),
         "has_oauth": has_oauth,
+        "model_auth": model_auth,
         "managed_upstream": has_proxy,
         "key_valid": serde_json::Value::Null,
         "key_error": "",
     }))
+}
+
+/// Which model sign-ins this server holds, for the first-run "Connect a model"
+/// screen (docs/design/cloud-self-service.md 8.4). Each CLI keeps its own
+/// credential in its own store; this only reports presence, never a value.
+/// `claude.subscription_token` is `claude setup-token`'s one-year token saved
+/// as CLAUDE_CODE_OAUTH_TOKEN; `claude.oauth` is an interactive /login.
+pub(crate) fn model_auth_status(env_text: &str, user_home: &std::path::Path) -> serde_json::Value {
+    let set = |key: &str| {
+        env_text.lines().any(|l| {
+            l.trim()
+                .strip_prefix(key)
+                .and_then(|r| r.strip_prefix('='))
+                .map(|v| {
+                    let v = v.trim().trim_matches('"').trim_matches('\'').to_lowercase();
+                    !v.is_empty() && !PLACEHOLDER_API_KEYS.contains(&v.as_str())
+                })
+                .unwrap_or(false)
+        })
+    };
+    let nonempty = |p: std::path::PathBuf| std::fs::metadata(p).map(|m| m.len() > 2).unwrap_or(false);
+    let claude_oauth = std::fs::read_to_string(user_home.join(".claude.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .map(|v| py_truthy(&v["oauthAccount"]))
+        .unwrap_or(false)
+        || nonempty(user_home.join(".claude").join(".credentials.json"));
+    serde_json::json!({
+        "claude": {
+            "api_key": set("ANTHROPIC_API_KEY"),
+            "subscription_token": set("CLAUDE_CODE_OAUTH_TOKEN"),
+            "oauth": claude_oauth,
+        },
+        "codex": {
+            "api_key": set("OPENAI_API_KEY"),
+            "signed_in": nonempty(user_home.join(".codex").join("auth.json")),
+        },
+        "gemini": {
+            "api_key": set("GEMINI_API_KEY") || set("GOOGLE_API_KEY"),
+            "signed_in": nonempty(user_home.join(".gemini").join("oauth_creds.json")),
+        },
+    })
+}
+
+#[cfg(test)]
+mod model_auth_tests {
+    use super::model_auth_status;
+
+    #[test]
+    fn reports_presence_per_provider_and_ignores_placeholders() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::write(home.path().join(".codex/auth.json"), r#"{"tokens":{"x":1}}"#).unwrap();
+        let env = "ANTHROPIC_API_KEY=changeme\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-abc\nGEMINI_API_KEY=\n";
+        let v = model_auth_status(env, home.path());
+        assert_eq!(v["claude"]["api_key"], false, "placeholder key is not a key");
+        assert_eq!(v["claude"]["subscription_token"], true);
+        assert_eq!(v["claude"]["oauth"], false);
+        assert_eq!(v["codex"]["signed_in"], true);
+        assert_eq!(v["codex"]["api_key"], false);
+        assert_eq!(v["gemini"]["api_key"], false, "empty value is not a key");
+        assert_eq!(v["gemini"]["signed_in"], false);
+    }
 }
 
 // ---- /api/memory/global ----
@@ -1145,6 +1247,8 @@ async fn global_memory_get() -> axum::Json<serde_json::Value> {
 }
 
 async fn global_memory_post(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -1154,7 +1258,21 @@ async fn global_memory_post(
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(&path, content) {
-        Ok(_) => axum::Json(serde_json::json!({"ok": true})).into_response(),
+        Ok(_) => {
+            // "Global memory saved: all workers will see it" is the UI's
+            // promise. Every worker's composed context is rewritten and the
+            // running ones are told to re-read it (session_verbs::refresh_scoped_context).
+            let reached = session_verbs::workers_in_scope("global", "");
+            let origin = session_verbs::hdr_worker(&headers);
+            let live = session_verbs::refresh_scoped_context(&state, &reached, "memory (global scope)", &origin).await;
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "affected_workers": reached,
+                "delivered_live": live,
+                "takes_effect": session_verbs::SCOPED_CONTEXT_TAKES_EFFECT,
+            }))
+            .into_response()
+        }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(serde_json::json!({"error": e.to_string()})),

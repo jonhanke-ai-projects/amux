@@ -18,6 +18,25 @@ Stdlib only. Users live in USERS_FILE as `user scrypt$<salt>$<hash>` lines,
 written by `door.py hash`. The cookie is `user.expiry.hmac` under a random
 per-host secret; rotating the secret signs everyone out.
 
+Token mode (amux Cloud, docs/design/cloud-self-service.md J8, 8.2): when
+/etc/amux/fleet.env holds AMUX_FLEET_SECRET and AMUX_SLUG, /_door/enter?t=...
+accepts a 60-second token signed by cloud.amux.io with this server's secret.
+The token names the person (sub = email), their role, and for a teammate the
+amux invite to redeem. The door redeems it with amux-server, keeps the member
+token in MEMBERS_FILE, and sets a 12-hour cookie.
+
+The owner (an AMUX_WEB_USERS entry marked `owner`, which is the paying customer on amux
+Cloud) has no member token: Caddy then sends amux an empty member cookie and amux treats
+the request as its host owner, who can invite teammates in Settings. A teammate opens the
+invite link (/invite/<token>), the door sends them to /_door/join, where they pick their
+own password; the door redeems the invite and keeps that password in JOINED_FILE.
+
+Every other account, password or token, maps to an amux member token in MEMBERS_FILE
+("name token" lines). /_door/check returns it as X-Amux-Member, which Caddy
+forwards as the only cookie amux sees. Each token is re-validated against
+amux-server's /api/identity at most every 60 seconds, so revoking a member in
+Team settings locks them out within a minute.
+
   door.py serve                 listen on 127.0.0.1:8890
   door.py hash <user>           read a password on stdin, print a users line
 """
@@ -35,6 +54,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USERS_FILE = os.environ.get("DOOR_USERS", "/etc/amux-door/users")
 SECRET_FILE = os.environ.get("DOOR_SECRET", "/etc/amux-door/secret")
+UPDATE_STATUS = os.environ.get("DOOR_UPDATE_STATUS", "/var/lib/amux-update/status.json")
 COOKIE = "amux_door"
 # File previews run in a sandboxed iframe (an opaque origin), so their link
 # clicks are cross-site and never carry a SameSite=Lax cookie. This second,
@@ -47,7 +67,14 @@ VIEW_PATH = "/api/file/raw-path/"
 # would fire on every page load.
 VIEW_MARK = "amux_door_vm"
 MAX_AGE = 30 * 86400
+TOKEN_MAX_AGE = 12 * 3600
 PORT = int(os.environ.get("DOOR_PORT", "8890"))
+MEMBERS_FILE = os.environ.get("DOOR_MEMBERS", "/etc/amux-door/members")
+JOINED_FILE = os.environ.get("DOOR_JOINED", "/etc/amux-door/joined")   # teammates' own passwords
+FLEET_ENV = os.environ.get("DOOR_FLEET_ENV", "/etc/amux/fleet.env")
+AMUX = os.environ.get("DOOR_AMUX_URL", "https://127.0.0.1:8824")
+MEMBER_RECHECK = float(os.environ.get("DOOR_MEMBER_RECHECK", "60"))
+_member_ok_cache = {}   # token -> (ok, checked_at)
 
 
 def log(**kv):
@@ -61,10 +88,10 @@ def scrypt_hash(password, salt=None):
     return "scrypt$%s$%s" % (base64.b64encode(salt).decode(), base64.b64encode(h).decode())
 
 
-def users():
+def users(path=None):
     out = {}
     try:
-        for line in open(USERS_FILE):
+        for line in open(path or USERS_FILE):
             parts = line.split()
             if len(parts) == 2:
                 out[parts[0]] = parts[1]
@@ -73,8 +100,121 @@ def users():
     return out
 
 
+def members():
+    out = {}
+    try:
+        for line in open(MEMBERS_FILE):
+            parts = line.split()
+            if len(parts) == 2:
+                out[parts[0]] = parts[1]
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def joined():
+    """Teammates who set their password at /_door/join. They stay members: revoking one in
+    Settings locks them out, because their check goes through member_valid like a token user."""
+    return users(JOINED_FILE)
+
+
+def save_joined(name, pw_hash):
+    rows = {k: v for k, v in joined().items() if k != name}
+    rows[name] = pw_hash
+    tmp = JOINED_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("".join("%s %s\n" % kv for kv in rows.items()))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, JOINED_FILE)
+
+
+def save_member(name, token):
+    rows = {k: v for k, v in members().items() if k != name}
+    rows[name] = token
+    tmp = MEMBERS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("".join("%s %s\n" % kv for kv in rows.items()))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, MEMBERS_FILE)
+
+
+def fleet():
+    """AMUX_* settings written by cloud-init on amux Cloud servers; empty elsewhere."""
+    out = {}
+    try:
+        for line in open(FLEET_ENV):
+            k, _, v = line.strip().partition("=")
+            if k:
+                out[k] = json.loads(v) if v.startswith('"') else v
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def _amux(method, path, data=None, cookie=None, timeout=5):
+    import ssl, urllib.request
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE   # loopback, self-signed
+    req = urllib.request.Request(AMUX + path, data=data, method=method)
+    if cookie:
+        req.add_header("Cookie", "amux_member=" + cookie)
+    if data is not None:
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+        return r.status, r.read()
+
+
+def member_valid(token, now=None):
+    """Is this amux member token still a verified member? Cached for MEMBER_RECHECK seconds."""
+    now = now or time.time()
+    hit = _member_ok_cache.get(token)
+    if hit and now - hit[1] < MEMBER_RECHECK:
+        return hit[0]
+    try:
+        _, body = _amux("GET", "/api/identity", cookie=token)
+        ok = bool(json.loads(body).get("is_local_member"))
+    except Exception:
+        ok = hit[0] if hit else False      # amux briefly down: keep the last answer rather than lock everyone out
+    _member_ok_cache[token] = (ok, now)
+    return ok
+
+
+def verify_entry_token(token, now=None):
+    """The control plane's token (cloud/control/tokens.py): payload.mac, HMAC-SHA256 with this server's secret."""
+    cfg = fleet()
+    sec, slug = cfg.get("AMUX_FLEET_SECRET"), cfg.get("AMUX_SLUG")
+    if not sec or not slug:
+        raise ValueError("token sign-in is not enabled on this server")
+    try:
+        payload, mac = token.split(".")
+    except (AttributeError, ValueError):
+        raise ValueError("malformed token")
+    unb64 = lambda x: base64.urlsafe_b64decode(x + "=" * (-len(x) % 4))
+    if not hmac.compare_digest(hmac.new(sec.encode(), payload.encode(), hashlib.sha256).digest(), unb64(mac)):
+        raise ValueError("bad signature")
+    claims = json.loads(unb64(payload))
+    if claims.get("exp", 0) < (now or time.time()):
+        raise ValueError("expired")
+    if claims.get("aud") != slug:
+        raise ValueError("wrong server")
+    if not claims.get("sub") or "@" not in claims["sub"]:
+        raise ValueError("no person in token")
+    return claims
+
+
+def redeem_invite(email, invite):
+    """Accept an amux invite for email; the invite token becomes the member token (as bootstrap.sh does)."""
+    data = urllib.parse.urlencode({"email": email, "name": email.split("@")[0]}).encode()
+    _amux("POST", "/invite/" + urllib.parse.quote(invite, safe=""), data=data, timeout=10)
+    _member_ok_cache.pop(invite, None)
+    if not member_valid(invite):
+        raise ValueError("invite was not accepted for this email")
+    save_member(email, invite)
+    return invite
+
+
 def check_password(user, password):
-    stored = users().get(user)
+    stored = users().get(user) or joined().get(user)
     if not stored or not stored.startswith("scrypt$"):
         # Same work either way so a timing difference does not reveal users.
         scrypt_hash(password)
@@ -93,8 +233,8 @@ def sign(user, expiry):
     return hmac.new(secret(), msg, hashlib.sha256).hexdigest()
 
 
-def make_cookie(user):
-    exp = int(time.time()) + MAX_AGE
+def make_cookie(user, max_age=MAX_AGE):
+    exp = int(time.time()) + max_age
     return "%s.%d.%s" % (user, exp, sign(user, exp))
 
 
@@ -107,7 +247,7 @@ def cookie_user(header, name=COOKIE):
                 exp = int(exp)
             except ValueError:
                 return None
-            if exp > time.time() and hmac.compare_digest(sign(user, exp), mac) and user in users():
+            if exp > time.time() and hmac.compare_digest(sign(user, exp), mac) and (user in users() or user in members()):
                 return user
     return None
 
@@ -122,11 +262,11 @@ def basic_user(header):
     return user if check_password(user, pw) else None
 
 
-def session_cookies(user):
-    v = make_cookie(user)
-    return [("Set-Cookie", "%s=%s; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax" % (COOKIE, v, MAX_AGE)),
-            ("Set-Cookie", "%s=%s; Path=%s; Max-Age=%d; HttpOnly; Secure; SameSite=None" % (VIEW_COOKIE, v, VIEW_PATH, MAX_AGE)),
-            ("Set-Cookie", "%s=1; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax" % (VIEW_MARK, MAX_AGE))]
+def session_cookies(user, max_age=MAX_AGE):
+    v = make_cookie(user, max_age)
+    return [("Set-Cookie", "%s=%s; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax" % (COOKIE, v, max_age)),
+            ("Set-Cookie", "%s=%s; Path=%s; Max-Age=%d; HttpOnly; Secure; SameSite=None" % (VIEW_COOKIE, v, VIEW_PATH, max_age)),
+            ("Set-Cookie", "%s=1; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax" % (VIEW_MARK, max_age))]
 
 
 def has_cookie(header, name):
@@ -159,6 +299,15 @@ button{margin-top:18px;width:100%%;min-height:44px;border:0;border-radius:8px;ba
 <button type="submit">Sign in</button>%(err)s
 </form></body></html>"""
 
+JOIN_PAGE = PAGE.replace('<form method="post" action="/_door/login">', '<form method="post" action="/_door/join">').replace(
+    "<title>Sign in to amux</title>", "<title>Join amux</title>").replace(
+    '<h1>amux</h1><p>%(host)s</p>', '<h1>Join %(host)s</h1><p>You were invited to this amux server. Choose the password you will sign in with.</p>').replace(
+    '<label for="u">Username</label>', '<label for="u">Your email</label>').replace(
+    'autocomplete="current-password" required>', 'autocomplete="new-password" minlength="10" required>'
+    '<label for="p2">Password again</label><input id="p2" name="password2" type="password" autocomplete="new-password" required>').replace(
+    '<input type="hidden" name="next" value="%(next)s">', '<input type="hidden" name="invite" value="%(next)s">').replace(
+    '<button type="submit">Sign in</button>', '<button type="submit">Join</button>')
+
 
 class Door(BaseHTTPRequestHandler):
     server_version = "amux-door"
@@ -182,6 +331,13 @@ class Door(BaseHTTPRequestHandler):
         self.send(401 if err else 200, body.encode(), [("Content-Type", "text/html; charset=utf-8"),
                                                        ("Cache-Control", "no-store")])
 
+    def join_page(self, invite, user="", err=""):
+        host = html.escape(self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "")
+        body = JOIN_PAGE % {"host": host, "next": html.escape(invite), "user": html.escape(user),
+                            "err": '<div class="err">%s</div>' % html.escape(err) if err else ""}
+        self.send(400 if err else 200, body.encode(), [("Content-Type", "text/html; charset=utf-8"),
+                                                       ("Cache-Control", "no-store")])
+
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path)
         if path.path == "/_door/check":
@@ -193,21 +349,81 @@ class Door(BaseHTTPRequestHandler):
             if not user and method == "GET" and uri.startswith(VIEW_PATH):
                 user = cookie_user(cookies, VIEW_COOKIE)
             if user:
+                tok = members().get(user)
+                if user not in users() and not (tok and member_valid(tok)):
+                    log(event="check", user=user, verdict="door_member_revoked")
+                    user = None
+            if user:
                 # Signed in before the view cookie existed: one hop to add it.
                 if (method == "GET" and "text/html" in self.headers.get("Accept", "")
                         and not has_cookie(cookies, VIEW_MARK) and not uri.startswith(("/_door/", VIEW_PATH))):
                     loc = "/_door/refresh?next=" + urllib.parse.quote(safe_next(uri), safe="")
                     return self.send(302, headers=[("Location", loc), ("Cache-Control", "no-store")])
-                return self.send(200, headers=[("X-Door-User", user)])
+                tok = members().get(user)
+                return self.send(200, headers=[("X-Door-User", user)] + ([("X-Amux-Member", tok)] if tok else []))
             accept = self.headers.get("Accept", "")
+            if method == "GET" and uri.startswith("/invite/"):
+                # A teammate's invite link (Settings > Team). They have no password yet.
+                inv = uri[len("/invite/"):].split("?")[0].split("/")[0]
+                return self.send(302, headers=[("Location", "/_door/join?invite=" + urllib.parse.quote(inv, safe="")),
+                                               ("Cache-Control", "no-store")])
             if self.headers.get("X-Forwarded-Method", "GET") == "GET" and "text/html" in accept:
+                cfg = fleet()
+                if cfg.get("AMUX_CONTROL_URL") and cfg.get("AMUX_SLUG") and not users():
+                    # amux Cloud: people arrive through cloud.amux.io, which sends them back with a fresh token.
+                    loc = "%s/?server=%s" % (cfg["AMUX_CONTROL_URL"].rstrip("/"), urllib.parse.quote(cfg["AMUX_SLUG"]))
+                    return self.send(302, headers=[("Location", loc), ("Cache-Control", "no-store")])
                 loc = "/_door/login?next=" + urllib.parse.quote(safe_next(uri), safe="")
                 return self.send(302, headers=[("Location", loc)])
             return self.send(401, b'{"error":"sign in required"}', [("Content-Type", "application/json"),
                              ("WWW-Authenticate", 'Basic realm="amux"')])
+        if path.path == "/_door/enter":
+            q = urllib.parse.parse_qs(path.query)
+            ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+            try:
+                claims = verify_entry_token(q.get("t", [""])[0])
+                email = claims["sub"].lower()
+                known = members().get(email)
+                if claims.get("invite") and not (known and member_valid(known)):
+                    redeem_invite(email, claims["invite"])     # invites are single use; a member skips this
+                tok = members().get(email)
+                if not tok or not member_valid(tok):
+                    raise ValueError("not a member of this server")
+            except Exception as e:
+                log(event="enter", ip=ip, verdict="door_enter_refused", reason=str(e)[:120])
+                body = ("<!doctype html><meta charset=utf-8><title>Link expired</title><p>This sign-in link has expired "
+                        "or is not for this server. <a href='%s'>Sign in again</a></p>" %
+                        html.escape(fleet().get("AMUX_CONTROL_URL", "https://cloud.amux.io"))).encode()
+                return self.send(401, body, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])
+            log(event="enter", user=email, ip=ip, role=claims.get("role"), verdict="door_enter_ok")
+            nxt = safe_next(q.get("next", ["/"])[0])
+            return self.send(303, headers=[("Location", nxt), ("Cache-Control", "no-store")] +
+                             session_cookies(email, TOKEN_MAX_AGE))
         if path.path == "/_door/login":
             q = urllib.parse.parse_qs(path.query)
             return self.page(q.get("next", ["/"])[0])
+        if path.path == "/_door/join":
+            q = urllib.parse.parse_qs(path.query)
+            return self.join_page(q.get("invite", [""])[0])
+        if path.path == "/_door/status":
+            # Public and secret-free: the self-updater's last outcome (cloud/desktop/update.sh) plus
+            # whether amux answers right now. cloud.amux.io's monitor reads it without signing in.
+            try:
+                st = json.load(open(UPDATE_STATUS))
+            except Exception:
+                st = {"verdict": "unknown"}
+            try:
+                st["live_commit"] = json.loads(_amux("GET", "/health", timeout=3)[1]).get("commit", "")
+            except Exception:
+                st["live_commit"] = ""
+            try:   # the page a customer lands on, fetched as the owner over loopback
+                code, body = _amux("GET", "/", timeout=5)
+                st["dashboard"] = code == 200 and b"<html" in body[:4096].lower()
+            except Exception:
+                st["dashboard"] = False
+            st["measured"] = True
+            return self.send(200, json.dumps(st).encode(), [("Content-Type", "application/json"),
+                                                             ("Cache-Control", "no-store")])
         if path.path == "/_door/refresh":
             q = urllib.parse.parse_qs(path.query)
             nxt = safe_next(q.get("next", ["/"])[0])
@@ -216,17 +432,22 @@ class Door(BaseHTTPRequestHandler):
                 return self.send(302, headers=[("Location", "/_door/login?next=" + urllib.parse.quote(nxt, safe=""))])
             return self.send(302, headers=[("Location", nxt), ("Cache-Control", "no-store")] + session_cookies(user))
         if path.path == "/_door/logout":
-            return self.send(302, headers=[("Location", "/_door/login"),
+            # To "/", so the check decides: an amux Cloud server goes to cloud.amux.io sign-in,
+            # a password host to its login form (the dashboard's Sign out, 2026-10-17).
+            return self.send(302, headers=[("Location", "/"), ("Cache-Control", "no-store"),
                              ("Set-Cookie", "%s=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax" % COOKIE),
                              ("Set-Cookie", "%s=; Path=%s; Max-Age=0; HttpOnly; Secure; SameSite=None" % (VIEW_COOKIE, VIEW_PATH)),
                              ("Set-Cookie", "%s=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax" % VIEW_MARK)])
         self.send(404)
 
     def do_POST(self):
-        if urllib.parse.urlsplit(self.path).path != "/_door/login":
+        route = urllib.parse.urlsplit(self.path).path
+        if route not in ("/_door/login", "/_door/join"):
             return self.send(404)
         n = int(self.headers.get("Content-Length") or 0)
         form = urllib.parse.parse_qs(self.rfile.read(min(n, 65536)).decode(errors="replace"))
+        if route == "/_door/join":
+            return self.join(form)
         user = (form.get("username") or [""])[0].strip()
         pw = (form.get("password") or [""])[0]
         nxt = safe_next((form.get("next") or ["/"])[0])
@@ -237,6 +458,30 @@ class Door(BaseHTTPRequestHandler):
         log(event="signin", user=user, ip=ip, verdict="door_signin_refused")
         time.sleep(1.0)  # slows guessing without a lockout a person could trip
         return self.page(nxt, user, "Wrong username or password.")
+
+
+    def join(self, form):
+        email = (form.get("username") or [""])[0].strip().lower()
+        pw, pw2 = (form.get("password") or [""])[0], (form.get("password2") or [""])[0]
+        invite = (form.get("invite") or [""])[0].strip()
+        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        if "@" not in email or not (3 <= len(email) <= 200) or any(c.isspace() for c in email):
+            return self.join_page(invite, email, "Enter your email address.")
+        if len(pw) < 10:
+            return self.join_page(invite, email, "Use at least 10 characters.")
+        if pw != pw2:
+            return self.join_page(invite, email, "The two passwords differ.")
+        if email in users() or email in joined():
+            return self.join_page(invite, email, "That email already has an account here. Sign in instead.")
+        try:
+            redeem_invite(email, invite)
+        except Exception as e:
+            log(event="join", user=email, ip=ip, verdict="door_join_refused", reason=str(e)[:120])
+            time.sleep(1.0)
+            return self.join_page(invite, email, "This invite link is used or no longer valid. Ask the server owner for a new one.")
+        save_joined(email, scrypt_hash(pw))
+        log(event="join", user=email, ip=ip, verdict="door_join_ok")
+        return self.send(303, headers=[("Location", "/"), ("Cache-Control", "no-store")] + session_cookies(email))
 
 
 def main():

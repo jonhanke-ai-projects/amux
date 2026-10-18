@@ -18,6 +18,7 @@ has() { if printf '%s' "$1" | grep -q -- "$2"; then echo yes; else echo no; fi; 
 alive() { kill -0 "$1" 2>/dev/null && echo alive || echo gone; }
 export AMUX_CLEANUP_SCOPE_FILE=/dev/null AMUX_CLEANUP_FSEVENTSD_CMD=true AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/none"
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
+export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
 DB="$FIX/amux"; mkdir -p "$DB"; STATE_DIR="$FIX/state"; SQLITE_DB_ROOT="$DB"
 # Never $(spawn): a command substitution waits for the child's stdout to close.

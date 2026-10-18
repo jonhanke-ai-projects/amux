@@ -39,7 +39,7 @@
     "description": "How engineering leaders use amux to deploy a fleet of parallel AI coding agents — Claude Code, Codex, and Gemini CLI — with a shared kanban board, self-healing overnight operation, mobile oversight, and a full audit trail. Open source, self-hosted, zero vendor dependency.",
     "url": "https://amux.io/for/ctos/",
     "datePublished": "2026-07-24",
-    "dateModified": "2026-08-22",
+    "dateModified": "2026-10-13",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png"
@@ -116,23 +116,18 @@
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For</a> <span class="sep">›</span> <span>CTOs</span></div>
 
     <h1>amux for CTOs</h1>
-    <p class="subtitle">Run an AI engineering team from one dashboard — self-healing parallel agents, shared kanban, mobile oversight, and a full audit trail. <em>Updated August 2026.</em></p>
+    <p class="subtitle">Run an AI engineering team from one dashboard — self-healing parallel agents, shared kanban, mobile oversight, and a full audit trail. <em>Updated October 2026.</em></p>
 
-    <!-- EXP-053: /for/ctos/ top-of-page green CTA -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:1.5rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <span style="flex:1;min-width:200px;font-size:.92rem;color:var(--fg,#e2e8f0)">Scale your engineering output with a self-healing fleet of parallel AI agents — open source, self-hosted, MIT licensed.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp053_ctos_topofpage_cta_click')" style="display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:.88rem;font-weight:600;white-space:nowrap">View amux on GitHub ★</a>
-    </div>
+    <!-- EXP-129: /for/ctos/ top-of-page green CTA — October 2026 refresh -->
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.75rem;margin:2rem 0;">
       <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>What amux gives your engineering org:</strong> a single control plane for Claude Code, Codex, and Gemini CLI sessions — with a web dashboard, iOS app, shared kanban board, self-healing watchdog, multi-runtime rate-limit distribution, append-only audit logs, and a REST API for integration with your existing toolchain. All open source, MIT + Commons Clause, self-hosted on your own infrastructure. Your code never leaves your network.</p>
@@ -284,13 +279,24 @@ schedules:
       <li><strong>Week 1:</strong> The team writes shared CLAUDE.md rules for their coding style and branching conventions, checked into the repo. All sessions now follow them automatically. Cost tracking in the dashboard shows $180 in Claude API spend for the week — CTO sets a per-session daily budget threshold in server.env.</li>
     </ol>
 
+    <h2 id="whats-new-october-2026">What's new in October 2026</h2>
+    <ul>
+      <li><strong>Workspace isolation (AMUX_WORKSPACE_ISOLATION=1):</strong> Each worker gets its own git worktree, scratch directory, and TMPDIR. Agents working in parallel on the same repo no longer interfere with each other's uncommitted files or build artifacts. Set at worker, group, or global scope.</li>
+      <li><strong>Standing approvals:</strong> Pre-authorize categories of actions (file writes to a specific path, bash commands matching a pattern) so agents can run unattended through your standard review gates. Configure once in the dashboard; applies to every agent in the group.</li>
+      <li><strong>Vault secrets (amux vault set):</strong> Store API keys and tokens at global, group, or worker scope. Agents receive secrets at session start without them appearing in prompts, transcripts, or logs. Vault keys are never written to disk in plaintext.</li>
+      <li><strong>Companion chat + activity log:</strong> The Chat tab shows each agent's last 15 actions as a natural-language summary. Ask "what did the agent just do?" in plain English from your phone. Useful for mid-task check-ins in meetings without opening a terminal.</li>
+      <li><strong>Goal keeper (AMUX_GOAL):</strong> Set a goal string for any session; amux checks at configurable intervals whether the agent is still working toward it and re-orients if it drifts. Prevents scope creep on long overnight tasks.</li>
+      <li><strong>Pinned notes overlay:</strong> Attach session-scoped, group-scoped, or global notes that are injected into each agent's context at every turn. Use it to share standing instructions, API reference, or team conventions without bloating CLAUDE.md.</li>
+      <li><strong>Scratchpad tab:</strong> A shared markdown workspace for the whole fleet. Agents write architecture decisions, file ownership maps, and handoff notes here. The scratchpad persists across restarts and is visible from any session.</li>
+      <li><strong>Full Google Calendar sync:</strong> Connect Google Calendar via the Connectors tab; amux imports your events and makes them queryable from any agent session. Schedule-aware automations and daily standup context now include real calendar data.</li>
+    </ul>
+
     <h2>What's new in August 2026</h2>
     <ul>
-      <li><strong>OAuth broker (Connectors tab):</strong> Authorize a third-party service once from the dashboard and every agent in your fleet shares the OAuth grant automatically. No per-session credential setup — one approval covers the whole fleet. The Connectors tab also shows per-service health canaries so you can see which integrations are live before agents try to use them.</li>
+      <li><strong>OAuth broker (Connectors tab):</strong> Authorize a third-party service once from the dashboard and every agent in your fleet shares the OAuth grant automatically. No per-session credential setup — one approval covers the whole fleet.</li>
       <li><strong>Board progress notes with owner alerts:</strong> When an agent appends a progress note to a board card, the card's owner gets an in-app notification. Engineering managers and CTOs are kept updated on long-running tasks without polling the board manually.</li>
-      <li><strong>Status-explain:</strong> The dashboard now shows how each session's status was derived — whether from a live hook report, a terminal scrape, or a timeout inference. Removes ambiguity when a session's indicator doesn't match what you expected.</li>
-      <li><strong>Server self-adoption (zero-downtime deploys):</strong> The Rust server now swaps the running binary in place when a new build lands. No restart window, no dropped connections — updates apply while sessions keep running.</li>
-      <li><strong>Disk watchdog:</strong> A weekly scan warns before build caches and logs fill the drive. Flags directories above configurable thresholds so you have time to clean up before writes start failing.</li>
+      <li><strong>Status-explain:</strong> The dashboard now shows how each session's status was derived — whether from a live hook report, a terminal scrape, or a timeout inference.</li>
+      <li><strong>Server self-adoption (zero-downtime deploys):</strong> The Rust server swaps the running binary in place when a new build lands. No restart window, no dropped connections.</li>
     </ul>
 
     <h2>Comparison: ad-hoc agents vs amux team deployment</h2>
@@ -339,6 +345,21 @@ schedules:
             <td style="padding:10px 16px;">Developers review their own agents' PRs; no cross-team visibility</td>
             <td style="padding:10px 16px;">Board shows every task status; done-vs-verified distinction prevents premature sign-off</td>
           </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Secrets management</td>
+            <td style="padding:10px 16px;">API keys pasted into prompts or stored in plaintext shell files</td>
+            <td style="padding:10px 16px;">Vault secrets scoped to worker/group/global; never appear in transcripts or logs</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Parallel work on the same repo</td>
+            <td style="padding:10px 16px;">Shared worktree — agents interfere with each other's uncommitted files</td>
+            <td style="padding:10px 16px;">Workspace isolation gives each agent its own worktree, scratch dir, and TMPDIR</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Unattended overnight tasks</td>
+            <td style="padding:10px 16px;">Agents stop at every permission prompt; someone must be at the keyboard</td>
+            <td style="padding:10px 16px;">Standing approvals pre-authorize categories of actions; agents run through the night</td>
+          </tr>
           <tr>
             <td style="padding:10px 16px;">Code leaves the network</td>
             <td style="padding:10px 16px;">Code goes to Claude's API (Anthropic) but not to additional third parties</td>
@@ -374,14 +395,7 @@ schedules:
       <p style="margin:0.8rem 0 0;">Yes — amux's REST API is designed for programmatic integration. LangGraph nodes can call /api/sessions/NAME/send to issue tasks to amux-managed coding sessions, then poll /api/sessions/NAME/peek for results. A common pattern: LangGraph handles the high-level decision graph (which tasks, in what order, with what dependencies), while amux handles the actual Claude Code session fleet (spawning, self-healing, monitoring). See <a href="/compare/amux-vs-langraph/">amux vs LangGraph</a> for detailed patterns.</p>
     </details>
 
-    <!-- EXP-014 -->
-    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — open-source AI engineering team dashboard (363★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Run Claude Code, Codex, and Gemini CLI sessions from one dashboard. Self-healing, kanban, mobile oversight, and audit trail. Single Rust binary, MIT licensed, self-hosted.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
-    </div>
+    <!-- EXP-014 / updated Oct 2026 -->
 
     <div class="cta-box">
       <h3>Deploy amux for your engineering team</h3>

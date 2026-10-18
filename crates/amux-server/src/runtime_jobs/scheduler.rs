@@ -1843,16 +1843,44 @@ impl LiveDeliverer {
         // was most recently active: SCHED-550 (amux-helper's) sent 55 messages
         // stamped amux, canvas-app-use-cases, amux-app and gainz (2026-10-04).
         let owner = sched.str_field("session").trim().to_string();
+        // The owner's vault secrets (AMUX-5375), resolved at every run so a
+        // rotation applies to the next fire. They go into the child's
+        // environment, never argv, and are masked out of every byte of output
+        // amux stores, so a command that echoes one does not write it into
+        // the run log or the run row. An unowned schedule gets none: it is no
+        // worker's, so no worker's grant covers it.
+        let vault_vals: std::sync::Arc<Vec<(String, String)>> = std::sync::Arc::new(if owner.is_empty() {
+            Vec::new()
+        } else {
+            match crate::api::vault_secrets::deliver(
+                &crate::config::amux_home(),
+                &owner,
+                crate::api::vault_secrets::DeliveryPath::ShellSchedule,
+            ) {
+                Ok(d) => d.values,
+                Err(error) => {
+                    tracing::warn!(schedule = %sched_id, session = %owner, %error, measured = false, n_considered = 0,
+                        verdict = "vault_delivery_failed",
+                        "vault: a shell schedule runs without its owner's secrets (AMUX-5375)");
+                    Vec::new()
+                }
+            }
+        });
         let run_once = |cmd: String| {
             let sid = sched_id.clone();
             let owner = owner.clone();
+            let vault_vals = vault_vals.clone();
             async move {
+                let _in_flight = ShellRunInFlight::enter(&sid);
                 let path = shell_run_log_path(&sid);
                 let fut = async {
                     use tokio::io::AsyncReadExt;
                     let mut command = tokio::process::Command::new("/bin/bash");
                     // A check piped into tail must report the check's failure.
                     command.args(["-o", "pipefail", "-c"]).arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
+                    for (k, v) in vault_vals.iter() {
+                        command.env(k, v);
+                    }
                     if owner.is_empty() {
                         command.env_remove("AMUX_SESSION");
                     } else {
@@ -1877,7 +1905,7 @@ impl LiveDeliverer {
                     // Both streams in ARRIVAL order, bounded, for the run row's
                     // tail (AMUX-5241). (bytes kept, bytes dropped off the front)
                     let combined = std::sync::Arc::new(std::sync::Mutex::new((Vec::<u8>::new(), 0usize)));
-                    let pump = |mut r: Box<dyn tokio::io::AsyncRead + Unpin + Send>, log: std::sync::Arc<std::sync::Mutex<ShellRunLog>>, combined: std::sync::Arc<std::sync::Mutex<(Vec<u8>, usize)>>| async move {
+                    let pump = |mut r: Box<dyn tokio::io::AsyncRead + Unpin + Send>, log: std::sync::Arc<std::sync::Mutex<ShellRunLog>>, combined: std::sync::Arc<std::sync::Mutex<(Vec<u8>, usize)>>, vv: std::sync::Arc<Vec<(String, String)>>| async move {
                         let mut all = Vec::new();
                         let mut buf = [0u8; 8192];
                         loop {
@@ -1888,7 +1916,9 @@ impl LiveDeliverer {
                                     if all.len() > SHELL_COMBINED_KEEP {
                                         all.drain(..all.len() - SHELL_COMBINED_KEEP);
                                     }
-                                    if let Ok(mut l) = log.lock() { l.write(&buf[..n]); }
+                                    if let Ok(mut l) = log.lock() {
+                                        if vv.is_empty() { l.write(&buf[..n]); } else { l.write(&crate::api::vault_secrets::redact_bytes(&buf[..n], &vv)); }
+                                    }
                                     if let Ok(mut c) = combined.lock() {
                                         c.0.extend_from_slice(&buf[..n]);
                                         if c.0.len() > SHELL_COMBINED_KEEP {
@@ -1906,8 +1936,8 @@ impl LiveDeliverer {
                     let err = child.stderr.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
                     let drains = async {
                         tokio::join!(
-                            async { match out { Some(r) => pump(r, log.clone(), combined.clone()).await, None => Vec::new() } },
-                            async { match err { Some(r) => pump(r, log.clone(), combined.clone()).await, None => Vec::new() } },
+                            async { match out { Some(r) => pump(r, log.clone(), combined.clone(), vault_vals.clone()).await, None => Vec::new() } },
+                            async { match err { Some(r) => pump(r, log.clone(), combined.clone(), vault_vals.clone()).await, None => Vec::new() } },
                         )
                     };
                     tokio::pin!(drains);
@@ -1944,7 +1974,20 @@ impl LiveDeliverer {
                         .lock()
                         .map(|c| shell_output_tail(&c.0, c.1, SHELL_OUTPUT_TAIL_BYTES))
                         .unwrap_or_default();
-                    Ok::<_, String>((code, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned(), tail))
+                    if !vault_vals.is_empty() {
+                        // A value split across two reads escaped the per-chunk
+                        // mask; one pass over the whole file catches it.
+                        if let Some(p) = &path {
+                            if let Ok(bytes) = std::fs::read(p) {
+                                let clean = crate::api::vault_secrets::redact_bytes(&bytes, &vault_vals);
+                                if clean != bytes {
+                                    let _ = std::fs::write(p, clean);
+                                }
+                            }
+                        }
+                    }
+                    let r = |b: &[u8]| crate::api::vault_secrets::redact(&String::from_utf8_lossy(b), &vault_vals);
+                    Ok::<_, String>((code, r(&o), r(&e), crate::api::vault_secrets::redact(&tail, &vault_vals)))
                 };
                 match tokio::time::timeout(std::time::Duration::from_secs(SHELL_TIMEOUT_S), fut).await {
                     Ok(r) => r,
@@ -1999,7 +2042,8 @@ impl LiveDeliverer {
                 .trim_start_matches(':')
                 .trim_start()
                 .to_string();
-            self.wake_owner(sched, code, &detail).await;
+            // The owning worker is told by `schedule_failure::on_run_outcome`
+            // once the run is recorded, for this and every other failure.
             return RunOutcome::ShellError {
                 note: format!(
                     "exit {code} [{}] {detail}",
@@ -2033,41 +2077,6 @@ impl LiveDeliverer {
                 .filter(|s| !s.trim().is_empty()),
             output,
         }
-    }
-
-    /// Tell the owning lane its schedule failed, through the steering queue.
-    ///
-    /// Python called `_push_alert` here, which writes an SSE blip and a Web Push
-    /// broadcast — and `push_subscriptions` is empty on this deployment, so the
-    /// action named "alert" alerted nobody: mvs-infra logged five exit-1 runs
-    /// and zero wakes. The steering queue is the one channel that provably
-    /// reaches a session, and it lands at a turn boundary.
-    async fn wake_owner(&self, sched: &DurableSchedule, code: i32, why: &str) {
-        let owner = sched.str_field("session").trim().to_string();
-        if owner.is_empty() || !crate::api::session_verbs::is_running(&owner).await {
-            tracing::warn!(
-                schedule = %sched.id(), code,
-                "schedule alert has no reachable owning lane — nobody was told"
-            );
-            return;
-        }
-        let text = format!(
-            "[amux] SCHEDULE FAILED — '{}' ({}) exited {code}.\n\n{why}\n\nThis is the `alert` exit \
-             action on your schedule. Investigate, fix, or change the schedule's exit_actions if a \
-             non-zero exit is expected here. If this is noise, say so on a card rather than \
-             silencing it quietly — a schedule that alerts on a normal exit trains you to ignore \
-             the channel.",
-            sched.str_field("title"),
-            sched.id()
-        );
-        let _ = crate::api::session_verbs::steer_enqueue(
-            &self.state,
-            &owner,
-            &text,
-            &format!("sched:{}", sched.id()),
-            "",
-        )
-        .await;
     }
 }
 
@@ -2442,6 +2451,10 @@ async fn fire_recorded(
                 rusqlite::params![bump, chrono::Utc::now().timestamp(), eid])?;
             Ok(WriteOutcome { applied: true, events: vec![] })
         }).await?;
+        let (rid, reason) = (id.to_string(), format!("fire aborted: {e}"));
+        if let Ok(Some(sched)) = store.read_async(move |c| Ok(get_schedule(c, &rid)?)).await {
+            super::schedule_failure::on_run_outcome(store, &sched, &RunOutcome::Failed { reason }, "cron-rs").await;
+        }
     }
     result
 }
@@ -2695,6 +2708,7 @@ async fn fire_one(
     let run_ids = claim.run_ids;
     let all_lost = should_warn_undelivered(&outcomes);
     let statuses: Vec<&'static str> = outcomes.iter().map(|o| o.status()).collect();
+    let for_notice = outcomes.clone();
     store
         .write_async(move |conn| {
             let now_ts = chrono::Utc::now().timestamp();
@@ -2761,6 +2775,10 @@ async fn fire_one(
             session = %claim.sched.str_field("session"), outcomes = ?statuses,
             "schedule fired but nothing was delivered"
         );
+    }
+    // Tell the owning worker (or the owner) when a run failed, once per streak.
+    for outcome in &for_notice {
+        super::schedule_failure::on_run_outcome(store, &claim.sched, outcome, "cron-rs").await;
     }
     Ok(true)
 }
@@ -5229,5 +5247,60 @@ mod tests {
         let mut s = make_row("SCHED-3", "alpha", None, "2026-08-10T09:00");
         s.set("recurrence", Value::from("fortnightly"));
         assert_eq!(skip_next_run(&s), None);
+    }
+}
+
+/// Shell schedule runs executing in THIS process, so self-adoption can wait for
+/// them: an exec closes a run's output pipes and the run is recorded as "server
+/// restarted before this fire recorded a delivery outcome". The builder's own
+/// hold (rust-auto-build.sh SHELL-RUN DEFER) looks only before it builds, and
+/// SCHED-465 fired during the build at 17:18 and 18:18 on 2026-10-17, so both
+/// runs died at the adoption that followed.
+static SHELL_RUNS_IN_FLIGHT: std::sync::Mutex<Vec<(u64, String, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+static SHELL_RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) struct ShellRunInFlight(u64);
+
+impl ShellRunInFlight {
+    pub(crate) fn enter(schedule: &str) -> Self {
+        let id = SHELL_RUN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut v) = SHELL_RUNS_IN_FLIGHT.lock() {
+            v.push((id, schedule.to_string(), std::time::Instant::now()));
+        }
+        Self(id)
+    }
+}
+
+impl Drop for ShellRunInFlight {
+    fn drop(&mut self) {
+        if let Ok(mut v) = SHELL_RUNS_IN_FLIGHT.lock() {
+            v.retain(|(id, _, _)| *id != self.0);
+        }
+    }
+}
+
+/// Schedule ids of shell runs in flight that started less than `max_age` ago.
+pub(crate) fn shell_runs_in_flight(max_age: std::time::Duration) -> Vec<String> {
+    let mut ids: Vec<String> = SHELL_RUNS_IN_FLIGHT.lock().map(|v| {
+        v.iter().filter(|(_, _, t)| t.elapsed() < max_age).map(|(_, s, _)| s.clone()).collect()
+    }).unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+#[cfg(test)]
+mod shell_in_flight_tests {
+    use super::*;
+
+    #[test]
+    fn a_shell_run_is_in_flight_until_its_guard_drops() {
+        let hour = std::time::Duration::from_secs(3600);
+        let g = ShellRunInFlight::enter("SCHED-test-inflight");
+        assert!(shell_runs_in_flight(hour).contains(&"SCHED-test-inflight".to_string()));
+        assert!(!shell_runs_in_flight(std::time::Duration::ZERO).contains(&"SCHED-test-inflight".to_string()),
+            "a run older than the cap no longer holds adoption");
+        drop(g);
+        assert!(!shell_runs_in_flight(hour).contains(&"SCHED-test-inflight".to_string()));
     }
 }

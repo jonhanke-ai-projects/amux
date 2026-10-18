@@ -69,6 +69,13 @@ if [ -n "$FOREIGN" ]; then
   exit 0
 fi
 
+# Abort if local is behind origin (non-fast-forward would be rejected).
+BEHIND=$(git rev-list --count main..origin/main 2>/dev/null || echo 0)
+if [ "$BEHIND" -gt "0" ]; then
+  echo "auto-deploy: skipping push — local is $BEHIND commit(s) behind origin/main (run: git merge origin/main)" >&2
+  exit 0
+fi
+
 # All $AHEAD commits are mine. Safe to push.
 echo "auto-deploy: pushing $AHEAD commit(s) to origin/main..."
 git push origin main

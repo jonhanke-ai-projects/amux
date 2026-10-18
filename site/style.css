@@ -43,44 +43,6 @@
   --nav-bg:     color-mix(in oklab, oklch(0.17 0.012 250) 85%, transparent);
 }
 
-[data-theme="light"] {
-  --bg:         oklch(0.97 0.004 90);
-  --bg-2:       oklch(0.93 0.006 90);
-  --bg-3:       oklch(0.88 0.007 90);
-  --line:       oklch(0.80 0.008 90);
-  --line-2:     oklch(0.72 0.010 90);
-  --fg:         oklch(0.18 0.012 250);
-  --fg-dim:     oklch(0.38 0.014 250);
-  --fg-mute:    oklch(0.44 0.010 250);
-  --accent:     oklch(0.40 0.18 85);
-  --accent-dim: oklch(0.40 0.18 85 / .15);
-  --ok:         oklch(0.36 0.18 145);
-  --warn:       oklch(0.44 0.18 65);
-  --err:        oklch(0.44 0.20 25);
-  --blue:       oklch(0.38 0.18 240);
-
-  /* Legacy compat */
-  --surface:    oklch(0.93 0.006 90);
-  --surface-2:  oklch(0.88 0.007 90);
-  --border:     oklch(0.80 0.008 90);
-  --border-dim: oklch(0.84 0.007 90);
-  --text:       oklch(0.18 0.012 250);
-  --dim:        oklch(0.38 0.014 250);
-  --muted:      oklch(0.44 0.010 250);
-  --bg-card:    oklch(0.93 0.006 90);
-  --text-muted: oklch(0.44 0.010 250);
-  --green:      oklch(0.36 0.18 145);
-  --green-dim:  oklch(0.32 0.16 145);
-  --green-glow: oklch(0.36 0.18 145 / .15);
-  --amber:      oklch(0.40 0.18 85);
-  --red:        oklch(0.44 0.20 25);
-  --nav-bg:     color-mix(in oklab, oklch(0.97 0.004 90) 90%, transparent);
-}
-
-/* Light-mode: docs TOC */
-[data-theme="light"] .docs-toc { background: var(--bg-2); }
-[data-theme="light"] .docs-toc a { color: var(--accent); }
-
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html {
@@ -189,37 +151,6 @@ a:hover { color: var(--accent); }
   color: var(--bg);
 }
 
-/* Theme toggle — labeled pill (icon + "Light"/"Dark"), full-contrast text and a
-   44px-min touch target, instead of the old lone dim 13px glyph. */
-.theme-toggle {
-  background: var(--bg-2);
-  border: 1.5px solid var(--line-2);
-  border-radius: 999px;
-  color: var(--fg);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  font-family: var(--font-sans, inherit);
-  padding: 7px 14px;
-  line-height: 1;
-  min-height: 36px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  transition: color 0.12s, border-color 0.12s, background 0.12s;
-}
-.theme-toggle .tt-ic { font-size: 15px; color: var(--accent); line-height: 1; }
-.theme-toggle:hover {
-  border-color: var(--accent);
-  background: var(--bg-3);
-}
-.theme-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-@media (max-width: 640px) {
-  .theme-toggle { min-height: 44px; min-width: 44px; padding: 8px 13px; }
-}
 
 @media (max-width: 640px) {
   .site-header { padding: 0 16px; }
@@ -832,3 +763,11 @@ footer, .site-footer {
   .site-header nav { gap: 8px; }
   .site-header nav a.nav-cta { padding: 5px 8px; font-size: 11px; }
 }
+
+/* Mobile: long inline code and wide tables must not widen the page */
+p code, li code, td code, dd code { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  main table { display: block; max-width: 100%; overflow-x: auto; }
+  .site-header nav a.nav-cta-primary { white-space: nowrap; }
+}
+video, img { max-width: 100%; height: auto; }

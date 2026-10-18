@@ -1,9 +1,0 @@
-project_id         = "your-gcp-project-id"
-tailscale_auth_key = "tskey-auth-xxxxx"
-
-# Optional overrides (defaults are fine for cost target)
-# region              = "us-central1"
-# zone                = "us-central1-a"
-# machine_type        = "e2-small"    # ~$13/mo   (e2-micro ~$7/mo)
-# disk_size_gb        = 20
-# storage_disk_size_gb = 100          # standard HDD ~$4/mo

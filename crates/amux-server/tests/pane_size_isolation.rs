@@ -43,7 +43,7 @@ fn pane_size_startup_and_periodic_work_share_isolation() {
         let fake = scratch.path().join("tmux");
         // PATH contains ONLY this directory. Even a malformed fixture cannot
         // fall through to the developer's tmux server. /bin/sh uses builtins.
-        std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AMUX_PANE_ISOLATION_TEST_CALLS\"\nif [ \"$1\" = list-windows ]; then\n  printf 'amux-af789\\t80\\t24\\t0\\tmanual\\n'\nfi\n").unwrap();
+        std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AMUX_PANE_ISOLATION_TEST_CALLS\"\nif [ \"$1\" = list-windows ]; then\n  printf 'amux-af789|80|24|0|manual\\n'\nfi\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         for mode in [
             "AMUX_ISOLATED",

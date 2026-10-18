@@ -12,7 +12,7 @@ on:
         required: true
 
 env:
-  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+  CLOUD_HOST: ${{ vars.CLOUD_HOST }}
 
 jobs:
   check:

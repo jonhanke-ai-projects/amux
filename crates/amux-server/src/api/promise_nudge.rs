@@ -263,7 +263,7 @@ pub(crate) async fn promise_sweep(state: &AppState) -> usize {
         if promise_uuid.is_empty() || sv::meta_str(&meta, "promise_nudged_uuid") == promise_uuid {
             continue;
         }
-        if sv::session_is_isolated(name) {
+        if sv::session_is_isolated(name) || crate::api::board_lifecycle::board_unused(name) {
             continue;
         }
         if !enabled(name, PROMISE_KEY) {
@@ -309,6 +309,9 @@ pub(crate) async fn promise_sweep(state: &AppState) -> usize {
                     tracing::debug!(session = %name, verdict = "promise_waiting", reason, live_bg = bg.len(),
                         "promise sweep: not nudging yet");
                 }
+            }
+            PromiseGate::Nudge if !super::turn_end::nudges_wanted(name, "promise") => {
+                sv::update_meta(name, &[("promise_uuid", json!(""))]);
             }
             PromiseGate::Nudge => {
                 let card = card.unwrap_or_default();

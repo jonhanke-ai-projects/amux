@@ -85,7 +85,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+  CLOUD_HOST: ${{ vars.CLOUD_HOST }}
   IMAGE: ghcr.io/mixpeek/amux
 
 jobs:
@@ -220,12 +220,17 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.event.workflow_run.head_sha || github.sha }}
+          build-args: |
+            AMUX_SOURCE_COMMIT=${{ github.event.workflow_run.head_sha || github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # ── 3. Host: gateway + compose template + pull ─────────────────────────────
   deploy:
     needs: build
+    # No cloud host is configured while cloud.amux.io is offline (the GCP VM is
+    # deleted and its address released); skip instead of failing every run.
+    if: vars.CLOUD_HOST != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -583,7 +588,7 @@ jobs:
   # ── 4. Recreate — explicit, never automatic ────────────────────────────────
   redeploy:
     needs: [build, deploy]
-    if: github.event_name == 'workflow_dispatch' && inputs.recreate == 'yes'
+    if: github.event_name == 'workflow_dispatch' && inputs.recreate == 'yes' && vars.CLOUD_HOST != ''
     runs-on: ubuntu-latest
     steps:
       - name: Set up SSH

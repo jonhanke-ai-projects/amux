@@ -80,12 +80,15 @@ Commit the regenerated `static/state/control-registry.json` and `kernel.js`
 when handlers change. `spa-lint.sh` checks their freshness before ESLint; a
 targeted Playwright configuration can skip that preflight and pass against a
 stale interaction bundle. When testing candidate assets against a running
-server, set `AMUX_E2E_STATE_KERNEL` alongside the candidate app/HTML/CSS paths.
+server, set `AMUX_E2E_STATE_KERNEL` (and `AMUX_E2E_CONTROL_REGISTRY` when
+handlers changed) alongside the candidate app/HTML/CSS paths.
 
-Then bump `APP_VER` (`app.js`) and `CACHE` (`sw.js`) **together**. A change to
-one without the other ships code nobody's browser will fetch.
+No version bump: `APP_VER` (`app.js`) and `CACHE` (`sw.js`) hold the
+`__AMUX_ASSET_VER__` placeholder, and the server stamps a content hash of
+`static/` into both when serving them.
 
-Pass: `node --check` silent, and both constants moved in the same commit.
+Pass: `node --check` silent, and `curl -sk "$(amux url)/app.js" | grep -m1 'const APP_VER'`
+shows a 12-hex-digit hash after the server adopts the commit.
 
 ## Anything with a UI
 
@@ -151,6 +154,30 @@ so bracket every measurement with `build`.
 The hand-run is not the scheduled run: the exec environment differs, and that is
 where the restic chain broke once already (launchd does not inherit shell PATH).
 Evidence is a log line carrying a timestamp from a run nobody started by hand.
+
+## The /codex skill (`skills/codex.md`, `skills/codex/scripts/`)
+
+```bash
+~/.amux/scripts/codex-send.py '<chat name>' - --dry-run <<<'probe'
+grep -c "From amux worker <sender>" ~/.codex/sessions/*/*/*/rollout-*<thread id>.jsonl
+sqlite3 -readonly ~/.codex/queue_1.sqlite "select id, thread_id from queued_items"
+```
+
+Pass: the dry run resolves the name to one thread id, the send's `Queued
+message <id>` line is in `~/.amux/logs/codex-send.log`, and the message appears
+in that thread's rollout as a `UserMessage`. `Queued` alone only means the
+message reached Codex's queue. A thread nobody has open can leave it in
+`queued_items` unread, so check the rollout before reporting it delivered.
+
+Recorded pass, 2026-10-18 (amux-helper): `#mxp onboarding flow` resolved to
+`01a05ec4-3e67-7860-9e0e-47c9ef741d5d` out of 275 named threads. Workers had
+used the skill for 14 sends and 2 new named threads (`#mxp lifecycle walk`,
+`ff-e2e live parity review`). momentbench-oss's 8 sends to `#mxp MomentBench`
+are in its rollout (25 matching lines, the last a `UserMessage` at
+05:56Z). Two sends were still in `queued_items` at 06:12Z: 01a14bff to `#mxp
+lifecycle walk`, whose last turn aborted at 23:47Z on 10-17, and 01a14d1f to
+`ff-e2e live parity review`, whose last item completed at 03:29Z. Neither
+had been read yet.
 
 ## When there is genuinely no artifact
 

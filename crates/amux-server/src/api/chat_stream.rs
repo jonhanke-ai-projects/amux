@@ -83,6 +83,10 @@ pub(crate) struct Parser {
     text_started: bool,
     pub conversation_id: String,
     pub model: String,
+    /// The provider reported the turn's final result (`result` for Claude,
+    /// `turn.completed` for Codex). The reply is complete from here even if
+    /// the process stays alive on a background command it started.
+    pub turn_ended: bool,
 }
 
 impl Parser {
@@ -234,6 +238,7 @@ impl Parser {
                     "utilization": i["unifiedWindows"]}));
             }
             "result" => {
+                self.turn_ended = true;
                 if let Some(id) = v["session_id"].as_str() {
                     self.conversation_id = id.to_string();
                 }
@@ -330,6 +335,7 @@ impl Parser {
                 }
             }
             "turn.completed" => {
+                self.turn_ended = true;
                 let u = &v["usage"];
                 evs.push(json!({"type": "usage",
                     "input_tokens": u["input_tokens"],

@@ -42,7 +42,7 @@
     "description": "Engineering team leads use amux to get visibility into every AI coding agent across their team without reading every terminal. Organize by groups, check plain-English status from your phone, and review the week in 60 seconds.",
     "url": "https://amux.io/for/team-leads/",
     "datePublished": "2026-08-14",
-    "dateModified": "2026-08-14",
+    "dateModified": "2026-10-13",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -106,22 +106,17 @@
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/for/">For Developers</a> <span class="sep">&rsaquo;</span> <span>Engineering Team Leads</span></div>
 
     <h1>amux for Engineering Team Leads</h1>
-    <p class="subtitle">Visibility into your AI engineering team without reading every terminal. Organize agents by group, check plain-English status from your phone, and run a weekly review in under 60 seconds. Updated August 2026.</p>
+    <p class="subtitle">Visibility into your AI engineering team without reading every terminal. Organize agents by group, check plain-English status from your phone, and run a weekly review in under 60 seconds. Updated October 2026.</p>
 
-    <div style="background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(5,150,105,.06));border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1.1rem 1.4rem;margin:1.25rem 0 1.75rem">
-      <p style="margin:0 0 0.7rem;font-size:0.95rem">Give your engineering team an AI agent fleet they can actually manage. amux is free, MIT licensed, and takes 2 minutes to install.</p>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp037_team_leads_topofpage_cta_click')" style="display:inline-block;background:#10b981;color:#fff;font-weight:600;font-size:0.9rem;padding:0.55rem 1.1rem;border-radius:6px;text-decoration:none">View amux on GitHub ★</a>
-    </div>
 
     <h2>The team lead's problem with AI coding agents</h2>
     <p>You are responsible for what the team ships, but your team's AI agents live in a dozen separate terminal windows across several machines. Each developer knows what their own agents are doing. You do not. Getting a status update means interrupting someone or reading raw terminal scrollback, which is not a real option when you have eight sessions to check before a sync call. What you need is a layer above the terminals that shows you the team at a glance.</p>
@@ -195,6 +190,18 @@
     <pre><code>curl -sk -X POST -d @team-config.yaml https://localhost:8824/api/envspec/apply</code></pre>
 
     <p>For teams that rotate agents across projects or spin up environments for specific sprints, this replaces the "here is how we set it up" doc with a runnable artifact. Check the YAML into your project repository alongside your CLAUDE.md so any team member can reproduce the full setup.</p>
+
+    <h2>What's New — October 2026</h2>
+    <p>Three features shipped in the past two months that directly affect team lead workflows:</p>
+
+    <h3>Workspace isolation per worker</h3>
+    <p>Set <code>AMUX_WORKSPACE_ISOLATION=1</code> on any worker via the Scope tab and it gets its own git worktree. Parallel workers no longer share a single index — one agent's uncommitted files are invisible to every other agent. For teams running multiple agents on the same codebase simultaneously, this eliminates a significant class of false failures and cross-contamination. Each isolated worker's status card shows an "isolated" badge so you can see at a glance which sessions are running clean.</p>
+
+    <h3>Open groups for team broadcast</h3>
+    <p>Group messaging now supports open groups: any worker can post to a named group channel and all members receive the message. This is useful for cross-group notifications — a backend agent announcing a schema change that frontend agents need to know about, or an infra agent broadcasting that a shared service restarted. Configure which groups are open in the Group settings panel.</p>
+
+    <h3>FTS5 full-text search across session history</h3>
+    <p>The dashboard now indexes all session messages, logs, and transcripts with FTS5 full-text search. As team lead, you can search across your entire fleet's history — find every session that mentioned a specific file, error, or decision without opening each session's peek panel. The search panel opens with Cmd+K and works from the iOS app too. Particularly useful for post-incident review: search the error message to immediately surface which session, when, and what context surrounded it.</p>
 
     <h2>Voice orchestration: dispatch commands hands-free</h2>
     <p>The amux orchestrate panel accepts voice input from a mobile browser or the iOS app. Speak a command and it routes to the right session or group: "summarize what the backend group has done today," or "send the frontend session a message to pause and wait for review." The voice orchestrator handles routing, you handle the decision.</p>

@@ -428,25 +428,62 @@ pub async fn list(State(state): State<AppState>, Query(p): Query<ListParams>) ->
         // audit — counted from actual runs, not parsed from the expr).
         let day_ago = chrono::Utc::now().timestamp() - 86_400;
         let mut fires: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        // Failures are counted from the SAME rows and window as `fires_day`, so
+        // the Scheduler page's Runs/day and Failures columns cannot disagree
+        // about which runs they looked at. A failure is a run whose recorded
+        // verdict is `error` (delivery or command failed) or `refused` (never
+        // delivered). `skipped` is a deliberate no-op and is not a failure.
+        let mut fails: std::collections::HashMap<String, (i64, Option<i64>)> =
+            std::collections::HashMap::new();
         {
             let mut stmt = conn.prepare(
-                "SELECT schedule_id, COUNT(*) FROM schedule_runs WHERE ran_at >= ?1 GROUP BY schedule_id",
+                "SELECT schedule_id, COUNT(*), \
+                        SUM(CASE WHEN status IN ('error','refused') THEN 1 ELSE 0 END), \
+                        MAX(CASE WHEN status IN ('error','refused') THEN ran_at END) \
+                 FROM schedule_runs WHERE ran_at >= ?1 GROUP BY schedule_id",
             )?;
-            let it = stmt.query_map([day_ago], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            let it = stmt.query_map([day_ago], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    r.get::<_, Option<i64>>(3)?,
+                ))
+            })?;
             for row in it {
-                let (k, v) = row?;
-                fires.insert(k, v);
+                let (k, v, f, last_f) = row?;
+                fires.insert(k.clone(), v);
+                fails.insert(k, (f, last_f));
             }
         }
-        let total: i64 = fires.values().sum::<i64>().max(1);
+        // Every run row the window considered, fleet-wide: the denominator
+        // that makes a 0 beside it readable as "quiet", not "never measured".
+        let window_rows: i64 = fires.values().sum::<i64>();
+        let total: i64 = window_rows.max(1);
         let now = Local::now();
         let out: Vec<Value> = rows
             .iter()
             .map(|s| {
                 let mut v = s.to_json();
+                crate::runtime_jobs::schedule_failure::expose(&mut v);
                 let f = *fires.get(s.id()).unwrap_or(&0);
                 v["fires_day"] = json!(f);
                 v["fleet_share"] = json!((100.0 * f as f64 / total as f64 * 10.0).round() / 10.0);
+                let (nf, last_fail) = fails.get(s.id()).copied().unwrap_or((0, None));
+                v["run_stats_24h"] = json!({
+                    "runs": f,
+                    "failures": nf,
+                    "last_failure_at": last_fail,
+                    "window_s": 86_400,
+                    "failure_statuses": ["error", "refused"],
+                    "measured": true,
+                    "n_considered": window_rows,
+                });
+                let (class, planned) = cadence_class(s.schedule_expr(), s.str_field("sched_type"));
+                v["cadence_class"] = json!(class);
+                v["planned_fires_day"] = planned
+                    .map(|p| json!((p * 100.0).round() / 100.0))
+                    .unwrap_or(Value::Null);
                 // The Rust parser's own next-run, alongside the stored
                 // next_run (which Python may own): shadow-comparable, and
                 // never clobbers the field the dashboard renders.
@@ -507,6 +544,51 @@ pub async fn list(State(state): State<AppState>, Query(p): Query<ListParams>) ->
     }
 }
 
+/// Which group the Scheduler page files a schedule under, decided by the SAME
+/// parser that fires it (ethos rule 1: a view shares the mechanism's
+/// predicate). Returns the class and the planned fires per day.
+///
+/// - `loop`: fires more often than hourly (an interval under 1h, or a cron
+///   that averages more than 24 fires a day).
+/// - `routine`: hourly to daily, including `every weekday at`.
+/// - `weekly`: weekly, monthly, or an interval longer than a day.
+/// - `once`: a one-shot with no recurring expression.
+/// - `unknown`: an expression this parser cannot read. It will not fire
+///   either, so the page must not file it as a healthy routine.
+///
+/// Cron is COUNTED over the next 7 days rather than 24 hours: a weekly cron
+/// fires zero or one time in any given day and would otherwise be filed by
+/// the weekday the page happened to be opened on.
+pub(crate) fn cadence_class(expr: Option<&str>, sched_type: &str) -> (&'static str, Option<f64>) {
+    let Some(expr) = expr.map(str::trim).filter(|e| !e.is_empty()) else {
+        return (if sched_type == "once" { "once" } else { "unknown" }, None);
+    };
+    let Ok(parsed) = ScheduleExpr::parse(expr) else {
+        return ("unknown", None);
+    };
+    let per_day = match &parsed {
+        ScheduleExpr::Cron(sched) => {
+            let now = Local::now();
+            let until = now + chrono::Duration::days(7);
+            let n = sched.after(&now).take(20_000).take_while(|t| *t < until).count();
+            (n < 20_000).then_some(n as f64 / 7.0)
+        }
+        other => scheduler::fires_per_day(other),
+    };
+    let class = match &parsed {
+        ScheduleExpr::Daily { .. } | ScheduleExpr::Weekday { .. } => "routine",
+        ScheduleExpr::Weekly { .. } | ScheduleExpr::Monthly { .. } => "weekly",
+        _ => match per_day {
+            Some(p) if p > 24.0 + 1e-9 => "loop",
+            Some(p) if p >= 5.0 / 7.0 - 1e-9 => "routine",
+            Some(_) => "weekly",
+            // A cron too dense to count is denser than hourly.
+            None => "loop",
+        },
+    };
+    (class, per_day)
+}
+
 // ---- GET /api/schedules/{id} ----------------------------------------------
 
 pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -519,6 +601,7 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
     match joined {
         Ok(Ok(Some(s))) => {
             let mut v = s.to_json();
+            crate::runtime_jobs::schedule_failure::expose(&mut v);
             // A tombstone must not read as live (AMUX-3431): the raw row
             // carries enabled:1 next to deleted:<ts>, and SCHED-349's owner
             // read exactly that as a working schedule for five days. Say it
@@ -1522,6 +1605,37 @@ pub async fn skip_next(
 
 // ---- POST /api/schedules/{id}/run -----------------------------------------
 
+/// The acknowledgement of a manual shell run. The RUN is asynchronous
+/// (`status: running`, `pending`), but the COMMAND a Run now press issued,
+/// "start this run", is complete once this answers, so `phase` says so. Without
+/// it the dashboard's press tracker read the bare 202 as a command still in
+/// flight, waited 30s for a completion nobody reports, and then toasted "Run
+/// now: still waiting on the server; you can try again" over a run that had
+/// already finished (scheduler e2e, 2026-10-11). The run's result has its own
+/// home: the Runs tab and the run history.
+fn shell_run_ack(started: bool) -> Value {
+    json!({
+        "ok": true,
+        "pending": true,
+        "deduped": !started,
+        "status": "running",
+        "phase": if started { "applied" } else { "noop" },
+        "message": if started {
+            "Run started on the host; its result appears in Runs"
+        } else {
+            "Already running; attached to the existing run"
+        },
+        "note": if started {
+            "started on host; result pending"
+        } else {
+            "already running; attached to the existing run"
+        },
+        "delivery": "shell",
+        "submission": Value::Null,
+        "kind": "shell",
+    })
+}
+
 pub async fn run_now(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1633,6 +1747,7 @@ pub async fn run_now(
                     .await;
                 let status = outcome.status().to_string();
                 let sid_done = sched_bg.id().to_string();
+                let for_notice = outcome.clone();
                 let update = state_bg
                     .store
                     .write_async(move |conn| {
@@ -1657,33 +1772,20 @@ pub async fn run_now(
                 if let Err(e) = update {
                     tracing::error!(schedule = %sched_bg.id(), run_id, error = %e,
                         "could not record completed manual shell run");
+                } else {
+                    crate::runtime_jobs::schedule_failure::on_run_outcome(
+                        &state_bg.store, &sched_bg, &for_notice, &source_bg).await;
                 }
             });
         }
 
-        return (
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "ok": true,
-                "pending": true,
-                "deduped": !claim.started(),
-                "ran": sched.str_field("title"),
-                "run_id": claim.run_id(),
-                "ran_at": claim.ran_at(),
-                "status": "running",
-                "note": if claim.started() {
-                    "started on host; result pending"
-                } else {
-                    "already running; attached to the existing run"
-                },
-                "delivery": "shell",
-                "submission": Value::Null,
-                "session": sched.str_field("session"),
-                "kind": "shell",
-                "source": source,
-            })),
-        )
-            .into_response();
+        let mut body = shell_run_ack(claim.started());
+        body["ran"] = json!(sched.str_field("title"));
+        body["run_id"] = json!(claim.run_id());
+        body["ran_at"] = json!(claim.ran_at());
+        body["session"] = json!(sched.str_field("session"));
+        body["source"] = json!(source);
+        return (StatusCode::ACCEPTED, Json(body)).into_response();
     }
 
     let deliverer = LiveDeliverer::new(state.clone());
@@ -1721,6 +1823,7 @@ pub async fn run_now(
     if let Err(e) = write {
         return internal(e);
     }
+    crate::runtime_jobs::schedule_failure::on_run_outcome(&state.store, &sched, &o_resp, &source).await;
 
     // SAY WHAT HAPPENED. The dashboard toasts `status`/`note` verbatim, so an
     // empty note here is what rendered as "Ran · no output" over a dead action.
@@ -2392,6 +2495,17 @@ mod tests {
         assert_eq!(audit.as_array().unwrap().len(), 2, "{audit}");
     }
 
+    #[test]
+    fn a_started_shell_run_acknowledges_the_command_as_done() {
+        let started = super::shell_run_ack(true);
+        assert_eq!(started["phase"], json!("applied"), "the start command completed");
+        assert_eq!(started["status"], json!("running"), "the run itself is still running");
+        assert_eq!(started["pending"], json!(true));
+        let attached = super::shell_run_ack(false);
+        assert_eq!(attached["phase"], json!("noop"));
+        assert_eq!(attached["deduped"], json!(true));
+    }
+
     #[tokio::test]
     async fn run_now_is_409_in_shadow_mode() {
         // Default deployment: AMUX_RS_SCHEDULER unset -> shadow mode. (No
@@ -2942,5 +3056,72 @@ mod tests {
             );
         }
         assert!(UNHONOURED_FIELDS_HEADER.contains("AMUX-2680"));
+    }
+
+    /// The Scheduler page's groups come from the firing parser, not a regex
+    /// in the client. Each arm named so a broken one fails by name.
+    #[test]
+    fn cadence_class_files_each_expression_by_the_firing_parser() {
+        let c = |e: &str| cadence_class(Some(e), "recurring").0;
+        assert_eq!(c("every 10m"), "loop");
+        assert_eq!(c("every 59m"), "loop");
+        assert_eq!(c("*/5 * * * *"), "loop");
+        assert_eq!(c("every 1h"), "routine", "hourly is a routine, not a loop");
+        assert_eq!(c("daily at 09:00"), "routine");
+        assert_eq!(c("every weekday at 9am"), "routine");
+        assert_eq!(c("0 9,17 * * 1-5"), "routine");
+        assert_eq!(c("weekly on monday at 06:00"), "weekly");
+        assert_eq!(c("monthly on 1 at 9am"), "weekly");
+        assert_eq!(c("0 6 * * 1"), "weekly", "a weekly cron is weekly on every day of the week");
+        assert_eq!(c("every 2d"), "weekly");
+        assert_eq!(c("not a schedule"), "unknown");
+        assert_eq!(cadence_class(None, "once").0, "once");
+        assert_eq!(cadence_class(None, "recurring").0, "unknown");
+        let (_, planned) = cadence_class(Some("every 15m"), "recurring");
+        assert_eq!(planned, Some(96.0));
+    }
+
+    /// Runs/day and Failures are COUNTED from schedule_runs in one window,
+    /// with the denominator published beside them.
+    #[tokio::test]
+    async fn list_counts_runs_and_failures_from_run_history() {
+        let (app, dir) = app();
+        let (st, created) = send(
+            &app,
+            "POST",
+            "/api/schedules",
+            Some(json!({ "title": "counted", "session": "alpha", "schedule_expr": "every 10m" })),
+            &SES,
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{created}");
+        let id = created["id"].as_str().unwrap().to_string();
+        let conn = rusqlite::Connection::open(dir.path().join("sched-api-test.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        for (age, status) in [
+            (60, "ok"),
+            (120, "error"),
+            (180, "refused"),
+            (240, "skipped"),
+            (2 * 86_400, "error"), // outside the window: neither a run nor a failure
+        ] {
+            conn.execute(
+                "INSERT INTO schedule_runs (schedule_id, ran_at, status, source) VALUES (?1, ?2, ?3, 'cron')",
+                rusqlite::params![id, now - age, status],
+            )
+            .unwrap();
+        }
+        let (st, list) = send(&app, "GET", "/api/schedules", None, &[]).await;
+        assert_eq!(st, StatusCode::OK);
+        let row = &list.as_array().unwrap()[0];
+        let stats = &row["run_stats_24h"];
+        assert_eq!(stats["runs"], json!(4), "{stats}");
+        assert_eq!(stats["failures"], json!(2), "error + refused, not skipped: {stats}");
+        assert_eq!(stats["last_failure_at"], json!(now - 120));
+        assert_eq!(stats["measured"], json!(true));
+        assert_eq!(stats["n_considered"], json!(4));
+        assert_eq!(row["fires_day"], json!(4), "fires_day and runs must be the same count");
+        assert_eq!(row["cadence_class"], json!("loop"));
+        assert_eq!(row["planned_fires_day"], json!(144.0));
     }
 }

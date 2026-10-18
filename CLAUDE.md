@@ -37,9 +37,12 @@ for status only: it must not add context, change permissions, send prompts, or
 trigger boards. Preserve owner input, delivery receipts and message history.
 Explicit owner queuing is transport only. Isolation overrides stale project
 metadata; a restarted raw CLI must not inherit harness routing.
-Two owner-configured exceptions reach isolated workers as owner input: their
-schedules, and the goal keeper continuing an owner-set Claude Code `/goal` that
-is not met (`AMUX_GOAL_CONTINUE=0` opts out).
+Three owner-configured exceptions reach isolated workers: their schedules, the
+goal keeper continuing an owner-set Claude Code `/goal` that is not met
+(`AMUX_GOAL_CONTINUE=0` opts out), and the worker boundaries in
+`boundaries.toml` (payments, email, credentials, resources), whose guard refuses
+the same tool calls for isolated workers (`apply_to_isolated = false` opts out).
+A refusal injects no prompt and routes nothing.
 A chat speaks for the owner: a worker's Chat tab or a `chat`-type worker can read,
 send to, queue for and leave card notes that reach any worker, isolated included.
 
@@ -48,6 +51,19 @@ send to, queue for and leave card notes that reach any worker, isolated included
 board, workers, schedulers, filesystem, groups, memories, environment, messages.
 If a request decomposes into these, the work is configuration and UX. Do not add a
 ninth thing that re-expresses them.
+
+## Reuse existing paradigms (UI and code)
+
+Before building a view, find the one amux already has for that job and render
+through it: a folder is the file view (`_feCrumbsHtml`, `_feBuildRow`,
+`_feParentRow`, `_feEmptyRow`, `_feStatusText`), a prompt is `showConfirm` /
+`showPrompt`, a dialog is `.modal-overlay > .modal`. If it lacks a hook you need
+(a root, an open callback, a filter), add the hook to the shared one. A second
+table, dialog or list with its own markup drifts from the first on every later
+change. Specimen, 2026-10-16: the MDAI tab grew its own folder table, breadcrumb
+and "Folder" line beside the Files tab, and Ethan asked for it to be "the same
+file directory / file view as any other file view". Catalogue:
+`docs/ui-style-guide.md`.
 
 ## Dogfooding + two-fix rule
 
@@ -76,6 +92,9 @@ Verify a hook by what it WROTE, not by the settings file.
 ## Workflow
 
 - **No auto-pull.** Shared checkout; the freshness hook reports staleness, the human decides.
+  Asked to bring a checkout current, run `amux sync-checkout` (`--check` to only report): it
+  fast-forwards when nothing can be lost and otherwise names the blockers in seconds. Do not
+  diff the tree by hand.
 - **Commit after every completed task.** Committing deploys locally (builder adopts within ~60s).
 - **Bash CLI ships via `make install-cli`** (also part of `install.sh`).
   `check-and-commit.sh` checks saves; installation validates the exact published bytes.
@@ -84,7 +103,8 @@ Verify a hook by what it WROTE, not by the settings file.
 - **Bracket measurements with `/health`'s `build`** -- the builder swaps the binary on any commit.
   Use `commit` for "did source change?", `build` for "same process image?".
 - **Pre-fix specimen: `<your-sha>^`**, never `HEAD~1` (shared checkout).
-- **Client JS: bump `APP_VER` (app.js) + `CACHE` (sw.js) together.**
+- **Client version is derived; do not bump it.** app.js/sw.js hold `__AMUX_ASSET_VER__`;
+  the server stamps a content hash of `static/` (amux-dashboard `build.rs`) when serving.
 - Syntax gates: `cargo check --workspace`. Before push: `cargo clippy --workspace --all-targets -- -D warnings`.
   Tests: `scripts/test-contended.sh -p amux-server` (same args as `cargo test`, same exit status).
 - **Prefer offloading any of the above to remote hardware (see the remote-build convention below)
@@ -526,8 +546,16 @@ and lives only in `server.env`. Never commit the actual URL (repo is public).
 Use `amux browser route start '{"profile":"<saved-profile>","url":"https://..."}'`,
 then `amux browser route state`, `amux browser route shot`, and
 `amux browser route action '{"action":"click","selector":"..."}'`.
-The shared route tries Amux → direct CDP with the Chrome profile configured in
-Browser → Browser route settings → CUA when enabled. The result's `route`
-names the actual backend/profile and failed attempts. After a handoff, observe
-again before acting; uncertain actions are never replayed. Scope refusals remain refusals; an occupied native profile can use the configured isolated CDP copy while preserving its owner’s browser. Login-cookie evidence is not live auth proof.
+Omit `profile` and the route uses the profile `amux browser for <url>` picks for
+that site. Backends are tried in the `ladder` of `browser-methods.toml` (Amux →
+CDP copy of the Chrome profile set in Browser → Browser route settings → CUA
+when enabled). When another worker holds the profile, the Amux backend joins
+its browser in a tab of your own (live sign-ins); it falls to the CDP copy only
+if joining fails, or with `"join":false`. The result's `route` names the actual
+backend, profile, how the profile was chosen, and every attempt. After a
+handoff, observe again before acting; uncertain actions are never replayed.
+Scope refusals remain refusals. Login-cookie evidence is not live auth proof.
+`amux browser route goal '{"task":"..."}'` hands a whole task to an agent method
+from `browser-methods.toml` (OpAgent first; disabled until its model is served),
+which drives the route and returns its answer and a trajectory.
 Standalone `/chrome-cdp` remains available for explicit tab work.

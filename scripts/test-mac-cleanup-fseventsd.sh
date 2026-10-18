@@ -9,6 +9,7 @@ TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane
 export AMUX_CLEANUP_FSEVENTSD_CMD=true
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
+export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp"
 trap 'rm -rf -- "${FIX:?}"' EXIT
 fails=0
@@ -54,6 +55,19 @@ if [ "$(uname)" = Darwin ]; then
   check "it becomes a constraint"                       "yes" "$(has "$out" 'constraints 1\|constraint fseventsd')"
   check "and is escalated"                              "yes" "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
   check "the escalation names the feed"                 "yes" "$(grep -q "Top feed: 50 files in 5m under $R/a/proj/sess/scratchpad" "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+  # The first reading is the baseline taken before any reap arm, the second the
+  # one after. A burst only after this tick's own deletions is not escalated.
+  SEQ="$FIX/seq.sh"; printf '#!/bin/bash\nn=$(cat %s/seq.n 2>/dev/null || echo 0); n=$((n+1)); echo $n > %s/seq.n\nsed -n "$( [ "$n" = 1 ] && echo 1 || echo 2 )p" %s/seq.vals\n' "$FIX" "$FIX" "$FIX" > "$SEQ"; chmod +x "$SEQ"
+  rm -f "$FIX/sent.log" "$FIX/seq.n"; printf '0.01 4\n0.01 95\n' > "$FIX/seq.vals"
+  out=$(tick "$SEQ")
+  check "a burst after the tick's own deletions is named as such" "yes" "$(has "$out" 'verdict=fseventsd_burst_self_inflicted')"
+  check "and is not escalated"                          "no"  "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
+  # Fresh state: the first cell's escalation started the cooldown, which would
+  # suppress this one for the wrong reason.
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/seq.n"; printf '0.01 92\n0.01 95\n' > "$FIX/seq.vals"
+  out=$(tick "$SEQ")
+  check "it is not suppressed by an earlier cell's cooldown" "no" "$(has "$out" 'escalation suppressed')"
+  check "hot before and after still escalates"          "yes" "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
 else
   echo "  skip (the end-to-end tick needs macOS)"
 fi

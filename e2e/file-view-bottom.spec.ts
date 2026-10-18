@@ -9,6 +9,10 @@ declare const _xlsxEd: any;
 
 test.beforeEach(async ({page}) => {
   await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({json:[{name:'file-bottom-worker',running:false,provider:'codex',dir:'/tmp'}]}));
+  // These cases measure the pdf.js renderer (pages, cap notice, CDN fallback).
+  // Desktop now opens PDFs in the native viewer (2d02e34d), so they opt into
+  // pdf.js the way a person can; the native default has its own test below.
+  await page.addInitScript(() => { try { localStorage.setItem('amux_pdf_viewer', 'pdfjs'); } catch (e) {} });
 });
 
 const end = 'FILE_VIEW_FINAL_LINE_20261009';
@@ -364,13 +368,23 @@ test('late directory and file responses cannot replace the worker current file',
     await writeFile(oldFile,'OLD_FILE_MUST_NOT_REPLACE_CURRENT');await writeFile(currentFile,longText);
     await page.goto('/?peekEmbed=file-bottom-worker');await page.setViewportSize(sizes[0]);
     await page.evaluate(()=>(window as any)._peekSplitOpen('files'));
-    for(const [matcher,start] of [
-      [/\/api\/ls\?path=/,() => page.evaluate(p=>{void (window as any)._psfLoad(p);},dir)],
-      [/\/api\/file\?path=.*old\.md/,() => page.evaluate(p=>{void (window as any)._psfViewFile(p);},oldFile)],
+    // HOLD EXACTLY ONE REQUEST: the one start() issues. The matcher used to
+    // hold every request it matched, so any other /api/ls read during the
+    // iteration also entered route.fetch(). One still in flight when the test
+    // ended rejected with "route.fetch: Test ended" after this test had passed,
+    // and Playwright charged it to the next test in the worker ("capped PDF",
+    // desktop run 38917609108 and mobile run 38821710436; both errors name
+    // /api/ls?path=<this test's dir>). Every other request falls through
+    // untouched, which needs no network call of its own.
+    for(const [matcher,key,start] of [
+      [/\/api\/ls\?path=/,'/api/ls?path='+encodeURIComponent(dir),() => page.evaluate(p=>{void (window as any)._psfLoad(p);},dir)],
+      [/\/api\/file\?path=.*old\.md/,'/api/file?path='+encodeURIComponent(oldFile),() => page.evaluate(p=>{void (window as any)._psfViewFile(p);},oldFile)],
     ] as const){
-      let release!:()=>void, arrived!:()=>void, completed!:()=>void;
+      let release!:()=>void, arrived!:()=>void, completed!:()=>void, taken=false;
       const held=new Promise<void>(r=>release=r), seen=new Promise<void>(r=>arrived=r), done=new Promise<void>(r=>completed=r);
       await page.route(matcher,async route=>{
+        if(taken||!route.request().url().includes(key)) return route.fallback();
+        taken=true;
         const response=await route.fetch();arrived();await held;
         await route.fulfill({response});completed();
       });
@@ -404,4 +418,22 @@ test('capped PDF and large text disclose their limits and download the complete 
       await download.delete();await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
     }
   }finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
+});
+
+test('desktop opens a PDF in the native viewer from the raw stream by default', async ({page}, info) => {
+  // Skipped runs never load the page, so the shared sessions stub goes unused there.
+  if (info.project.name !== 'desktop') allowUnusedRoute(page, /\/api\/sessions(?:\?.*)?$/);
+  test.skip(info.project.name !== 'desktop', 'touch devices keep pdf.js');
+  const dir = await mkdtemp(join(tmpdir(), 'amux-pdf-native-'));
+  try {
+    await writeFile(join(dir, 'native.pdf'), pdfBytes());
+    await page.addInitScript(() => { try { localStorage.removeItem('amux_pdf_viewer'); } catch (e) {} });
+    await page.goto('/');
+    await page.waitForFunction(() => typeof (window as any).openFilePreview === 'function');
+    await page.evaluate(p => (window as any).openFilePreview(p), join(dir, 'native.pdf'));
+    const frame = page.locator('#file-body iframe.pdf-native');
+    await expect(frame).toHaveCount(1, {timeout: 30000});
+    expect(await frame.getAttribute('src')).toContain('/api/file/raw?path=');
+    await expect(page.locator('#file-body .pdf-page')).toHaveCount(0);
+  } finally { await cleanup('remove temp folder', () => rm(dir, {recursive: true, force: true})); }
 });

@@ -1,59 +1,79 @@
 #!/usr/bin/env bash
-# Deploy the amux cloud GATEWAY (cloud/gateway/gateway.py) to the VM and restart it.
-# deploy.sh only ships the per-user amux-server.py; this ships the host gateway.
+# Deploy the amux cloud GATEWAY (cloud/gateway/) to the cloud host by hand and
+# restart it. The normal path is a push to main (.github/workflows/deploy-cloud.yml);
+# this is the manual one, for when CI cannot be used.
 #
 # Usage:
-#   ./deploy-gateway.sh                      # deploy gateway.py + restart
-#   ./deploy-gateway.sh --mint-token <email> # also mint a tunnel token for that org's owner
+#   AMUX_CLOUD_HOST=<host> ./deploy-gateway.sh                      # deploy + restart
+#   AMUX_CLOUD_HOST=<host> ./deploy-gateway.sh --mint-token <email> # also mint a tunnel token
 #
-# Requires: gcloud with an account that can `gcloud compute ssh amux-dev` via IAP.
+# The host is a plain Linux box (Hetzner, bootstrapped by setup-cloud.sh) reached
+# over ssh as root. There is no default host: the GCP VM this script used to
+# name (`amux-dev`) is deleted, and a default that points at a dead or foreign
+# address fails late and unclearly.
+#   AMUX_CLOUD_HOST     address or ssh alias of the host (required)
+#   AMUX_CLOUD_SSH_KEY  private key to offer (default ~/.ssh/amux_cloud, if it exists)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GATEWAY="$SCRIPT_DIR/gateway/gateway.py"
-ZONE="us-central1-a"
-VM="amux-dev"
-IAP_USER="$(gcloud config get-value account 2>/dev/null | tr '@.' '_')"
-SSH() { gcloud compute ssh "${IAP_USER}@${VM}" --zone="$ZONE" --tunnel-through-iap --quiet --command="$1"; }
+SRC="$SCRIPT_DIR/gateway"
+DEST="/opt/amux-cloud/gateway"
+SVC="amux-gateway"
+HOST="${AMUX_CLOUD_HOST:-}"
+KEY="${AMUX_CLOUD_SSH_KEY:-$HOME/.ssh/amux_cloud}"
 
 log() { echo "→ $*"; }
-[ -f "$GATEWAY" ] || { echo "gateway.py not found at $GATEWAY"; exit 1; }
+die() { echo "✗ $*" >&2; exit 1; }
 
-log "Copying gateway.py to VM…"
-gcloud compute scp "$GATEWAY" "${IAP_USER}@${VM}:/tmp/gateway.py" \
-  --zone="$ZONE" --tunnel-through-iap --quiet
+[ -n "$HOST" ] || die "AMUX_CLOUD_HOST is not set. Name the cloud host, for example: AMUX_CLOUD_HOST=203.0.113.10 $0"
+[ -f "$SRC/gateway.py" ] || die "gateway.py not found at $SRC"
 
-log "Discovering gateway install path + service…"
-GW_PATH="$(SSH 'sudo find /opt /srv /root /home -maxdepth 4 -name gateway.py 2>/dev/null | head -1' | tr -d "\r")"
-SVC="$(SSH 'systemctl list-units --type=service --all 2>/dev/null | grep -oiE "[a-z-]*gateway[a-z-]*\.service" | head -1' | tr -d "\r")"
-[ -z "$GW_PATH" ] && { echo "could not locate gateway.py on the VM"; exit 1; }
-log "  path=$GW_PATH  service=${SVC:-<none found>}"
+SSH_OPTS=(-o ConnectTimeout=20 -o BatchMode=yes)
+[ -f "$KEY" ] && SSH_OPTS+=(-i "$KEY")
+SSH() { ssh "${SSH_OPTS[@]}" "root@$HOST" "$@"; }
 
+log "Checking $HOST…"
+SSH "test -d '$DEST'" || die "cannot reach root@$HOST, or $DEST is missing there (bootstrap the host with setup-cloud.sh first)"
+
+# chatgpt_front.py first: gateway.py imports it.
+STAMP="$(date +%s)"
+for f in chatgpt_front.py gateway.py; do
+  log "Copying $f…"
+  SSH "cat > '/tmp/$f.new'" < "$SRC/$f"
+  SSH "python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' '/tmp/$f.new'" \
+    || die "$f does not parse on the host; nothing was installed"
+done
 log "Backing up + installing…"
-SSH "sudo cp '$GW_PATH' '${GW_PATH}.bak.$(date +%s)' && sudo cp /tmp/gateway.py '$GW_PATH'"
+for f in chatgpt_front.py gateway.py; do
+  SSH "[ ! -f '$DEST/$f' ] || cp '$DEST/$f' '$DEST/$f.bak.$STAMP'; mv '/tmp/$f.new' '$DEST/$f'"
+done
 
-if [ -n "$SVC" ]; then
-  log "Restarting $SVC…"
-  SSH "sudo systemctl restart '$SVC' && sleep 2 && sudo systemctl is-active '$SVC'"
-else
-  echo "⚠ No gateway service found — restart it manually (check how gateway.py is run)."
-fi
+log "Restarting $SVC…"
+SSH "systemctl restart '$SVC' && sleep 2 && systemctl is-active '$SVC'"
 
 log "Smoke test (tunnel routes should 402/404, not 500)…"
 SSH "curl -s -o /dev/null -w 'POST /tunnel/register → %{http_code}\n' -X POST http://127.0.0.1:8080/tunnel/register || true"
 
 if [ "${1:-}" = "--mint-token" ] && [ -n "${2:-}" ]; then
-  EMAIL="$2"
-  log "Minting tunnel token for owner email: $EMAIL"
-  TOKEN="$(SSH "
-    ORG=\$(sudo sqlite3 /var/amux/gateway.db \"SELECT o.id FROM orgs o JOIN users u ON u.id=o.owner_id WHERE u.email='$EMAIL' LIMIT 1;\")
-    [ -z \"\$ORG\" ] && ORG=\$(sudo sqlite3 /var/amux/gateway.db \"SELECT id FROM orgs WHERE plan='pro' LIMIT 1;\")
-    TOK=\$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')
-    sudo sqlite3 /var/amux/gateway.db \"INSERT INTO tunnel_tokens (token,org_id,email,label,created_at) VALUES ('\$TOK','\$ORG','$EMAIL','cli',strftime('%s','now'));\"
-    echo \$TOK
-  " | tr -d '\r' | tail -1)"
+  log "Minting tunnel token for owner email: $2"
+  # The host has no sqlite3 CLI. The email travels as an argument, never as SQL text.
+  TOKEN="$(SSH "python3 - $(printf '%q' "$2")" <<'PY' | tr -d '\r' | tail -1
+import secrets, sqlite3, sys, time
+email = sys.argv[1]
+db = sqlite3.connect("/var/amux/gateway.db")
+row = db.execute("SELECT o.id FROM orgs o JOIN users u ON u.id=o.owner_id WHERE u.email=? LIMIT 1", (email,)).fetchone()
+if not row:
+    sys.exit("no org is owned by " + email)
+tok = secrets.token_urlsafe(24)
+db.execute("INSERT INTO tunnel_tokens (token,org_id,email,label,created_at) VALUES (?,?,?,?,?)",
+           (tok, row[0], email, "cli", int(time.time())))
+db.commit()
+print(tok)
+PY
+)"
+  [ -n "$TOKEN" ] || die "no token was minted"
   echo ""
   echo "  Tunnel token: $TOKEN"
-  echo "  Configure locally:  echo 'AMUX_TUNNEL_TOKEN=$TOKEN' >> ~/.amux/server.env && touch amux-server.py"
+  echo "  Configure locally: add AMUX_TUNNEL_TOKEN=<token> to ~/.amux/server.env, then restart the server."
 fi
 
 log "Done."

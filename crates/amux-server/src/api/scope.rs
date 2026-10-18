@@ -1040,6 +1040,11 @@ async fn scope_write(
                 "'{actor}' is a member with {} access ({}) and may configure only workers inside it, not the {level} layer for '{name}'.",
                 m.level(), if m.name().is_empty() { "global" } else { m.name() }))
         }
+        None if super::session_verbs::is_admin_worker(actor) => {
+            tracing::info!(actor, level, name, gate = "scope_write", verdict = "admin_group_owner_gate",
+                measured = true, n_considered = 1, "an admin-group worker passed an owner-only gate");
+            (true, format!("admin-group worker {actor} (owner reach)"))
+        }
         None => scope_write_allowed(level, name, actor),
     };
     if !ok {
@@ -1053,7 +1058,7 @@ async fn scope_write(
     };
 
     let value = value.cloned().unwrap_or(Value::Null);
-    if key == "env" && !actor.is_empty() {
+    if key == "env" && !actor.is_empty() && !super::session_verbs::is_admin_worker(actor) {
         if let Some(k) = owner_only_key_changed(&home, level, name, &value) {
             tracing::warn!(actor = %actor, level, name, key = %k, verdict = "scope_owner_only_key_refused",
                 "a session tried to change an owner-only scope key");
@@ -1112,69 +1117,22 @@ async fn scope_write(
         "actor": if actor.is_empty() { "human" } else { actor },
         "why_allowed": why,
     });
-    // A saved rule is not yet an applied one (AH-233): rules are composed into
-    // each worker's launch, so a running worker keeps the rules it started
-    // with. Say who this reaches and when, rather than a bare ok.
-    if key == "rules" {
+    // A saved rule or memory is not yet an applied one (AH-233). Both are
+    // composed into each worker's launch, so a running worker keeps what it
+    // started with unless it is told. Say who this reaches and when, and tell
+    // the running ones (session_verbs::refresh_scoped_context), deletions
+    // included: an emptied layer is a change the worker must hear about too.
+    if key == "rules" || key == "memory" {
         let reached = crate::api::session_verbs::workers_in_scope(level, name);
-        let live = deliver_rules_live(state, level, name, &reached, actor).await;
-        body["takes_effect"] = json!(
-            "now for running workers (the composed rules were sent to each as a message) and in the system prompt from each worker's next start"
-        );
+        let what = format!("{key} ({level} scope{})", if level == "global" { String::new() } else { format!(" {name}") });
+        let live = crate::api::session_verbs::refresh_scoped_context(state, &reached, &what, actor).await;
+        let isolated: Vec<&String> = reached.iter().filter(|w| crate::api::session_verbs::session_is_isolated(w)).collect();
+        body["takes_effect"] = json!(crate::api::session_verbs::SCOPED_CONTEXT_TAKES_EFFECT);
         body["affected_workers"] = json!(reached);
         body["delivered_live"] = json!(live);
+        body["isolated_not_reached"] = json!(isolated);
     }
     j(200, body)
-}
-
-/// Send each RUNNING, non-isolated worker in a rules write its newly composed
-/// rules once, as a message. Rules ride in the launch system prompt, so a
-/// change used to reach a running worker only at its next start, and
-/// restarting an orchestrator mid-run kills its background agents and
-/// monitors. Measured 2026-10-01: Ethan's rules for the gs12-platform group
-/// reached 14 running lanes and applied to none of them. Logged per worker as
-/// verdict=rules_delivered_live; returns who got it.
-async fn deliver_rules_live(
-    state: &AppState,
-    level: &str,
-    name: &str,
-    reached: &[String],
-    actor: &str,
-) -> Vec<String> {
-    let mut sent = Vec::new();
-    for w in reached {
-        if crate::api::session_verbs::session_is_isolated(w) {
-            continue;
-        }
-        let st = crate::backend::tmux::session_target(&format!("amux-{w}"));
-        let running = std::process::Command::new("tmux")
-            .args(["has-session", "-t", &st])
-            .status()
-            .is_ok_and(|s| s.success());
-        if !running {
-            continue;
-        }
-        let block = crate::api::session_verbs::compose_rules_block(w);
-        if block.is_empty() {
-            continue;
-        }
-        let text = format!(
-            "[amux rules] Your binding rules changed at the {level} scope{}. They apply from now, \
-             and from your next start they are also in your system prompt.\n\n{block}",
-            if level == "global" { String::new() } else { format!(" ({name})") }
-        );
-        let sender = if actor.is_empty() { "owner" } else { actor };
-        match crate::api::session_verbs::steer_enqueue(state, w, &text, "rules-update", sender).await {
-            Ok(_) => {
-                tracing::info!(session = %w, level, scope = name, measured = true, n_considered = 1,
-                    verdict = "rules_delivered_live", "sent the changed rules to a running worker");
-                sent.push(w.clone());
-            }
-            Err(why) => tracing::warn!(session = %w, level, scope = name, why, measured = true, n_considered = 1,
-                verdict = "rules_not_delivered_live", "a running worker in scope could not be sent its changed rules"),
-        }
-    }
-    sent
 }
 
 // ---------------------------------------------------------------------------

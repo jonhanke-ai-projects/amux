@@ -92,6 +92,24 @@ pub(crate) fn local_member_actor(headers: &HeaderMap) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+/// Stamp a verified member identity onto headers for an INTERNAL call made on
+/// that member's behalf (a Messages post delivered to a worker). Inbound copies
+/// of these headers are stripped by the middleware, so only server code can
+/// produce them.
+pub(crate) fn stamp_member_headers(headers: &mut HeaderMap, email: &str, scope: &MemberScope) {
+    use axum::http::HeaderValue;
+    let mut put = |k: &'static str, v: &str| {
+        if let Ok(v) = HeaderValue::from_str(v) {
+            headers.insert(k, v);
+        }
+    };
+    put(VERIFIED_MEMBER_HEADER, "1");
+    put(MEMBER_ACTOR_HEADER, &format!("member:{email}"));
+    put(MEMBER_SCOPE_LEVEL_HEADER, scope.level());
+    put(MEMBER_SCOPE_NAME_HEADER, scope.name());
+    put("x-amux-session", &format!("member:{email}"));
+}
+
 /// The resource boundary granted to a local/Tailscale member.
 ///
 /// This is deliberately separate from `role`: every invitee remains a
@@ -270,6 +288,17 @@ pub(crate) fn authorize_local_member_request(
     if path == "/api/identity" || path == "/api/events" {
         return None;
     }
+    // Realtime rooms (api/rt.rs) check every join against the file rules and
+    // this member's grant, and refuse a scoped member's ops (read-only), so
+    // the transport itself is admitted here. /api/debug/rt is not.
+    if path == "/api/rt" || path == "/api/rt/events" || path == "/api/rt/send" {
+        return None;
+    }
+    // Messages (conversations.rs): every handler checks the conversation
+    // against this member's scope before reading or writing.
+    if path == "/api/conversations" || path.starts_with("/api/conversations/") {
+        return None;
+    }
     if path == "/api/sessions" {
         return (*method != Method::GET).then(|| forbidden(&scope, "fleet mutation"));
     }
@@ -392,7 +421,7 @@ fn member_file_target(path: &str, uri: &Uri) -> Option<std::path::PathBuf> {
             .into_iter().next().map(|(_, v)| v).unwrap_or_default();
         return Some(std::path::PathBuf::from(format!("/{}", decoded.trim_start_matches('/'))));
     }
-    let reads = ["/api/file", "/api/file/", "/api/file/raw", "/api/file/xlsx", "/api/file/vtt",
+    let reads = ["/api/file", "/api/file/", "/api/file/raw", "/api/file/hls", "/api/file/xlsx", "/api/file/vtt",
                  "/api/fs/read", "/api/fs/list"];
     if !reads.contains(&path) {
         return None;

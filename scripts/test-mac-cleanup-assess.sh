@@ -10,6 +10,7 @@ TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane
 export AMUX_CLEANUP_FSEVENTSD_CMD=true   # the live fseventsd must not decide a test (DESKT-81)
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
+export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp"   # never the live session temp tree (DESKT-77)
 trap 'rm -rf -- "${FIX:?}"' EXIT
 fails=0
@@ -53,27 +54,33 @@ check "a filling-up disk has no ETA"                       "-"    "$(mkhist 13 -
 check "garbage input is unmeasured, not a crash"           "- -"  "$(echo 'not json' | burn_from_history 1 | awk '{print $1, $2}')"
 
 echo "2. classification"
-DISK_FLOOR_GB=150; HOURS_TO_FULL=24; SWAP_FREE_FLOOR_MB=512; CPU_SHARE=0.9; SWAP_FREE_CRITICAL_PCT=0.10
+DISK_FLOOR_GB=150; HOURS_TO_FULL=24; SWAP_FREE_FLOOR_MB=512; CPU_SHARE=0.9; CPU_IDLE_MAX_PCT=25; SWAP_FREE_CRITICAL_PCT=0.10
 check "a healthy machine is not constrained"          ""   "$(classify_constraints 600 - - 1 2000 10 28 0 20000)"
+check "high load on a busy CPU is a cpu constraint"    "cpu" "$(classify_constraints 600 - - 1 2000 40 28 0 20000 5 | awk '{print $1}')"
+check "high load with the CPU 65% idle is not cpu"     ""    "$(classify_constraints 600 - - 1 2000 40 28 0 20000 65)"
+check "high load with idle unmeasured keeps the rule"  "cpu" "$(classify_constraints 600 - - 1 2000 40 28 0 20000 -1 | awk '{print $1}')"
 check "under the disk floor"                          "disk" "$(classify_constraints 100 - - 1 2000 10 28 0 20000 | awk '{print $1}')"
 check "above the floor but full within the window"   "yes" "$(has "$(classify_constraints 300 20 15 1 2000 10 28 0 20000)" 'disk burning 20.0G/h, full in 15.0h')"
 check "full outside the window is fine"              ""    "$(classify_constraints 300 5 60 1 2000 10 28 0 20000)"
 check "kernel pressure after purge"                   "memory" "$(classify_constraints 600 - - 2 2000 10 28 0 20000 | awk '{print $1}')"
-check "swap nearly exhausted (a real swapfile, mostly used)" "memory" "$(classify_constraints 600 - - 1 100 10 28 0 20000 | awk '{print $1}')"
+check "swap nearly exhausted, little disk to grow it: trips" "memory" "$(classify_constraints 10 - - 1 100 10 28 0 20000 | grep -o '^memory')"
+check "swap nearly used but normal pressure and disk to grow it: not a constraint (AMUX memory RCA 2026-10-13: 385MB of 12288MB, 61G disk)" "" "$(classify_constraints 61.4 - - 1 385 10 28 0 12288 | grep -o '^memory')"
+check "same swap at pressure 2 trips whatever the disk" "memory" "$(classify_constraints 600 - - 2 385 10 28 0 12288 | grep -o '^memory')"
 check "load over the CPU share"                       "cpu"  "$(classify_constraints 600 - - 1 2000 30 28 0 20000 | awk '{print $1}')"
 check "a runaway family"                              "family" "$(classify_constraints 600 - - 1 2000 10 28 1 20000 | awk '{print $1}')"
 check "unmeasured inputs (-1) never trip a class"     ""   "$(classify_constraints -1 - - -1 -1 -1 28 0 -1)"
 
 echo "2b. swap_total=0 means no swapfile was ever created, not exhaustion (MO-3629/MO-3638, 3 escalations in one day: swap_free=0.00MB, pressure=1/normal, >=90% memory free every time)"
 check "fresh boot, swap free=0 AND total=0: not a constraint"  ""       "$(classify_constraints 600 - - 1 0 10 28 0 0)"
-check "same free=0, but a real swapfile (total>0): still trips" "memory" "$(classify_constraints 600 - - 1 0 10 28 0 20000 | awk '{print $1}')"
+check "same free=0, a real swapfile (total>0) and no disk to grow it: still trips" "memory" "$(classify_constraints 10 - - 1 0 10 28 0 20000 | grep -o '^memory')"
 check "swap_total unmeasured (-1) does not trip either"          ""       "$(classify_constraints 600 - - 1 0 10 28 0 -1)"
 check "kernel pressure still trips independently of swap_total" "memory" "$(classify_constraints 600 - - 2 0 10 28 0 0 | awk '{print $1}')"
 
 echo "2c. a low swap_free can be STALE, not current, once pressure is confirmed normal (MO-3655/3657: identical 438.06MB free across hours while pressure stayed 1 and load/free% visibly improved)"
 check "pr==1 and 43% of swap still free (today's real numbers): not a constraint" "" "$(classify_constraints 600 - - 1 438 10 28 0 1024)"
 check "pr unmeasured (-1) with the same ratio: still trips (cannot trust pressure)" "memory" "$(classify_constraints 600 - - -1 438 10 28 0 1024 | awk '{print $1}')"
-check "pr==1 but under the critical percent (<10% of swap left): still trips despite normal pressure" "memory" "$(classify_constraints 600 - - 1 50 10 28 0 1024 | awk '{print $1}')"
+check "pr==1 under the critical percent (<10% of swap left) with little disk: still trips" "memory" "$(classify_constraints 10 - - 1 50 10 28 0 1024 | grep -o '^memory')"
+check "pr==1 under the critical percent but disk unmeasured (-1): still trips" "memory" "$(classify_constraints -1 - - 1 50 10 28 0 1024 | grep -o '^memory')"
 check "pr==1 right at the critical percent boundary (exactly 10%): does not trip" "" "$(classify_constraints 600 - - 1 102 10 28 0 1020)"
 check "pr==2 still trips via the pressure branch regardless of the percent gate" "memory" "$(classify_constraints 600 - - 2 438 10 28 0 1024 | awk '{print $1}')"
 

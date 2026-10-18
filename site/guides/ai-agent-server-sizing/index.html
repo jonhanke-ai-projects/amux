@@ -155,10 +155,9 @@
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
     </nav>
   </header>
   <main>
@@ -168,18 +167,6 @@
     <p class="subtitle"><span class="updated-badge">August 2026</span> — RAM, CPU, and disk requirements for 5 to 50+ parallel Claude Code, Codex, or Gemini CLI agents, plus amux OOM protection.</p>
 
     <!-- EXP-069: ai-agent-server-sizing top-of-page green CTA -->
-    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
-         data-exp="EXP-069">
-      <div>
-        <div style="font-weight:600;color:#d1fae5;font-size:1rem;margin-bottom:0.25rem">Run your AI engineering team overnight — with built-in OOM protection</div>
-        <div style="color:#a7f3d0;font-size:0.875rem">amux refuses to start new agents when your server is running low on memory — so a runaway fleet can't crash your machine at 3am. Open source, MIT licensed, 374+ stars.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
-         onclick="if(window.posthog) posthog.capture('exp069_server_sizing_guide_cta_click', {page: window.location.pathname})"
-         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.625rem 1.25rem;border-radius:8px;font-size:0.9rem;font-weight:600;white-space:nowrap;flex-shrink:0">
-        View amux on GitHub ★
-      </a>
-    </div>
 
     <p>Running a fleet of AI coding agents overnight is practical on almost any modern server — but getting the sizing right prevents the 3am crash that wipes out your agents' work. This guide covers the numbers you need: how much RAM per agent, when to move from your laptop to a cloud VM, and how amux's new OOM protection prevents resource exhaustion from taking down your fleet.</p>
 

@@ -1179,6 +1179,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("issues", "lease_heartbeat_at", false),
     ("layout_presets", "created_at", false),
     ("logs", "ts", false),
+    ("file_opens", "opened_at", false), // epoch seconds, written by POST /api/fs/opened
     ("mdai_runs", "ts", false),
     ("org", "created_at", false),
     ("org_invites", "created_at", false),
@@ -1218,6 +1219,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("steering_history", "delivered_at", false),
     ("steering_history", "queued_at", false),
     ("steering_queue", "queued_at", false),
+    ("steering_queue", "deliver_at", false),
     // SECONDS, MEASURED on the live database 2026-09-14 (RR-0052 attempts,
     // db/attempts.rs): MAX(started_at) 1789414003 and MAX(ended_at) 1789413676
     // against a `now` of 1789414183.
@@ -1227,6 +1229,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("skill_usage", "ts", false), // transcript timestamps, stored as unix seconds (AMUX-5340)
     ("trace_archive", "archived_at", false), // measured 2026-09-27: 1790517771..1790535244 over 5405 rows
     ("waitlist", "ts", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+    ("conversation_posts", "ts", true), // conversations.rs writes now_ms(); 0117 says "unix millis"
 ];
 
 /// Does each declared timestamp column actually hold what readers assume?

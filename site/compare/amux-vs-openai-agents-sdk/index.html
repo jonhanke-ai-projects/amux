@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs OpenAI Agents SDK — Agent Fleet Dashboard vs Python Agent Framework (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs OpenAI Agents SDK: fleet dashboard for Claude Code sessions vs Python framework for building AI agent apps. Full 2026 comparison — use cases, architecture, setup, fault tolerance.">
+  <meta name="keywords" content="amux vs openai agents sdk, openai agents sdk alternative, openai agents sdk comparison, claude code vs openai agents sdk, python agents sdk orchestration 2026">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-openai-agents-sdk/">
+  <meta property="og:title" content="amux vs OpenAI Agents SDK — Fleet Dashboard vs Agent Framework">
+  <meta property="og:description" content="amux runs your coding sessions. OpenAI Agents SDK helps you write the code that calls those sessions. The full 2026 comparison.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-openai-agents-sdk/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs OpenAI Agents SDK","item":"https://amux.io/compare/amux-vs-openai-agents-sdk/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs OpenAI Agents SDK","datePublished":"2026-10-13","dateModified":"2026-10-13","author":{"@type":"Organization","name":"amux"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io"},"description":"Comparison of amux (Claude Code fleet dashboard) and OpenAI Agents SDK (Python agent development framework) for teams building with AI coding agents in 2026."}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the OpenAI Agents SDK?","acceptedAnswer":{"@type":"Answer","text":"The OpenAI Agents SDK (open-sourced March 2026) is a Python library for building structured multi-agent AI applications. It provides primitives for tool calling, agent handoffs, guardrails, and tracing — all on top of OpenAI's API. Originally called Swarm, it was redesigned and released as the official Python SDK for building production AI agent workflows. It is a development framework: you write Python code that uses it."}},{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is an open-source operations layer for running AI coding sessions — Claude Code, Codex CLI, and Gemini CLI — in parallel from a single dashboard. It is not a programming framework. It is infrastructure: process management, self-healing, a shared kanban board, vault secrets, workspace isolation, and mobile oversight. You run amux on a server and connect to it from a browser or the iOS app."}},{"@type":"Question","name":"Are amux and OpenAI Agents SDK solving the same problem?","acceptedAnswer":{"@type":"Answer","text":"No. OpenAI Agents SDK is a framework for writing the logic of an agent — what tools it has, how it hands off to other agents, how it validates its output. amux is infrastructure for running the resulting agent sessions — spawning them, keeping them alive overnight, giving you visibility from your phone, and letting multiple agents coordinate on a shared task board. A team could use the Agents SDK to write the agent logic and amux to run and monitor those agents as long-running processes."}},{"@type":"Question","name":"Does OpenAI Agents SDK work with Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Not directly. The Agents SDK is built around OpenAI's API (GPT-4o, o1, etc.) and the OpenAI tool-calling contract. Claude Code is a terminal-based coding agent from Anthropic. They occupy different layers: the Agents SDK is for building conversational agent workflows in Python; Claude Code is a coding agent you run in a terminal. amux, by contrast, is built specifically to manage Claude Code sessions."}},{"@type":"Question","name":"Which is easier to get started with for a team running parallel coding agents?","acceptedAnswer":{"@type":"Answer","text":"amux. It is a single Rust binary — run install.sh, point your terminal at it, and you have a fleet dashboard in 5 minutes. No Python environment, no API wrapper code to write. The OpenAI Agents SDK requires writing Python code that defines agent logic, tools, and handoffs — meaningful engineering work before the first agent runs. For teams that already have coding agents (Claude Code sessions) and want observability and coordination, amux is the direct path."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&#x203A;</span> <a href="/compare/">Compare</a> <span class="sep">&#x203A;</span> <span>amux vs OpenAI Agents SDK</span></div>
+
+    <h1>amux vs OpenAI Agents SDK</h1>
+    <p class="subtitle">Fleet dashboard for running Claude Code sessions vs Python framework for building AI agent logic — different layers, different jobs.</p>
+
+    <!-- EXP-130: /compare/amux-vs-openai-agents-sdk/ top CTA — October 2026 launch -->
+
+    <p><strong>OpenAI Agents SDK</strong> (open-sourced March 2026) is a Python library for building structured multi-agent AI applications on top of OpenAI's API. It gives you tool definitions, agent handoffs, guardrails, and distributed tracing. You write Python that uses it. It is a development framework for authoring agent logic.</p>
+
+    <p><strong>amux</strong> is an open-source control plane for running a parallel AI coding team. It manages Claude Code, Codex CLI, and Gemini CLI sessions in tmux, surfaced through a web dashboard and iOS app. You get self-healing, a shared kanban board, vault secrets, workspace isolation, and standing approvals. It is operations infrastructure, not a development framework.</p>
+
+    <p>The two tools occupy different layers. You could use the Agents SDK to write the business logic of an agent and amux to run and monitor that agent as a long-running process on your own server.</p>
+
+    <h2>The core difference: framework vs infrastructure</h2>
+
+    <p>The OpenAI Agents SDK answers the question: <em>how do I write an agent that calls tools, hands off to other agents, and validates its own output?</em> You write Python code. The SDK gives you the primitives. When the agent runs, it calls OpenAI's API and finishes.</p>
+
+    <p>amux answers a different question: <em>how do I keep 10 coding sessions running in parallel overnight, coordinate them on shared tasks, and know what is happening from my phone?</em> There is no code to write for amux itself. You run a binary, it manages Claude Code sessions, and you watch them from a dashboard.</p>
+
+    <p>Teams that are building sophisticated multi-agent pipelines with custom tool logic tend to use the Agents SDK (or similar frameworks like LangGraph) for the pipeline layer and amux for the execution layer underneath.</p>
+
+    <h2>Feature comparison</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Dimension</th>
+            <th style="padding:10px 16px;text-align:left;">amux</th>
+            <th style="padding:10px 16px;text-align:left;">OpenAI Agents SDK</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">What it is</td>
+            <td style="padding:10px 16px;">Operations infrastructure — fleet dashboard, self-healing, board</td>
+            <td style="padding:10px 16px;">Development framework — Python library for writing agent logic</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Primary language</td>
+            <td style="padding:10px 16px;">Rust (server) + any CLI agent you point at it</td>
+            <td style="padding:10px 16px;">Python 3.9+</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Supported agent models</td>
+            <td style="padding:10px 16px;">Claude Code, Codex CLI, Gemini CLI, any terminal-based agent</td>
+            <td style="padding:10px 16px;">OpenAI API (GPT-4o, o1, o3-mini)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Requires writing code</td>
+            <td style="padding:10px 16px;">No — configure via dashboard and env vars</td>
+            <td style="padding:10px 16px;">Yes — Python code defining agents, tools, handoffs</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Fleet visibility</td>
+            <td style="padding:10px 16px;">Web dashboard + iOS app — live status, peek, token spend</td>
+            <td style="padding:10px 16px;">OpenAI Tracing dashboard (trace per run, not fleet view)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Overnight reliability</td>
+            <td style="padding:10px 16px;">Self-healing watchdog handles crash, context overflow, rate limit</td>
+            <td style="padding:10px 16px;">No process supervision — each run completes or raises an exception</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Workspace isolation</td>
+            <td style="padding:10px 16px;">Per-agent git worktree, scratch dir, TMPDIR via AMUX_WORKSPACE_ISOLATION</td>
+            <td style="padding:10px 16px;">No — agents share the calling process environment</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Secrets management</td>
+            <td style="padding:10px 16px;">Vault: scoped key/value store, never appears in transcripts</td>
+            <td style="padding:10px 16px;">Standard env vars or secrets manager — developer's responsibility</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Task coordination</td>
+            <td style="padding:10px 16px;">Built-in SQLite kanban with atomic CAS claiming</td>
+            <td style="padding:10px 16px;">No built-in board — use a separate issue tracker or queue</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Mobile oversight</td>
+            <td style="padding:10px 16px;">Native iOS app + PWA with full fleet view</td>
+            <td style="padding:10px 16px;">None</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Tool calling</td>
+            <td style="padding:10px 16px;">Handled by the underlying coding agent (Claude Code, etc.)</td>
+            <td style="padding:10px 16px;">First-class SDK primitive with typed schemas and tracing</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Agent handoffs</td>
+            <td style="padding:10px 16px;">Via board tasks — agents pick up tasks left by other agents</td>
+            <td style="padding:10px 16px;">First-class SDK primitive — explicit handoff API with context transfer</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Setup time</td>
+            <td style="padding:10px 16px;">5 min — single binary, install.sh</td>
+            <td style="padding:10px 16px;">30-120 min — Python env, define agents and tools, integrate tracing</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">License</td>
+            <td style="padding:10px 16px;">MIT + Commons Clause (self-hosted free)</td>
+            <td style="padding:10px 16px;">MIT</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>When each tool fits</h2>
+
+    <p><strong>Use the OpenAI Agents SDK when</strong> you are building a structured multi-step AI workflow in Python — a research pipeline, a customer support bot, a data extraction system — where you need typed tool schemas, explicit agent handoffs, guardrails, and end-to-end tracing on OpenAI's platform. The SDK shines for workflows you author and own as code.</p>
+
+    <p><strong>Use amux when</strong> you are running coding agents (Claude Code, Codex, Gemini CLI) in parallel on a real codebase, overnight, and you need the fleet to stay alive, coordinate tasks, and let you check in from your phone. amux requires no Python code to set up. It is the operations layer for teams deploying AI engineers, not the framework layer for building AI applications.</p>
+
+    <p><strong>Use both when</strong> you are building a sophisticated autonomous system: the Agents SDK (or LangGraph) handles the decision graph and agent logic; amux manages the underlying coding session fleet that those decisions dispatch work into. The REST API at /api/sessions/NAME/send is the integration point.</p>
+
+    <h2>FAQ</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What is the OpenAI Agents SDK?</summary>
+      <p style="margin:0.8rem 0 0;">The OpenAI Agents SDK (open-sourced March 2026) is a Python library for building structured multi-agent AI applications. It provides primitives for tool calling, agent handoffs, guardrails, and tracing on top of OpenAI's API. Originally called Swarm, it was redesigned and released as the official Python SDK for production AI agent workflows.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I use amux and the OpenAI Agents SDK together?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. They operate at different layers. An Agents SDK workflow can dispatch coding tasks to amux-managed Claude Code sessions via the amux REST API: POST /api/sessions/NAME/send with the task as the message body. The coding session runs, the board card gets marked done, and the SDK workflow polls for the result. This lets you keep the high-level decision logic in Python while the actual code changes happen inside properly supervised, isolated agent sessions.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does the OpenAI Agents SDK handle overnight reliability?</summary>
+      <p style="margin:0.8rem 0 0;">No. Each SDK run completes or raises an exception — there is no built-in process supervision, crash recovery, or context-overflow handling. If an agent run hits a rate limit at 2am, it raises an exception and stops. amux's watchdog handles these failure modes automatically: it detects context overflow, restarts crashed sessions with message replay, and retries rate-limited sessions with backoff.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Which has better tracing?</summary>
+      <p style="margin:0.8rem 0 0;">The Agents SDK has better per-run tracing for structured pipelines: each tool call, handoff, and guardrail evaluation is captured with inputs, outputs, and latency. amux has better fleet-level observability: session status dots, live peek panels, board history, and per-session token spend. They are answering different questions. SDK tracing asks "what did this agent do inside this run?" — amux asks "what is my whole fleet doing right now?"</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Is amux only for Claude Code?</summary>
+      <p style="margin:0.8rem 0 0;">No. amux manages any terminal-based coding agent — Claude Code, OpenAI Codex CLI, and Gemini CLI are all supported in the same dashboard. The watchdog, board, and mobile oversight work identically across providers. Multi-provider fleets are common: teams run Claude Code for primary development and Codex CLI for tasks that saturate Claude's rate limits, with amux distributing tasks across both.</p>
+    </details>
+
+    <!-- EXP-014 variant / compare page bottom CTA -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — open-source AI engineering team dashboard (525+&#x2605; GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Fleet dashboard for Claude Code, Codex, and Gemini CLI sessions. Self-healing, workspace isolation, vault secrets, mobile oversight. Single Rust binary, MIT licensed, self-hosted.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp130_agents_sdk_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub &#x2605;</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related:</strong>
+      <a href="/compare/amux-vs-openai-symphony/">amux vs OpenAI Symphony</a> &#x00B7;
+      <a href="/compare/amux-vs-langraph/">amux vs LangGraph</a> &#x00B7;
+      <a href="/compare/amux-vs-crewai/">amux vs CrewAI</a> &#x00B7;
+      <a href="/compare/amux-vs-langchain/">amux vs LangChain</a> &#x00B7;
+      <a href="/compare/amux-vs-codex/">amux vs Codex CLI</a> &#x00B7;
+      <a href="/compare/">All comparisons</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-col">
+          <div class="footer-col-label">amux</div>
+          <ul>
+            <li><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/concierge/">Concierge Setup</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='&#x2605; '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

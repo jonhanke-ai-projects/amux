@@ -2342,7 +2342,15 @@ async fn test_connection_inner(
                     .await
                     .unwrap_or_default();
                 let minted: Value = serde_json::from_slice(&bytes).unwrap_or_default();
-                let mut check = if status.is_success() {
+                let missing = missing_scopes(scopes, minted["scope"].as_str());
+                let mut check = if status.is_success() && !missing.is_empty() {
+                    // A shared Google grant that never consented this connector's
+                    // scopes is not connected FOR this connector: calling the
+                    // provider only produces a 403 that reads as broken (google-admin
+                    // failed for every saved account, two of them gmail.com, 2026-10-14).
+                    json!({"ok":false,"status":"needs_auth","measured":true,
+                        "detail":format!("this account's grant does not include {}; connect it for this connector", missing.join(" "))})
+                } else if status.is_success() {
                     match minted["access_token"].as_str() {
                         Some(token) => provider_canary(&ctx, p.id, p.test_url, token).await,
                         None => {
@@ -2356,8 +2364,21 @@ async fn test_connection_inner(
                 check["account"] = json!(account);
                 checks.push(check);
             }
-            let ok = checks.iter().all(|c| c["ok"] == true);
-            return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":checks.iter().all(|c| c["measured"] == true),"accounts":checks,"detail":if ok {"all saved accounts passed the live provider test"} else {"one or more saved accounts failed; inspect accounts"}})).into_response();
+            let unscoped = checks.iter().filter(|c| c["status"] == "needs_auth").count();
+            if unscoped == checks.len() {
+                // No saved account carries this connector's scopes: report it as not
+                // set up, unless a domain-wide service account can test it below.
+                tracing::info!(connector=%id, accounts=unscoped, measured=true, n_considered=unscoped,
+                    verdict="connector_accounts_lack_scope", "no saved account granted this connector's scopes");
+                if !(p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some()) {
+                    return Json(json!({"ok":false,"status":"needs_auth","measured":true,"accounts":checks,
+                        "detail":format!("no saved account granted this connector's scopes; connect first — POST /api/connectors/{}/auth", p.id)})).into_response();
+                }
+            } else {
+                let scoped: Vec<&Value> = checks.iter().filter(|c| c["status"] != "needs_auth").collect();
+                let ok = scoped.iter().all(|c| c["ok"] == true);
+                return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":scoped.iter().all(|c| c["measured"] == true),"accounts":checks,"detail":if ok {"all saved accounts passed the live provider test"} else {"one or more saved accounts failed; inspect accounts"}})).into_response();
+            }
         }
         if p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some() {
             return match super::google_sa::mint_token(scopes).await {
@@ -2410,6 +2431,19 @@ async fn test_connection_inner(
         p.test_url.into()
     };
     Json(provider_canary(&ctx, p.id, &url, &key).await).into_response()
+}
+
+/// The connector scopes a grant did not include. `granted` is the scope string
+/// the mint reports for the stored grant; when the grant never recorded its
+/// scopes there is nothing to compare, and nothing is reported missing.
+fn missing_scopes<'a>(wanted: &'a str, granted: Option<&str>) -> Vec<&'a str> {
+    let Some(granted) = granted.filter(|g| !g.trim().is_empty()) else { return vec![] };
+    // Google separates granted scopes with spaces, Slack with commas.
+    let have: Vec<&str> = granted.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).collect();
+    // A full scope covers its `.readonly` form: a grant of admin.directory.user
+    // can read users, and Google reports only the scope that was granted.
+    let covered = |w: &str| have.contains(&w) || w.strip_suffix(".readonly").is_some_and(|full| have.contains(&full));
+    wanted.split_whitespace().filter(|w| !covered(w)).collect()
 }
 
 /// Provider success includes application-level errors (Slack/Telegram can return HTTP 200).
@@ -3077,6 +3111,20 @@ static ROLLUP_CACHE: Mutex<std::collections::BTreeMap<PathBuf, (Instant, Value)>
     Mutex::new(std::collections::BTreeMap::new());
 const ROLLUP_TTL_S: u64 = 300;
 
+/// Bumped by every invalidation. A rollup records it before probing and only
+/// caches its result if no invalidation landed meanwhile: a rollup started
+/// before an account connected used to finish after the callback's
+/// invalidation and cache the stale list for the full TTL (the flaky
+/// `declared_oauth_connector_lifecycle_survives_sigkill`, 1 account of 2).
+static ROLLUP_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Drop the cached rollup for `home` and stop any rollup already in flight
+/// from caching what it computed before this change.
+fn invalidate_rollup(home: &std::path::Path) {
+    ROLLUP_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    ROLLUP_CACHE.lock().expect("rollup cache").remove(home);
+}
+
 /// Canary targets: the cheapest real call per Google service, gated on the
 /// grant actually covering it (a gmail-only grant must read `not_granted` for
 /// calendar, never red — the inverse of the "connected but useless" lie).
@@ -3120,6 +3168,7 @@ pub(crate) async fn accounts_rollup(
             }
         }
     }
+    let gen_at_start = ROLLUP_GEN.load(std::sync::atomic::Ordering::SeqCst);
     let mut rows: std::collections::BTreeMap<String, Map<String, Value>> = Default::default();
     // Per-account canary legs (AMUX-3430): the CONTINUES-working proof, one
     // cheap real API call per granted service on every cache refresh.
@@ -3272,10 +3321,15 @@ pub(crate) async fn accounts_rollup(
         "needs_reauth": needs_reauth,
         "note": "One row per account; one approval repairs every family listed as needs_reauth (a Google grant covers gmail + calendar + drive/docs at once and every worker shares it). canary = one real API call per granted service on every refresh (~5min): ok / api_error / not_granted / unreachable, with checked_at.",
     });
-    ROLLUP_CACHE
-        .lock()
-        .expect("rollup cache")
-        .insert(home.to_path_buf(), (Instant::now(), out.clone()));
+    {
+        let mut cache = ROLLUP_CACHE.lock().expect("rollup cache");
+        if ROLLUP_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen_at_start {
+            cache.insert(home.to_path_buf(), (Instant::now(), out.clone()));
+        } else {
+            tracing::info!(verdict = "connector_rollup_not_cached_stale", measured = true, n_considered = 1,
+                "connector rollup computed across a credential change; served once, not cached");
+        }
+    }
     out
 }
 
@@ -5159,6 +5213,20 @@ mod connector_storage_regressions {
 
 #[cfg(test)]
 mod connector_maintenance_regressions {
+    #[test]
+    fn missing_scopes_names_what_a_grant_lacks_and_trusts_unrecorded_grants() {
+        let admin = "https://www.googleapis.com/auth/admin.directory.user.readonly https://www.googleapis.com/auth/admin.directory.group.readonly";
+        let gmail_only = "openid https://www.googleapis.com/auth/gmail.modify";
+        assert_eq!(super::missing_scopes(admin, Some(gmail_only)).len(), 2);
+        assert!(super::missing_scopes(admin, Some(&format!("{gmail_only} {admin}"))).is_empty());
+        assert!(super::missing_scopes(admin, None).is_empty(), "no recorded scopes: nothing to compare");
+        assert!(super::missing_scopes(admin, Some("  ")).is_empty());
+        let full = "https://www.googleapis.com/auth/admin.directory.user https://www.googleapis.com/auth/admin.directory.group";
+        assert!(super::missing_scopes(admin, Some(full)).is_empty(), "a full scope covers its readonly form");
+        assert!(super::missing_scopes("channels:read chat:write", Some("chat:write,channels:read")).is_empty(), "Slack's comma list");
+        assert_eq!(super::missing_scopes("https://www.googleapis.com/auth/drive", Some("https://www.googleapis.com/auth/drive.readonly")).len(), 1, "readonly does not cover full");
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

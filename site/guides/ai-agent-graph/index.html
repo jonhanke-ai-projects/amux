@@ -164,10 +164,9 @@
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">★ GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
     </nav>
   </header>
   <main>
@@ -177,12 +176,6 @@
     <p class="subtitle">Board cards are nodes. depends_on and reviewer fields are typed directed edges. Sessions are coordination nodes with send/peek edges between them. Here is the complete topology of a parallel AI agent fleet. July 2026.</p>
 
     <!-- EXP-018: top-of-page CTA -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:20px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;font-size:.9rem">
-        <strong>Want to run a dependency-aware agent fleet?</strong> <span style="color:var(--muted)">amux gives every agent a shared task graph with atomic claiming, typed edges, and phone-first monitoring — open source, zero external dependencies.</span>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp018_guide_topofpage_cta_click',{page:window.location.pathname})" style="background:rgba(16,185,129,.15);color:var(--text);border:1px solid rgba(16,185,129,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
-    </div>
 
     <p>When you run 10 or 20 parallel AI coding agents, you are running a distributed system. The hardest coordination problems in distributed systems — ordering, dependencies, sign-off gates, communication topology — are graph problems. amux makes this explicit: every coordination primitive is a typed graph edge, and the board is the adjacency list for your fleet's work.</p>
 
@@ -458,12 +451,6 @@ import json, sys
     </table>
 
     <!-- EXP-007: inline GitHub CTA -->
-    <div style="background:var(--surface-2);border:1px solid var(--border,#333);border-radius:8px;padding:16px 20px;margin:2rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;font-size:.9rem">
-        <strong>amux is open source.</strong> <span style="color:var(--muted)">Single Rust binary, SQLite-backed, zero external dependencies. The full graph API is live in every amux installation.</span>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_guide_github_cta_click',{page:window.location.pathname})" style="background:var(--surface-3,#2a2f3e);color:var(--text);border:1px solid var(--border,#333);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
-    </div>
 
     <h2>Frequently asked questions</h2>
 

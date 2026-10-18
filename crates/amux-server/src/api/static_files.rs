@@ -8,7 +8,6 @@
 //! the shell WITHOUT that bearer and continues through its revocable cookie.
 
 use super::AppState;
-use amux_dashboard::DashboardAssets;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -79,6 +78,10 @@ pub fn routes() -> Router<AppState> {
         // never existed, from two lanes; each got 405 and nothing to act on,
         // while the equivalent GET answers `{"error": "not found"}`.
         // `serve_path` still refuses to hand the SPA shell to a non-GET.
+        // A dev server on this machine, opened from any device (port_proxy.rs).
+        // Before the catch-all, which answered these with the dashboard.
+        .route("/proxy/{port}", axum::routing::get(port_proxy::proxy))
+        .route("/proxy/{port}/{*rest}", axum::routing::get(port_proxy::proxy))
         .route("/{*path}", axum::routing::any(serve_path))
 }
 
@@ -154,11 +157,15 @@ async fn serve_path(
         )
         .await;
     }
-    match DashboardAssets::get(path) {
+    // `asset`, not the raw embed: app.js and sw.js carry the
+    // `__AMUX_ASSET_VER__` placeholder, and the served bytes must hold the real
+    // content hash so the SW cache name moves on every deploy and the SSE
+    // ping's version (sse.rs) matches what this page will compare it with.
+    match amux_dashboard::asset(path) {
         Some(content) => {
             let mime = mime_for(path);
             let mut resp =
-                ([(header::CONTENT_TYPE, mime)], content.data.into_owned()).into_response();
+                ([(header::CONTENT_TYPE, mime)], content.into_owned()).into_response();
             if path == "sw.js" {
                 resp.headers_mut()
                     .insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
@@ -346,6 +353,7 @@ mod clear_sw_landing_tests {
     }
 }
 
+pub(crate) mod port_proxy;
 pub(crate) mod tailnet_auth;
 
 async fn serve_shell(
@@ -486,10 +494,10 @@ fn serve_index(
     } else {
         "index.html"
     };
-    let Some(index) = DashboardAssets::get(asset) else {
+    let Some(index) = amux_dashboard::asset(asset) else {
         return (StatusCode::NOT_FOUND, "dashboard not embedded").into_response();
     };
-    let html = String::from_utf8_lossy(&index.data).into_owned();
+    let html = String::from_utf8_lossy(&index).into_owned();
     let owner_access = owner_bootstrap_allowed(state, headers, uri, peer);
     let member_verified = super::org::is_verified_local_member(headers);
     let owner_session = owner_session_status(state, headers);
@@ -584,7 +592,7 @@ fn inject_bootstrap(
          window._AMUX_POSTHOG_KEY={};window._AMUX_POSTHOG_HOST={};window._AMUX_USER_EMAIL={};\
          window._AMUX_USER_ID={};window._AMUX_UI_TOKEN={};window._AMUX_DEFAULT_MODEL={};\
          window._AMUX_LEGACY_PORT={};window._AMUX_CANONICAL_PORT={};\
-         window._AMUX_AUTH_WITHHELD={};window._AMUX_MDAI_ROOT={};</script>\n",
+         window._AMUX_AUTH_WITHHELD={};window._AMUX_MDAI_ROOT={};window._AMUX_DATA_DIR={};</script>\n",
         jstr(&ical_subscribe_url()),
         jstr(&auth),
         jstr(&home),
@@ -610,11 +618,15 @@ fn inject_bootstrap(
         // root instead of $HOME when a `mdai_root` pref points elsewhere
         // (AMUX-4477).
         jstr(&crate::api::mdai::mdai_root_str()),
+        // The amux data directory (AMUX_HOME, default ~/.amux). The Draw tab
+        // keeps its shared library and recent-drawings list under `draw/`
+        // here, so they follow the server rather than one browser.
+        jstr(&crate::config::amux_home().to_string_lossy()),
     );
     let with_bootstrap = format!("{}{}{}", &html[..b], block, &html[e..]);
     // Client update adoption is the SSE ping's job, exactly like Python
-    // (amux-server.py:65292): every ping carries `v` = the embedded APP_VER
-    // (see sse.rs::ping_payload) and the SPA self-reloads on mismatch,
+    // (amux-server.py:65292): every ping carries `v` = the derived asset
+    // version, amux_dashboard::asset_version() (see sse.rs::ping_payload) and the SPA self-reloads on mismatch,
     // rate-limited and SW-nudged. The earlier /health-polling banner is
     // deliberately GONE (Ethan 2026-08-09: "frontend clients should also
     // restart just like the python server") — a banner on backend-only
@@ -641,6 +653,10 @@ fn mime_for(path: &str) -> &'static str {
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         Some("webmanifest") => "application/manifest+json",
+        // The Draw tab's vendored editor (static/vendor/draw) ships fonts and
+        // a lazily loaded font-subsetting module.
+        Some("woff2") => "font/woff2",
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
 }

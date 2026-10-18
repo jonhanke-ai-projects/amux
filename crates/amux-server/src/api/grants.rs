@@ -18,6 +18,11 @@
 //! So: the refusal stops being terminal. It mints a GRANT the owner can approve
 //! from the dashboard, and the worker's retry then succeeds.
 //!
+//! SUPERSEDED FOR WORKER MESSAGING (2026-10-08, 4617e48d): worker sends are now
+//! shared-group-only and `cross_group_send_ok` says grants "cannot widen" it, so
+//! a refused cross-group send mints nothing. The vault spend path still uses
+//! this module. Reopening grants for messaging is the owner's call, not a fix.
+//!
 //! # The mechanism, deliberately the email gate's
 //!
 //! `email_approval` already solved this shape for outbound mail and has been
@@ -327,6 +332,8 @@ pub fn take_allowance(home: &Path, origin: &str, target: &str) -> Option<String>
 /// the email gate's discriminator, and it is the reason a worker cannot approve
 /// its own ask.
 fn is_worker_origin(headers: &HeaderMap) -> bool {
+    // An admin-group worker decides grants as the owner (Ethan, 2026-10-17).
+    if super::session_verbs::admin_origin(headers, "grant_decision").is_some() { return false; }
     ["x-amux-session", "x-amux-worker"].iter().any(|h| {
         headers
             .get(*h)

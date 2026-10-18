@@ -714,6 +714,228 @@ struct ListSnapshot {
     runtime_epoch: u64,
     /// `registry_fingerprint()` at build start — see that function.
     registry: u64,
+    /// When the build finished and `json` was published, and how long it took.
+    /// Freshness counts from `published`, for at least `build_s`: see
+    /// [`snapshot_fresh`].
+    published: f64,
+    build_s: f64,
+}
+
+/// Whether a published fleet snapshot may still be served.
+///
+/// RCA hog 20261015-182512: amux-server-rs at 344% CPU on two ticks. The
+/// snapshot's age used to count from build START against a 2s TTL, while a
+/// build took 2-4s (36 workers of tmux captures, transcript tails, git), so
+/// every snapshot was already expired when it was published and the next
+/// request started another build; and each worker status report (25.7/min)
+/// zeroed the stamp as well. The single builder therefore ran back to back.
+/// Counting from publication and for at least as long as the build took caps
+/// the builder at about half the time whatever the poll or report rate; a
+/// status is at most one build interval staler than before. Structural
+/// changes (membership, isolation) still clear `json` and rebuild at once.
+// TASK-NAME HISTORY (Ethan, 2026-10-16: "make sure we're storing the list of
+// task changes per worker ... i want to be able to see the list of task changes
+// for a worker from the model easily"). A worker's task name is DERIVED on each
+// snapshot build (owner override, generated or Claude title, board card,
+// message, desc), so it is recorded where it is final: after build_array, a
+// change against the last recorded name appends one `task.renamed` row to
+// session_events (kept 90 days with the other task.* rows). The last names live
+// in memory, seeded once from the newest stored row per worker, so a restart
+// does not re-record every worker. Read it with
+// GET /api/sessions/{name}/task-history.
+static LAST_TASK_NAME: std::sync::LazyLock<std::sync::Mutex<Option<std::collections::HashMap<String, String>>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// The task-name changes in `arr` against `last`: (worker, from, to, source, card).
+fn task_name_changes(arr: &[Value], last: &mut std::collections::HashMap<String, String>) -> Vec<(String, String, String, String, String)> {
+    let mut out = Vec::new();
+    for v in arr {
+        let (Some(name), Some(task)) = (v["name"].as_str(), v["task_name"].as_str()) else { continue };
+        let task = task.trim();
+        if name.is_empty() || task.is_empty() || last.get(name).map(String::as_str) == Some(task) {
+            continue;
+        }
+        let from = last.insert(name.to_string(), task.to_string()).unwrap_or_default();
+        out.push((name.to_string(), from, task.to_string(),
+            v["task_source"].as_str().unwrap_or("").to_string(),
+            Some(v["task_board_id"].as_str().unwrap_or(""))
+                .filter(|c| !c.is_empty())
+                .or_else(|| (v["task_source"].as_str() == Some("board")).then(|| v["task_name_card"].as_str().unwrap_or("")))
+                .unwrap_or("")
+                .to_string()));
+    }
+    out
+}
+
+fn record_task_changes(store: &crate::db::SharedStore, conn: &rusqlite::Connection, arr: &[Value]) {
+    let Ok(mut guard) = LAST_TASK_NAME.lock() else { return };
+    let last = guard.get_or_insert_with(|| {
+        let mut m = std::collections::HashMap::new();
+        if let Ok(mut st) = conn.prepare(
+            "SELECT session, json_extract(data,'$.to') FROM session_events WHERE id IN \
+             (SELECT MAX(id) FROM session_events WHERE type='task.renamed' GROUP BY session)",
+        ) {
+            if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))) {
+                for (s, to) in rows.flatten() {
+                    if let Some(to) = to { m.insert(s, to); }
+                }
+            }
+        }
+        m
+    });
+    let changes = task_name_changes(arr, last);
+    drop(guard);
+    if changes.is_empty() {
+        return;
+    }
+    let n = changes.len();
+    let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+    let res = store.write(move |c| {
+        for (name, from, to, src, card) in &changes {
+            c.execute(
+                "INSERT INTO session_events (ts, session, type, data, source) VALUES (?1, ?2, 'task.renamed', ?3, 'sessions-snapshot')",
+                rusqlite::params![now, name, json!({"from": from, "to": to, "source": src, "card": card}).to_string()],
+            )?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    });
+    match res {
+        Ok(_) => tracing::info!(target: "amux::sessions", n, measured = true, n_considered = n,
+            verdict = "task_renamed_recorded", "recorded worker task-name changes"),
+        Err(e) => tracing::warn!(target: "amux::sessions", n, error = %e, verdict = "task_history_write_failed",
+            "could not record worker task-name changes"),
+    }
+}
+
+/// GET /api/sessions/{name}/task-history?limit=N: the worker's task-name
+/// changes, newest first.
+pub async fn task_history(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(50).clamp(1, 1000);
+    // Changes are detected when the fleet snapshot is built. Build it first (a
+    // cached call, at most one build per TTL), so a model asking for history
+    // gets the current name even when no dashboard is polling.
+    let st = state.store.clone();
+    let _ = tokio::task::spawn_blocking(move || legacy_sessions_array(&st)).await;
+    let who = name.clone();
+    let rows = state.store.read_async(move |c| {
+        let mut st = c.prepare(
+            "SELECT ts, data FROM session_events WHERE type='task.renamed' AND session=?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let out = st.query_map(rusqlite::params![who, limit], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?)))?
+            .flatten()
+            .map(|(ts, d)| {
+                let mut v: Value = serde_json::from_str(&d).unwrap_or(json!({}));
+                v["ts"] = json!(ts);
+                v
+            })
+            .collect::<Vec<Value>>();
+        Ok(out)
+    }).await;
+    match rows {
+        Ok(changes) => Json(json!({"session": name, "measured": true, "n_considered": changes.len(), "limit": limit,
+            "changes": changes, "note": "newest first; recorded when the task name shown for the worker changes"})).into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"session": name, "measured": false, "n_considered": 0,
+            "why_unmeasured": e.to_string()}))).into_response(),
+    }
+}
+
+/// The Tasks tab's rows: every recorded task, one per `task.renamed` row, with
+/// `ended` set to when the same worker took its next task (null for its current
+/// one). `session` narrows to one worker, `q` matches the task name. Returns the
+/// total that matched and the requested page.
+fn task_rows(
+    c: &rusqlite::Connection,
+    session: Option<&str>,
+    q: Option<&str>,
+    asc: bool,
+    limit: i64,
+    offset: i64,
+) -> rusqlite::Result<(i64, Vec<Value>)> {
+    let mut filt = String::new();
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(s) = session.filter(|s| !s.is_empty()) {
+        filt.push_str(" AND session = ?");
+        params.push(rusqlite::types::Value::Text(s.to_string()));
+    }
+    if let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) {
+        filt.push_str(" AND json_extract(data,'$.to') LIKE ? ESCAPE '\\'");
+        let lit = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        params.push(rusqlite::types::Value::Text(format!("%{lit}%")));
+    }
+    // `ended` comes from the worker's whole history, so a filter never shortens a task.
+    let base = "SELECT id, ts, session, data, LEAD(ts) OVER (PARTITION BY session ORDER BY ts, id) AS ended \
+                FROM session_events WHERE type='task.renamed'";
+    let total: i64 = c.query_row(
+        &format!("SELECT COUNT(*) FROM session_events WHERE type='task.renamed'{filt}"),
+        rusqlite::params_from_iter(params.iter()),
+        |r| r.get(0),
+    )?;
+    let dir = if asc { "ASC" } else { "DESC" };
+    let sql = format!("SELECT ts, session, data, ended FROM ({base}) WHERE 1=1{filt} ORDER BY ts {dir}, id {dir} LIMIT ? OFFSET ?");
+    let mut all = params.clone();
+    all.push(rusqlite::types::Value::Integer(limit));
+    all.push(rusqlite::types::Value::Integer(offset));
+    let mut st = c.prepare(&sql)?;
+    let rows = st
+        .query_map(rusqlite::params_from_iter(all.iter()), |r| {
+            Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<f64>>(3)?))
+        })?
+        .flatten()
+        .map(|(ts, session, d, ended)| {
+            let d: Value = serde_json::from_str(&d).unwrap_or(json!({}));
+            json!({"session": session, "task": d["to"], "previous": d["from"], "source": d["source"],
+                   "card": d["card"], "ts": ts, "ended": ended})
+        })
+        .collect();
+    Ok((total, rows))
+}
+
+/// GET /api/task-history?session=&q=&order=asc|desc&limit=&offset=: every
+/// worker's recorded tasks (the Tasks tab). Oldest first by default.
+pub async fn task_list(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(100).clamp(1, 1000);
+    let offset = q.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    let asc = q.get("order").map(String::as_str) != Some("desc");
+    let st = state.store.clone();
+    let _ = tokio::task::spawn_blocking(move || legacy_sessions_array(&st)).await;
+    let (session, text) = (q.get("session").cloned(), q.get("q").cloned());
+    let res = state
+        .store
+        .read_async(move |c| Ok(task_rows(c, session.as_deref(), text.as_deref(), asc, limit, offset)?))
+        .await;
+    match res {
+        Ok((total, tasks)) => Json(json!({"measured": true, "n_considered": total, "total": total, "offset": offset,
+            "limit": limit, "order": if asc { "asc" } else { "desc" }, "tasks": tasks,
+            "note": "one row per task a worker took on, recorded when its task name changed; ended is when it took the next one"}))
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(target: "amux::sessions", error = %e, verdict = "task_list_failed", "could not read the task history");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()})))
+                .into_response()
+        }
+    }
+}
+
+fn snapshot_fresh(now: f64, published: f64, build_s: f64, ttl: f64) -> bool {
+    now - published < ttl.max(build_s)
+}
+
+/// At most one `sessions_build_exceeds_ttl` WARN a minute.
+fn build_slow_first_in_minute() -> bool {
+    static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = chrono::Utc::now().timestamp();
+    let last = LAST.load(std::sync::atomic::Ordering::Relaxed);
+    now - last >= 60
+        && LAST
+            .compare_exchange(last, now, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed)
+            .is_ok()
 }
 
 fn build_array_cache() -> &'static std::sync::Mutex<ListSnapshot> {
@@ -726,6 +948,8 @@ fn build_array_cache() -> &'static std::sync::Mutex<ListSnapshot> {
             epoch: 0,
             runtime_epoch: 0,
             registry: 0,
+            published: 0.0,
+            build_s: 0.0,
         })
     })
 }
@@ -842,10 +1066,9 @@ pub fn invalidate_sessions_cache() {
 /// isolation may not. A structural invalidation still uses
 /// [`invalidate_sessions_cache`] and clears the snapshot.
 pub fn invalidate_sessions_runtime_cache() {
+    // Recorded, not acted on: a report no longer forces a rebuild (see
+    // snapshot_fresh). The next build after the freshness window carries it.
     SESSIONS_RUNTIME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if let Ok(mut c) = build_array_cache().lock() {
-        c.stamp = 0.0;
-    }
 }
 
 /// Git branch cache: dir -> (branch, epoch). Branches change on the scale of
@@ -945,6 +1168,70 @@ fn parse_list_sessions_line(l: &str) -> Option<(&str, Option<i64>, Option<i64>)>
 /// native provider is tool work. This avoids treating the provider process's
 /// mere existence as activity while keeping a long-running cargo/browser child
 /// authoritative when rollout writes are naturally quiet.
+/// Claude lanes whose Bash-tool shells are all just WAITING: every process
+/// below the shell wrappers Claude starts is a shell, `sleep`, `tail` or a
+/// similar idle helper, so nothing is being worked on.
+///
+/// Claude's footer counts "N shells" for any background Bash job, including an
+/// `until ...; do sleep 15; done` watch whose condition never comes. Read
+/// alone it kept long-form-videos labelled "Background job" for 16 hours on
+/// three dead watchers (Ethan, 2026-10-15: "background job is inaccurate here
+/// its not doing anything"), and held its queued messages as if mid-turn.
+/// A lane qualifies only when the measurement saw a `claude` process with at
+/// least one shell child under the pane root, and every process in those
+/// shells' trees is a waiter.
+fn claude_lanes_with_only_waiting_shells(
+    pane_roots: &[(String, String)],
+    ps_output: &str,
+) -> BTreeSet<String> {
+    const WAITERS: [&str; 10] = ["bash", "sh", "zsh", "dash", "sleep", "tail", "cat", "grep", "timeout", "wait"];
+    let base = |c: &str| Path::new(c).file_name().and_then(|n| n.to_str()).unwrap_or(c).trim_start_matches('-').to_string();
+    let mut children: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut comm_of: BTreeMap<String, String> = BTreeMap::new();
+    for line in ps_output.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (f.next(), f.next()) else { continue };
+        let _state = f.next();
+        let comm = base(f.next().unwrap_or(""));
+        children.entry(ppid.to_string()).or_default().push((pid.to_string(), comm.clone()));
+        comm_of.insert(pid.to_string(), comm);
+    }
+    let mut out = BTreeSet::new();
+    for (session, root) in pane_roots {
+        // Find the claude process under the pane root (breadth-first, bounded).
+        let mut queue = vec![root.clone()];
+        let mut claude = None;
+        let mut seen = 0;
+        while let Some(pid) = queue.pop() {
+            seen += 1;
+            if seen > 256 { break; }
+            if comm_of.get(&pid).is_some_and(|c| c == "claude") { claude = Some(pid); break; }
+            if let Some(k) = children.get(&pid) { queue.extend(k.iter().map(|(p, _)| p.clone())); }
+        }
+        let Some(claude) = claude else { continue };
+        let shells: Vec<String> = children.get(&claude).map(|k| k.iter()
+            .filter(|(_, c)| matches!(c.as_str(), "bash" | "sh" | "zsh"))
+            .map(|(p, _)| p.clone()).collect()).unwrap_or_default();
+        if shells.is_empty() { continue; }
+        let mut all_waiting = true;
+        let mut stack = shells;
+        let mut n = 0;
+        while let Some(pid) = stack.pop() {
+            n += 1;
+            if n > 512 { all_waiting = false; break; }
+            if let Some(k) = children.get(&pid) {
+                for (p, c) in k {
+                    if !WAITERS.contains(&c.as_str()) { all_waiting = false; }
+                    stack.push(p.clone());
+                }
+            }
+            if !all_waiting { break; }
+        }
+        if all_waiting { out.insert(session.clone()); }
+    }
+    out
+}
+
 fn sessions_with_codex_tool_children(
     pane_roots: &[(String, String)],
     ps_output: &str,
@@ -1055,6 +1342,9 @@ pub struct FleetSignals {
     /// footer cannot vote, but a live tool child can.
     pub(crate) provider_child_activity: BTreeSet<String>,
     pub(crate) provider_children_measured: bool,
+    /// Claude lanes whose background shells are only waiting (see
+    /// [`claude_lanes_with_only_waiting_shells`]).
+    pub(crate) claude_waiting_shells: BTreeSet<String>,
     /// session name -> raw pane capture, for lanes that PAINTED recently.
     ///
     /// The only physical evidence in this struct: everything else is a claim
@@ -1244,6 +1534,7 @@ impl FleetSignals {
         // counts as shell-only only if EVERY pane is a shell.
         let mut shell_only = BTreeSet::new();
         let mut provider_child_activity = BTreeSet::new();
+        let mut claude_waiting_shells = BTreeSet::new();
         let mut provider_children_measured = false;
         // BOUNDED (AF-301) — was a bare `.output()`.
         let panes_probe = {
@@ -1373,6 +1664,7 @@ impl FleetSignals {
                         }
                     }
                     provider_child_activity = sessions_with_codex_tool_children(&pane_roots, out);
+                    claude_waiting_shells = claude_lanes_with_only_waiting_shells(&pane_roots, out);
                 }
                 None => tracing::warn!(
                     target: "amux::sessions",
@@ -1519,6 +1811,7 @@ impl FleetSignals {
             codex_turns,
             provider_child_activity,
             provider_children_measured,
+            claude_waiting_shells,
             panes: BTreeMap::new(),
             subagent_activity: scan_subagent_activity(),
             now: chrono::Utc::now().timestamp() as f64,
@@ -2444,6 +2737,26 @@ impl FleetSignals {
                     .filter(|raw| !raw.trim().is_empty())
             })
             .is_some_and(crate::api::session_verbs::provider_background_working);
+        // Shells that only wait are not work. Background AGENTS still count:
+        // only the footer's shell count is discounted, and only when the
+        // process tree was measured and every shell process is a waiter.
+        let raw_now = self.pane_of(name).or_else(|| self.panes.get(name).map(String::as_str)).unwrap_or("");
+        let shells_only_waiting = provider_background_working
+            && self.claude_waiting_shells.contains(name)
+            && !crate::backend::adapter::codex_pane_background_working(raw_now)
+            && !crate::backend::adapter::claude_background_wait_verdict(&crate::backend::adapter::strip_ansi(raw_now)).0;
+        if shells_only_waiting {
+            ex.insert("background_shells_waiting".into(), json!(true));
+            if crate::log_dedupe::first_this_bucket(
+                &format!("waiting-shells:{name}"),
+                crate::log_dedupe::hour_bucket(crate::config::now_f64()),
+            ) {
+                tracing::info!(session = %name, measured = true, n_considered = 1,
+                    verdict = "background_shells_only_waiting",
+                    "footer counts background shells but every process in them is waiting; not counted as work");
+            }
+        }
+        let provider_background_working = provider_background_working && !shells_only_waiting;
         ex.insert(
             "provider_background_working".into(),
             json!(provider_background_working),
@@ -3134,42 +3447,17 @@ fn confirmed_active_model(meta: &serde_json::Value, provider: &str) -> String {
     }
 }
 
-/// Pick the worker's task label and its source from the freshness verdicts.
+/// The task label for a worker, in precedence order: a fresh board card, a
+/// fresh generated summary, a stale board card, then the role description.
 ///
-/// Pure so the precedence — and especially the SUMMARY freshness gate — can be
-/// tested without a DB or meta files. The gate is the fix for the 2026-08-13
-/// "these task names are out of date" report: `summary` is a point-in-time label
-/// that nothing refreshes, so an ungated `!summary.is_empty()` let an unstamped
-/// relic outrank both the live board card and the honest desc, permanently. Both
-/// `board_fresh` and `summary_fresh` carry the SAME rule (`ts > 0 && age <= 24h`)
-/// so the two time-sensitive sources age out identically; a stale summary falls
-/// through to a stale board title, then to desc.
-/// "[09:28 AM] build a video like this @/Users/x/up.png" -> "build a video like this",
-/// one line, at most 140 characters. Slash commands and bare "continue"-style
-/// nudges say nothing about the task and yield "".
-fn task_label_from_message(text: &str) -> String {
-    let t = text.trim();
-    static STAMP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    static UPLOAD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let stamp = STAMP.get_or_init(|| regex::Regex::new(r"^\[\s*\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?\s*\]\s*").unwrap());
-    let upload = UPLOAD.get_or_init(|| regex::Regex::new(r"@?/[^\s]+\.(?:png|jpe?g|gif|webp|heic|pdf)\b").unwrap());
-    let t = stamp.replace(t, "");
-    let t = upload.replace_all(&t, "");
-    let one: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lower = one.to_lowercase();
-    if one.starts_with('/') || one.chars().count() < 12
-        || matches!(lower.as_str(), "continue" | "go" | "yes" | "ok" | "do both" | "you do it" | "you do it all")
-    {
-        return String::new();
-    }
-    let mut out: String = one.chars().take(140).collect();
-    if one.chars().count() > 140 {
-        out.push('\u{2026}');
-    }
-    out
-}
-
-#[cfg(test)]
+/// The owner's last message is deliberately NOT a source here (Ethan,
+/// 2026-10-17: "tasks should be the worker (like claude) task names, thats it,
+/// not messages" / "make sure the task name is Claude Code/LLM generated tasks
+/// NOT messages"). Claude Code's own ai-title (resolved by `claude_ai_title`
+/// and applied by the caller after this) is the real headline when present;
+/// this function only picks the honest fallback when it is absent. An earlier
+/// build ranked the owner's latest message above a stale card and the role
+/// (AMUX, 2026-09-25), which is exactly what put his last message on the card.
 fn resolve_task_name(
     board_title: Option<&str>,
     board_fresh: bool,
@@ -3177,32 +3465,62 @@ fn resolve_task_name(
     summary_fresh: bool,
     desc: &str,
 ) -> (String, &'static str) {
-    resolve_task_name_with(board_title, board_fresh, summary, summary_fresh, None, desc)
-}
-
-/// `recent_message` is the owner's latest message to this worker within 24h.
-/// It outranks a stale card title and the role description (Ethan,
-/// 2026-09-25: "make sure the task names are up to date"; amux-helper, a
-/// worker with no card, showed its role text as its task).
-fn resolve_task_name_with(
-    board_title: Option<&str>,
-    board_fresh: bool,
-    summary: &str,
-    summary_fresh: bool,
-    recent_message: Option<&str>,
-    desc: &str,
-) -> (String, &'static str) {
     if board_fresh {
         (board_title.unwrap_or_default().to_string(), "board")
     } else if summary_fresh {
         (summary.to_string(), "summary")
-    } else if let Some(m) = recent_message.filter(|m| !m.trim().is_empty()) {
-        (m.to_string(), "message")
     } else if let Some(t) = board_title {
         (t.to_string(), "board")
     } else {
         (desc.to_string(), "desc")
     }
+}
+
+/// Claude Code names a conversation itself: it writes `{"type":"ai-title",
+/// "aiTitle":...}` records into the transcript and rewrites them as the work
+/// moves, even for a worker amux launched with a custom title (measured
+/// 2026-10-14: mixpeek-funnel held 1175, latest "Done cards awaiting
+/// verification"). This title, when present, is the task headline.
+pub(crate) fn latest_ai_title(records: &[Value]) -> Option<String> {
+    records.iter().rev()
+        .find(|r| r["type"] == "ai-title")
+        .and_then(|r| r["aiTitle"].as_str())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// The latest title in a transcript written within the last day. Cached per
+/// file and re-read at most once a minute, so a sessions poll stays cheap.
+pub(crate) fn ai_title_from_file(path: &std::path::Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant, SystemTime};
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    if SystemTime::now().duration_since(modified).map(|d| d > Duration::from_secs(86_400)).unwrap_or(false) {
+        return None;
+    }
+    type TitleCache = HashMap<std::path::PathBuf, (SystemTime, Instant, Option<String>)>;
+    static CACHE: OnceLock<Mutex<TitleCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((m, at, t)) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+        if *m == modified || at.elapsed() < Duration::from_secs(60) {
+            return t.clone();
+        }
+    }
+    let title = latest_ai_title(&super::session_verbs::iter_jsonl_tail(path, 524_288));
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), (modified, Instant::now(), title.clone()));
+    title
+}
+
+/// Claude Code's own title for `name`'s current conversation, if it has one.
+fn claude_ai_title(name: &str, report: Option<&Value>) -> Option<String> {
+    let sid = report?.get("session_id")?.as_str().filter(|s| !s.is_empty())?;
+    let path = super::session_verbs::lifecycle_transcript_path(name, sid)?;
+    ai_title_from_file(&path)
+}
+
+fn task_title_is_generated(source: Option<&str>) -> bool {
+    source == Some("generated")
 }
 
 /// Reconcile the runtime verdict with the board attribution exposed by the
@@ -3543,15 +3861,13 @@ fn announce_sticky_runtime_claim(session: &str, observed_card: &str, suppressed:
 pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<String> {
     let store_key = std::sync::Arc::downgrade(store);
     let ttl = env_secs("AMUX_SESSIONS_CACHE_TTL_S", 2.0);
-    let now = chrono::Utc::now().timestamp() as f64;
+    let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
     let epoch_now = SESSIONS_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
-    let runtime_epoch_now = SESSIONS_RUNTIME_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
     if let Ok(c) = build_array_cache().lock() {
-        if now - c.stamp < ttl
+        if snapshot_fresh(now, c.published, c.build_s, ttl)
             && c.store.ptr_eq(&store_key)
             && !c.json.is_empty()
             && c.epoch == epoch_now
-            && c.runtime_epoch == runtime_epoch_now
         {
             // Substrate guard (AMUX-2960): a fresh-looking snapshot whose
             // worker SET no longer matches the registry on disk means an
@@ -3700,11 +4016,10 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
     // Double-check under the flight lock: the previous holder may have just
     // refreshed, and rebuilding immediately would waste its work.
     if let Ok(c) = build_array_cache().lock() {
-        if now - c.stamp < ttl
+        if snapshot_fresh(chrono::Utc::now().timestamp_millis() as f64 / 1000.0, c.published, c.build_s, ttl)
             && c.store.ptr_eq(&store_key)
             && !c.json.is_empty()
             && c.epoch == epoch_now
-            && c.runtime_epoch == runtime_epoch_now
             && registry_fingerprint().is_some_and(|f| c.registry == f)
         {
             return Ok(c.json.clone());
@@ -3723,6 +4038,7 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
     // run. Cheap board/status requests remain independent of fleet discovery.
     let conn = store.dedicated_read()?;
     let arr = build_array(&conn)?;
+    record_task_changes(store, &conn, &arr);
     let json = serde_json::to_string(&arr)?;
     match race_verdict(
         epoch_start,
@@ -3736,6 +4052,19 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
             // an unwrap because an unwrap here would be a panic in the request
             // path if the verdict ever gained a fourth state.
             if let (Ok(mut c), Some(registry)) = (build_array_cache().lock(), registry_start) {
+                let published = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+                let build_s = (published - now).max(0.0);
+                // Status reports that landed since the previous snapshot: each
+                // one used to force a rebuild on its own.
+                let reports_since_last = runtime_epoch_start.saturating_sub(c.runtime_epoch);
+                if build_s > ttl && build_slow_first_in_minute() {
+                    tracing::warn!(
+                        target: "amux::sessions",
+                        verdict = "sessions_build_exceeds_ttl", measured = true, n_considered = 1,
+                        build_ms = (build_s * 1000.0) as u64, ttl_s = ttl, reports_since_last,
+                        "fleet snapshot build outlasted its TTL; the next build waits as long as this one took"
+                    );
+                }
                 *c = ListSnapshot {
                     store: store_key,
                     stamp: now,
@@ -3743,6 +4072,8 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
                     epoch: epoch_start,
                     runtime_epoch: runtime_epoch_start,
                     registry,
+                    published,
+                    build_s,
                 };
             }
         }
@@ -4438,7 +4769,7 @@ pub async fn create_session_legacy(
         )
             .into_response();
     }
-    let mut dir = s("dir");
+    let mut dir = requested_work_dir(&s("dir"));
     if dir.is_empty()
         && descriptor.project_dir != amux_core::worker_type::Requirement::Required
     {
@@ -4547,19 +4878,18 @@ pub async fn create_session_legacy(
     {
         pairs.push(("CC_ISOLATED", "1".to_string()));
     }
-    // WORKTREE AT CREATE TIME (AMUX-4911), same reason as CC_ISOLATED directly
-    // above and written the same way: only when true, because absence already
-    // means "shared checkout" to the one reader that matters
-    // (`cfg.get_or("CC_WORKTREE", "") == "1"` in session_verbs::start).
+    // WORKTREE AT CREATE TIME (AMUX-4911). `worktree: false` is the dialog's
+    // unchecked box, and it opts this worker out of group-level workspace
+    // isolation (CC_WORKTREE=0). A request that does not mention a worktree
+    // (the CLI, the API) writes nothing, so AMUX_WORKSPACE_ISOLATION still
+    // applies to it.
     if worktree {
         pairs.push(("CC_WORKTREE", "1".to_string()));
-        // SPARSE PROFILE (AMUX-5341): which folders the worktree checks out,
-        // for a repo that ships scripts/worktree.sh. Absent = the repo's own
-        // default profile. Only meaningful with a worktree, so only written
-        // with one.
         if !worktree_profile.is_empty() {
             pairs.push(("CC_WORKTREE_PROFILE", worktree_profile.clone()));
         }
+    } else if body.get("worktree").and_then(serde_json::Value::as_bool) == Some(false) {
+        pairs.push(("CC_WORKTREE", "0".to_string()));
     }
     // ACCEPT tags AS AN ARRAY, which is what the dashboard and API send
     // (AMUX-3114). `s("tags")` only matched a STRING, so `{"tags":["gtm"]}` read
@@ -5004,8 +5334,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // nudger said "off". `standing_orders` is the master switch's own
             // state, exposed so the SPA can show WHY a lane is quiet without
             // re-deriving the layering.
-            "auto_continue": crate::api::session_verbs::standing_orders_on(&name, "CC_AUTO_CONTINUE"),
-            "auto_continue_own": env.contains_key("CC_AUTO_CONTINUE"),
+            "auto_continue": crate::api::session_verbs::board_continue_on(&name),
+            "auto_continue_own": env.contains_key(crate::api::session_verbs::BOARD_CONTINUE_KEY) || env.contains_key("CC_AUTO_CONTINUE"),
             "auto_pickup": crate::api::session_verbs::standing_orders_on(&name, "CC_AUTO_PICKUP"),
             "auto_pickup_own": env.contains_key("CC_AUTO_PICKUP"),
             "standing_orders": crate::api::session_verbs::standing_orders_on(&name, "CC_STANDING_ORDERS"),
@@ -5191,7 +5521,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             row["worker_type"] = json!(worker_type);
             row["renderer"] = json!(worker_type.descriptor().renderer);
             row["auto_continue_raw"] = json!(crate::api::session_verbs::auto_continue_on(
-                crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_CONTINUE").as_deref()));
+                crate::api::session_verbs::scoped_setting_in(&home, &name, crate::api::session_verbs::BOARD_CONTINUE_KEY)
+                    .or_else(|| crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_CONTINUE")).as_deref()));
             row["auto_pickup_raw"] = json!(crate::api::session_verbs::auto_continue_on(
                 crate::api::session_verbs::scoped_setting_in(&home, &name, "CC_AUTO_PICKUP").as_deref()));
             row["standing_orders_raw"] = json!(crate::api::session_verbs::auto_continue_on(
@@ -5212,7 +5543,7 @@ fn steering_with_transport(
         "SELECT id, session, text, queued_at, COALESCE(guard,''),
         (SELECT substr(msg_id,7) FROM send_dedup d WHERE d.session=steering_queue.session
           AND d.receipt_id=steering_queue.id AND d.msg_id LIKE 'steer:%' LIMIT 1),
-        COALESCE(delay_after_idle_s,0)
+        COALESCE(deliver_at,0)
         FROM steering_queue ORDER BY queued_at ASC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -5223,11 +5554,11 @@ fn steering_with_transport(
             r.get::<_, f64>(3)?,
             r.get::<_, String>(4)?,
             r.get::<_, Option<String>>(5)?,
-            r.get::<_, i64>(6)?,
+            r.get::<_, f64>(6)?,
         ))
     })?;
     for row in rows {
-        let (id, session, text, queued_at, guard, transport_id, delay_after_idle_s) = row?;
+        let (id, session, text, queued_at, guard, transport_id, deliver_at) = row?;
         let system = crate::api::session_verbs::steer_guard_is_system(&guard);
         let held = crate::api::projects::steering_delivery_hold(conn, &session, &id)
             .unwrap_or_else(|_| Some("project_delivery_identity_unavailable".into()));
@@ -5236,7 +5567,7 @@ fn steering_with_transport(
             .or_default()
             .push(json!({"id":id,"text":text,"queued_at":queued_at,
             "guard":guard,"system":system,"transport_id":transport_id,"blocked_reason":held,
-            "delay_after_idle_s":delay_after_idle_s}));
+            "deliver_at":(deliver_at > 0.0).then_some(deliver_at)}));
     }
     Ok(steering)
 }
@@ -5377,24 +5708,6 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             }
         }
     }
-    // The owner's latest message per worker in the last 24h, cleaned for a
-    // one-line task label (stamp and attachment paths removed).
-    let recent_owner_messages: BTreeMap<String, String> = {
-        let since_ms = (crate::runtime_jobs::registry::unix_now() as i64 - 86_400) * 1000;
-        let mut stmt = conn.prepare(
-            "SELECT session, text FROM cmd_history WHERE type = 'user' AND ts >= ?1
-             AND session IS NOT NULL ORDER BY ts ASC",
-        )?;
-        let rows = stmt.query_map([since_ms], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        let mut out = BTreeMap::new();
-        for (sess, text) in rows.flatten() {
-            let label = task_label_from_message(&text);
-            if !label.is_empty() {
-                out.insert(sess, label);
-            }
-        }
-        out
-    };
     // Board linkage per card, Python's exact query + precedence
     // (py:20187-20197, 20348-20365): ORDER BY updated ASC with dict
     // overwrite so the NEWEST-touched doing card wins (the 2026-07-22
@@ -5653,12 +5966,26 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             };
             if v["isolated"].as_bool() == Some(true) {
                 // Raw CLI status must not be rewritten by historical board claims.
-                // The owner's own latest message is not a board claim: it is
-                // what this worker was last asked to do, so it names the task
-                // better than the role description (amux-helper, 2026-09-25).
-                if let Some(m) = recent_owner_messages.get(&name) {
-                    v["task_name"] = json!(m);
-                    v["task_source"] = json!("message");
+                // The task label is Claude Code's own ai-title, then a generated
+                // summary, then the role description — never the owner's last
+                // message (Ethan, 2026-10-17: "task name is Claude Code/LLM
+                // generated tasks NOT messages").
+                let meta = load_meta(&name);
+                let generated = meta["task_summary"].as_str().unwrap_or("").to_string();
+                let generated_ts = meta["task_summary_ts"].as_i64().unwrap_or(0);
+                let generated_fresh = !generated.is_empty()
+                    && generated_ts > 0
+                    && now - generated_ts <= 86400
+                    && task_title_is_generated(meta.get("task_summary_source").and_then(|v| v.as_str()));
+                if let Some(t) = claude_ai_title(&name, signals.reports.get(&name)) {
+                    v["task_name"] = json!(t);
+                    v["task_source"] = json!("claude_title");
+                } else if generated_fresh {
+                    // A display label from the worker's own conversation
+                    // (runtime_jobs::task_titles); never sent to the worker.
+                    v["task_name"] = json!(generated);
+                    v["task_source"] = json!("generated_title");
+                    v["task_updated"] = json!(generated_ts);
                 } else {
                     v["task_name"] = v["desc"].clone();
                     v["task_source"] = json!("desc");
@@ -5779,16 +6106,34 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             // worker's role, which is honest rather than a wrong task claim.
             let summary_fresh = !summary.is_empty() && summary_ts > 0 && now - summary_ts <= 86400;
             let desc = v["desc"].as_str().unwrap_or("").to_string();
-            let (tname, tsrc) = resolve_task_name_with(
+            let (tname, tsrc) = resolve_task_name(
                 board.map(|(_, t, _)| t.as_str()),
                 board_fresh,
                 &summary,
                 summary_fresh,
-                recent_owner_messages.get(&name).map(String::as_str),
                 &desc,
             );
             v["task_name"] = json!(tname);
             v["task_source"] = json!(tsrc);
+            // The card a board-sourced name came from, so the task history can
+            // link it even when the worker is stopped and task_board_id is empty.
+            if tsrc == "board" {
+                if let Some((id, _, _)) = board { v["task_name_card"] = json!(id); }
+            }
+            // A GENERATED title stands in for Claude Code's own ai-title on a
+            // named worker (session_verbs::spawn_task_title), so it ranks the
+            // same: above the board card. The board card a prompt creates is
+            // titled from the prompt, so ranking it first put the owner's last
+            // message back on the card (long-form-videos, 2026-10-14). A
+            // hand-set summary keeps its old place below the board.
+            if summary_fresh && task_title_is_generated(meta.get("task_summary_source").and_then(|v| v.as_str())) {
+                v["task_name"] = json!(summary);
+                v["task_source"] = json!("generated_title");
+            }
+            if let Some(t) = claude_ai_title(&name, signals.reports.get(&name)) {
+                v["task_name"] = json!(t);
+                v["task_source"] = json!("claude_title");
+            }
             // The dashboard shows a non-empty override as the task headline, so
             // a stale one must not be sent at all: this is how a 40-day-old
             // "AMUX-2676 — worker card evidence" sat above amux's real card.
@@ -5878,6 +6223,23 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                     "checked_at": report.finished_at,
                 });
             }
+        }
+    }
+
+    // Self-announcing regression guard (Ethan, 2026-10-17: "task name is Claude
+    // Code/LLM generated tasks NOT messages"). "message" is no longer a value
+    // `resolve_task_name` or the isolated path can emit; if one ever reappears
+    // here a later edit reintroduced the owner's message as a task label, so a
+    // log sweep catches it without anyone re-reading this code.
+    {
+        let msg_sourced = out.iter().filter(|v| v["task_source"] == "message").count();
+        if msg_sourced > 0 {
+            tracing::warn!(
+                target: "amux::task_name",
+                count = msg_sourced,
+                "task_source=message reappeared on {} worker(s); task names must be Claude/LLM-generated, not owner messages",
+                msg_sourced
+            );
         }
     }
 
@@ -6818,6 +7180,20 @@ pub(crate) mod tests {
     /// (Ethan, 2026-08-22). The four cells are separated because the single
     /// message this replaces was false about two of them.
     #[test]
+    fn a_tilde_dir_expands_to_home_before_it_is_checked() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(requested_work_dir("~/Dev/x"), format!("{home}/Dev/x"));
+        assert_eq!(requested_work_dir("~"), home);
+        assert_eq!(requested_work_dir(" /abs/path "), "/abs/path");
+        assert_eq!(requested_work_dir(""), "");
+        // ~user is not ours to resolve: it stays relative and is refused.
+        assert_eq!(requested_work_dir("~bob/x"), "~bob/x");
+        assert!(matches!(ensure_work_dir(&requested_work_dir("~bob/x")), WorkDirOutcome::Refused(_)));
+        // The expanded form passes the absolute-path gate for an existing dir.
+        assert!(matches!(ensure_work_dir(&requested_work_dir("~")), WorkDirOutcome::Ok));
+    }
+
+    #[test]
     fn a_missing_working_directory_is_created_not_refused() {
         use std::io::Write;
         let tmp = tempfile::tempdir().unwrap();
@@ -7132,18 +7508,26 @@ pub(crate) mod tests {
         assert_eq!(name, "just the role");
     }
 
+    /// The owner's last message is NOT a task source (Ethan, 2026-10-17: "task
+    /// name is Claude Code/LLM generated tasks NOT messages"). A worker with no
+    /// card and no ai-title shows its role description, never the last thing it
+    /// was asked. The guarantee is structural: `resolve_task_name` has no
+    /// message parameter, so "message" is not a value `task_source` can take.
     #[test]
-    fn a_worker_with_no_card_shows_the_owners_latest_message_not_its_role() {
-        let label = task_label_from_message(
-            "[10:43 AM] figure out why this task is stuck up ehtere. and make sure the task names are up to date @/Users/ethan/.amux/uploads/95fcc22b70cc-image.png");
-        assert_eq!(label, "figure out why this task is stuck up ehtere. and make sure the task names are up to date");
-        assert_eq!(task_label_from_message("continue"), "");
-        assert_eq!(task_label_from_message("/clear"), "");
-        let (name, src) = resolve_task_name_with(None, false, "", false, Some(&label), "Ethan's direct-request session");
-        assert_eq!((name.as_str(), src), (label.as_str(), "message"));
-        // A fresh card still wins; a stale card title does not beat a recent message.
-        assert_eq!(resolve_task_name_with(Some("AMUX-9 card"), true, "", false, Some(&label), "d").1, "board");
-        assert_eq!(resolve_task_name_with(Some("old card"), false, "", false, Some(&label), "d").1, "message");
+    fn a_worker_with_no_card_falls_back_to_its_role_never_a_message() {
+        // No board, no summary -> desc (the role), not any message text.
+        let (name, src) = resolve_task_name(None, false, "", false, "Ethan's direct-request session");
+        assert_eq!((name.as_str(), src), ("Ethan's direct-request session", "desc"));
+        // "message" is no longer in the source vocabulary at all.
+        for case in [
+            resolve_task_name(None, false, "", false, "role"),
+            resolve_task_name(Some("old card"), false, "", false, "role"),
+            resolve_task_name(Some("AMUX-9 card"), true, "s", true, "role"),
+        ] {
+            assert_ne!(case.1, "message", "message must never be a task source");
+        }
+        // A stale card title still beats the bare role (unchanged).
+        assert_eq!(resolve_task_name(Some("old card"), false, "", false, "role").1, "board");
     }
 
     /// ATE-92: a control/checkpoint turn does not release still-live causal
@@ -7433,6 +7817,7 @@ pub(crate) mod tests {
             codex_turns: BTreeMap::new(),
             provider_child_activity: BTreeSet::new(),
             provider_children_measured: true,
+            claude_waiting_shells: BTreeSet::new(),
             panes: BTreeMap::new(),
             now: 1_000_000.0,
         }
@@ -7860,6 +8245,22 @@ pub(crate) enum WorkDirOutcome {
     Created,
     /// Cannot be used, with the sentence the user sees.
     Refused(String),
+}
+
+/// The `dir` a create request named, with a leading `~` / `~/` expanded to
+/// `$HOME` (long-form-videos, 2026-10-17: typing `~/myrepo` in the new-worker
+/// dialog was refused as "not an absolute path"). Expanded HERE, before both
+/// the existence check and the env write, so the worker's stored dir is the
+/// absolute path rather than a `~` that every later cwd reader would have to
+/// expand again. `~user` is left alone and still refused as relative.
+pub(crate) fn requested_work_dir(raw: &str) -> String {
+    let raw = raw.trim();
+    let expanded = crate::api::fs::expanduser(raw).to_string_lossy().into_owned();
+    if expanded != raw {
+        tracing::info!(target: "amux::work_dir", raw = %raw, dir = %expanded,
+            "expanded ~ in new worker's working directory");
+    }
+    expanded
 }
 
 /// Resolve the working directory a new worker asked for, CREATING it when it is
@@ -9450,6 +9851,76 @@ Checked, nothing of mine was at risk, no action needed from you.
     /// because a static footer never repaints and the pane was never read. The
     /// footer marker is now read for idle-reported lanes; the stale-pane rule
     /// for every other claim is untouched.
+    /// RCA hog 20261015-182512: a 3s build against a 2s TTL counted from build
+    /// start was expired on publication, so the builder ran back to back. From
+    /// publication, and for at least the build's own duration, it rests at
+    /// least as long as it works.
+    #[test]
+    fn task_name_changes_record_only_a_new_name_per_worker() {
+        let mut last = std::collections::HashMap::new();
+        let snap = |t: &str| vec![json!({"name": "w1", "task_name": t, "task_source": "generated_title", "task_board_id": "AMUX-1"}),
+                                  json!({"name": "w2", "task_name": ""})];
+        let c = task_name_changes(&snap("Fix the build gate"), &mut last);
+        assert_eq!(c, vec![("w1".into(), "".into(), "Fix the build gate".into(), "generated_title".into(), "AMUX-1".into())],
+            "the first name seen is recorded; an empty one is not");
+        assert!(task_name_changes(&snap("Fix the build gate"), &mut last).is_empty(), "the same name again records nothing");
+        let stopped = vec![json!({"name": "w3", "task_name": "From a card", "task_source": "board", "task_board_id": "", "task_name_card": "AMUX-9"})];
+        assert_eq!(task_name_changes(&stopped, &mut last)[0].4, "AMUX-9", "a stopped worker's board-named task keeps its card");
+        let c = task_name_changes(&snap("Ship the stopwatch"), &mut last);
+        assert_eq!((c[0].1.as_str(), c[0].2.as_str()), ("Fix the build gate", "Ship the stopwatch"), "a change records from and to");
+    }
+
+    #[test]
+    fn task_rows_are_tasks_in_order_with_when_each_ended() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT, source TEXT);").unwrap();
+        let add = |ts: f64, s: &str, to: &str, ty: &str| {
+            c.execute("INSERT INTO session_events (ts, session, type, data) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![ts, s, ty, json!({"from": "", "to": to, "source": "board", "card": "AA-1"}).to_string()]).unwrap();
+        };
+        add(10.0, "w1", "Fix the build", "task.renamed");
+        add(20.0, "w2", "Ship 100% of maps", "task.renamed");
+        add(30.0, "w1", "Write the docs", "task.renamed");
+        add(35.0, "w1", "not a task", "session.started");
+        let (n, rows) = task_rows(&c, None, None, true, 100, 0).unwrap();
+        assert_eq!(n, 3, "only task.renamed rows are tasks");
+        let names: Vec<&str> = rows.iter().map(|r| r["task"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Fix the build", "Ship 100% of maps", "Write the docs"], "oldest first");
+        assert_eq!(rows[0]["ended"], json!(30.0), "a task ends when that worker takes its next one");
+        assert_eq!(rows[1]["ended"], Value::Null, "w2's only task is still current");
+        assert_eq!(rows[0]["session"], json!("w1"));
+        let (n, rows) = task_rows(&c, Some("w1"), Some("docs"), true, 100, 0).unwrap();
+        assert_eq!((n, rows.len()), (1, 1), "worker and text filters both apply");
+        let (_, rows) = task_rows(&c, None, Some("100%"), true, 100, 0).unwrap();
+        assert_eq!(rows.len(), 1, "% in the search is literal");
+        let (n, rows) = task_rows(&c, None, None, false, 1, 1).unwrap();
+        assert_eq!((n, rows[0]["task"].as_str().unwrap()), (3, "Ship 100% of maps"), "newest-first paging");
+    }
+
+    #[test]
+    fn a_snapshot_stays_fresh_for_as_long_as_it_took_to_build() {
+        // A quick build: the TTL governs.
+        assert!(snapshot_fresh(101.5, 100.0, 0.3, 2.0));
+        assert!(!snapshot_fresh(102.1, 100.0, 0.3, 2.0));
+        // A slow build: fresh for its own duration after publication.
+        assert!(snapshot_fresh(103.5, 100.0, 4.0, 2.0));
+        assert!(!snapshot_fresh(104.1, 100.0, 4.0, 2.0));
+        // Never published: stale.
+        assert!(!snapshot_fresh(100.0, 0.0, 0.0, 2.0));
+    }
+
+    #[test]
+    fn shells_that_only_sleep_are_waiting_and_a_real_child_is_work() {
+        let roots = vec![("lfv".to_string(), "100".to_string()), ("busy".to_string(), "200".to_string())];
+        let ps = "100 1 S /bin/sh\n101 100 S+ claude\n102 101 Ss /bin/bash\n103 102 S sleep\n104 101 S node\n\
+                  200 1 S /bin/sh\n201 200 S+ claude\n202 201 Ss /bin/bash\n203 202 R ffmpeg\n";
+        let w = super::claude_lanes_with_only_waiting_shells(&roots, ps);
+        assert!(w.contains("lfv"), "an until/sleep watcher is waiting, and an MCP node child is not a shell");
+        assert!(!w.contains("busy"), "a shell running ffmpeg is work");
+        let none = vec![("x".to_string(), "300".to_string())];
+        assert!(super::claude_lanes_with_only_waiting_shells(&none, "300 1 S /bin/sh\n301 300 S claude\n").is_empty(), "no shells: nothing to discount");
+    }
+
     #[test]
     fn an_idle_reported_lane_with_background_shells_is_not_idle() {
         let mut s = signals();
@@ -10119,6 +10590,29 @@ mod discovery_race_tests {
 
 #[cfg(test)]
 mod picker_companion_tests {
+    #[test]
+    fn only_a_generated_summary_outranks_the_board_title() {
+        assert!(super::task_title_is_generated(Some("generated")));
+        assert!(!super::task_title_is_generated(None), "a hand-set summary keeps its place");
+    }
+
+    #[test]
+    fn claude_code_title_is_the_latest_ai_title_in_the_transcript() {
+        let recs = vec![
+            serde_json::json!({"type":"custom-title","customTitle":"amux"}),
+            serde_json::json!({"type":"ai-title","aiTitle":"Fix the split view"}),
+            serde_json::json!({"type":"user","message":"this happens when I open Split View"}),
+            serde_json::json!({"type":"ai-title","aiTitle":"  Compact mobile headers  "}),
+        ];
+        assert_eq!(super::latest_ai_title(&recs).as_deref(), Some("Compact mobile headers"));
+        assert_eq!(super::latest_ai_title(&recs[..3]).as_deref(), Some("Fix the split view"));
+        assert_eq!(super::latest_ai_title(&recs[..1]), None);
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("t.jsonl");
+        std::fs::write(&f, recs.iter().map(|r| r.to_string() + "\n").collect::<String>()).unwrap();
+        assert_eq!(super::ai_title_from_file(&f).as_deref(), Some("Compact mobile headers"));
+    }
+
     use super::is_chat_companion_row;
 
     #[test]
