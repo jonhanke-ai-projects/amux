@@ -4,6 +4,7 @@
 //! in the OpenAPI spec (RR checklist) and — for legacy-compat paths — in the
 //! alias registry (RR-0018a).
 
+pub mod agent_limit_resume;
 pub mod alerts;
 pub mod aliases;
 pub mod auth;
@@ -72,6 +73,7 @@ pub mod history_ask;
 pub mod interactions;
 pub mod invariants_api;
 pub mod journal;
+pub mod launch_context;
 pub mod layout_presets;
 pub mod log_search;
 pub mod lookup;
@@ -211,6 +213,7 @@ pub fn router_with_connector_transport(
         .route("/api/models", axum::routing::get(workers::model_catalog))
         .route("/api/peek/steps", axum::routing::get(session_verbs::peek_steps))
         .route("/api/sessions/{name}/task-history", axum::routing::get(sessions_legacy::task_history))
+        .route("/api/sessions/{name}/quota", axum::routing::get(agent_limit_resume::worker_quota))
         .route("/api/task-history", axum::routing::get(sessions_legacy::task_list))
         .route("/api/task-history/at", axum::routing::get(sessions_legacy::task_at_batch))
         .route("/api/task-history/links", axum::routing::get(sessions_legacy::task_links))

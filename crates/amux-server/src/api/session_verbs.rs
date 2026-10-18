@@ -2563,6 +2563,11 @@ pub(crate) struct AutoResumeInputs<'a> {
     pub last_key: &'a str,
     pub api_window_start: i64,
     pub api_count: i64,
+    /// The newest death among this worker's background agents that a usage
+    /// limit or a logout killed and whose stop is now over (0 = none). Lets a
+    /// worker that is NOT limited itself, but sat idle after its agents died,
+    /// be resumed at their reset (gs12 review finding 1).
+    pub agents_over_at: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2608,6 +2613,9 @@ pub(crate) fn auto_resume_decision(i: &AutoResumeInputs) -> AutoResume {
                     && i.now - i.api_error_since >= AUTO_RESUME_API_IDLE_S =>
             {
                 Some(("api_error", format!("api:{}", i.api_error_since)))
+            }
+            None if i.agents_over_at > 0 => {
+                Some(("agents_reset", format!("agents:{}", i.agents_over_at)))
             }
             _ => None,
         },
@@ -3376,6 +3384,11 @@ fn conversation_generations(name: &str) -> Option<u32> {
     count_compact_boundaries(&transcript_path_for(name)?)
 }
 
+/// The lane's compaction sizes, from the same cached scan as its generations.
+pub(crate) fn compact_scan_of(name: &str) -> Option<CompactScan> {
+    compact_pre_tokens(&transcript_path_for(name)?)
+}
+
 /// The incremental counter behind [`conversation_generations`], split out so
 /// the scanning is testable against a real file without a `$HOME` full of
 /// lanes — the census one is a smoke test at best, since it passes vacuously
@@ -3393,20 +3406,47 @@ pub fn count_compact_boundaries(path: &Path) -> Option<u32> {
 /// in one 64MB read, so it passes against the single-read bug it exists to
 /// catch.
 pub fn count_compact_boundaries_with_chunk(path: &Path, chunk: u64) -> Option<u32> {
+    scan_compact_boundaries_with_chunk(path, chunk).map(|s| s.count)
+}
+
+/// What the incremental boundary scan knows about one transcript.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CompactScan {
+    pub count: u32,
+    /// `compactMetadata.preTokens` of the second-newest and newest boundary:
+    /// the context size each compaction fired at (gs12 review finding 12).
+    pub pre_tokens_prev: Option<u64>,
+    pub pre_tokens_last: Option<u64>,
+}
+
+/// The context size the last two compactions fired at, from the same
+/// incremental scan that counts generations.
+pub fn compact_pre_tokens(path: &Path) -> Option<CompactScan> {
+    scan_compact_boundaries_with_chunk(path, 64 * 1024 * 1024)
+}
+
+/// Has the compaction point fallen by more than 30% from one compaction to
+/// the next? That is a smaller effective window (a settings change, a model
+/// change), and it means the lane compacts far more often from then on.
+pub fn compact_window_shrank(scan: &CompactScan) -> bool {
+    crate::api::launch_context::window_shrank(scan.pre_tokens_prev, scan.pre_tokens_last)
+}
+
+fn scan_compact_boundaries_with_chunk(path: &Path, chunk: u64) -> Option<CompactScan> {
     use std::io::{Read, Seek, SeekFrom};
-    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (u64, u32)>>> =
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (u64, CompactScan)>>> =
         std::sync::Mutex::new(None);
 
     let path = path.to_path_buf();
     let len = std::fs::metadata(&path).ok()?.len();
     let mut guard = CACHE.lock().ok()?;
     let cache = guard.get_or_insert_with(std::collections::HashMap::new);
-    let (mut offset, mut count) = cache.get(&path).copied().unwrap_or((0, 0));
+    let (mut offset, mut scan) = cache.get(&path).copied().unwrap_or((0, CompactScan::default()));
     if offset > len {
         // Rotated or replaced: the cached count describes a file that no
         // longer exists. Start over rather than report a number for it.
         offset = 0;
-        count = 0;
+        scan = CompactScan::default();
     }
     if len > offset {
         // CHUNKED TO EOF, not one bounded read. The first draft did a single
@@ -3441,19 +3481,34 @@ pub fn count_compact_boundaries_with_chunk(path: &Path, chunk: u64) -> Option<u3
                 // than spin: without this break a trailing fragment loops.
                 None => break,
             };
-            count += buf[..scanned]
-                .windows(COMPACT_BOUNDARY_MARKER.len())
-                .filter(|w| *w == COMPACT_BOUNDARY_MARKER)
-                .count() as u32;
+            for line in buf[..scanned].split(|b| *b == b'\n') {
+                let hits = line
+                    .windows(COMPACT_BOUNDARY_MARKER.len())
+                    .filter(|w| *w == COMPACT_BOUNDARY_MARKER)
+                    .count() as u32;
+                if hits == 0 {
+                    continue;
+                }
+                scan.count += hits;
+                // A boundary line whose metadata does not parse still counts
+                // as a generation; it just carries no size.
+                let pre = serde_json::from_slice::<Value>(line)
+                    .ok()
+                    .and_then(|v| v.pointer("/compactMetadata/preTokens").and_then(Value::as_u64));
+                if pre.is_some() {
+                    scan.pre_tokens_prev = scan.pre_tokens_last;
+                    scan.pre_tokens_last = pre;
+                }
+            }
             offset += scanned as u64;
             if scanned < buf.len() {
                 // The chunk ended mid-line; re-read from the line boundary.
                 f.seek(SeekFrom::Start(offset)).ok()?;
             }
         }
-        cache.insert(path, (offset, count));
+        cache.insert(path, (offset, scan));
     }
-    Some(count)
+    Some(scan)
 }
 
 /// A lane is worth recycling somewhere around here. Deliberately a number in
@@ -3778,6 +3833,8 @@ pub async fn debug_context_health() -> Response {
             }
             None => unmeasurable += 1,
         }
+        let scan = compact_scan_of(&lane);
+        let lane_meta = load_meta(&lane);
         lanes.push(json!({
             "session": lane,
             "generations": gens,
@@ -3794,6 +3851,13 @@ pub async fn debug_context_health() -> Response {
             }),
             "running": running.contains(&lane),
             "transcript_mb": mb,
+            // gs12 review finding 12: the context size the last two
+            // compactions fired at. A drop past 30% is a smaller window.
+            "compact_pre_tokens_prev": scan.and_then(|s| s.pre_tokens_prev),
+            "compact_pre_tokens_last": scan.and_then(|s| s.pre_tokens_last),
+            "compact_window_shrank": scan.map(|s| compact_window_shrank(&s)),
+            "launch_model": meta_str(&lane_meta, "launch_model"),
+            "launch_compact_window": lane_meta.get("launch_compact_window").cloned(),
         }));
     }
     lanes.sort_by_key(|l| {
@@ -17119,6 +17183,21 @@ pub(crate) async fn start_session(
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
     meta.insert("start_count".into(), json!(count + 1));
+    // gs12 review finding 12: record the model and compaction window this
+    // launch resolved, and WARN when the window shrank against the last one.
+    // Passive observation of the provider's own settings, so it runs for
+    // isolated workers too; it sends nothing and changes nothing.
+    if provider == "claude" {
+        let model = {
+            let m = extract_model_from_flags(&flags);
+            if m.is_empty() { extract_model_from_flags(&default_flags) } else { m }
+        };
+        let prev_model = meta_str(&meta, "launch_model");
+        let prev_window = meta.get("launch_compact_window").and_then(Value::as_u64);
+        for (k, v) in super::launch_context::record_launch(name, &model, &work_dir, &claude_home(), &prev_model, prev_window) {
+            meta.insert(k.into(), v);
+        }
+    }
     // Keep pending identity until the durable steering queue accepts it. The
     // session.started row is the generation shared with board-drive; both
     // producers use exactly the same generation/card delivery id.
@@ -24815,6 +24894,19 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         if provider_of(&cfg) == "claude" {
             let meta = load_meta(name);
             let last_key = meta_str(&meta, "auto_resume_for");
+            // Background agents a limit or a logout killed (gs12 review
+            // finding 1). Listed in the continuation, and a reason to resume
+            // on their own once their stop is over. `agents_listed_until`
+            // keeps one wave from being repeated in every later resume.
+            let (killed, notes_considered) = super::agent_limit_resume::limit_killed_agents(
+                &records,
+                meta_i64(&meta, "agents_listed_until"),
+            );
+            let killed_over: Vec<_> = killed
+                .iter()
+                .filter(|k| super::agent_limit_resume::kill_is_over(k, now_i64(), account_changed_at))
+                .cloned()
+                .collect();
             let inputs = AutoResumeInputs {
                 enabled: auto_resume_enabled(name) && !lane_is_paused(name),
                 idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref()) || expired_limit_foreground_at_boundary(&pane, observation.as_ref(), api_error.as_deref(), now_i64())),
@@ -24827,6 +24919,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                 last_key: &last_key,
                 api_window_start: meta_i64(&meta, "auto_resume_api_window_start"),
                 api_count: meta_i64(&meta, "auto_resume_api_count"),
+                agents_over_at: killed_over.iter().map(|k| k.at).max().unwrap_or(0),
             };
             match auto_resume_decision(&inputs) {
                 AutoResume::Nothing => {}
@@ -24867,7 +24960,15 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                             continue;
                         }
                     }
-                    let queued = match steer_enqueue_idempotent_report(state, name, "continue", &guard, "", &identity).await {
+                    // The dead agents ride along with whichever stop is being
+                    // resumed (the worker's own limit, an API error, or
+                    // theirs), but only those whose own stop is over: an
+                    // agent relaunched into a limit that has not reset dies
+                    // again at once.
+                    let listed = &killed_over;
+                    let window_pct = super::agent_limit_resume::fresh_window_pct();
+                    let text = super::agent_limit_resume::resume_text("continue", listed, window_pct, name);
+                    let queued = match steer_enqueue_idempotent_report(state, name, &text, &guard, "", &identity).await {
                         Ok(queued) => queued,
                         Err(why) => {
                             tracing::warn!(session = name, reason, key, why, verdict = "auto_resume_refused",
@@ -24876,6 +24977,9 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                         }
                     };
                     let mut updates = vec![("auto_resume_for", json!(key))];
+                    if let Some(newest) = listed.iter().map(|k| k.at).max() {
+                        updates.push(("agents_listed_until", json!(newest)));
+                    }
                     if reason == "api_error" {
                         let (start, count) = if inputs.now - inputs.api_window_start < AUTO_RESUME_API_WINDOW_S {
                             (inputs.api_window_start, inputs.api_count + 1)
@@ -24900,13 +25004,15 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                     update_meta(name, &updates);
                     let verdict = "auto_resume_queued";
                     tracing::warn!(target: "amux::usage_reset", session = name, reason, key, queue_id = %queued.id,
-                        disposition = ?queued.disposition, verdict,
+                        disposition = ?queued.disposition, verdict, killed_agents_listed = listed.len(),
+                        agent_notifications_considered = notes_considered, window_pct = ?window_pct,
                         "continuation accepted by the durable consumer; terminal submission has its own receipt");
                     emit_event(
                         state,
                         name,
                         "session.auto_resumed",
                         Some(json!({"reason": reason, "key": key, "verdict": verdict,
+                            "killed_agents_listed": listed.iter().map(|k| k.id.clone()).collect::<Vec<_>>(),
                             "submission": "deferred", "queue_id": queued.id,
                             "disposition": format!("{:?}", queued.disposition)})),
                         Some(format!("auto-resume:{name}:{key}")),
@@ -43036,6 +43142,7 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             last_key: "",
             api_window_start: 0,
             api_count: 0,
+            agents_over_at: 0,
         }
     }
 
@@ -43158,6 +43265,30 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         // Not yet stamped this tick: not provably before the switch.
         let unstamped = AutoResumeInputs { limited_since: 0, ..resume_inputs(Some(&weekly), None) };
         assert_eq!(auto_resume_decision(&unstamped), AutoResume::Nothing);
+    }
+
+    /// gs12 review finding 1: the worker is not limited itself, but its
+    /// background agents died on the limit and it went idle. Their reset (or
+    /// an account switch after them) resumes it once per wave.
+    #[test]
+    fn dead_agents_resume_an_unlimited_idle_worker_once_per_wave() {
+        let now = 1_790_000_000;
+        let wave = AutoResumeInputs { agents_over_at: now - 7200, ..resume_inputs(None, None) };
+        let key = format!("agents:{}", now - 7200);
+        assert_eq!(auto_resume_decision(&wave), AutoResume::Send { reason: "agents_reset", key: key.clone() });
+        assert_eq!(auto_resume_decision(&AutoResumeInputs { last_key: &key, ..wave }), AutoResume::Nothing);
+        // No dead agent whose stop is over: nothing.
+        assert_eq!(auto_resume_decision(&resume_inputs(None, None)), AutoResume::Nothing);
+        // A worker still limited itself waits for its own reset.
+        let future = ClaudeLimitObservation { menu: false, kind: "transcript", reset_at: now + 3600 };
+        let limited = AutoResumeInputs { agents_over_at: now - 7200, ..resume_inputs(Some(&future), None) };
+        assert_eq!(auto_resume_decision(&limited), AutoResume::Nothing);
+        // A current logout on the worker holds it, as for every other reason.
+        let auth = AutoResumeInputs { agents_over_at: now - 7200, ..resume_inputs(None, Some("authentication_failed")) };
+        assert_eq!(auto_resume_decision(&auth), AutoResume::Nothing);
+        // Live work holds it.
+        let busy = AutoResumeInputs { idle: false, agents_over_at: now - 7200, ..resume_inputs(None, None) };
+        assert!(matches!(auto_resume_decision(&busy), AutoResume::Hold { why: "lane_busy", .. }));
     }
 
     #[test]
@@ -56222,6 +56353,7 @@ mod session_limit_banner_tests {
             last_key: "",
             api_window_start: 0,
             api_count: 0,
+            agents_over_at: 0,
         };
         assert!(matches!(auto_resume_decision(&inputs), AutoResume::Send { reason: "usage_reset", .. }));
     }

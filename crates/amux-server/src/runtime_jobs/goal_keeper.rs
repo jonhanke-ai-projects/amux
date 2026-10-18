@@ -43,6 +43,19 @@
 //! checker decides "met". [`resolve`] is the one predicate the payload, the
 //! keeper and the schedule gate share.
 //!
+//! # Usage limits (gs12 review, 2026-10-18)
+//!
+//! A worker whose last turn ended on a usage limit is held, not continued:
+//! a continue into an unexpired limit fails at once and used to spend the
+//! two-continue budget, leaving the keeper exhausted through the reset
+//! (mxp-gs12, 10-12 17:13Z). The hold ends at the named reset or at an account
+//! switch after the limit, and that end clears any exhaustion the limit
+//! caused. A continue answered by a 429 is not counted as no progress. The
+//! continue also lists the worker's background agents a limit or logout
+//! killed (`api::agent_limit_resume`). Log verdicts:
+//! `goal_continue_held_for_limit`, `goal_continue_rearmed_after_limit`, and
+//! `killed_agents_listed` on `goal_continue_sent`.
+//!
 //! # Isolated workers
 //!
 //! The owner set the goal in that CLI, so continuing toward it is the owner's
@@ -504,6 +517,12 @@ struct Keep {
     exhausted_logged: bool,
     no_record_logged: bool,
     override_logged: bool,
+    /// The reset a limit hold was last logged for, so it is logged once.
+    held_for_reset: i64,
+    /// Set when a passed limit voided the no-progress count; logged once.
+    rearmed_after_limit: bool,
+    /// Agent deaths at or before this were already listed in a continue.
+    listed_until: i64,
 }
 
 fn state() -> &'static Mutex<HashMap<String, Keep>> {
@@ -551,7 +570,54 @@ fn bare_condition(c: &str) -> &str {
     t.strip_prefix("continue:").map(str::trim).unwrap_or(t)
 }
 
+/// Where the worker's own last turn stands against a usage limit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LimitGate {
+    /// The last turn did not end on a usage limit.
+    Clear,
+    /// It did, and neither the named reset nor an account switch has come.
+    Holding { reset_at: i64 },
+    /// It did, and the reset passed or the account changed after it.
+    Over,
+}
+
+/// [`LimitGate`] for a transcript tail, from the provider's structured 429
+/// record (`transcript_rate_limit`) and the machine's last account switch.
+pub fn limit_gate(records: &[Value], now: i64, account_changed_at: i64) -> LimitGate {
+    let Some(reset_at) = crate::api::session_verbs::transcript_rate_limit(records) else {
+        return LimitGate::Clear;
+    };
+    let limited_at = records
+        .iter()
+        .rev()
+        .find(|r| r["type"] == "assistant" && r["error"] == "rate_limit" && r["isSidechain"] != true)
+        .map(|r| ts_of(r) as i64)
+        .unwrap_or(0);
+    let reset_passed = reset_at > 0 && now >= reset_at + crate::api::agent_limit_resume::RESET_GRACE_S;
+    let switched = account_changed_at > 0 && limited_at > 0 && account_changed_at >= limited_at;
+    if reset_passed || switched {
+        LimitGate::Over
+    } else {
+        LimitGate::Holding { reset_at }
+    }
+}
+
+/// Did a turn after `since` end on a usage limit? A continue answered by a
+/// 429 made no progress because it could not, so it must not count toward
+/// exhaustion (gs12 review finding 1: the keeper spent its two continues into
+/// a limit, then stayed exhausted through the reset).
+pub fn limit_hit_since(records: &[Value], since: f64) -> bool {
+    records
+        .iter()
+        .any(|r| r["type"] == "assistant" && r["error"] == "rate_limit" && r["isSidechain"] != true && ts_of(r) > since)
+}
+
+#[cfg(test)]
 fn decide(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now: f64) -> Decision {
+    decide_with(k, goal, res, records, now, LimitGate::Clear)
+}
+
+fn decide_with(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now: f64, limit: LimitGate) -> Decision {
     if res.state == "met" {
         return Decision::Skip("goal met");
     }
@@ -561,6 +627,18 @@ fn decide(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now: f64
     if k.condition != goal.condition {
         *k = Keep { condition: goal.condition.clone(), ..Default::default() };
     }
+    match limit {
+        // A continue into an unexpired limit fails at once and only spends
+        // the no-progress budget the reset will need.
+        LimitGate::Holding { .. } => return Decision::Skip("usage limit not reset"),
+        // The stop is over: whatever exhaustion the limit caused is void.
+        LimitGate::Over if k.no_progress > 0 || k.exhausted_logged => {
+            k.no_progress = 0;
+            k.exhausted_logged = false;
+            k.rearmed_after_limit = true;
+        }
+        _ => {}
+    }
     // The interval ALWAYS holds, whatever else happened since the last send.
     if k.last_sent > 0.0 && now - k.last_sent < interval_s() {
         return Decision::Skip("interval");
@@ -569,7 +647,7 @@ fn decide(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now: f64
     if k.last_sent > 0.0 && foreign_input_since(records, k.last_sent) {
         k.no_progress = 0;
         k.exhausted_logged = false;
-    } else if k.last_sent > 0.0 {
+    } else if k.last_sent > 0.0 && limit != LimitGate::Over && !limit_hit_since(records, k.last_sent) {
         if tool_uses_since(records, k.last_sent) == 0 {
             k.no_progress += 1;
         } else {
@@ -670,10 +748,21 @@ async fn tick(app: crate::api::AppState) {
                 continue;
             }
         }
-        let decision = {
+        let now_s = now as i64;
+        let account_changed_at = crate::api::session_verbs::observe_claude_account_change(now_s);
+        let gate = limit_gate(&records, now_s, account_changed_at);
+        let (decision, listed_until, rearmed) = {
             let Ok(mut map) = state().lock() else { return };
             let k = map.entry(name.clone()).or_default();
-            let d = decide(k, &goal, &res, &records, now);
+            let d = decide_with(k, &goal, &res, &records, now, gate);
+            if let LimitGate::Holding { reset_at } = gate {
+                if k.held_for_reset != reset_at {
+                    k.held_for_reset = reset_at;
+                    tracing::info!(target: "amux::goal_keeper", session = %name, verdict = "goal_continue_held_for_limit",
+                        reset_at, account_changed_at, measured = true, n_considered = 1,
+                        "the worker's last turn ended on a usage limit; the keeper waits for its reset or an account switch");
+                }
+            }
             if matches!(d, Decision::Send(_)) && !k.override_logged && (goal.met || goal.cleared.is_some()) {
                 k.override_logged = true;
                 let verdict = if goal.met { "goal_met_overruled_by_checker" } else { "goal_continue_after_error_clear" };
@@ -686,8 +775,14 @@ async fn tick(app: crate::api::AppState) {
                 }
                 k.exhausted_logged = true;
             }
-            d
+            let rearmed = std::mem::take(&mut k.rearmed_after_limit);
+            (d, k.listed_until, rearmed)
         };
+        if rearmed {
+            tracing::warn!(target: "amux::goal_keeper", session = %name, verdict = "goal_continue_rearmed_after_limit",
+                measured = true, n_considered = 1,
+                "a usage limit is over; the no-progress count it caused is cleared and the keeper continues the goal");
+        }
         match decision {
             Decision::Skip(_) => {}
             Decision::Exhausted => {
@@ -696,6 +791,15 @@ async fn tick(app: crate::api::AppState) {
                     "two continues produced no tool call; the keeper stops for this goal until it changes or the owner writes");
             }
             Decision::Send(text) => {
+                // Background agents a limit or logout killed, whose stop is
+                // over, ride along (gs12 review finding 1): the owner typed
+                // these resumes by hand.
+                use crate::api::agent_limit_resume as alr;
+                let (killed, notes_considered) = alr::limit_killed_agents(&records, listed_until);
+                let over: Vec<_> =
+                    killed.into_iter().filter(|k| alr::kill_is_over(k, now_s, account_changed_at)).collect();
+                let window_pct = alr::fresh_window_pct();
+                let text = alr::resume_text(&text, &over, window_pct, &name);
                 let home = crate::api::session_verbs::home();
                 let (text, carried) = super::receipts::attach(&home, &name, &text);
                 let out = crate::api::session_verbs::deliver_automated(&app, &name, &text, &format!("goal:{name}")).await;
@@ -726,10 +830,17 @@ async fn tick(app: crate::api::AppState) {
                 if let Ok(mut map) = state().lock() {
                     if let Some(k) = map.get_mut(&name) {
                         k.last_sent = now;
+                        if !out.refused {
+                            if let Some(newest) = over.iter().map(|a| a.at).max() {
+                                k.listed_until = newest;
+                            }
+                        }
                     }
                 }
                 tracing::info!(target: "amux::goal_keeper", session = %name, verdict = "goal_continue_sent",
                     submitted = ?out.submitted, refused = out.refused, measured = true, n_considered = 1,
+                    killed_agents_listed = over.len(), agent_notifications_considered = notes_considered,
+                    window_pct = ?window_pct, limit_gate = ?gate,
                     "continued a worker whose /goal is not met: {}", out.message);
             }
         }
@@ -912,6 +1023,67 @@ mod tests {
     fn dec(k: &mut Keep, g: &Goal, recs: &[Value], footer: bool, now: f64) -> Decision {
         let res = resolve(Some(g), || Some(footer), &json!({"configured": false}));
         decide(k, g, &res, recs, now)
+    }
+
+    fn dec_gate(k: &mut Keep, g: &Goal, recs: &[Value], now: f64, gate: LimitGate) -> Decision {
+        let res = resolve(Some(g), || Some(true), &json!({"configured": false}));
+        decide_with(k, g, &res, recs, now, gate)
+    }
+
+    fn limit_rec(ts: &str, reset: i64) -> Value {
+        json!({"type":"assistant","timestamp":ts,"error":"rate_limit","isApiErrorMessage":true,
+            "quotaLimits":{"status":"rejected","resetsAt":reset,"rateLimitType":"five_hour"},
+            "message":{"role":"assistant","content":[{"type":"text","text":"You've hit your session limit"}]}})
+    }
+
+    /// gs12 review finding 1, the live sequence of 2026-10-12: a limit at
+    /// 17:13Z resetting 18:50Z; the keeper continued at 17:23 (answered by a
+    /// 429 two seconds later) and again at 18:20, which spent its whole
+    /// no-progress budget inside the limit.
+    #[test]
+    fn a_usage_limit_holds_the_keeper_and_its_end_rearms_it() {
+        let goal = Goal { met: false, condition: "finish gs12".into(), ts: 0.0, cleared: None };
+        let hit = t("2026-10-12T17:13:14Z");
+        let reset = t("2026-10-12T18:50:00Z") as i64;
+        let recs = vec![limit_rec("2026-10-12T17:13:14Z", reset)];
+        assert_eq!(limit_gate(&recs, hit as i64 + 600, 0), LimitGate::Holding { reset_at: reset });
+        let mut k = Keep::default();
+        let held = dec_gate(&mut k, &goal, &recs, hit + 600.0, LimitGate::Holding { reset_at: reset });
+        assert_eq!(held, Decision::Skip("usage limit not reset"));
+        assert_eq!((k.no_progress, k.last_sent), (0, 0.0), "a hold spends nothing");
+        // Over at the reset, or at an account switch after the limit; a
+        // switch before it is the account that hit it.
+        assert_eq!(limit_gate(&recs, reset + 61, 0), LimitGate::Over);
+        assert_eq!(limit_gate(&recs, hit as i64 + 900, hit as i64 + 300), LimitGate::Over);
+        assert_eq!(limit_gate(&recs, hit as i64 + 900, hit as i64 - 300), LimitGate::Holding { reset_at: reset });
+        // A later turn ends the limit entirely.
+        let mut after = recs.clone();
+        after.push(user("2026-10-12T19:00:00Z", "continue"));
+        assert_eq!(limit_gate(&after, reset + 600, 0), LimitGate::Clear);
+        // An exhausted keeper (the pre-fix state) is re-armed by the reset.
+        let mut spent = Keep { condition: "finish gs12".into(), last_sent: hit, no_progress: 2, exhausted_logged: true, ..Default::default() };
+        let d = dec_gate(&mut spent, &goal, &recs, reset as f64 + 700.0, LimitGate::Over);
+        assert!(matches!(d, Decision::Send(_)), "{d:?}");
+        assert!(spent.rearmed_after_limit && !spent.exhausted_logged);
+        // CONTROL: the same keeper with no limit in play stays exhausted.
+        let mut spent2 = Keep { condition: "finish gs12".into(), last_sent: hit, no_progress: 2, exhausted_logged: true, ..Default::default() };
+        assert_eq!(dec_gate(&mut spent2, &goal, &[], reset as f64 + 700.0, LimitGate::Clear), Decision::Exhausted);
+    }
+
+    #[test]
+    fn a_continue_answered_by_a_429_is_not_counted_as_no_progress() {
+        let goal = Goal { met: false, condition: "finish gs12".into(), ts: 0.0, cleared: None };
+        let sent = t("2026-10-12T17:23:34Z");
+        let answered = vec![user("2026-10-12T17:23:34Z", &format!("{MARK} keep going")), limit_rec("2026-10-12T17:23:36Z", 0)];
+        assert!(limit_hit_since(&answered, sent - 1.0));
+        let mut k = Keep { condition: "finish gs12".into(), last_sent: sent, no_progress: 1, ..Default::default() };
+        let d = dec_gate(&mut k, &goal, &answered, sent + 700.0, LimitGate::Clear);
+        assert!(matches!(d, Decision::Send(_)), "{d:?}");
+        assert_eq!(k.no_progress, 1, "the 429 neither counts nor clears");
+        // CONTROL: the same silence without a 429 does count.
+        let silent = vec![user("2026-10-12T17:23:34Z", &format!("{MARK} keep going"))];
+        let mut k2 = Keep { condition: "finish gs12".into(), last_sent: sent, no_progress: 1, ..Default::default() };
+        assert_eq!(dec_gate(&mut k2, &goal, &silent, sent + 700.0, LimitGate::Clear), Decision::Exhausted);
     }
 
     fn sentinel(ts: &str, met: bool, cond: &str) -> Value {

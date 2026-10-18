@@ -2835,6 +2835,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/sessions/{name}/task-history",
         methods: &["GET"],
     },
+    // -- a worker's plan window and limit-killed agents (agent_limit_resume::worker_quota)
+    RouteEntry {
+        path: "/api/sessions/{name}/quota",
+        methods: &["GET"],
+    },
     // -- every worker's tasks, oldest first (sessions_legacy::task_list, the Tasks tab)
     RouteEntry {
         path: "/api/task-history",
