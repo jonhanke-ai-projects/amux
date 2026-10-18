@@ -72,8 +72,10 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   await expect(items).toHaveCount(2, { timeout: 15000 });
   await expect(items.nth(0).locator('.task-title')).toHaveText('First task ' + nonce);
   await expect(items.nth(1).locator('.task-title')).toHaveText('Second task ' + nonce);
-  await expect(items.nth(0).locator('.task-num')).toHaveText('#1');
-  await expect(items.nth(1).locator('.task-num')).toHaveText('#2');
+  // Numbers are places in the whole list, which also holds the peer's task.
+  const nums = await items.locator('.task-num').allTextContents();
+  expect(nums.map(t => Number(t.replace('#', ''))), nums.join(' ')).toEqual([expect.any(Number), expect.any(Number)]);
+  expect(Number(nums[0].slice(1)) < Number(nums[1].slice(1)), nums.join(' ')).toBe(true);
   for (let i = 0; i < 2; i++) await expect(items.nth(i).locator('.msg-sess-link')).toHaveText(seed.worker);
   await expect(items.nth(0)).toContainText(/ran \d/);
   await expect(items.nth(1)).toContainText('current');
