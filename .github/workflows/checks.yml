@@ -209,6 +209,13 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-claude-scratch-report.sh
+      # The tmux watchdog restarts only Claude workers, leaves isolated ones to
+      # their owner, and holds a worker that dies after every restart. Runs the
+      # real script against fake tmux/pgrep/ps/amux, so no tmux is needed here.
+      - name: the tmux watchdog restarts only what it can judge
+        run: |
+          set -uo pipefail
+          ./scripts/test-tmux-watchdog.sh
       # AMUX-4732. The report reaches each lane as a CARD now, because the
       # 2026-09-14 attempt went out as peer MESSAGES and the two lanes that were
       # down never received it: both grew ~6 GB more while the one that was up
