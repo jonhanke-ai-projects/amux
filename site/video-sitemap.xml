@@ -331,10 +331,10 @@
     </video:video>
     <video:video>
       <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-desktop-short.jpg</video:thumbnail_loc>
-      <video:title>amux in 45 seconds</video:title>
-      <video:description>A silent, captioned 45-second tour of amux: start an agent, watch it work, approve it, tile the team, track the board and schedule prompts.</video:description>
+      <video:title>amux in one minute</video:title>
+      <video:description>A silent, captioned one-minute tour of amux: start an agent, answer only what needs you, have one worker brief another with an @mention, tile the team, and watch the board gate Done.</video:description>
       <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-desktop-short.mp4</video:content_loc>
-      <video:duration>45</video:duration>
+      <video:duration>56</video:duration>
       <video:publication_date>2026-10-17</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
