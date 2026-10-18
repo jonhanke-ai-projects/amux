@@ -106,10 +106,26 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await page.locator('#vault-add-btn').click();
     await page.fill('#vault-e-key', M);
     await page.check('input[name="vault-e-scope"][value="group"]');
-    for (const box of await page.locator('#vault-e-group input[type=checkbox]').all()) {
-      const v = await box.getAttribute('value');
-      if (v === 'research' || v === 'devops') await box.check(); else await box.uncheck();
-    }
+    for (const box of await page.locator('#vault-e-group input[type=checkbox]').all()) await box.uncheck();
+    await expect(page.locator('#vault-e-group-chips')).toHaveText('No groups selected');
+    // Search narrows the list; Enter picks the first match and clears the box.
+    const q = page.locator('#vault-e-group-q');
+    await q.fill('resea');
+    await expect(page.locator('#vault-e-group-list .vault-check:visible')).toHaveCount(1);
+    await q.press('Enter');
+    await expect(q).toHaveValue('');
+    await expect(page.locator('#vault-e-group-list input[value="research"]')).toBeChecked();
+    await q.fill('zz-no-such-group');
+    await expect(page.locator('#vault-e-group-none')).toBeVisible();
+    await q.fill('devo');
+    await q.press('Enter');
+    await expect(page.locator('#vault-e-group-chips .vault-ms-name')).toHaveText(['devops', 'research']);
+    // A chip's x removes that group, and only that group.
+    await page.getByRole('button', { name: 'Remove research' }).click();
+    await expect(page.locator('#vault-e-group-list input[value="research"]')).not.toBeChecked();
+    await expect(page.locator('#vault-e-group-chips .vault-ms-name')).toHaveText(['devops']);
+    await q.fill('research');
+    await q.press('Enter');
     await expect(page.locator('#vault-e-reach')).toContainText(wa);
     await expect(page.locator('#vault-e-reach')).toContainText(wb);
     await page.fill('#vault-e-value', VALUES.group);
