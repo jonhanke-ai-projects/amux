@@ -98,7 +98,11 @@ test('proxy links open a local app from a signed-in remote browser, and not with
       return { status: r.status, len: (await r.arrayBuffer()).byteLength, cr: r.headers.get('content-range') };
     }, lPort);
     expect(range).toEqual({ status: 206, len: 10, cr: `bytes 0-9/${CLIP.length}` });
-    await rp.locator('#l').click();
+    // The link is rewritten into the proxy, and the app's redirect stays there.
+    // Followed by navigation: a WebKit tap on it raced the assertion on main
+    // (ios-safari, 92b1c9660 and 294c658ff), and the tap is not what is tested.
+    await expect(rp.locator('#l')).toHaveAttribute('href', `/proxy/${lPort}/redir`);
+    await rp.goto(`${relayOrigin}/proxy/${lPort}/redir`);
     await expect(rp.locator('#t')).toHaveText('landed inside the proxy');
     expect(new URL(rp.url()).pathname).toBe(`/proxy/${lPort}/landed`);
     // The app's own cookie round-trips; amux's owner cookie never reaches it.
@@ -120,7 +124,11 @@ test('proxy links open a local app from a signed-in remote browser, and not with
       return a ? a.href : 'no link in: ' + body.innerHTML;
     }, rPort);
     expect(href).toBe(`${new URL(baseURL!).origin}/proxy/${rPort}/`);
-    const [tab] = await Promise.all([remote.waitForEvent('page'), rp.locator(`#peek-body a[href*="/proxy/${rPort}/"]`).first().click()]);
+    // It opens in a new tab. Opened by navigation: a WebKit tap on a
+    // target=_blank link hung the click itself on ios-safari.
+    await expect(rp.locator(`#peek-body a[href*="/proxy/${rPort}/"]`).first()).toHaveAttribute('target', '_blank');
+    const tab = await remote.newPage();
+    await tab.goto(href);
     await expect(tab.locator('#t')).toHaveText('proxied app ok', { timeout: 15000 });
 
     // A port nothing listens on says so instead of serving the dashboard.
