@@ -35,6 +35,7 @@ function world() {
         w.servers.push(s); return ok({ server: s });
       }
       let mm;
+      if ((mm = p.match(/^\/v1\/servers\/(\d+)\/actions\/create_image$/))) { const img = { id: ++w.n, ...body }; w.images.push(img); return ok({ image: img }); }
       if ((mm = p.match(/^\/v1\/servers\/(\d+)\/actions\/enable_backup$/))) { w.servers.find(s => s.id == mm[1]).backup_window = '22-02'; return ok({}); }
       if ((mm = p.match(/^\/v1\/servers\/(\d+)$/)) && m === 'PUT') { const s = w.servers.find(s => s.id == mm[1]); s.labels = body.labels; return ok({ server: s }); }
       if ((mm = p.match(/^\/v1\/servers\/(\d+)$/)) && m === 'DELETE') { w.servers = w.servers.filter(s => s.id != mm[1]); return ok({}); }
@@ -75,7 +76,7 @@ function world() {
         return s ? ok(s) : Response.json({ error: { message: `No such checkout.session: ${mm[1]}` } }, { status: 404 });
       }
       if (p === '/v1/subscriptions' && m === 'GET')
-        return ok({ data: Object.values(w.subs).filter(s => s.status === 'active').map(s => ({ ...s, customer: { id: s.customer_id, email: s.email } })) });
+        return ok({ data: Object.values(w.subs).filter(s => f.get('status') === 'all' || s.status === 'active').map(s => ({ ...s, customer: { id: s.customer_id, email: s.email } })) });
       if ((mm = p.match(/^\/v1\/subscriptions\/([^/]+)$/)) && m === 'POST') {
         const s = w.subs[mm[1]]; for (const [k, v] of f) { const x = k.match(/^metadata\[(.+)\]$/); if (x) { if (v === '') delete s.metadata[x[1]]; else s.metadata[x[1]] = v; } }
         return ok(s);
@@ -312,6 +313,26 @@ await test('C4 Sign in with Apple: forged, wrong-app and unverified tokens are r
   eq(w.logs.filter(l => l.event === 'apple.refused').length, 3, 'refusals logged');
   eq((await api(w, '/api/apple/servers', { identity_token: apple(w, { ...claims, email_verified: 'false' }) })).status, 404, 'unverified email finds nothing');
   eq((await api(w, '/api/apple/servers', { identity_token: apple(w, { sub: 'a4', email: 'stranger@example.com', email_verified: 'true' }) })).status, 404, 'no account');
+});
+
+await test('ops audit: books against servers, with the one safe fix made and the rest reported', async () => {
+  const w = world(); w.env.OPS_KEY = 'ops';
+  const price = (cents) => ({ data: [{ price: { unit_amount: cents }, quantity: 1 }] });
+  const ok = paid(w, 'healthy'); await webhook(w, ok); w.subs[ok].items = price(4900);
+  const thin = paid(w, 'thin'); await webhook(w, thin); w.subs[thin].items = price(2000);
+  const gone = paid(w, 'gone'); await webhook(w, gone); w.subs[gone].status = 'canceled';
+  const lost = paid(w, 'lost', 3 * 86400); delete w.subs[lost].metadata.pw_hash;
+  for (const s of w.servers) s.server_type = { prices: [{ location: 'fsn1', price_monthly: { gross: '18.00' } }] };
+  w.servers.push({ id: 99, name: 'amux-stray', labels: { 'amux-standalone': '1', 'amux-mode': 'test', 'amux-slug': 'stray', 'amux-sub': 'sub_nobody' } });
+  eq((await api(w, '/api/ops')).status, 404, 'no key, no report');
+  const rep = await (await call(w, () => worker.fetch(new Request('https://w.test/api/ops', { headers: { 'x-ops-key': 'ops' } }), w.env))).json();
+  eq(rep.fixed, ['gone: subscription canceled, server snapshotted for deletion'], 'fixed');
+  eq(rep.problems.sort(), ['lost: active subscription sub_lost has no server',
+    'stray: server 99 has no subscription Stripe knows (sub_nobody)',
+    'thin: plan team pays $20.00/mo for a server costing about 18.00/mo'], 'problems');
+  eq([rep.mrr_usd, rep.funnel.measured], [69, false], 'mrr and unmeasured funnel');
+  eq(w.images.some(i => i.labels?.['amux-sub'] === gone), true, 'final snapshot taken');
+  eq(w.logs.some(l => l.event === 'ops.audit'), true, 'audit logged');
 });
 
 process.exitCode = failures;

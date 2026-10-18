@@ -13,12 +13,15 @@
 //                            its address, backups and snapshots (no 30-day keep)
 //   POST /webhooks/stripe    checkout.session.completed: create the server and its DNS record
 //                            customer.subscription.deleted: snapshot it, then (cron) delete it
+//   GET  /api/ops            (x-ops-key) the operator audit: books against servers, margin, funnel
+//   cron 13:00 UTC daily     the operator audit; emails hello@amux.io only when something is wrong (and Mondays)
 //   cron every minute        ready emails; delete servers whose final snapshot is done;
 //                            delete snapshots older than 30 days; finish any paid signup the
 //                            webhook did not (reconcile); check each server every 10 minutes
 //
 // Bindings (cloud/start/deploy.sh): STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, HCLOUD_TOKEN,
-// APPLE_BUNDLE_ID, DOOR_ENTRY_SECRET, CF_TOKEN, CF_ZONE_ID, GMAIL_OAUTH, GOLDEN_IMAGE, PLANS (JSON), MODE (live|test), TEST_KEY.
+// APPLE_BUNDLE_ID, DOOR_ENTRY_SECRET, CF_TOKEN, CF_ZONE_ID, GMAIL_OAUTH, GOLDEN_IMAGE, PLANS (JSON), MODE (live|test), TEST_KEY,
+// OPS_KEY, POSTHOG_KEY and POSTHOG_PROJECT (the operator audit).
 
 const SITE = 'https://amux.io';
 const DOMAIN = 'amux.io';
@@ -417,6 +420,95 @@ async function monitor(env, servers) {
   }
 }
 
+// ------------------------------------------------------------------ operator audit
+// Once a day (13:00 UTC) the books are checked against the servers, so nobody has to look.
+// Fixed without asking: a server whose subscription Stripe says has ended is snapshotted and
+// deleted the same way a cancellation is. Reported, because they need a decision: a paying
+// customer with no server, a server with no subscription Stripe knows, a server failing its
+// checks, a plan whose price no longer covers about 1.5x its server. The email goes out only when
+// something is wrong, plus a Monday summary. GET /api/ops (header x-ops-key) returns the same report.
+async function allSubs(env) {
+  const out = [];
+  let after;
+  for (let i = 0; i < 20; i++) {
+    const page = await stripe(env, 'GET', '/subscriptions', { status: 'all', limit: 100, ...(after ? { starting_after: after } : {}) });
+    out.push(...page.data.filter(s => s.metadata?.slug));
+    if (!page.has_more || !page.data.length) break;
+    after = page.data[page.data.length - 1].id;
+  }
+  return out;
+}
+const LIVE = ['active', 'trialing', 'past_due'];
+async function funnel(env) {
+  if (!env.POSTHOG_KEY || !env.POSTHOG_PROJECT) return { measured: false, why: 'POSTHOG_KEY not configured' };
+  const q = "select properties.$pathname as p, count(distinct person_id) from events where event = '$pageview' and " +
+            "properties.$host = 'amux.io' and timestamp > now() - interval 1 day and (p like '/cloud%' or p like '/pricing%' or p like '/start%') group by p";
+  const r = await fetch(`https://us.posthog.com/api/projects/${env.POSTHOG_PROJECT}/query/`, { method: 'POST',
+    headers: { authorization: `Bearer ${env.POSTHOG_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ query: { kind: 'HogQLQuery', query: q } }) });
+  if (!r.ok) return { measured: false, why: `PostHog answered HTTP ${r.status}` };
+  const visitors = {};
+  for (const [path, n] of (await r.json()).results || []) {
+    const k = path.split('/')[1] || '/'; visitors[k] = (visitors[k] || 0) + n;
+  }
+  return { measured: true, visitors_24h: visitors };
+}
+async function audit(env) {
+  const subs = await allSubs(env), bySub = new Map(subs.map(s => [s.id, s]));
+  const servers = (await hetzner(env, 'GET', `/servers?label_selector=amux-standalone=1,amux-mode=${env.MODE}`)).servers;
+  const problems = [], fixed = [], day = Math.floor(Date.now() / 1000) - 86400;
+  let mrr = 0, cost = 0;
+  for (const s of servers) {
+    if (s.labels['amux-ending']) continue;
+    const slug = s.labels['amux-slug'], sub = bySub.get(s.labels['amux-sub']);
+    const price = (s.server_type?.prices || []).find(x => x.location === s.datacenter?.location?.name) || (s.server_type?.prices || [])[0];
+    const monthly = Number(price?.price_monthly?.gross || 0);
+    cost += monthly;
+    if (!sub) { problems.push(`${slug}: server ${s.id} has no subscription Stripe knows (${s.labels['amux-sub']})`); continue; }
+    if (['canceled', 'incomplete_expired'].includes(sub.status)) {   // the cancellation webhook was missed
+      await deprovision(env, sub.id, false);
+      fixed.push(`${slug}: subscription ${sub.status}, server snapshotted for deletion`);
+      continue;
+    }
+    if (!LIVE.includes(sub.status)) { problems.push(`${slug}: subscription is ${sub.status} and its server still runs`); continue; }
+    const item = sub.items?.data?.[0], amount = (item?.price?.unit_amount || 0) * (item?.quantity || 1) / 100;
+    mrr += amount;
+    if (monthly && amount && amount < monthly * 1.5)
+      problems.push(`${slug}: plan ${s.labels['amux-plan']} pays $${amount.toFixed(2)}/mo for a server costing about ${monthly.toFixed(2)}/mo`);
+    if (Number(s.labels['amux-fail'] || 0) >= 2) problems.push(`${slug}: failing its checks (${s.labels['amux-fail']} in a row)`);
+  }
+  const withServer = new Set(servers.map(s => s.labels['amux-sub']));
+  for (const sub of subs)
+    if (LIVE.includes(sub.status) && !withServer.has(sub.id) && sub.created < day)
+      problems.push(`${sub.metadata.slug}: ${sub.status} subscription ${sub.id} has no server`);
+  const pastDue = subs.filter(s => s.status === 'past_due').map(s => s.metadata.slug);
+  const checkouts = (await stripe(env, 'GET', '/checkout/sessions', { 'created[gte]': day, limit: 100 })).data
+    .filter(c => c.metadata?.slug);
+  const report = { mode: env.MODE, measured: true, at: new Date().toISOString(),
+    customers: subs.filter(s => LIVE.includes(s.status)).length, servers: servers.length, past_due: pastDue,
+    mrr_usd: Math.round(mrr * 100) / 100, server_cost_eur: Math.round(cost * 100) / 100,
+    checkouts_24h: { started: checkouts.length, paid: checkouts.filter(c => c.status === 'complete').length },
+    funnel: await funnel(env).catch(e => ({ measured: false, why: String(e).slice(0, 120) })), problems, fixed };
+  log('ops.audit', { ...report, funnel: undefined, visitors: report.funnel.visitors_24h, funnel_measured: report.funnel.measured });
+  return report;
+}
+async function dailyAudit(env) {
+  const r = await audit(env), monday = new Date().getUTCDay() === 1;
+  if (!r.problems.length && !r.fixed.length && !monday) return r;
+  const lines = [
+    r.problems.length ? `Needs a look:\r\n\r\n${r.problems.map(x => '- ' + x).join('\r\n\r\n')}` : 'Nothing needs a look.',
+    r.fixed.length ? `Fixed automatically:\r\n\r\n${r.fixed.map(x => '- ' + x).join('\r\n\r\n')}` : '',
+    `Customers: ${r.customers}. Servers: ${r.servers}. Past due: ${r.past_due.length ? r.past_due.join(', ') : 'none'}.`,
+    `Revenue: $${r.mrr_usd}/mo list price. Server cost: about EUR ${r.server_cost_eur}/mo.`,
+    `Last 24h: ${r.checkouts_24h.started} checkouts started, ${r.checkouts_24h.paid} paid.`,
+    r.funnel.measured ? `Visitors (24h): ${Object.entries(r.funnel.visitors_24h).map(([k, v]) => `/${k} ${v}`).join(', ') || 'none'}.`
+                      : `Visitors: not measured (${r.funnel.why}).`,
+  ].filter(Boolean);
+  const subject = r.problems.length ? `${r.problems.length} thing(s) need a look` : (r.fixed.length ? 'fixed automatically' : 'weekly summary');
+  await sendMail(env, OPERATOR, `[amux cloud ${env.MODE}] ${subject}`, lines.join('\r\n\r\n'));
+  return r;
+}
+
 // ------------------------------------------------------------------ account deletion
 async function accountSubs(env, email) {
   const out = [];
@@ -570,6 +662,11 @@ async function route(req, env) {
     return json({ ok: true }, 200, cors(req));
   }
 
+  if (p === '/api/ops' && req.method === 'GET') {
+    if (!env.OPS_KEY || req.headers.get('x-ops-key') !== env.OPS_KEY) return json({ error: 'not found' }, 404);
+    return json(await audit(env));
+  }
+
   if (p === '/api/apple/servers' && req.method === 'POST') {
     const b = await req.json().catch(() => ({}));
     let c;
@@ -654,5 +751,8 @@ export default {
   },
   async scheduled(_ev, env, ctx) {
     ctx.waitUntil(tick(env).catch(e => log('cron.error', { error: String(e.message || e).slice(0, 300) })));
+    const now = new Date();
+    if (now.getUTCHours() === 13 && now.getUTCMinutes() === 0)
+      ctx.waitUntil(dailyAudit(env).catch(e => log('ops.audit_failed', { error: String(e.message || e).slice(0, 300) })));
   },
 };

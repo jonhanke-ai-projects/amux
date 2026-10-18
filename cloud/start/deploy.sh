@@ -38,7 +38,7 @@ fi
 [[ -s "$WF" ]] || { log "FATAL: the $MODE webhook exists but its secret is not in $WF"; exit 1; }
 GOLDEN=$(curl -fsS -H "Authorization: Bearer $HC" 'https://api.hetzner.cloud/v1/images?type=snapshot&label_selector=amux-golden&sort=created:desc' | python3 -c 'import json,sys;print(json.load(sys.stdin)["images"][0]["id"])')
 META=$(mktemp); trap 'rm -f "$META"' EXIT; chmod 600 "$META"
-APPLE_BUNDLE_ID="$(envv APPLE_BUNDLE_ID)" python3 - "$META" "$MODE" "$KEY" "$(cat "$WF")" "$HC" "$CF" "$ZID" "$GOLDEN" "$HERE/../control/plans.json" "$S" "$(cat "$PF")" <<'EOF'
+APPLE_BUNDLE_ID="$(envv APPLE_BUNDLE_ID)" POSTHOG_KEY="$(envv POSTHOG_PERSONAL_API_KEY)" python3 - "$META" "$MODE" "$KEY" "$(cat "$WF")" "$HC" "$CF" "$ZID" "$GOLDEN" "$HERE/../control/plans.json" "$S" "$(cat "$PF")" <<'EOF'
 import base64, json, os, sys
 meta, mode, key, whs, hc, cf, zid, golden, plans, s, portal = sys.argv[1:]
 gt = os.path.expanduser("~/.amux/gmail-tokens/hello@amux.io.json")
@@ -73,6 +73,16 @@ if bundle:
     b.append({"type": "plain_text", "name": "APPLE_BUNDLE_ID", "text": bundle})
 else:
     print("WARN APPLE_BUNDLE_ID unset: the iOS app's Sign in with Apple will be refused", file=sys.stderr)
+# The operator audit: its report endpoint's key, and PostHog for the signup funnel (one HogQL query a day).
+ok = os.path.join(s, f"ops-key-{mode}")
+if not os.path.exists(ok):
+    import secrets
+    fd = os.open(ok, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(fd, secrets.token_urlsafe(24).encode()); os.close(fd)
+b.append({"type": "secret_text", "name": "OPS_KEY", "text": open(ok).read().strip()})
+if os.environ.get("POSTHOG_KEY"):
+    b.append({"type": "secret_text", "name": "POSTHOG_KEY", "text": os.environ["POSTHOG_KEY"]})
+    b.append({"type": "plain_text", "name": "POSTHOG_PROJECT", "text": "378145"})   # PostHog project "amux"
 if mode == "test":
     b.append({"type": "secret_text", "name": "TEST_KEY", "text": open(os.path.join(s, "start-test-key")).read().strip()})
 json.dump({"main_module": "worker.mjs", "compatibility_date": "2026-10-01", "bindings": b,
