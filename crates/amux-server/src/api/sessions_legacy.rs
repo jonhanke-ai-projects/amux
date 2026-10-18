@@ -10172,11 +10172,8 @@ Checked, nothing of mine was at risk, no action needed from you.
 
     #[test]
     fn task_rows_are_tasks_in_order_with_when_each_ended() {
-        let c = rusqlite::Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT, source TEXT);
-                         CREATE TABLE cmd_history (id INTEGER PRIMARY KEY, text TEXT, type TEXT, session TEXT, ts INTEGER);
-                         CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, status TEXT);
-                         INSERT INTO issues VALUES ('AA-1', 'The card', 'doing');").unwrap();
+        let c = crate::db::migrate::test_memdb();
+        c.execute("INSERT INTO issues (id, title, status, created, updated) VALUES ('AA-1', 'The card', 'doing', 1, 1)", []).unwrap();
         let add = |ts: f64, s: &str, to: &str, ty: &str, card: &str| {
             c.execute("INSERT INTO session_events (ts, session, type, data) VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![ts, s, ty, json!({"from": "", "to": to, "source": "board", "card": card}).to_string()]).unwrap();
@@ -10237,10 +10234,7 @@ Checked, nothing of mine was at risk, no action needed from you.
 
     #[test]
     fn task_at_handoffs_and_commits_link_a_task_to_what_it_touched() {
-        let c = rusqlite::Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT, source TEXT);
-                         CREATE TABLE cmd_history (id INTEGER PRIMARY KEY, text TEXT, type TEXT, session TEXT, ts INTEGER, origin TEXT NOT NULL DEFAULT '');
-                         CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, status TEXT);").unwrap();
+        let c = crate::db::migrate::test_memdb();
         for (ts, to) in [(1000.0, "First"), (2000.0, "Second")] {
             c.execute("INSERT INTO session_events (ts, session, type, data) VALUES (?1, 'w1', 'task.renamed', ?2)",
                 rusqlite::params![ts, json!({"from": "", "to": to, "card": ""}).to_string()]).unwrap();
