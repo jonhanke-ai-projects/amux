@@ -11,6 +11,7 @@ struct WebView: UIViewRepresentable {
     @Binding var canGoForward: Bool
     @Binding var loadError: String?
     let onNavigationAction: (WKNavigationAction) -> WKNavigationActionPolicy
+    var onLongPress: () -> Void = {}
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -39,6 +40,17 @@ struct WebView: UIViewRepresentable {
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.isOpaque = false
         webView.backgroundColor = UIColor(red: 0.051, green: 0.067, blue: 0.09, alpha: 1) // #0d1117
+
+        // Long-press opens Settings. It must never take a touch from the page:
+        // cancelsTouchesInView and delaysTouchesBegan stay false, and it
+        // recognizes alongside WebKit's own recognizers.
+        let press = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
+        press.minimumPressDuration = 0.6
+        press.cancelsTouchesInView = false
+        press.delaysTouchesBegan = false
+        press.delaysTouchesEnded = false
+        press.delegate = context.coordinator
+        webView.addGestureRecognizer(press)
 
         // Pull-to-refresh
         let refresh = UIRefreshControl()
@@ -109,7 +121,7 @@ struct WebView: UIViewRepresentable {
     }
 
     // MARK: - Coordinator
-    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
         var parent: WebView
         weak var webView: WKWebView?
         var refreshControl: UIRefreshControl?
@@ -326,6 +338,15 @@ struct WebView: UIViewRepresentable {
             webView.reload()
             armWatchdog(host: webView.url?.host ?? parent.url.host)
         }
+
+        @objc func handleLongPress(_ sender: UILongPressGestureRecognizer) {
+            guard sender.state == .began else { return }
+            logger.info("long-press: opening Settings")
+            parent.onLongPress()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
         @objc func handleRefresh(_ sender: UIRefreshControl) {
             webView?.reload()
