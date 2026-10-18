@@ -64,3 +64,26 @@ test('Scratchpad keeps typed text: a note closed before Save is saved, and captu
   await openScratchpad(page);
   await expect(page.locator('#sp-capture')).toHaveValue(`draft ${marker}`);
 });
+
+// The tab reads its folder from /api/scratchpad/config. A note made the
+// moment the tab opened went to the fallback folder while that read was in
+// flight (#359 CI, twice). Hold the read for 2s and make the note at once:
+// it must still land in the configured folder.
+test('a note made while the folder is still being read lands in the configured folder', async ({ page, request }, info) => {
+  test.setTimeout(60_000);
+  test.skip(info.project.name !== 'desktop', 'client ordering; proven once');
+  await page.route('**/api/scratchpad/config', async r => { await new Promise(res => setTimeout(res, 2000)); await r.continue(); });
+  await boot(page);
+  const auth = { Authorization: `Bearer ${await page.evaluate(() => (window as unknown as Win)._AMUX_AUTH_TOKEN)}` };
+  const marker = `race-${Date.now()}`;
+  await page.evaluate(() => (window as unknown as Win).switchView('scratchpad'));
+  await page.evaluate(() => (window as any)._scratchpadNewNote());
+  await expect(page.locator('#file-edit-ta')).toBeVisible();
+  const path = await page.evaluate(() => (0, eval)('_fileData').path as string);
+  expect(path.startsWith((await scratchpadDir(request, auth)) + '/'), 'new note path ' + path).toBe(true);
+  await page.locator('#file-edit-ta').fill(marker);
+  await page.locator('#file-overlay .btn', { hasText: '✕' }).first().click();
+  await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
+  await page.unroute('**/api/scratchpad/config');
+});
+

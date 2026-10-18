@@ -499,6 +499,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Manage in Vault \u2197 | `_scopeVaultManage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Refresh | `_scratchpadLoad` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Create a subfolder | `_scratchpadNewFolder` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Create a new note | `_scratchpadNewNote` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Claude Code | `_selectProvider` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Codex | `_selectProvider` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Gemini | `_selectProvider` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1274,7 +1275,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Remove  | `_scopeBpRemove` | onclick |
 | app.js | … | `_scopeBpToggle` | onclick |
 | index.html | Preview | `_scopeEditPreview` | onclick |
-| index.html | Create a new note | `_scratchpadNewNote` | onclick |
 | app.js | ${esc(p.id)} | `_selectIterm2Pane` | onclick |
 | app.js | Use this template | `_selectTemplate` | onclick |
 | index.html | Attach this device | `_settingsToggleGeo` | onclick |
