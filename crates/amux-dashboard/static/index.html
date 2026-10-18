@@ -1308,7 +1308,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     .tasks-scope .task-track-start { position:absolute; top:6px; width:3px; height:16px; margin-left:-1px; background:var(--accent); border-radius:2px; }
     .tasks-scope .task-tick { position:absolute; top:7px; width:14px; height:14px; margin-left:-7px; border-radius:50%; border:2px solid var(--card); background:var(--accent); cursor:pointer; padding:0; }
     .tasks-scope .task-tick:hover, .tasks-scope .task-tick:focus-visible { transform:scale(1.35); outline:none; }
-    .tasks-scope .task-track-card { position:absolute; right:0; top:2px; font-size:0.7rem; background:var(--card); border:1px solid var(--accent); color:var(--accent); border-radius:10px; padding:2px 8px; cursor:pointer; }
+    .tasks-scope .task-track-row { display:flex; align-items:flex-start; gap:8px; }
+    .tasks-scope .task-track-col { flex:1; min-width:0; display:grid; gap:4px; padding:0 7px; }
+    .tasks-scope .task-track-card { flex:0 0 auto; margin-top:4px; font-size:0.7rem; background:var(--card); border:1px solid var(--accent); color:var(--accent); border-radius:10px; padding:2px 8px; cursor:pointer; }
     .tasks-scope .task-track-ends { display:flex; justify-content:space-between; font-size:0.7rem; color:var(--dim); }
     .tasks-scope .task-msg { border-radius:6px; }
     .tasks-scope .tl { display:grid; gap:4px; }

@@ -53798,13 +53798,16 @@ function _tasksTrack(sc, key, t, msgs, commits) {
     return '<button type="button" class="task-tick" style="left:' + pct(sec) + '" onclick="event.stopPropagation();_tasksFocusMsg(\'' + sc + '\',\'' + escJs(key) + '\',' + i + ')" title="' + esc(label) + '" aria-label="Message at ' + esc(_tasksWhen(sec)) + '"></button>';
   }).join('');
   return '<div class="task-track-wrap"><div class="tasks-dim">Connections over the task\'s run: <span aria-hidden="true">&#x25CF;</span> messages, <span aria-hidden="true">&#x25C6;</span> commits</div>'
+    + '<div class="task-track-row"><div class="task-track-col">'
     + '<div class="task-track" role="group" aria-label="This task\'s messages over time">'
     + '<span class="task-track-bar"></span>'
     + '<span class="task-track-start" style="left:' + pct(t.ts) + '" title="Named ' + esc(_tasksWhen(t.ts)) + '"></span>'
     + ticks
     + (commits || []).map(c => '<a class="task-tick-commit" style="left:' + pct(c.ts) + '"' + (c.url ? ' href="' + esc(c.url) + '" target="_blank" rel="noopener"' : '') + ' onclick="event.stopPropagation()" title="' + esc(_tasksWhen(c.ts) + ' · ' + c.sha.slice(0, 9) + ' ' + (c.subject || '')) + '" aria-label="Commit ' + esc(c.sha.slice(0, 9)) + '"></a>').join('')
+    + '</div><div class="task-track-ends"><span>' + esc(_tasksWhen(t.ts)) + '</span><span>' + (t.ended ? esc(_tasksWhen(t.ended)) : 'now') + '</span></div></div>'
+    // Beside the track, not on it: at its right end it covered the newest tick.
     + (t.card ? '<button type="button" class="task-track-card" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open card ' + esc(t.card) + '">' + esc(t.card) + '</button>' : '')
-    + '</div><div class="task-track-ends"><span>' + esc(_tasksWhen(t.ts)) + '</span><span>' + (t.ended ? esc(_tasksWhen(t.ended)) : 'now') + '</span></div></div>';
+    + '</div></div>';
 }
 // Commits the worker pushed during the task, and the owner requests it closed
 // or landed then. Both come from GET /api/task-history/links; each says when

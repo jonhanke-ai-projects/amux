@@ -83,7 +83,7 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   await expect(page.locator('#tasks-list')).not.toContainText('a message during the second task');
 
   // The second task opens: started, current, its card and the message it received.
-  await items.nth(1).locator('.task-row').click();
+  await items.nth(1).locator('.task-row .task-title').click();
   const detail = items.nth(1).locator('.task-detail');
   await expect(detail).toBeVisible();
   await expect(detail).toContainText('Started');
@@ -91,12 +91,12 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   await expect(detail.locator('.task-card-open')).toContainText(String(seed.cards[1]));
   await expect(detail.locator('.task-msgs')).toContainText('a message during the second task ' + nonce, { timeout: 10000 });
   // The first task ended when the second began, and did not receive that message.
-  await items.nth(0).locator('.task-row').click();
+  await items.nth(0).locator('.task-row .task-title').click();
   const first = items.nth(0).locator('.task-detail');
   await expect(first).toContainText('Ended');
   await expect(first.locator('.task-msgs')).not.toContainText('a message during the second task');
   // Clicking again closes it.
-  await items.nth(0).locator('.task-row').click();
+  await items.nth(0).locator('.task-row .task-title').click();
   await expect(first).toBeHidden();
 
   // Each row says it links one message and its card; the explainer says these
