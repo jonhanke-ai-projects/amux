@@ -174,7 +174,8 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   await page.locator('#msgs-search').press('Enter');
   const row = page.locator('#msgs-list [data-msg-key]', { hasText: 'a message during the second task ' + nonce }).first();
   await expect(row.locator('.msg-task-link')).toContainText('during: Second task ' + nonce, { timeout: 15000 });
-  await row.locator('.msg-task-link').click();
+  // Scrolled to the list's top edge, the sticky day header covers the chip on phones.
+  await row.locator('.msg-task-link').dispatchEvent('click');
   await expect(page.locator('#tab-tasks')).toHaveClass(/active/);
   await expect(page.locator('#tasks-list .task-item.open .task-title')).toHaveText('Second task ' + nonce, { timeout: 15000 });
 
