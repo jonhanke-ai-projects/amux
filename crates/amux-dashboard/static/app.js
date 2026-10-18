@@ -52786,27 +52786,30 @@ function _messagesRender() {
 
 // Calendar/time review helpers for the Messages timeline (Ethan 2026-08-13).
 // ── Tasks ─────────────────────────────────────────────────────────────────
-// Every task a worker received, oldest first and numbered: owner prompts,
-// Chat-tab messages, peer asks and scheduled sends (the cmd_history rows
-// /api/history already serves), each tagged with its worker. A row opens its
-// detail: delivery, the board cards it created or joined, the other messages
-// on those cards, and the earlier ask it repeats. Rows are the Messages
-// tab's own (_cmdHistItemHTML); only the numbering, pager and detail are new.
+// Every task a worker took on, oldest first and numbered: one row per recorded
+// task name (GET /api/task-history, the task.renamed rows the fleet snapshot
+// writes when the "Task:" line on a worker changes). A row opens its detail:
+// when it started and ended, its board card, and the messages the worker
+// received while it ran. Owner, 2026-10-17: the earlier rows were messages
+// ("tasks still look to be displaying messages not tasks").
 //
 // Two scopes share this code: `main` is the Tasks tab (all workers, with a
 // worker filter) and `peek` is a worker's own Tasks tab (fixed to
 // peekSession). Each scope's DOM ids carry its prefix.
 const _TASKS_PAGE = 100;
 const _TASKS_KINDS = 'human,chat,session,schedule';
+// A task's name is recorded a moment after the message that set it, so its
+// message window opens this much earlier.
+const _TASKS_LEAD_S = 120;
 const _tasksScopes = {
-  main: { prefix: 'tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', withAmux: false, open: new Set(), loading: false, err: '', seq: 0 },
-  peek: { prefix: 'peek-tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', withAmux: false, open: new Set(), loading: false, err: '', seq: 0, fixed: true },
+  main: { prefix: 'tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', open: new Set(), loading: false, err: '', seq: 0 },
+  peek: { prefix: 'peek-tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', open: new Set(), loading: false, err: '', seq: 0, fixed: true },
 };
 const _tasksSel = new Set();
 const _tasksEl = (sc, name) => document.getElementById(_tasksScopes[sc].prefix + name);
+const _taskKey = (t) => (t.session || '') + '@' + t.ts;
 function _tasksParams(sc, extra) {
   const s = _tasksScopes[sc], p = new URLSearchParams();
-  p.set('kind', s.withAmux ? _TASKS_KINDS + ',amux' : _TASKS_KINDS);
   p.set('order', 'asc');
   if (s.worker) p.set('session', s.worker);
   if (s.q) p.set('q', s.q);
@@ -52825,17 +52828,17 @@ async function _tasksLoad(sc, toEnd) {
   _tasksRenderHead(sc);
   try {
     if (toEnd !== false) {
-      const r0 = await fetch(API + '/api/history?' + _tasksParams(sc, { limit: 1, offset: 0 }));
-      const total = parseInt(r0.headers.get('x-amux-total') || '0', 10) || 0;
+      const d0 = await (await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: 1, offset: 0 }), { headers: _authHeaders() })).json();
+      const total = (d0 && d0.total) || 0;
       s.offset = Math.max(0, Math.floor(Math.max(0, total - 1) / _TASKS_PAGE) * _TASKS_PAGE);
     }
-    const r = await fetch(API + '/api/history?' + _tasksParams(sc, { limit: _TASKS_PAGE, offset: s.offset }));
+    const r = await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: _TASKS_PAGE, offset: s.offset }), { headers: _authHeaders() });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const total = parseInt(r.headers.get('x-amux-total') || '0', 10) || 0;
-    const rows = await r.json();
+    const d = await r.json();
     if (seq !== s.seq) return;
-    s.total = total;
-    s.rows = (Array.isArray(rows) ? rows : []).map(_msgNorm);
+    if (d.measured === false) throw new Error(d.why_unmeasured || 'not measured');
+    s.total = d.total || 0;
+    s.rows = Array.isArray(d.tasks) ? d.tasks : [];
   } catch (e) {
     if (seq !== s.seq) return;
     s.err = (e && e.message) || String(e);
@@ -52848,38 +52851,49 @@ async function _tasksLoad(sc, toEnd) {
 function _tasksWorkerOptions() {
   const sel = _tasksEl('main', 'worker');
   if (!sel || sel.dataset.filled) return;
-  fetch(API + '/api/history?' + new URLSearchParams({ sessions: '1', kind: _TASKS_KINDS })).then(r => r.json()).then(d => {
-    const names = (Array.isArray(d) ? d : []).map(x => typeof x === 'string' ? x : (x.session || '')).filter(Boolean).sort();
-    const cur = _tasksScopes.main.worker;
-    if (cur && !names.includes(cur)) names.unshift(cur);
-    sel.innerHTML = '<option value="">All workers</option>' + names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
-    sel.dataset.filled = '1';
-  }).catch(() => {});
+  const names = [...new Set((typeof sessions !== 'undefined' && Array.isArray(sessions) ? sessions : []).map(x => x && x.name).filter(Boolean))].sort();
+  if (!names.length) return;
+  const cur = _tasksScopes.main.worker;
+  if (cur && !names.includes(cur)) names.unshift(cur);
+  sel.innerHTML = '<option value="">All workers</option>' + names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+  sel.dataset.filled = '1';
 }
 function _tasksRenderHead(sc) {
   const s = _tasksScopes[sc], el = _tasksEl(sc, 'count');
   if (!el) return;
   if (s.loading) { el.textContent = 'Loading tasks…'; return; }
   if (s.err) { el.textContent = 'Could not load tasks: ' + s.err; return; }
-  if (!s.total) { el.textContent = 'No tasks match'; return; }
+  if (!s.total) { el.textContent = s.q ? 'No tasks match' : 'No tasks recorded yet'; return; }
   el.textContent = 'Tasks ' + (s.offset + 1) + '–' + (s.offset + s.rows.length) + ' of ' + s.total + (s.worker && !s.fixed ? ' for ' + s.worker : '');
 }
+// The messages inside a task's detail use the Messages tab's row builder.
 function _tasksCtx(sc) {
   return { sel: _tasksSel, key: _msgKey, toggle: '_tasksSelToggle', resend: '_tasksResend',
-           searchId: _tasksScopes[sc].prefix + 'search', rowClass: 'msg-row task-row',
-           title: 'Click to show this task\'s delivery, board cards and related messages',
+           searchId: _tasksScopes[sc].prefix + 'search', rowClass: 'msg-row',
+           title: 'Open this message',
            target: (e) => (typeof e === 'string' ? '' : (e.session || '')),
-           onOpen: (e) => `_tasksToggle('${sc}','${escJs(String(e.id || ''))}')` };
+           onOpen: (e) => `_bdOpenMessage('${escJs(String(e.id || ''))}')` };
 }
 function _tasksSelToggle(key, ev) {
   if (ev) ev.stopPropagation();
   if (_tasksSel.has(key)) _tasksSel.delete(key); else _tasksSel.add(key);
-  Object.keys(_tasksScopes).forEach(_tasksRender);
+  Object.keys(_tasksScopes).forEach(sc => _tasksScopes[sc].open.forEach(k => _tasksFillDetail(sc, k, true)));
 }
 async function _tasksResend(keys) {
-  const all = Object.values(_tasksScopes).flatMap(s => s.rows);
+  const all = Object.values(_tasksScopes).flatMap(s => Object.values(s.msgs || {}).flat());
   const rows = all.filter(m => keys.includes(_msgKey(m)) && (m.session || '')).map(m => ({ session: m.session, text: m.text || '' }));
-  if (await _resendRows(rows)) { _tasksSel.clear(); Object.keys(_tasksScopes).forEach(_tasksRender); }
+  if (await _resendRows(rows)) { _tasksSel.clear(); Object.keys(_tasksScopes).forEach(sc => _tasksScopes[sc].open.forEach(k => _tasksFillDetail(sc, k, true))); }
+}
+function _tasksDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + 's';
+  const m = Math.round(sec / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  return h < 48 ? h + 'h ' + (m % 60) + 'm' : Math.round(h / 24) + 'd';
+}
+function _tasksWhen(sec) {
+  return sec ? new Date(sec * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 }
 function _tasksRender(sc) {
   const s = _tasksScopes[sc], list = _tasksEl(sc, 'list');
@@ -52887,21 +52901,29 @@ function _tasksRender(sc) {
   _tasksRenderHead(sc);
   if (sc === 'main') _tasksWorkerOptions();
   if (s.err) { list.innerHTML = '<div class="tasks-empty">Could not load tasks. <button class="btn" onclick="_tasksLoad(\'' + sc + '\')">Retry</button></div>'; _tasksRenderPager(sc); return; }
-  if (!s.rows.length) { list.innerHTML = '<div class="tasks-empty">' + (s.loading ? 'Loading…' : 'No tasks match.') + '</div>'; _tasksRenderPager(sc); return; }
-  const ctx = _tasksCtx(sc);
+  if (!s.rows.length) { list.innerHTML = '<div class="tasks-empty">' + (s.loading ? 'Loading…' : s.q ? 'No tasks match.' : 'No tasks recorded yet. A task is recorded when the worker\'s "Task:" line changes.') + '</div>'; _tasksRenderPager(sc); return; }
   let day = '', html = '';
-  s.rows.forEach((m, i) => {
-    const k = _msgDayKey(m.ts);
-    if (k !== day) { day = k; html += '<div class="tasks-day">' + esc(_msgDayLabel(m.ts)) + '</div>'; }
-    const id = String(m.id || '');
-    const open = s.open.has(id);
-    html += '<div class="task-item' + (open ? ' open' : '') + '" id="' + s.prefix + 'item-' + esc(id) + '" data-task-id="' + esc(id) + '">'
-      + '<div class="task-num" title="Task ' + (s.offset + i + 1) + ' in sequence">#' + (s.offset + i + 1) + '</div>'
-      + '<div class="task-main">' + _cmdHistItemHTML(m, ctx)
-      + '<div class="task-detail" id="' + s.prefix + 'detail-' + esc(id) + '"' + (open ? '' : ' hidden') + '></div></div></div>';
+  s.rows.forEach((t, i) => {
+    const k = _msgDayKey(t.ts * 1000);
+    if (k !== day) { day = k; html += '<div class="tasks-day">' + esc(_msgDayLabel(t.ts * 1000)) + '</div>'; }
+    const key = _taskKey(t), open = s.open.has(key), n = s.offset + i + 1;
+    const ran = t.ended ? 'ran ' + _tasksDur(t.ended - t.ts) : 'current';
+    const sess = t.session || '';
+    html += '<div class="task-item' + (open ? ' open' : '') + '" id="' + s.prefix + 'item-' + esc(key) + '" data-task-key="' + esc(key) + '">'
+      + '<div class="task-num" title="Task ' + n + ' in sequence">#' + n + '</div>'
+      + '<div class="task-main"><div class="task-row" role="button" tabindex="0" aria-expanded="' + open + '" title="Show when this task ran, its card and its messages"'
+      + ' onclick="_tasksToggle(\'' + sc + '\',\'' + escJs(key) + '\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();_tasksToggle(\'' + sc + '\',\'' + escJs(key) + '\')}">'
+      + '<div class="task-title">' + esc(t.task || '(untitled)') + '</div>'
+      + '<div class="task-meta">'
+      + (s.fixed ? '' : '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>')
+      + '<span>' + esc(_tasksWhen(t.ts)) + '</span>'
+      + '<span class="msg-tag' + (t.ended ? '' : ' task-current') + '">' + esc(ran) + '</span>'
+      + (t.card ? '<button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open this card on the board"><code>' + esc(String(t.card)) + '</code></button>' : '')
+      + '</div></div>'
+      + '<div class="task-detail" id="' + s.prefix + 'detail-' + esc(key) + '"' + (open ? '' : ' hidden') + '></div></div></div>';
   });
   list.innerHTML = html;
-  s.open.forEach(id => _tasksFillDetail(sc, id));
+  s.open.forEach(k => _tasksFillDetail(sc, k));
   _tasksRenderPager(sc);
 }
 function _tasksRenderPager(sc) {
@@ -52927,7 +52949,6 @@ function _tasksFilter(sc) {
   const s = _tasksScopes[sc];
   if (!s.fixed) s.worker = (_tasksEl(sc, 'worker') || {}).value || '';
   s.q = ((_tasksEl(sc, 'search') || {}).value || '').trim();
-  s.withAmux = !!(_tasksEl(sc, 'amux') || {}).checked;
   s.open.clear();
   _tasksLoad(sc, true);
 }
@@ -52935,64 +52956,66 @@ const _tasksSearchT = {};
 function _tasksSearchInput(sc) { clearTimeout(_tasksSearchT[sc]); _tasksSearchT[sc] = setTimeout(() => _tasksFilter(sc), 300); }
 // From anywhere: the Tasks tab narrowed to one worker.
 function _tasksByWorker(name) {
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
   if (activeView !== 'tasks') switchView('tasks');
   const sel = _tasksEl('main', 'worker');
   if (sel) { if (![...sel.options].some(o => o.value === name)) sel.add(new Option(name, name)); sel.value = name; }
   _tasksFilter('main');
 }
-function _tasksToggle(sc, id) {
-  if (!id) return;
+function _tasksToggle(sc, key) {
+  if (!key) return;
   const s = _tasksScopes[sc];
-  if (s.open.has(id)) s.open.delete(id); else s.open.add(id);
-  const item = _tasksEl(sc, 'item-' + id), det = _tasksEl(sc, 'detail-' + id);
-  if (item) item.classList.toggle('open', s.open.has(id));
-  if (det) { det.hidden = !s.open.has(id); if (s.open.has(id)) _tasksFillDetail(sc, id); }
+  if (s.open.has(key)) s.open.delete(key); else s.open.add(key);
+  const item = _tasksEl(sc, 'item-' + key), det = _tasksEl(sc, 'detail-' + key);
+  if (item) { item.classList.toggle('open', s.open.has(key)); const row = item.querySelector('.task-row'); if (row) row.setAttribute('aria-expanded', String(s.open.has(key))); }
+  if (det) { det.hidden = !s.open.has(key); if (s.open.has(key)) _tasksFillDetail(sc, key); }
 }
 function _tasksOpenCard(id) {
   if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
   switchView('board'); setTimeout(() => openBoardDetail(id), 250);
 }
-async function _tasksFillDetail(sc, id) {
-  const det = _tasksEl(sc, 'detail-' + id);
-  const m = _tasksScopes[sc].rows.find(r => String(r.id) === String(id));
-  if (!det || !m || det.dataset.filled === '1') return;
-  det.innerHTML = '<div class="tasks-dim">Loading details…</div>';
-  let full = null;
-  try { const r = await fetch(API + '/api/history/' + encodeURIComponent(id)); if (r.ok) full = await r.json(); } catch (_) {}
-  const cards = (m.linked_cards && m.linked_cards.length) ? m.linked_cards : (m.card_id ? [{ id: m.card_id, title: m.card_title, status: m.card_status }] : []);
-  const cardMsgs = {};
-  await Promise.all(cards.slice(0, 4).map(async c => {
-    try { const r = await fetch(API + '/api/board/' + encodeURIComponent(c.id)); if (r.ok) { const d = await r.json(); cardMsgs[c.id] = { card: d, msgs: Array.isArray(d.messages) ? d.messages : [] }; } } catch (_) {}
-  }));
-  const when = (t) => t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
-  const f = full || m;
-  const delivery = f.delivered === true ? 'Delivered' + (f.delivered_at ? ' ' + when(f.delivered_at) : '') + (f.delivered_source ? ' (' + esc(f.delivered_source) + ')' : '')
-    : f.delivered === false ? 'Not confirmed delivered' : (f.delivery ? esc(f.delivery) : 'Unknown');
-  const sess = m.session || '';
+async function _tasksFillDetail(sc, key, rerender) {
+  const s = _tasksScopes[sc];
+  const det = _tasksEl(sc, 'detail-' + key);
+  const t = s.rows.find(r => _taskKey(r) === key);
+  if (!det || !t || (det.dataset.filled === '1' && !rerender)) return;
+  s.msgs = s.msgs || {};
+  const sess = t.session || '';
+  if (!s.msgs[key]) {
+    det.innerHTML = '<div class="tasks-dim">Loading details…</div>';
+    const p = new URLSearchParams({ session: sess, kind: _TASKS_KINDS, order: 'asc', limit: '50', since: String(Math.floor((t.ts - _TASKS_LEAD_S) * 1000)) });
+    // Milliseconds, and the server's bound is exclusive: the message that
+    // started the next task belongs to that task, not this one.
+    if (t.ended) p.set('until', String(Math.floor(t.ended * 1000)));
+    let msgs = [], card = null, msgErr = '';
+    await Promise.all([
+      fetch(API + '/api/history?' + p.toString(), { headers: _authHeaders() }).then(async r => {
+        if (!r.ok) { msgErr = 'HTTP ' + r.status; return; }
+        const d = await r.json(); msgs = (Array.isArray(d) ? d : []).map(_msgNorm);
+      }).catch(e => { msgErr = (e && e.message) || String(e); }),
+      t.card ? fetch(API + '/api/board/' + encodeURIComponent(t.card), { headers: _authHeaders() }).then(async r => { if (r.ok) card = await r.json(); }).catch(() => {}) : null,
+    ]);
+    s.msgs[key] = msgs; s.cards = s.cards || {}; s.cards[key] = card; s.msgErr = s.msgErr || {}; s.msgErr[key] = msgErr;
+  }
+  const msgs = s.msgs[key], card = (s.cards || {})[key], msgErr = (s.msgErr || {})[key];
   let html = '<div class="task-facts">'
     + '<div><span class="tasks-dim">Worker</span> ' + (sess ? '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>'
       + ' <button type="button" class="btn" onclick="event.stopPropagation();openPeek(\'' + escJs(sess) + '\')">Open worker</button>' : '-') + '</div>'
-    + '<div><span class="tasks-dim">From</span> ' + esc(m.sender || m.origin || 'unknown') + '</div>'
-    + '<div><span class="tasks-dim">Sent</span> ' + esc(when(m.ts)) + ' &middot; MSG-' + esc(String(id)) + '</div>'
-    + '<div><span class="tasks-dim">Delivery</span> ' + delivery + (m.queue_wait_ms ? ' after ' + Math.round(m.queue_wait_ms / 1000) + 's in the queue' : '') + '</div>'
-    + (f.repeat_of ? '<div><span class="tasks-dim">Repeats</span> <button type="button" class="btn" onclick="event.stopPropagation();_bdOpenMessage(\'' + escJs(String(f.repeat_of)) + '\')">MSG-' + esc(String(f.repeat_of)) + '</button></div>' : '')
+    + '<div><span class="tasks-dim">Started</span> ' + esc(_tasksWhen(t.ts)) + '</div>'
+    + '<div><span class="tasks-dim">' + (t.ended ? 'Ended' : 'Status') + '</span> ' + (t.ended ? esc(_tasksWhen(t.ended)) + ' after ' + esc(_tasksDur(t.ended - t.ts)) : 'Current task, running ' + esc(_tasksDur(Date.now() / 1000 - t.ts))) + '</div>'
+    + (t.previous ? '<div><span class="tasks-dim">Before this</span> ' + esc(t.previous) + '</div>' : '')
+    + (t.source ? '<div><span class="tasks-dim">Named from</span> ' + esc(String(t.source).replace(/_/g, ' ')) + '</div>' : '')
     + '</div>';
-  if (!cards.length) html += '<div class="tasks-dim">No board card is linked to this task.</div>';
-  for (const c of cards) {
-    const extra = cardMsgs[c.id];
-    const card = (extra && extra.card) || c;
-    html += '<div class="task-card"><button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(c.id)) + '\')" title="Open this card on the board">'
-      + '<code>' + esc(String(c.id)) + '</code> ' + esc(card.title || c.title || '') + '</button>'
-      + '<span class="msg-tag">' + esc(card.status || c.status || '') + '</span>'
-      + (card.session ? ' <span class="tasks-dim">' + esc(card.session) + '</span>' : '');
-    const others = extra ? extra.msgs.filter(x => String(x.id) !== String(id)) : [];
-    if (others.length) {
-      html += '<div class="task-card-msgs"><div class="tasks-dim">Other messages on this card</div>'
-        + others.slice(0, 10).map(x => '<div class="task-card-msg"><button type="button" class="btn" onclick="event.stopPropagation();_bdOpenMessage(\'' + escJs(String(x.id)) + '\')">MSG-' + esc(String(x.id)) + '</button> <span class="tasks-dim">' + esc(when(x.ts)) + ' ' + esc(x.session || '') + '</span> ' + esc(String(x.text || '').slice(0, 160)) + '</div>').join('')
-        + '</div>';
-    }
-    html += '</div>';
+  if (t.card) {
+    html += '<div class="task-card"><button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open this card on the board">'
+      + '<code>' + esc(String(t.card)) + '</code> ' + esc((card && card.title) || '') + '</button>'
+      + (card && card.status ? '<span class="msg-tag">' + esc(card.status) + '</span>' : '') + '</div>';
   }
+  html += '<div class="task-msgs"><div class="tasks-dim">' + (msgErr ? 'Could not load this task\'s messages: ' + esc(msgErr)
+    : msgs.length ? 'Messages ' + esc(sess) + ' received while on this task (' + msgs.length + (msgs.length >= 50 ? '+' : '') + ')'
+    : 'No messages to ' + esc(sess) + ' while on this task.') + '</div>';
+  const ctx = _tasksCtx(sc);
+  html += msgs.map(m => _cmdHistItemHTML(m, ctx)).join('') + '</div>';
   det.innerHTML = html;
   det.dataset.filled = '1';
 }

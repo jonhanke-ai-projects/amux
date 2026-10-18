@@ -758,7 +758,11 @@ fn task_name_changes(arr: &[Value], last: &mut std::collections::HashMap<String,
         let from = last.insert(name.to_string(), task.to_string()).unwrap_or_default();
         out.push((name.to_string(), from, task.to_string(),
             v["task_source"].as_str().unwrap_or("").to_string(),
-            v["task_board_id"].as_str().unwrap_or("").to_string()));
+            Some(v["task_board_id"].as_str().unwrap_or(""))
+                .filter(|c| !c.is_empty())
+                .or_else(|| (v["task_source"].as_str() == Some("board")).then(|| v["task_name_card"].as_str().unwrap_or("")))
+                .unwrap_or("")
+                .to_string()));
     }
     out
 }
@@ -836,6 +840,86 @@ pub async fn task_history(
             "changes": changes, "note": "newest first; recorded when the task name shown for the worker changes"})).into_response(),
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"session": name, "measured": false, "n_considered": 0,
             "why_unmeasured": e.to_string()}))).into_response(),
+    }
+}
+
+/// The Tasks tab's rows: every recorded task, one per `task.renamed` row, with
+/// `ended` set to when the same worker took its next task (null for its current
+/// one). `session` narrows to one worker, `q` matches the task name. Returns the
+/// total that matched and the requested page.
+fn task_rows(
+    c: &rusqlite::Connection,
+    session: Option<&str>,
+    q: Option<&str>,
+    asc: bool,
+    limit: i64,
+    offset: i64,
+) -> rusqlite::Result<(i64, Vec<Value>)> {
+    let mut filt = String::new();
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(s) = session.filter(|s| !s.is_empty()) {
+        filt.push_str(" AND session = ?");
+        params.push(rusqlite::types::Value::Text(s.to_string()));
+    }
+    if let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) {
+        filt.push_str(" AND json_extract(data,'$.to') LIKE ? ESCAPE '\\'");
+        let lit = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        params.push(rusqlite::types::Value::Text(format!("%{lit}%")));
+    }
+    // `ended` comes from the worker's whole history, so a filter never shortens a task.
+    let base = "SELECT id, ts, session, data, LEAD(ts) OVER (PARTITION BY session ORDER BY ts, id) AS ended \
+                FROM session_events WHERE type='task.renamed'";
+    let total: i64 = c.query_row(
+        &format!("SELECT COUNT(*) FROM session_events WHERE type='task.renamed'{filt}"),
+        rusqlite::params_from_iter(params.iter()),
+        |r| r.get(0),
+    )?;
+    let dir = if asc { "ASC" } else { "DESC" };
+    let sql = format!("SELECT ts, session, data, ended FROM ({base}) WHERE 1=1{filt} ORDER BY ts {dir}, id {dir} LIMIT ? OFFSET ?");
+    let mut all = params.clone();
+    all.push(rusqlite::types::Value::Integer(limit));
+    all.push(rusqlite::types::Value::Integer(offset));
+    let mut st = c.prepare(&sql)?;
+    let rows = st
+        .query_map(rusqlite::params_from_iter(all.iter()), |r| {
+            Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<f64>>(3)?))
+        })?
+        .flatten()
+        .map(|(ts, session, d, ended)| {
+            let d: Value = serde_json::from_str(&d).unwrap_or(json!({}));
+            json!({"session": session, "task": d["to"], "previous": d["from"], "source": d["source"],
+                   "card": d["card"], "ts": ts, "ended": ended})
+        })
+        .collect();
+    Ok((total, rows))
+}
+
+/// GET /api/task-history?session=&q=&order=asc|desc&limit=&offset=: every
+/// worker's recorded tasks (the Tasks tab). Oldest first by default.
+pub async fn task_list(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(100).clamp(1, 1000);
+    let offset = q.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    let asc = q.get("order").map(String::as_str) != Some("desc");
+    let st = state.store.clone();
+    let _ = tokio::task::spawn_blocking(move || legacy_sessions_array(&st)).await;
+    let (session, text) = (q.get("session").cloned(), q.get("q").cloned());
+    let res = state
+        .store
+        .read_async(move |c| Ok(task_rows(c, session.as_deref(), text.as_deref(), asc, limit, offset)?))
+        .await;
+    match res {
+        Ok((total, tasks)) => Json(json!({"measured": true, "n_considered": total, "total": total, "offset": offset,
+            "limit": limit, "order": if asc { "asc" } else { "desc" }, "tasks": tasks,
+            "note": "one row per task a worker took on, recorded when its task name changed; ended is when it took the next one"}))
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(target: "amux::sessions", error = %e, verdict = "task_list_failed", "could not read the task history");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()})))
+                .into_response()
+        }
     }
 }
 
@@ -6031,6 +6115,11 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             );
             v["task_name"] = json!(tname);
             v["task_source"] = json!(tsrc);
+            // The card a board-sourced name came from, so the task history can
+            // link it even when the worker is stopped and task_board_id is empty.
+            if tsrc == "board" {
+                if let Some((id, _, _)) = board { v["task_name_card"] = json!(id); }
+            }
             // A GENERATED title stands in for Claude Code's own ai-title on a
             // named worker (session_verbs::spawn_task_title), so it ranks the
             // same: above the board card. The board card a prompt creates is
@@ -9775,8 +9864,37 @@ Checked, nothing of mine was at risk, no action needed from you.
         assert_eq!(c, vec![("w1".into(), "".into(), "Fix the build gate".into(), "generated_title".into(), "AMUX-1".into())],
             "the first name seen is recorded; an empty one is not");
         assert!(task_name_changes(&snap("Fix the build gate"), &mut last).is_empty(), "the same name again records nothing");
+        let stopped = vec![json!({"name": "w3", "task_name": "From a card", "task_source": "board", "task_board_id": "", "task_name_card": "AMUX-9"})];
+        assert_eq!(task_name_changes(&stopped, &mut last)[0].4, "AMUX-9", "a stopped worker's board-named task keeps its card");
         let c = task_name_changes(&snap("Ship the stopwatch"), &mut last);
         assert_eq!((c[0].1.as_str(), c[0].2.as_str()), ("Fix the build gate", "Ship the stopwatch"), "a change records from and to");
+    }
+
+    #[test]
+    fn task_rows_are_tasks_in_order_with_when_each_ended() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT, source TEXT);").unwrap();
+        let add = |ts: f64, s: &str, to: &str, ty: &str| {
+            c.execute("INSERT INTO session_events (ts, session, type, data) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![ts, s, ty, json!({"from": "", "to": to, "source": "board", "card": "AA-1"}).to_string()]).unwrap();
+        };
+        add(10.0, "w1", "Fix the build", "task.renamed");
+        add(20.0, "w2", "Ship 100% of maps", "task.renamed");
+        add(30.0, "w1", "Write the docs", "task.renamed");
+        add(35.0, "w1", "not a task", "session.started");
+        let (n, rows) = task_rows(&c, None, None, true, 100, 0).unwrap();
+        assert_eq!(n, 3, "only task.renamed rows are tasks");
+        let names: Vec<&str> = rows.iter().map(|r| r["task"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Fix the build", "Ship 100% of maps", "Write the docs"], "oldest first");
+        assert_eq!(rows[0]["ended"], json!(30.0), "a task ends when that worker takes its next one");
+        assert_eq!(rows[1]["ended"], Value::Null, "w2's only task is still current");
+        assert_eq!(rows[0]["session"], json!("w1"));
+        let (n, rows) = task_rows(&c, Some("w1"), Some("docs"), true, 100, 0).unwrap();
+        assert_eq!((n, rows.len()), (1, 1), "worker and text filters both apply");
+        let (_, rows) = task_rows(&c, None, Some("100%"), true, 100, 0).unwrap();
+        assert_eq!(rows.len(), 1, "% in the search is literal");
+        let (n, rows) = task_rows(&c, None, None, false, 1, 1).unwrap();
+        assert_eq!((n, rows[0]["task"].as_str().unwrap()), (3, "Ship 100% of maps"), "newest-first paging");
     }
 
     #[test]

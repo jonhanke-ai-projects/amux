@@ -1,116 +1,111 @@
-import { test, expect } from './fixtures';
+import { test, expect, type Page } from './fixtures';
 
 /**
  * Ethan, 2026-10-17: "make a new tab ... called 'tasks' and it should be all the
  * tasks in sequential order with each worker tagged, each one clickable and any
- * other data associated with it (messages sent, board issues, etc.)".
+ * other data associated with it", then "tasks still look to be displaying
+ * messages not tasks".
  *
- * Against the real server: three tasks are sent to one worker in order, the
- * first and third are linked to the same board card. The Tasks tab lists them
- * oldest first and numbered, each tagged with the worker; opening the first
- * shows its delivery, the card, and the third task as another message on that
- * card; the card opens on the board.
+ * A task is what a worker is working on: the "Task:" line on its card, recorded
+ * each time it changes. Against the real server a new test worker takes two tasks
+ * from its board (one card in doing, then the next), and receives a message
+ * while on the second. The Tasks tab lists the two tasks, never the message;
+ * the second task's detail holds the message and its card.
  */
-test('Tasks lists every task in order, tagged with its worker, and a task opens its card and related messages', async ({ page }) => {
-  const nonce = Date.now().toString(36);
+async function seedTwoTasks(page: Page, nonce: string) {
   const worker = 'e2e-tasks-' + nonce;
-  const texts = ['first task ' + nonce, 'second task ' + nonce, 'third task ' + nonce];
+  return page.evaluate(async ({ worker, nonce }) => {
+    const j = async (r: Response) => ({ status: r.status, body: await r.json().catch(() => ({})) });
+    const post = (path: string, body: object) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j);
+    const patch = (path: string, body: object) => fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j);
+    const recorded = async (n: number) => {
+      for (let i = 0; i < 40; i++) {
+        await fetch('/api/sessions');
+        const d = await (await fetch('/api/task-history?session=' + encodeURIComponent(worker) + '&q=' + encodeURIComponent(nonce))).json();
+        if ((d.total || 0) >= n) return d.total;
+        await new Promise(res => setTimeout(res, 500));
+      }
+      return -1;
+    };
+    // A stopped worker is enough: its task line comes from its doing card.
+    const mk = await post('/api/sessions', { name: worker, dir: '/tmp', provider: 'codex' });
+    const a = await post('/api/board', { title: 'First task ' + nonce, status: 'doing', session: worker });
+    const first = await recorded(1);
+    await patch('/api/board/' + a.body.id, { status: 'done', evidence: 'none: e2e seed' });
+    const b = await post('/api/board', { title: 'Second task ' + nonce, status: 'doing', session: worker });
+    const second = await recorded(2);
+    const msg = await post('/api/history', { text: 'a message during the second task ' + nonce, type: 'user', session: worker });
+    return { worker, cards: [a.body.id, b.body.id], statuses: [mk.status, a.status, b.status], first, second, msg: msg.status };
+  }, { worker, nonce });
+}
+
+test('Tasks lists the tasks a worker took on, in order, and a task opens its card and messages', async ({ page }) => {
+  const nonce = Date.now().toString(36);
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).switchView === 'function', { timeout: 20000 });
-  // Seeded through the page's own authenticated fetch, one after another so
-  // the server stamps them in order.
-  const seed = await page.evaluate(async ({ worker, texts }) => {
-    const ids: number[] = [];
-    for (const text of texts) {
-      const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, type: 'user', session: worker }) });
-      ids.push((await r.json()).id);
-      await new Promise(res => setTimeout(res, 20));
-    }
-    const c = await fetch('/api/board', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Tasks tab card ' + worker, status: 'todo', session: worker }) });
-    const card = (await c.json()).id;
-    const link = async (id: number) => (await fetch('/api/history/MSG-' + id + '/card', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session: worker, card_id: card, reason: 'e2e tasks tab' }) })).status;
-    return { ids, card, links: [await link(ids[0]), await link(ids[2])] };
-  }, { worker, texts });
-  expect(seed.ids.every(Boolean), JSON.stringify(seed)).toBe(true);
-  expect(seed.card, JSON.stringify(seed)).toBeTruthy();
-  expect(seed.links, JSON.stringify(seed)).toEqual([200, 200]);
+  const seed = await seedTwoTasks(page, nonce);
+  expect(seed.statuses, JSON.stringify(seed)).toEqual([201, 201, 201]);
+  expect([seed.first, seed.second], JSON.stringify(seed)).toEqual([1, 2]);
 
-  await page.evaluate(() => (window as any).switchView('tasks'));
-  await expect(page.locator('#tab-tasks')).toHaveClass(/active/);
+  await page.locator('#tab-tasks').click();
   await expect(page.locator('#tasks-view')).toBeVisible();
-  // Narrow to this worker the way a person would: from the worker menu.
-  const fetched = page.waitForRequest(r => r.url().includes('/api/history?') && r.url().includes('order=asc') && r.url().includes('session=' + encodeURIComponent(worker)));
-  await page.evaluate((w) => (window as any)._tasksByWorker(w), worker);
+  const fetched = page.waitForResponse(r => r.url().includes('/api/task-history?') && r.url().includes('q=' + nonce));
+  await page.locator('#tasks-search').fill(nonce);
   await fetched;
 
   const items = page.locator('#tasks-list .task-item');
-  await expect(items).toHaveCount(3, { timeout: 15000 });
-  for (let i = 0; i < 3; i++) {
-    await expect(items.nth(i)).toContainText(texts[i]);
-    await expect(items.nth(i).locator('.task-num')).toHaveText('#' + (i + 1));
-    await expect(items.nth(i).locator('.msg-sess-link')).toHaveText(worker);
-  }
-  await expect(page.locator('#tasks-count')).toContainText('of 3 for ' + worker);
+  await expect(items).toHaveCount(2, { timeout: 15000 });
+  await expect(items.nth(0).locator('.task-title')).toHaveText('First task ' + nonce);
+  await expect(items.nth(1).locator('.task-title')).toHaveText('Second task ' + nonce);
+  await expect(items.nth(0).locator('.task-num')).toHaveText('#1');
+  await expect(items.nth(1).locator('.task-num')).toHaveText('#2');
+  for (let i = 0; i < 2; i++) await expect(items.nth(i).locator('.msg-sess-link')).toHaveText(seed.worker);
+  await expect(items.nth(0)).toContainText(/ran \d/);
+  await expect(items.nth(1)).toContainText('current');
+  // A message is never a task row.
+  await expect(page.locator('#tasks-list')).not.toContainText('a message during the second task');
 
-  // Opening the first task shows its facts, its card and the other message on that card.
-  await items.nth(0).locator('.task-row .msg-body').click();
-  const detail = page.locator('#tasks-detail-' + seed.ids[0]);
+  // The second task opens: started, current, its card and the message it received.
+  await items.nth(1).locator('.task-row').click();
+  const detail = items.nth(1).locator('.task-detail');
   await expect(detail).toBeVisible();
-  await expect(detail).toContainText('Delivery');
-  await expect(detail).toContainText('MSG-' + seed.ids[0]);
-  await expect(detail.locator('.task-card-open')).toContainText(String(seed.card));
-  await expect(detail.locator('.task-card-msgs')).toContainText('MSG-' + seed.ids[2]);
-  await expect(detail.locator('.task-card-msgs')).not.toContainText('MSG-' + seed.ids[0]);
-  // The second task has no card and says so.
-  await items.nth(1).locator('.task-row .msg-body').click();
-  await expect(page.locator('#tasks-detail-' + seed.ids[1])).toContainText('No board card is linked');
-  // Clicking a task again closes it.
-  await items.nth(0).locator('.task-row .msg-body').click();
-  await expect(detail).toBeHidden();
+  await expect(detail).toContainText('Started');
+  await expect(detail).toContainText('Current task');
+  await expect(detail.locator('.task-card-open')).toContainText(String(seed.cards[1]));
+  await expect(detail.locator('.task-msgs')).toContainText('a message during the second task ' + nonce, { timeout: 10000 });
+  // The first task ended when the second began, and did not receive that message.
+  await items.nth(0).locator('.task-row').click();
+  const first = items.nth(0).locator('.task-detail');
+  await expect(first).toContainText('Ended');
+  await expect(first.locator('.task-msgs')).not.toContainText('a message during the second task');
+  // Clicking again closes it.
+  await items.nth(0).locator('.task-row').click();
+  await expect(first).toBeHidden();
 
   // The card opens on the board.
-  await items.nth(0).locator('.task-row .msg-body').click();
-  await detail.locator('.task-card-open').click();
+  await detail.locator('.task-card-open').first().click();
   await expect(page.locator('#tab-board')).toHaveClass(/active/);
-  await expect(page.locator('body')).toContainText('Tasks tab card ' + worker, { timeout: 10000 });
+  await expect(page.locator('body')).toContainText('Second task ' + nonce, { timeout: 10000 });
 });
 
-test("a worker's Tasks tab lists only that worker's tasks, in order", async ({ page }) => {
+test("a worker's Tasks tab lists that worker's tasks", async ({ page }) => {
   const nonce = Date.now().toString(36);
-  const worker = 'e2e-probe';
-  const texts = ['probe task one ' + nonce, 'probe task two ' + nonce];
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).openPeek === 'function', { timeout: 20000 });
-  const ok = await page.evaluate(async ({ worker, texts }) => {
-    const out: number[] = [];
-    for (const text of texts) {
-      out.push((await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, type: 'user', session: worker }) })).status);
-      await new Promise(res => setTimeout(res, 20));
-    }
-    // Another worker's task must not appear in this worker's tab.
-    out.push((await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'elsewhere ' + texts[0], type: 'user', session: 'e2e-tasks-other' }) })).status);
-    return out;
-  }, { worker, texts });
-  expect(ok.every(s => s === 200), String(ok)).toBe(true);
+  const seed = await seedTwoTasks(page, nonce);
+  expect([seed.first, seed.second], JSON.stringify(seed)).toEqual([1, 2]);
 
-  await page.evaluate((w) => (window as any).openPeek(w), worker);
+  await page.evaluate((w) => (window as any).openPeek(w), seed.worker);
   await expect(page.locator('#peek-overlay')).toBeVisible();
   await page.locator('#peek-tab-tasks').click();
-  await expect(page.locator('#peek-tab-tasks')).toHaveClass(/active/);
   const panel = page.locator('#peek-tasks-panel');
   await expect(panel).toBeVisible();
+  await panel.locator('#peek-tasks-search').fill(nonce);
   const items = panel.locator('.task-item');
-  await expect(items.last()).toContainText(texts[1], { timeout: 15000 });
-  const n = await items.count();
-  await expect(items.nth(n - 2)).toContainText(texts[0]);
-  const nums = await items.locator('.task-num').allTextContents();
-  const seq = nums.map(t => parseInt(t.replace('#', ''), 10));
-  expect(seq, 'numbered in order').toEqual(seq.slice().sort((a, b) => a - b));
-  for (const tag of await items.locator('.msg-sess-link').allTextContents()) expect(tag).toBe(worker);
-  await expect(panel).not.toContainText('elsewhere ' + texts[0]);
-  // A task opens its detail inside the worker's tab too.
-  const lastId = await items.last().getAttribute('data-task-id');
-  await items.last().locator('.task-row .msg-body').click();
-  await expect(page.locator('#peek-tasks-detail-' + lastId)).toContainText('Delivery');
+  await expect(items).toHaveCount(2, { timeout: 15000 });
+  await expect(items.nth(0).locator('.task-title')).toHaveText('First task ' + nonce);
+  await expect(items.nth(1).locator('.task-title')).toHaveText('Second task ' + nonce);
+  await expect(panel).not.toContainText('a message during the second task');
+  await items.nth(1).locator('.task-row').click();
+  await expect(items.nth(1).locator('.task-msgs')).toContainText('a message during the second task ' + nonce, { timeout: 10000 });
 });
