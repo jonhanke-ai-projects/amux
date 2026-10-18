@@ -2892,6 +2892,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekLogAtClose": {
+      "kind": "command._peekLogAtClose",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekLogAtMore": {
+      "kind": "command._peekLogAtMore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekLogAtPaint": {
+      "kind": "command._peekLogAtPaint",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekLookupSelection": {
       "kind": "command._peekLookupSelection",
       "feedback_required": true,
@@ -2990,6 +3008,12 @@
     },
     "_peekNewSchedule": {
       "kind": "command._peekNewSchedule",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekOpenLogAt": {
+      "kind": "command._peekOpenLogAt",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

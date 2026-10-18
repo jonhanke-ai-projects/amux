@@ -7957,7 +7957,7 @@ function render() {
         const hits = _logMatches[s.name];
         const sq = searchQuery.replace(/'/g,"\\'");
         return hits.slice(0, 2).map((h, hi) =>
-          `<div class="card-log-hit" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}',hitIdx:${hi}})"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
+          `<div class="card-log-hit" onclick="event.stopPropagation();_peekOpenLogAt('${s.name}',${parseInt(h.line, 10) || 0},'${sq}')"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
       ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || _goalTileShown(s.goal)) ? `<div class="badges">
@@ -15894,6 +15894,7 @@ function openPeek(name, opts) {
   // PREVIOUS session's terminal when opening a different one (2026-07-16).
   _lastLiveHTML = '';
   _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };  // reset the load-earlier state
+  _peekLogAt = null;
   const searchInp = document.getElementById('peek-search');
   if (searchInp) {
     searchInp.value = prefillQuery;
@@ -18591,7 +18592,79 @@ function _peekLeaseStart() { /* removed — no more resize-on-peek to lease (AMU
 let _lastLiveHTML = '';
 let _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };
 const _PEEK_LOG_CHUNK_KB = 192;
+// A search hit names a line of the terminal log ("mixpeek-general.log:337458"),
+// usually far older than the loaded scrollback. Opening one shows the lines
+// around it above the live view, scrolled to the hit (Ethan, 2026-10-18:
+// "these should go to that location in the terminal/log").
+let _peekLogAt = null;   // {name, line, rotated, first, last, total, lines}
+function _peekLogAtHTML() {
+  const w = _peekLogAt;
+  if (!w.lines) return '<div class="peek-earlier-bar">Loading line ' + w.line.toLocaleString() + '\u2026</div>';
+  const file = esc(w.name) + '.log' + (w.rotated ? '.1' : '');
+  const head = '<div class="peek-earlier-bar peek-logat-bar">'
+    + (w.first > 1 ? '<button class="btn btn-sm" onclick="_peekLogAtMore(-1)">\u25B2 Earlier</button>' : '<span>start of log</span>')
+    + '<span>' + file + ' \u00b7 line ' + w.line.toLocaleString() + ' of ' + w.total.toLocaleString() + '</span>'
+    + '<button class="btn btn-sm" onclick="_peekLogAtClose()">Back to live</button></div>';
+  const at = w.line - w.first;
+  const block = _peekHtml(w.lines.slice(0, at).join('\n'))
+    + '<div class="peek-logat-hit">' + _peekHtml(w.lines[at] || ' ') + '</div>'
+    + _peekHtml(w.lines.slice(at + 1).join('\n'));
+  const foot = '<div class="peek-earlier-bar peek-logat-bar">'
+    + (w.last < w.total ? '<button class="btn btn-sm" onclick="_peekLogAtMore(1)">\u25BC Later</button>' : '<span>end of log</span>')
+    + '<span>live view below</span></div>';
+  return head + '<div class="peek-earlier-block peek-logat-block">' + block + '</div>' + foot;
+}
+async function _peekLogAtLoad(before, after) {
+  const w = _peekLogAt;
+  if (!w) return 'closed';
+  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(w.name) + '/log?at_line=' + w.line
+    + '&before=' + before + '&after=' + after + (w.rotated ? '&rotated=1' : ''), { headers: _authHeaders() });
+  const d = await r.json().catch(() => ({}));
+  if (_peekLogAt !== w) return 'stale';
+  if (!r.ok) { _peekLogAt = null; showToast(d.error || 'Could not open the log at that line'); return 'error'; }
+  Object.assign(w, { first: d.first, last: d.last, total: d.total, lines: d.lines, before, after });
+  return 'loaded';
+}
+function _peekLogAtPaint(jump) {
+  lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+  applyPeekSearch(true, false);
+  if (!jump) return;
+  _peekPendingFindScroll = false;
+  const hit = document.querySelector('#peek-body .peek-logat-hit');
+  if (!hit) return;
+  const m = hit.querySelector('.peek-highlight');
+  if (m) { peekSearchIndex = Number(m.dataset.idx); _peekScrollTo(peekSearchIndex, true, true); }
+  else _peekJumpTo(hit);
+}
+async function _peekOpenLogAt(name, line, query, rotated) {
+  line = parseInt(line, 10);
+  if (!name || !(line > 0)) return;
+  _peekDeepClose();
+  if (peekSession !== name || !document.getElementById('peek-overlay').classList.contains('active')) openPeek(name, { query: query || '' });
+  else if (query && query !== peekSearchQuery) { const inp = document.getElementById('peek-search'); if (inp) inp.value = query; peekSearchQuery = query; }
+  const w = _peekLogAt = { name, line, rotated: !!rotated };
+  _peekFollowBottom = false;
+  _peekLogAtPaint(false);
+  if (await _peekLogAtLoad(120, 120) === 'loaded' && _peekLogAt === w) _peekLogAtPaint(true);
+  else _peekLogAtPaint(false);
+}
+async function _peekLogAtMore(dir) {
+  const w = _peekLogAt;
+  if (!w || !w.lines) return;
+  if (await _peekLogAtLoad(dir < 0 ? w.before + 300 : w.before, dir > 0 ? w.after + 300 : w.after) !== 'loaded') return;
+  // Earlier lines grow the block upward; bring the hit back into view.
+  _peekLogAtPaint(true);
+}
+function _peekLogAtClose() {
+  _peekLogAt = null;
+  lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+  applyPeekSearch(true, false);
+  _peekFollowBottom = true;
+  const body = document.getElementById('peek-body');
+  if (body) body.scrollTop = body.scrollHeight;
+}
 function _peekEarlierHTML() {
+  if (_peekLogAt && _peekLogAt.name === peekSession) return _peekLogAtHTML();
   // Thin mode: tmux's scrollback is already the whole history; the bar would
   // page in the transcript re-render this mode exists to drop.
   if (_peekEarlier.hidden || _peekThin) return '';
@@ -19144,7 +19217,7 @@ async function _peekDeepSearch() {
           + Math.round(d.index_lag_bytes / 1048576).toLocaleString() + ' MB not indexed yet</span>' : '')
       + '</span>'
       + '<a href="#" onclick="event.preventDefault();_peekDeepClose()">close</a></div>'
-      + (hits.length ? hits.map(h => '<div class="peek-deep-hit"><div class="peek-deep-meta">'
+      + (hits.length ? hits.map(h => '<div class="peek-deep-hit"' + _peekDeepHitOpen(h, q) + '><div class="peek-deep-meta">'
           + esc(label[h.type] || h.type) + ' \u00b7 ' + esc(h.id || '') + '</div>'
           // The server HTML-escapes the snippet and adds only <mark> (search.rs render_snippet).
           + '<div class="peek-deep-snip">' + (h.snippet || '') + '</div></div>').join('')
@@ -19153,6 +19226,14 @@ async function _peekDeepSearch() {
     if (e.name === 'AbortError') return;
     box.innerHTML = '<div class="peek-deep-head">Search failed: ' + esc(String(e.message || e)) + '</div>';
   }
+}
+// A terminal-log hit's id is "<worker>.log:<line>" (or ".log.1" when it is in
+// the rotated generation); tapping it opens the log at that line.
+function _peekDeepHitOpen(h, q) {
+  const m = h.type === 'log' && /^(.+?)\.log(\.1)?:(\d+)$/.exec(h.id || '');
+  if (!m) return '';
+  return ' role="button" tabindex="0" title="Open the log at this line" onclick="_peekOpenLogAt(' + esc(JSON.stringify(m[1]))
+    + ',' + m[3] + ',' + esc(JSON.stringify(q)) + ',' + (m[2] ? 'true' : 'false') + ')"';
 }
 function _peekDeepClose() {
   if (_peekDeepAbort) _peekDeepAbort.abort();
