@@ -1064,6 +1064,16 @@ check_crash_reports() { # <dry:0|1>
   fi
   CRASH_PRUNED=$pruned
   echo "mac-cleanup: crash reports: last 24h $( [ -n "$top" ] && printf '%s' "$top" | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s%s x%d", s, $0, c; s=", "}' || echo none), pruned ${pruned} older than ${CRASH_KEEP_DAYS}d$( [ "$DRY" = 1 ] && [ "$old" -gt 0 ] && echo " (would prune ${old}, dry run)")"
+  # Mac crashes RCA 20261018-105230: the Python crashes are grpc's fork handler
+  # in interpreters reading a shared site-packages; a missing .pth there is the
+  # next thing to check, so say whether each one carries it.
+  local gsp gn=0 gh=0 gmiss=""
+  for gsp in /usr/local/lib/python3.*/site-packages /opt/homebrew/lib/python3.*/site-packages; do
+    [ -d "$gsp/grpc" ] || continue
+    gn=$((gn+1))
+    if [ -f "$gsp/amux-grpc-fork-safe.pth" ]; then gh=$((gh+1)); else gmiss="$gmiss $gsp"; fi
+  done
+  echo "mac-cleanup: python grpc fork-safe defaults: ${gh} of ${gn} site-packages with grpc carry them${gmiss:+; missing:${gmiss} (install: scripts/install-python-grpc-defaults.sh)}"
 }
 
 check_launchd_failing() {
