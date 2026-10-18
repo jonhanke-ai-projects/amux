@@ -275,6 +275,34 @@ pub(crate) fn grpc_fork_safe_exports(name: &str) -> String {
         .to_string()
 }
 
+/// The parallelism knobs a worker's own tools read, defaulted to its declared
+/// CPU budget (`AMUX_WORKER_CPUS`, worker > group > global). Before this the
+/// profile was declare-only: `amux resources` printed it and nothing read it, so
+/// Rust test binaries, cargo, rayon, tokio and `pytest -n auto` sized themselves
+/// to all 28 cores. Mac CPU RCA 20261018-085309: one isolated lane held ~1100%
+/// (a `mvs_shard` test binary at 777% plus ten xdist workers) at load15 40.6/28.
+/// `${VAR:-N}`, so a value the lane or any scope sets explicitly still wins.
+/// Unset or invalid budgets change nothing.
+pub(crate) fn worker_cpu_budget_exports(name: &str) -> String {
+    let Some(raw) = scoped_setting_in(&home(), name, "AMUX_WORKER_CPUS") else {
+        return String::new();
+    };
+    let Some(n) = raw.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 1.0).map(|v| v.floor() as u32) else {
+        tracing::warn!(session = name, value = %raw, measured = true, n_considered = 1,
+            verdict = "worker_cpus_invalid",
+            "AMUX_WORKER_CPUS is not a number of at least 1; the worker's tools keep their machine-wide defaults");
+        return String::new();
+    };
+    tracing::info!(session = name, cpus = n, measured = true, n_considered = 1,
+        verdict = "worker_cpu_budget_applied",
+        "worker shell defaults cargo, Rust test, rayon, tokio, OpenMP and pytest-xdist parallelism to AMUX_WORKER_CPUS");
+    ["CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "RAYON_NUM_THREADS", "TOKIO_WORKER_THREADS",
+     "OMP_NUM_THREADS", "PYTEST_XDIST_AUTO_NUM_WORKERS"]
+        .iter()
+        .map(|k| format!("export {k}=\"${{{k}:-{n}}}\"; "))
+        .collect()
+}
+
 pub(crate) fn docker_vm_exports(name: &str) -> String {
     let Some(vm) = scoped_setting_in(&home(), name, "AMUX_DOCKER_VM") else {
         return String::new();
@@ -324,6 +352,7 @@ pub(crate) fn surviving_shell_scope_rc(name: &str) -> String {
     rc.push_str(&workspace_isolation_exports(name));
     rc.push_str(&docker_vm_exports(name));
     rc.push_str(&grpc_fork_safe_exports(name));
+    rc.push_str(&worker_cpu_budget_exports(name));
     rc.push_str(&tmux_fleet_exports(name));
     rc
 }
@@ -396,6 +425,7 @@ pub(crate) fn headless_turn_prelude(name: &str, provider: &str, work_dir: &str) 
     rc.push_str(&workspace_isolation_exports(name));
     rc.push_str(&docker_vm_exports(name));
     rc.push_str(&grpc_fork_safe_exports(name));
+    rc.push_str(&worker_cpu_budget_exports(name));
     let local_cli_dir = home().join("bin");
     if local_cli_dir.join("amux").is_file() {
         rc.push_str(&format!(
@@ -16193,6 +16223,7 @@ pub(crate) async fn start_session(
     shell_rc.push_str(&workspace_isolation_exports(name));
     shell_rc.push_str(&docker_vm_exports(name));
     shell_rc.push_str(&grpc_fork_safe_exports(name));
+    shell_rc.push_str(&worker_cpu_budget_exports(name));
     // Profiles often prepend ~/.local/bin again. An isolated server with its
     // own installed CLI must put that CLI first AFTER profile/scope sourcing;
     // otherwise its workers silently call the unrelated main-server binary.
@@ -55405,6 +55436,39 @@ mod docker_vm_tests {
         std::fs::write(home.path().join("sessions").join("lane.env"), "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\n").unwrap();
         let rc = headless_turn_prelude("lane", "claude", "/tmp");
         assert!(rc.contains(&ex), "an isolated worker's prelude carries the grpc defaults: {rc}");
+    }
+
+    /// Mac CPU RCA 20261018-085309: a declared CPU budget reaches the worker's
+    /// tools, a value the lane set wins, and unset or invalid changes nothing.
+    #[test]
+    fn a_declared_worker_cpu_budget_defaults_tool_parallelism() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let env = home.path().join("sessions").join("lane.env");
+        std::fs::write(&env, "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\n").unwrap();
+        assert_eq!(worker_cpu_budget_exports("lane"), "", "unset is a no-op");
+        std::fs::write(&env, "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\nAMUX_WORKER_CPUS=\"lots\"\n").unwrap();
+        assert_eq!(worker_cpu_budget_exports("lane"), "", "an invalid budget is a no-op");
+        std::fs::write(&env, "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\nAMUX_WORKER_CPUS=\"8\"\n").unwrap();
+        let ex = worker_cpu_budget_exports("lane");
+        let run = |pre: &str| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{pre}{ex} printf '%s %s %s %s' \"$RUST_TEST_THREADS\" \"$CARGO_BUILD_JOBS\" \"$PYTEST_XDIST_AUTO_NUM_WORKERS\" \"$RAYON_NUM_THREADS\""))
+                .env_remove("RUST_TEST_THREADS")
+                .env_remove("CARGO_BUILD_JOBS")
+                .env_remove("PYTEST_XDIST_AUTO_NUM_WORKERS")
+                .env_remove("RAYON_NUM_THREADS")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        assert_eq!(run(""), "8 8 8 8");
+        assert_eq!(run("export RUST_TEST_THREADS=2; "), "2 8 8 8", "a value the lane set wins");
+        // An isolated worker's real prelude carries it.
+        let rc = headless_turn_prelude("lane", "claude", "/tmp");
+        assert!(rc.contains(&ex), "an isolated worker's prelude carries the CPU budget: {rc}");
     }
 
     /// DESKT-72: unset changes nothing; group scope routes Docker and installs
