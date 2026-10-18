@@ -51447,6 +51447,106 @@ const _RECLAIM_CATS = {
   snapshot:  { label: 'APFS snapshots',  hint: 'Holds deleted blocks. Not deletable from here.', safe: false },
 };
 
+// Recommendations: the scan's findings grouped the way a person cleans up, by
+// the tool that owns them, each with that tool's own cleanup command where one
+// exists (it knows what is still referenced; rm does not). Pure client-side
+// arithmetic over the findings the scan already returned. Selecting builds a
+// shell script to read and run, beside the existing quarantine action: nothing
+// here deletes anything.
+const _RECLAIM_TOOLS = [
+  { re: /\/(Library\/pnpm\/store|\.pnpm-store|\.local\/share\/pnpm\/store)(\/|$)/, key: 'pnpm', label: 'pnpm store', cmd: 'pnpm store prune', safe: true },
+  { re: /\/\.npm(\/_cacache)?(\/|$)/, key: 'npm', label: 'npm cache', cmd: 'npm cache clean --force', safe: true },
+  { re: /\/(Library\/Caches\/Yarn|\.yarn\/berry\/cache|\.cache\/yarn)(\/|$)/, key: 'yarn', label: 'Yarn cache', cmd: 'yarn cache clean', safe: true },
+  { re: /\/(Library\/Caches\/uv|\.cache\/uv)(\/|$)/, key: 'uv', label: 'uv cache', cmd: 'uv cache clean', safe: true },
+  { re: /\/(Library\/Caches\/pip|\.cache\/pip)(\/|$)/, key: 'pip', label: 'pip cache', cmd: 'python3 -m pip cache purge', safe: true },
+  { re: /\/(Library\/Caches\/ms-playwright|\.cache\/ms-playwright)(\/|$)/, key: 'playwright', label: 'Playwright browsers', cmd: 'npx playwright uninstall --all', safe: true },
+  { re: /\/go\/pkg\/mod(\/|$)/, key: 'gomod', label: 'Go module cache', cmd: 'go clean -modcache', safe: true },
+  { re: /\/Library\/Caches\/go-build(\/|$)/, key: 'gobuild', label: 'Go build cache', cmd: 'go clean -cache', safe: true },
+  { re: /\/Library\/Caches\/Homebrew(\/|$)/, key: 'brew', label: 'Homebrew downloads', cmd: 'brew cleanup -s', safe: true },
+  { re: /\/Library\/Developer\/Xcode\/DerivedData(\/|$)/, key: 'deriveddata', label: 'Xcode DerivedData', cmd: 'rm -rf ~/Library/Developer/Xcode/DerivedData/*', safe: true },
+  { re: /\/Library\/Developer\/CoreSimulator(\/|$)/, key: 'simulators', label: 'Unavailable simulators', cmd: 'xcrun simctl delete unavailable', safe: true },
+  { re: /\/\.cache\/huggingface(\/|$)/, key: 'hf', label: 'Hugging Face models', cmd: 'huggingface-cli delete-cache', safe: false },
+  { re: /\/\.ollama\/models(\/|$)/, key: 'ollama', label: 'Ollama models', cmd: 'ollama list   # then: ollama rm <model>', safe: false },
+  { re: /\/(\.colima|\.lima|Library\/Containers\/com\.docker\.docker)(\/|$)/, key: 'docker', label: 'Docker and VM disks', cmd: 'docker system prune', safe: false },
+  { re: /\/\.codex(\/|$)/, key: 'codex', label: 'Codex history', cmd: null, safe: false },
+  { re: /\/\.claude\/projects(\/|$)/, key: 'claude', label: 'Claude Code transcripts', cmd: null, safe: false },
+];
+// Rebuildable output that lives in many projects: one row for all of them.
+const _RECLAIM_BUILD_DIRS = new Set(['node_modules', '.next', 'target', '.venv', 'venv', '__pycache__', '.turbo', '.gradle', 'dist', '.parcel-cache']);
+
+function _reclaimShq(p) { return "'" + String(p).replace(/'/g, "'\\''") + "'"; }
+
+function _reclaimRecs(findings) {
+  const groups = new Map();
+  (findings || []).forEach(f => {
+    if (!f || !f.path || f.category === 'snapshot' || !(f.bytes > 0)) return;
+    const tool = _RECLAIM_TOOLS.find(t => t.re.test(f.path));
+    const base = f.path.split('/').pop();
+    let key, label, cmd = null, safe;
+    if (tool) { key = 'tool:' + tool.key; label = tool.label; cmd = tool.cmd; safe = tool.safe; }
+    else if (_RECLAIM_BUILD_DIRS.has(base) && (f.regenerable || _RECLAIM_CATS[f.category]?.safe)) { key = 'build:' + base; label = base; safe = true; }
+    else { key = 'path:' + f.path; label = f.path.replace(/^\/Users\/[^/]+/, '~'); safe = !!(f.regenerable || _RECLAIM_CATS[f.category]?.safe); }
+    const g = groups.get(key) || { key, label, cmd, safe, bytes: 0, paths: [], detail: f.detail || '' };
+    g.bytes += f.bytes; g.paths.push(f.path);
+    groups.set(key, g);
+  });
+  const all = [...groups.values()].map(g => {
+    if (g.key.startsWith('build:') && g.paths.length > 1) g.label = `${g.label} in ${g.paths.length} projects`;
+    return g;
+  }).sort((a, b) => b.bytes - a.bytes);
+  return { safe: all.filter(g => g.safe), review: all.filter(g => !g.safe) };
+}
+
+function _reclaimRecState(rec) {
+  const n = rec.paths.filter(p => _reclaimSel.has(p)).length;
+  return n === 0 ? 'none' : (n === rec.paths.length ? 'all' : 'some');
+}
+
+function _reclaimToggleRec(key) {
+  const recs = _reclaimRecs(_reclaimScan?.findings);
+  const rec = [...recs.safe, ...recs.review].find(r => r.key === key);
+  if (!rec) return;
+  const on = _reclaimRecState(rec) !== 'all';
+  rec.paths.forEach(p => on ? _reclaimSel.add(p) : _reclaimSel.delete(p));
+  _reclaimRender();
+}
+
+function _reclaimSelectSafe() {
+  _reclaimRecs(_reclaimScan?.findings).safe.forEach(r => r.paths.forEach(p => _reclaimSel.add(p)));
+  _reclaimRender();
+}
+
+// The script for the current selection. A tool's own command when the whole
+// group is selected, otherwise one rm per selected path. Review items are
+// written commented out: selecting them puts them in front of you, not in a
+// script that runs on paste.
+function _reclaimScript() {
+  const recs = _reclaimRecs(_reclaimScan?.findings);
+  const lines = ['#!/bin/bash',
+    `# amux disk cleanup, generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} from the latest Disk scan.`,
+    '# Nothing has run. Read it, then run it yourself. Sizes are the scan\'s estimates.',
+    'set -u', ''];
+  let n = 0;
+  const emit = (rec, review) => {
+    const sel = rec.paths.filter(p => _reclaimSel.has(p));
+    if (!sel.length) return;
+    n++;
+    const pre = review ? '# ' : '';
+    lines.push(`# ${rec.label} (${_fmtBytes(rec.bytes)})${review ? ': review first, uncomment to run' : ''}`);
+    if (rec.cmd && sel.length === rec.paths.length) lines.push(pre + rec.cmd);
+    else sel.forEach(p => lines.push(pre + 'rm -rf -- ' + _reclaimShq(p)));
+    lines.push('');
+  };
+  recs.safe.forEach(r => emit(r, false));
+  recs.review.forEach(r => emit(r, true));
+  if (!n) lines.push('# Nothing selected. Tick items under Recommendations first.');
+  return lines.join('\n');
+}
+
+function _reclaimCopyScript() {
+  _copyTextWithToast(_reclaimScript(), 'Cleanup script copied. Nothing has run.');
+}
+
 const _KIND_COLORS = {
   model: '#a371f7', media: '#f0883e', image: '#3fb950', archive: '#e3b341',
   data: '#58a6ff', code: '#6e7681', build: '#f85149', doc: '#39c5cf', other: '#484f58',
@@ -51842,6 +51942,41 @@ function _reclaimTreemapSvg(nodes, w, h) {
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="display:block;border-radius:8px;overflow:hidden;">${body}</svg>`;
 }
 
+function _reclaimRecsPanel(findings) {
+  const recs = _reclaimRecs(findings);
+  const sum = arr => arr.reduce((a, r) => a + r.bytes, 0);
+  const row = r => {
+    const st = _reclaimRecState(r);
+    return `<label class="reclaim-rec${st !== 'none' ? ' on' : ''}" title="${esc(r.paths.length > 1 ? r.paths.length + ' paths' : r.paths[0])}">
+      <input type="checkbox"${st === 'all' ? ' checked' : ''}${st === 'some' ? ' data-partial="1"' : ''} onchange="_reclaimToggleRec('${escJs(r.key)}')">
+      <span class="reclaim-rec-main"><span class="reclaim-rec-label">${esc(r.label)}</span>
+        <code class="reclaim-rec-cmd">${esc(r.cmd || (r.paths.length > 1 ? 'rm -rf each path' : 'rm -rf -- ' + _reclaimShq(r.paths[0]).replace(/^'\/Users\/[^/]+/, "'~")))}</code></span>
+      <span class="reclaim-rec-size">${_fmtBytes(r.bytes)}</span>
+    </label>`;
+  };
+  const list = (arr, cap) => arr.slice(0, cap).map(row).join('') +
+    (arr.length > cap ? `<div class="reclaim-rec-more">${arr.length - cap} more in Findings below</div>` : '');
+  const selBytes = (findings || []).filter(f => _reclaimSel.has(f.path)).reduce((a, f) => a + (f.bytes || 0), 0);
+  return `<aside class="reclaim-recs">
+    <div class="reclaim-recs-hdr"><div class="reclaim-recs-title">Recommendations</div>
+      <div class="reclaim-recs-sub">Tick items to build a cleanup script. Nothing runs from here.</div></div>
+    <div class="reclaim-recs-body">
+      <div class="reclaim-recs-group"><span class="reclaim-chip safe">Safe to remove</span><span>${_fmtBytes(sum(recs.safe))}</span></div>
+      ${recs.safe.length ? list(recs.safe, 12) : '<div class="reclaim-rec-more">Nothing regenerable found.</div>'}
+      <div class="reclaim-recs-group"><span class="reclaim-chip review">Review first</span><span>${_fmtBytes(sum(recs.review))}</span></div>
+      ${recs.review.length ? list(recs.review, 10) : '<div class="reclaim-rec-more">Nothing large needs review.</div>'}
+    </div>
+    <div class="reclaim-recs-foot">
+      <span class="reclaim-recs-sel"><b>${_fmtBytes(selBytes)}</b> selected · ${_reclaimSel.size} item${_reclaimSel.size === 1 ? '' : 's'}</span>
+      <span class="reclaim-recs-btns">
+        <button class="btn" onclick="_reclaimSelectSafe()" data-repeatable>Select safe</button>
+        <button class="btn primary" onclick="_reclaimCopyScript()" data-repeatable${_reclaimSel.size ? '' : ' disabled'}>Copy script</button>
+      </span>
+      ${_reclaimSel.size ? `<details class="reclaim-script"><summary>Show script</summary><pre>${esc(_reclaimScript())}</pre></details>` : ''}
+    </div>
+  </aside>`;
+}
+
 function _reclaimRender() {
   const el = document.getElementById('reclaim-content');
   if (!el) return;
@@ -51963,6 +52098,31 @@ function _reclaimRender() {
     </div>`;
   }
 
+  // Headline: what is free, what the scan can vouch for, what needs a person,
+  // and what it never looked at. "Not mapped" is the used space the scan did not
+  // walk (system, apps, other volumes' clones): showing it keeps the other
+  // three numbers from reading as the whole disk.
+  {
+    const recs = _reclaimRecs(findings);
+    const sum = arr => arr.reduce((a, r) => a + r.bytes, 0);
+    const used = scan.df_total && scan.df_free != null ? scan.df_total - scan.df_free : null;
+    const unmapped = used != null && scan.bytes_seen != null ? Math.max(0, used - scan.bytes_seen) : null;
+    html += `<div class="metrics-cards reclaim-summary">
+      <div class="metrics-card"><div class="metrics-card-title">Free right now</div>
+        <div class="metrics-card-value">${scan.df_free != null ? _fmtBytes(scan.df_free) : '—'}</div>
+        <div class="metrics-card-sub">${scan.df_total ? 'of ' + _fmtBytes(scan.df_total) : 'volume size unknown'}</div></div>
+      <div class="metrics-card"><div class="metrics-card-title"><i class="reclaim-dot safe"></i>Safe to remove</div>
+        <div class="metrics-card-value">${_fmtBytes(sum(recs.safe))}</div>
+        <div class="metrics-card-sub">${recs.safe.length} item${recs.safe.length === 1 ? '' : 's'} · regenerable</div></div>
+      <div class="metrics-card"><div class="metrics-card-title"><i class="reclaim-dot review"></i>Needs review</div>
+        <div class="metrics-card-value">${_fmtBytes(sum(recs.review))}</div>
+        <div class="metrics-card-sub">${recs.review.length} item${recs.review.length === 1 ? '' : 's'} · your data</div></div>
+      <div class="metrics-card"><div class="metrics-card-title">Not mapped</div>
+        <div class="metrics-card-value">${unmapped != null ? _fmtBytes(unmapped) : '—'}</div>
+        <div class="metrics-card-sub">${unmapped != null ? 'system, apps and what the scan skipped' : 'not measured by this scan'}</div></div>
+    </div>`;
+  }
+
   // Category totals
   const actionable = totals.filter(t => t.category !== 'snapshot');
   if (actionable.length) {
@@ -51979,6 +52139,8 @@ function _reclaimRender() {
     html += '</div>';
   }
 
+  // Treemap beside the recommendations (stacked on narrow screens).
+  html += '<div class="reclaim-split"><div class="reclaim-split-main">';
   // Treemap
   if (_reclaimTree) {
     const rootPath = _reclaimTree.root?.path || _reclaimTreePath || '~';
@@ -51994,12 +52156,14 @@ function _reclaimRender() {
     // the box agree and nothing is letterboxed. Measured from the scroll pane
     // (minus its 16px padding either side) rather than assumed.
     const _mapW = Math.round(Math.max(300, Math.min(1200,
-      (document.getElementById('disk-view')?.clientWidth || document.getElementById('metrics-main')?.clientWidth || 900) - 32)));
+      (document.getElementById('disk-view')?.clientWidth || document.getElementById('metrics-main')?.clientWidth || 900) - 32
+        - (window.innerWidth > 900 ? 376 : 0))));
     const _mapH = window.innerWidth < 600 ? 300 : 340;
     html += '<div class="reclaim-map">' + _reclaimTreemapSvg(_reclaimTree.children || [], _mapW, _mapH) + '</div>';
     html += '<div class="reclaim-legend">' + Object.entries(_KIND_COLORS).map(([k, c]) =>
       `<span class="reclaim-legend-item"><i style="background:${c}"></i>${k}</span>`).join('') + '</div>';
   }
+  html += '</div>' + _reclaimRecsPanel(findings) + '</div>';
 
   // Findings table
   const shown = _reclaimCat ? findings.filter(f => f.category === _reclaimCat) : findings.filter(f => f.category !== 'snapshot');
@@ -52078,6 +52242,7 @@ function _reclaimRender() {
   }
 
   el.innerHTML = html;
+  el.querySelectorAll('.reclaim-rec input[data-partial]').forEach(i => { i.indeterminate = true; });
 }
 
 // ── Torrents tab ─────────────────────────────────────────────────────────────
