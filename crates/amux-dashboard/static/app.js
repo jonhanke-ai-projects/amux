@@ -18160,6 +18160,16 @@ function _peekUnwrapPaste(blockLines) {
   }
   return kept;
 }
+// One box-drawing line (a table border or row), on tag-free text. Shared by
+// highlightPrompts and wrapBoxBlocks so a message boundary never falls inside
+// a box run: wrapBoxBlocks wraps the run in a <div>, and a run that straddled
+// a message's closing tag left that message open to the end of the terminal
+// (Ethan, 2026-10-18: a pasted table turned every later line blue).
+function _isBoxLine(text) {
+  if (!/[\u2500-\u257f]/.test(text)) return false;
+  if (/[\u2500\u2501\u2550]/.test(text)) return true;              // a border/rule line
+  return (text.match(/[\u2502\u2503\u250c-\u257f]/g) || []).length >= 2;  // a content row
+}
 function highlightPrompts(html, opts) {
   const thin = !!(opts && opts.thin);
   const gemini = _peekGeminiPrompts();
@@ -18180,6 +18190,15 @@ function highlightPrompts(html, opts) {
     while (end < lines.length) {
       if (promptStart.test(plain[end])) break;
       if (/^\s*(?:gpt-[\w.-]+|o[1-9][\w.-]*)\s.*(?:·|context left)/i.test(plain[end])) break;
+      // A box is atomic: an indented table pasted into the message is taken
+      // whole, and any other box run ends the message before it starts.
+      if (_isBoxLine(plain[end])) {
+        let run = end;
+        while (run < lines.length && _isBoxLine(plain[run])) run++;
+        const indented = plain.slice(end, run).every(l => /^[ \t]{2,}\S/.test(l));
+        if (indented && /^[ \t]{2,}[┌╭]/.test(plain[end]) && /^[ \t]{2,}[└╰]/.test(plain[run - 1])) { end = run; continue; }
+        break;
+      }
       if (/^[ \t]{2,}\S/.test(plain[end]) && !/^\s*[│┃⏵]/.test(plain[end])) { end++; continue; }
       // Paragraph breaks belong to a message only when followed by another
       // indented paragraph, not by assistant output or terminal chrome.
@@ -18211,9 +18230,18 @@ function highlightPrompts(html, opts) {
   }
   return out.join('\n');
 }
+let _peekNestedReported = '';
 function _peekReclassifyPrompts() {
   const body = document.getElementById('peek-body');
   if (!body) return;
+  // A message inside another means a block was left open (unbalanced markup
+  // from a later render stage), and everything after it takes its colour.
+  // Reported once per worker so a sweep of the server log finds it.
+  const nested = body.querySelectorAll('.peek-prompt .peek-prompt').length;
+  if (nested && _peekNestedReported !== peekSession) {
+    _peekNestedReported = peekSession;
+    try { window._clientDebug && window._clientDebug('peek-prompt-nested', { measured: true, n_considered: body.querySelectorAll('.peek-prompt').length, nested, session: peekSession }); } catch (_) {}
+  }
   for (const el of body.querySelectorAll('.peek-prompt')) {
     const kind = _classifyPromptKind(el.textContent);
     for (const previous of _MSG_KIND_ORDER) el.classList.remove('peek-prompt-' + previous);
@@ -18229,16 +18257,7 @@ function _peekReclassifyPrompts() {
 // in a horizontal-scroll container so monospace alignment survives on narrow
 // screens instead of wrapping — which shredded tables and detached their borders.
 function wrapBoxBlocks(html) {
-  const BOX   = /[─-╿]/;              // any box-drawing char (U+2500–257F)
-  const HRULE = /[─━═]/;         // ─ ━ ═ → structural border line
-  const VERT  = /[│┃┌-╿]/g; // │┃ + corners/junctions/rounded/diagonals
-  const stripTags = s => s.replace(/<[^>]*>/g, '');
-  const isBoxLine = raw => {
-    const t = stripTags(raw);
-    if (!BOX.test(t)) return false;
-    if (HRULE.test(t)) return true;                 // a border/rule line
-    return (t.match(VERT) || []).length >= 2;       // a content row: │ a │ b │
-  };
+  const isBoxLine = raw => _isBoxLine(raw.replace(/<[^>]*>/g, ''));
   // Emoji render WIDER than the 2 monospace cells the terminal (and Claude's
   // table layout) reserve for them (e.g. ✅ = 2.13ch), so every emoji row's right
   // border drifts out of alignment. Force each emoji cluster to exactly 2ch —
