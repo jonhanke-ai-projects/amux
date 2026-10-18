@@ -25107,6 +25107,7 @@ fn session_subagents_from(
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
             let (kind, description, turns) = subagent_head(&p);
+            let (kind, description) = subagent_meta(&p.with_extension("meta.json"), kind, description);
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -25145,6 +25146,22 @@ fn session_subagents_from(
     // Most recently active first: a switcher is read to jump to what is moving.
     out.sort_by_key(|v| -(v["last_active"].as_i64().unwrap_or(0)));
     json!({"session": name, "subagents": out, "source": "transcripts"})
+}
+
+/// Claude Code writes `<agent>.meta.json` beside each transcript with the
+/// spawning call's `agentType` and `description`. Those outrank the head scan,
+/// which can pick up a `description` key from a tool schema in the forked
+/// context (every mxp-gs12 subagent read "Create a doc, or apply several
+/// operations..." that way).
+fn subagent_meta(meta: &Path, kind: Value, description: Value) -> (Value, Value) {
+    let Some(m) = std::fs::read(meta).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
+        return (kind, description);
+    };
+    let pick = |key: &str, fallback: Value| match m[key].as_str() {
+        Some(v) if !v.is_empty() => json!(v),
+        _ => fallback,
+    };
+    (pick("agentType", kind), pick("description", description))
 }
 
 /// Subagents older than this are not classified; `state` is null for them.
@@ -36116,6 +36133,19 @@ mod tests {
         assert!(worker_deny.explicit_deny);
         assert!(worker_deny.reason.contains("Explicit worker deny"));
         assert!(cross_group_send_ok("roamer", "target").is_err());
+    }
+
+    #[test]
+    fn a_subagent_is_labelled_from_its_meta_file_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("agent-a1.meta.json");
+        let scanned = (json!("general-purpose"), json!("Create a doc, or apply several operations"));
+        assert_eq!(subagent_meta(&meta, scanned.0.clone(), scanned.1.clone()), scanned, "no meta file: keep the scan");
+        std::fs::write(&meta, r#"{"agentType":"Explore","description":"Map shard write paths"}"#).unwrap();
+        assert_eq!(
+            subagent_meta(&meta, scanned.0.clone(), scanned.1.clone()),
+            (json!("Explore"), json!("Map shard write paths"))
+        );
     }
 
     #[test]
