@@ -1709,7 +1709,7 @@ pub fn finish_manual_shell_run(
     let note = outcome
         .note()
         .map(|s| s.chars().take(500).collect::<String>());
-    conn.execute(
+    let n = conn.execute(
         "UPDATE schedule_runs SET status=?1, note=?2, delivery=?3, submission=?4,
                 exit_code=?6, output_tail=?7
          WHERE id=?5 AND status='running'",
@@ -1722,7 +1722,22 @@ pub fn finish_manual_shell_run(
             outcome.shell_output().map(|o| o.exit_code),
             outcome.shell_output().map(|o| o.tail.as_str()),
         ],
-    )
+    )?;
+    // AF-648 parity: cron fires and record_run stamp the schedule row with the
+    // latest outcome; a manual Run did not, so a passing rerun of SCHED-646
+    // (2026-10-18) left the schedule reading last_delivery=error beside a
+    // green run row and failure_streak 0.
+    if n > 0 {
+        conn.execute(
+            "UPDATE schedules SET last_delivery=?1, last_refusal_reason=?2
+             WHERE id=(SELECT schedule_id FROM schedule_runs WHERE id=?3)",
+            rusqlite::params![outcome.status(), outcome.refusal_reason(), run_id],
+        )?;
+        tracing::info!(run_id, status = outcome.status(), measured = true, n_considered = 1,
+            verdict = "manual_shell_run_outcome_stamped",
+            "manual shell run finished; its outcome is stamped on the schedule row");
+    }
+    Ok(n)
 }
 
 /// Replace a cron fire's provisional row with what delivery actually did (AF-515).
@@ -3923,6 +3938,10 @@ mod tests {
         let run_id = first.run_id();
         store
             .write_async(move |conn| {
+                conn.execute(
+                    "UPDATE schedules SET last_delivery='error', last_refusal_reason='an older failure' WHERE id='SCHED-173'",
+                    [],
+                )?;
                 finish_manual_shell_run(
                     conn,
                     run_id,
@@ -3938,6 +3957,19 @@ mod tests {
             })
             .await
             .unwrap();
+        {
+            let conn = store.read().unwrap();
+            let (d, r): (Option<String>, Option<String>) = conn
+                .query_row("SELECT last_delivery, last_refusal_reason FROM schedules WHERE id='SCHED-173'", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(
+                (d.as_deref(), r.as_deref()),
+                (Some(RunOutcome::ShellOk { note: None, output: None }.status()), None),
+                "a manual run's outcome replaces the schedule's stale failure"
+            );
+        }
         let third = claim(&store, "manual:browser-c").await;
         assert!(
             third.started(),
