@@ -80,7 +80,19 @@ check "dry run: reports would prune" yes "$(grep -q 'would prune 2' "$FIX/out.tx
 mk; run 0 60
 check "keep=0: off" yes "$(ex "$D/mvs_shard-1111111111111111")"
 
-echo "6. the tick runs the arm"
+echo "6. scale and budget (self RCA 20261018-103045: the first live run took ~30 min on 5830 candidates)"
+mk; for i in $(seq 1 3000); do : > "$D/big-$i.x-cgu.$i.rcgu.o"; done
+find "$D" -name 'big-*.rcgu.o' -exec touch -t 202001010000 {} +
+awk 'BEGIN{for(i=0;i<40000;i++) printf "proc %d ethan txt REG 1,18 4096 %d /Applications/Some.app/Contents/lib%d.dylib\n", i, i, i}' >> "$FIX/lsof.base"
+s0=$(date +%s); run 3 60; el=$(( $(date +%s) - s0 ))
+check "3000 codegen units against a 40k-line lsof snapshot finish in under 30s (took ${el}s)" yes "$( [ "$el" -lt 30 ] && echo yes || echo no)"
+check "and all of them were pruned" yes "$(grep -q '+ 3001 orphaned .rcgu.o' "$FIX/out.txt" && echo yes || echo no)"
+printf 'launchd 1 root cwd DIR 1,18 64 2 /\n' > "$FIX/lsof.base"
+mk; prune_superseded_artifacts "$R" 3 60 0 0 > "$FIX/out.txt"
+check "a spent budget deletes nothing"   yes "$(ex "$D/mvs_shard-1111111111111111")"
+check "and says complete=no"             yes "$(grep -q 'complete=no' "$FIX/out.txt" && echo yes || echo no)"
+
+echo "7. the tick runs the arm"
 case "$TARGET_ROOTS" in "$HOME/.amux/tmp@3:$HOME/.amux/tmp@9:"*) r=yes ;; *) r=no ;; esac
 check "per-worker targets (~/.amux/tmp@3) are scanned before the deep walk" yes "$r"
 check "wired into the tick" yes "$(grep -q 'prune_superseded_artifacts "$TARGET_ROOTS"' "$TICK" && echo yes || echo no)"

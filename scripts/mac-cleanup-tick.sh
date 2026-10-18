@@ -1350,50 +1350,74 @@ reap_idle_cargo_targets() { # <roots> <idle_hours> <dry:0|1>
 #  - *.rcgu.o codegen units, which rustc deletes after a link it finishes, so
 #    one older than the age floor was left by a compile that was killed.
 # Never a file younger than the floor, and never one any process holds open.
-prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1>
-  local roots=$1 keep=$2 age=$3 dry=${4:-0}
-  local cands lsofsnap list t d now cutoff mt sz f stem last n kb=0 k_open=0 k_recent=0 n_exe=0 n_obj=0 n_targets=0 n_fail=0
+prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1> [budget_s]
+  # One pass per stage, never a process per file (self RCA 20261018-103045): the
+  # first version ran has_open_handle (sed + a regex grep over the whole lsof
+  # snapshot, ~55ms idle and far more under load) once per candidate. Its first
+  # live run had 5830 candidates, ran ~30 min, outlived SCHED-465's 600s limit and
+  # was killed before the done line, so the launchd fallback reran the tick. Now:
+  # stat in batches, one awk pass that drops every candidate lsof shows open, and
+  # a deadline (TARGET_BUDGET_S) checked between targets.
+  local roots=$1 keep=$2 age=$3 dry=${4:-0} budget=${5:-$TARGET_BUDGET_S}
+  local cands lsofsnap stats picks open_out t d now cutoff deadline f n_targets=0 n_fail=0 k_open=0 k_recent=0 n_exe=0 n_obj=0 kb=0 complete=yes
   SUPERSEDED_PRUNED=0; SUPERSEDED_PRUNED_KB=0
   if [ "${keep:-0}" -le 0 ]; then echo "mac-cleanup: superseded artifacts: off (AMUX_CLEANUP_SUPERSEDED_KEEP=0)"; return 0; fi
-  cands=$(mktemp "${TMPDIR:-/tmp}/sup-cands.XXXXXX"); lsofsnap=$(mktemp "${TMPDIR:-/tmp}/sup-lsof.XXXXXX"); list=$(mktemp "${TMPDIR:-/tmp}/sup-list.XXXXXX")
+  deadline=$(( $(date +%s) + budget ))
+  cands=$(mktemp "${TMPDIR:-/tmp}/sup-cands.XXXXXX"); lsofsnap=$(mktemp "${TMPDIR:-/tmp}/sup-lsof.XXXXXX")
+  stats=$(mktemp "${TMPDIR:-/tmp}/sup-stats.XXXXXX"); picks=$(mktemp "${TMPDIR:-/tmp}/sup-picks.XXXXXX"); open_out=$(mktemp "${TMPDIR:-/tmp}/sup-open.XXXXXX")
   find_cargo_targets "$roots" "$TARGET_DEPTH" "$TARGET_SCAN_S" | sort -u > "$cands"
   if ! { $LSOF_CMD > "$lsofsnap" 2>/dev/null && [ -s "$lsofsnap" ]; }; then
     echo "mac-cleanup: superseded artifacts: open handles UNMEASURED (lsof produced nothing): pruned 0, nothing is deleted without it"
-    rm -f -- "${cands:?}" "${lsofsnap:?}" "${list:?}"; return 0
+    rm -f -- "${cands:?}" "${lsofsnap:?}" "${stats:?}" "${picks:?}" "${open_out:?}"; return 0
   fi
   now=$(date +%s); cutoff=$(( now - age * 60 ))
   while IFS= read -r t; do
     [ -d "$t" ] || continue
+    if [ "$(date +%s)" -ge "$deadline" ]; then complete=no; break; fi
     n_targets=$((n_targets+1))
     for d in "$t"/*/deps "$t"/*/*/deps; do
       [ -d "$d" ] || continue
-      # Executables, newest first within each stem; everything past the first N is superseded.
-      : > "$list"
-      find "$d" -maxdepth 1 -type f -perm -u+x -name '*-????????????????' 2>/dev/null \
-        | grep -E -- '-[0-9a-f]{16}$' | while IFS= read -r f; do stat -c '%Y %s %n' "$f" 2>/dev/null || stat -f '%m %z %N' "$f" 2>/dev/null; done \
-        | awk '{ f=$0; sub(/^[0-9]+ [0-9]+ /,"",f); stem=f; sub(/-[0-9a-f]{16}$/,"",stem); print stem "\t" $1 "\t" $2 "\t" f }' \
-        | sort -t$'\t' -k1,1 -k2,2nr > "$list"
-      last=""; n=0
-      while IFS=$'\t' read -r stem mt sz f; do
-        if [ "$stem" != "$last" ]; then last=$stem; n=0; fi
-        n=$((n+1)); [ "$n" -le "$keep" ] && continue
-        if [ "$mt" -gt "$cutoff" ]; then k_recent=$((k_recent+1)); continue; fi
-        if has_open_handle "$f" "$lsofsnap"; then k_open=$((k_open+1)); continue; fi
-        n_exe=$((n_exe+1)); kb=$((kb + sz/1024))
-        if [ "$dry" != 1 ]; then rm -rf -- "${f:?}" "${f:?}.d" "${f:?}.dSYM"; [ -e "$f" ] && n_fail=$((n_fail+1)); fi
-      done < "$list"
-      # Orphaned codegen units.
-      while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        if has_open_handle "$f" "$lsofsnap"; then k_open=$((k_open+1)); continue; fi
-        sz=$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f" 2>/dev/null || echo 0); n_obj=$((n_obj+1)); kb=$((kb + sz/1024))
-        if [ "$dry" != 1 ]; then rm -f -- "${f:?}"; [ -e "$f" ] && n_fail=$((n_fail+1)); fi
-      done < <(find "$d" -maxdepth 1 -type f -name '*.rcgu.o' -mmin +"$age" 2>/dev/null)
+      # "<kind>\t<mtime>\t<size>\t<path>", every file in one stat batch per deps dir.
+      find "$d" -maxdepth 1 -type f \( -perm -u+x -name '*-????????????????' -o -name '*.rcgu.o' \) \
+        -exec sh -c 'stat -c "%Y %s %n" "$@" 2>/dev/null || stat -f "%m %z %N" "$@" 2>/dev/null' sh {} + 2>/dev/null >> "$stats"
     done
   done < "$cands"
+  # Executables: group by stem, newest first; past the first N and older than the
+  # cutoff is a pick. Codegen units: older than the cutoff is a pick. Too-young
+  # superseded copies are counted, not picked.
+  awk -v keep="$keep" -v cutoff="$cutoff" '
+    { f=$0; sub(/^[0-9]+ [0-9]+ /,"",f); mt=$1; sz=$2
+      if (f ~ /\.rcgu\.o$/) { if (mt < cutoff) print "obj\t" sz "\t" f; next }
+      if (f !~ /-[0-9a-f]{16}$/) next
+      stem=f; sub(/-[0-9a-f]{16}$/,"",stem); print "exe\t" stem "\t" mt "\t" sz "\t" f }' "$stats" \
+    | sort -t$'\t' -k1,1 -k2,2 -k3,3nr \
+    | awk -F'\t' -v keep="$keep" -v cutoff="$cutoff" '
+      $1=="obj" { print "obj\t" $2 "\t" $3; next }
+      { if ($2!=last) { last=$2; n=0 } n++; if (n<=keep) next
+        if ($3 >= cutoff) { print "young\t0\t" $5; next }
+        print "exe\t" $4 "\t" $5 }' > "$picks"
+  k_recent=$(awk -F'\t' '$1=="young"' "$picks" | wc -l | tr -d ' ')
+  # One pass over lsof: a pick is open when any whitespace token, or the NAME
+  # column, equals its path.
+  awk -v pf="$picks" 'BEGIN { while ((getline l < pf) > 0) { split(l, a, "\t"); if (a[1]!="young") want[a[3]]=1 } }
+    { for (i=1;i<=NF;i++) if ($i in want) open[$i]=1
+      if (NF>=9) { name=$0; for (i=1;i<9;i++) sub(/^[^[:space:]]+[[:space:]]+/,"",name); sub(/ \(deleted\)$/,"",name); if (name in want) open[name]=1 } }
+    END { for (p in open) print p }' "$lsofsnap" > "$open_out"
+  k_open=$(wc -l < "$open_out" | tr -d ' ')
+  # Drop the open ones in one awk pass, then delete in xargs batches.
+  # getline in BEGIN, never NR==FNR: with an empty first file NR==FNR holds for
+  # the whole second file and every pick would read as open.
+  awk -F'\t' -v of="$open_out" 'BEGIN { while ((getline l < of) > 0) open[l]=1 } $1!="young" && !($3 in open)' "$picks" > "$stats"
+  n_exe=$(awk -F'\t' '$1=="exe"' "$stats" | wc -l | tr -d ' ')
+  n_obj=$(awk -F'\t' '$1=="obj"' "$stats" | wc -l | tr -d ' ')
+  kb=$(awk -F'\t' '{ s += int($2/1024) } END { print s+0 }' "$stats")
+  if [ "$dry" != 1 ] && [ -s "$stats" ]; then
+    awk -F'\t' '{ print $3; if ($1=="exe") { print $3 ".d"; print $3 ".dSYM" } }' "$stats" | tr '\n' '\0' | xargs -0 rm -rf -- 2>/dev/null
+    while IFS=$'\t' read -r _ _ f; do [ -e "$f" ] && n_fail=$((n_fail+1)); done < "$stats"
+  fi
   SUPERSEDED_PRUNED=$((n_exe+n_obj)); SUPERSEDED_PRUNED_KB=$kb
-  echo "mac-cleanup: superseded artifacts: targets ${n_targets}, $( [ "$dry" = 1 ] && echo 'would prune' || echo pruned ) ${n_exe} superseded executable(s) + ${n_obj} orphaned .rcgu.o ($(fmt_kb "$kb")), kept: newest ${keep} per stem, younger than ${age}m ${k_recent}, open ${k_open}, failed ${n_fail}"
-  rm -f -- "${cands:?}" "${lsofsnap:?}" "${list:?}"
+  echo "mac-cleanup: superseded artifacts: targets ${n_targets}, complete=${complete}, $( [ "$dry" = 1 ] && echo 'would prune' || echo pruned ) ${n_exe} superseded executable(s) + ${n_obj} orphaned .rcgu.o ($(fmt_kb "$kb")), kept: newest ${keep} per stem, younger than ${age}m ${k_recent}, open ${k_open}, failed ${n_fail}, elapsed $(( $(date +%s) - now ))s"
+  rm -f -- "${cands:?}" "${lsofsnap:?}" "${stats:?}" "${picks:?}" "${open_out:?}"
 }
 
 # Find candidate detached worktree scratch checkouts (MO-3631/3633): a directory
@@ -2480,7 +2504,7 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
   echo "mac-cleanup: disk tight (${tgt_free}G free, under ${TARGET_TIGHT_FREE_GB}G): build output idle ${tgt_idle}h is reclaimable this tick, not ${TARGET_IDLE_H}h"
 fi
 tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S && reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
-tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP" "$SUPERSEDED_MIN_AGE_MIN" "$DRY"
+tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP" "$SUPERSEDED_MIN_AGE_MIN" "$DRY" "$TARGET_BUDGET_S"
 VMS_PRUNED=0
 # Images BEFORE the trim (Mac disk RCA 20261010-162636): the trim is what hands
 # freed VM blocks back to the host, and with images swept after it, the 2-4
