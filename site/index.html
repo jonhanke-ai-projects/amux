@@ -920,17 +920,47 @@
   </div>
 </div>
 
+
 <!-- walkthrough (gtm/walkthrough-e2e/publish.py) -->
 <section id="walkthrough">
   <div class="container">
     <div class="section-head reveal">
       <h2>See it end to end.</h2>
-      <p>One agent, then a whole team, in 3 minutes. <a href="/walkthrough/">Phone version and transcript</a>.</p>
+      <p>One agent, then a whole team, in 4 minutes. <a href="/walkthrough/">Phone version and transcript</a>.</p>
     </div>
     <video controls preload="none" playsinline poster="/walkthrough/amux-walkthrough-desktop.jpg" title="amux walkthrough: from one agent to a whole AI engineering team"
       style="width:100%;max-width:1100px;display:block;margin:0 auto;border-radius:14px;border:1px solid var(--border);background:#000">
       <source src="/walkthrough/amux-walkthrough-desktop.mp4" type="video/mp4">
     </video>
+  </div>
+</section>
+<section id="feature-videos">
+  <style>
+    .fv-wrap { display:grid; grid-template-columns: 1.6fr 1fr; gap: 28px; align-items:center; max-width:1100px; margin:0 auto; }
+    .fv-clip { display:block; border-radius:14px; overflow:hidden; border:1px solid var(--border); background:#000; }
+    .fv-clip video { width:100%; display:block; }
+    .fv-copy h3 { margin:0 0 10px; font-size:1.35rem; }
+    .fv-copy p { margin:0 0 18px; color:var(--fg-2); }
+    .fv-copy .btn { min-height:44px; }
+    @media (max-width: 600px) { .fv-wrap { grid-template-columns: 1fr; gap: 16px; } }
+  </style>
+  <div class="container">
+    <div class="section-head reveal">
+      <h2>Every feature, in a short clip.</h2>
+      <p>29 feature videos, newest first. <a href="/demos/">Browse the library</a>.</p>
+    </div>
+    <div class="fv-wrap reveal">
+      <a class="fv-clip" href="/demos/draw-realtime-sync/" aria-label="Draw: realtime sync across devices">
+        <video src="/demos/draw-realtime-sync/demo.mp4" poster="/demos/draw-realtime-sync/poster.jpg" autoplay loop muted playsinline
+          title="Draw syncing live between a laptop and a phone"></video>
+      </a>
+      <div class="fv-copy">
+        <h3>Draw, live on every device</h3>
+        <p>Sketch on your laptop and it appears on your phone as you draw. Draw back from the phone and the laptop
+          updates too, with each device's cursor labeled. It saves to a plain .excalidraw file on your machine.</p>
+        <a class="btn btn-primary" href="/demos/">All 29 feature videos →</a>
+      </div>
+    </div>
   </div>
 </section>
 <!-- walkthrough (gtm/walkthrough-e2e/publish.py) -->

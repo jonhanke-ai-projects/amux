@@ -314,9 +314,9 @@
     <video:video>
       <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-desktop.jpg</video:thumbnail_loc>
       <video:title>amux walkthrough: from one agent to a whole AI engineering team</video:title>
-      <video:description>A narrated tour of amux on the desktop: start one coding agent, then run a team in parallel worktrees, approve permissions, track work on the board, schedule prompts, share context and reach it all from your phone.</video:description>
+      <video:description>A narrated tour of amux on the desktop: start one coding agent, then run a team that coordinates with @mentions, answer only what needs you, chat beside the terminal, drain the board through status gates, and keep every message, log and commit on your own machine.</video:description>
       <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-desktop.mp4</video:content_loc>
-      <video:duration>209</video:duration>
+      <video:duration>245</video:duration>
       <video:publication_date>2026-10-17</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
