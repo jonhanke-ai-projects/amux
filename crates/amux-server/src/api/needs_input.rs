@@ -539,7 +539,7 @@ async fn get_queue(State(state): State<AppState>) -> Response {
 /// store must not allow: owner-only, the rule standing approvals use.
 pub(crate) fn refuse_worker(headers: &HeaderMap, action: &str) -> Option<Response> {
     let lane = super::alerts::hdr_worker(headers);
-    if lane.is_empty() {
+    if lane.is_empty() || super::session_verbs::admin_origin(headers, "needs_input_triage").is_some() {
         return None;
     }
     tracing::warn!(verdict = "triage_action", action, outcome = "refused_worker", caller = %lane,

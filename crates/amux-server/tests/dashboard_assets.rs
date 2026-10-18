@@ -1365,8 +1365,7 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "nested skin/connector settings must not render as an unset configuration"
     );
     assert!(
-        app.contains("_workerBoardConfigurationSet(\\'")
-            && app.contains("\\',null)\">Inherit</button>"),
+        app.contains("_boardOneSet(\\'' + escJs(name) + '\\',null)\">Inherit</button>"),
         "worker overrides need an explicit path back to inherited configuration"
     );
     let css = asset("app.css");

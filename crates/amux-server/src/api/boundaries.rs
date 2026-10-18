@@ -9,12 +9,14 @@
 //! - `GET /api/boundaries`: every boundary, whether its hook is actually
 //!   installed and wired, and how often it fired in the last 24h.
 //! - `GET /api/resources[?worker=<name>]`: the machine's capacity and
-//!   pressure, the heaviest workers, and one worker's own usage against the
-//!   resource profile it declared (`AMUX_WORKER_CPUS`, `AMUX_WORKER_MEM_GB`).
+//!   pressure, the heaviest workers by CPU and memory, where the CPU no worker
+//!   owns is going (`machine`), and one worker's own usage (default: the
+//!   caller's `X-Amux-Session`) against the resource profile it declared
+//!   (`AMUX_WORKER_CPUS`, `AMUX_WORKER_MEM_GB`).
 //! - [`boundaries_context_block`] is composed into every non-isolated
 //!   worker's launch context, so the rule text reaches each worker by default.
 
-use axum::{extract::Query, response::IntoResponse, routing::get, Json, Router};
+use axum::{extract::Query, http::HeaderMap, response::IntoResponse, routing::get, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -280,50 +282,72 @@ pub fn over_profile(cpu_percent: f64, rss_mb: f64, profile: &Value) -> Vec<Strin
     over
 }
 
-async fn resources(Query(q): Query<ResQuery>) -> impl IntoResponse {
-    let (host, sessions) = tokio::task::spawn_blocking(|| {
-        (crate::api::metrics::collect_system_metrics(), crate::api::metrics::collect_session_metrics())
+/// How old the host guard's sample may be before a request takes its own.
+const SAMPLE_MAX_AGE_S: i64 = 90;
+
+async fn resources(headers: HeaderMap, Query(q): Query<ResQuery>) -> impl IntoResponse {
+    // The process census comes from the host guard's tick (one `ps`, one
+    // `tmux list-panes -a`), never from a walk per request. This route used to
+    // spawn `pgrep -P` for every process under every worker: 71s at load 87 on
+    // 2026-10-17, past the CLI's 30s limit, so `amux resources` failed exactly
+    // when the resources boundary told workers to run it.
+    let (host, util) = tokio::task::spawn_blocking(|| {
+        (crate::api::metrics::collect_system_metrics(), crate::runtime_jobs::host_guard::utilization_fresh(SAMPLE_MAX_AGE_S))
     })
     .await
-    .unwrap_or((json!({}), vec![]));
+    .unwrap_or((json!({}), None));
     let pressure = crate::runtime_jobs::host_guard::current();
-    let mut live: Vec<&Value> = sessions.iter().filter(|s| s["rss_mb"].as_f64().unwrap_or(0.0) > 0.0).collect();
-    live.sort_by(|a, b| b["rss_mb"].as_f64().partial_cmp(&a["rss_mb"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
-    let row = |s: &Value| {
-        json!({
-            "name": s["name"], "cpu_percent": s["cpu_percent"], "rss_mb": s["rss_mb"],
-            "n_processes": s["pids"].as_array().map(|a| a.len()).unwrap_or(0),
-        })
+    let now = chrono::Utc::now().timestamp();
+    let workers: Vec<crate::runtime_jobs::host_guard::WorkerUse> = util.as_ref().map(|u| u.workers.clone()).unwrap_or_default();
+    let row = |w: &crate::runtime_jobs::host_guard::WorkerUse| {
+        json!({ "name": w.name, "cpu_percent": w.cpu_percent, "rss_mb": w.rss_mb, "n_processes": w.n_processes })
     };
-    let total_rss: f64 = live.iter().filter_map(|s| s["rss_mb"].as_f64()).sum();
-    let worker = q.worker.as_deref().filter(|w| !w.is_empty()).map(|w| {
-        let prof = profile(w);
-        match sessions.iter().find(|s| s["name"].as_str() == Some(w)) {
-            Some(s) => {
-                let cpu = s["cpu_percent"].as_f64().unwrap_or(0.0);
-                let rss = s["rss_mb"].as_f64().unwrap_or(0.0);
-                json!({
-                    "name": w, "measured": true, "cpu_percent": cpu, "rss_mb": rss,
-                    "n_processes": s["pids"].as_array().map(|a| a.len()).unwrap_or(0),
-                    "share_of_worker_memory": if total_rss > 0.0 { rss / total_rss } else { 0.0 },
-                    "profile": prof.clone(),
-                    "over_profile": over_profile(cpu, rss, &prof),
-                })
-            }
-            None => json!({ "name": w, "measured": false, "why_unmeasured": "no registered worker by that name", "profile": prof }),
+    let mut by_mem: Vec<_> = workers.iter().collect();
+    by_mem.sort_by(|a, b| b.rss_mb.partial_cmp(&a.rss_mb).unwrap_or(std::cmp::Ordering::Equal));
+    let total_rss: f64 = workers.iter().map(|w| w.rss_mb).sum();
+    let capacity = util.as_ref().map(|u| u.capacity_percent).unwrap_or(0.0);
+    let caller = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let worker = q.worker.filter(|w| !w.is_empty()).or(caller).map(|w| {
+        let prof = profile(&w);
+        match workers.iter().find(|x| x.name == w) {
+            Some(x) => json!({
+                "name": w, "measured": true, "cpu_percent": x.cpu_percent, "rss_mb": x.rss_mb,
+                "n_processes": x.n_processes,
+                "share_of_worker_memory": if total_rss > 0.0 { x.rss_mb / total_rss } else { 0.0 },
+                "share_of_machine_cpu": if capacity > 0.0 { x.cpu_percent / capacity } else { 0.0 },
+                "profile": prof.clone(),
+                "over_profile": over_profile(x.cpu_percent, x.rss_mb, &prof),
+            }),
+            None => json!({
+                "name": w, "measured": false,
+                "why_unmeasured": if util.is_some() { "no live tmux pane for that worker in this sample" } else { "ps did not run, so no worker was measured" },
+                "profile": prof,
+            }),
         }
     });
+    let machine = match &util {
+        Some(u) => json!({
+            "measured": true, "why_unmeasured": null,
+            "capacity_percent": u.capacity_percent, "cpu_percent_total": u.cpu_percent_total,
+            "workers_cpu_percent": u.workers_cpu_percent, "unattributed_cpu_percent": u.unattributed_cpu_percent,
+            "by_kind": u.by_kind, "kinds": u.kinds, "top_unattributed": u.top_unattributed,
+            "sample_age_s": now - u.sampled_at, "sample_ms": u.sample_ms,
+        }),
+        None => json!({ "measured": false, "why_unmeasured": "ps did not run, so CPU could not be attributed" }),
+    };
     Json(json!({
-        "measured": host.get("cpu_count").is_some(),
-        "n_considered": sessions.len(),
+        "measured": host.get("cpu_count").is_some() && util.is_some(),
+        "n_considered": util.as_ref().map(|u| u.n_processes).unwrap_or(0),
         "host": host,
         "pressure": pressure.as_ref().map(|p| json!({
             "level": p.level.as_str(), "reasons": p.reasons, "measured": p.measured,
             "why_unmeasured": p.why_unmeasured, "sampled_at": p.sampled_at,
         })),
-        "workers_running": live.len(),
-        "workers_rss_mb": total_rss,
-        "top_by_memory": live.iter().take(8).map(|s| row(s)).collect::<Vec<_>>(),
+        "workers_running": workers.len(),
+        "workers_rss_mb": (total_rss * 10.0).round() / 10.0,
+        "top_by_cpu": workers.iter().take(8).map(row).collect::<Vec<_>>(),
+        "top_by_memory": by_mem.iter().take(8).map(|w| row(w)).collect::<Vec<_>>(),
+        "machine": machine,
         "worker": worker,
     }))
 }

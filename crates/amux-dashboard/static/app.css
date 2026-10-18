@@ -7938,6 +7938,10 @@ body:not(.light) .vault-chip-worker { color: #6fdc9b; }
 .vault-radio-text > span { display: flex; flex-direction: column; }
 .vault-radio-text b { font-weight: 600; }
 .vault-target { margin-left: 30px; width: calc(100% - 30px) !important; }
+.vault-checks[hidden] { display: none; }
+.vault-checks { display: flex; flex-wrap: wrap; gap: 0 var(--space-3); max-height: 220px; overflow-y: auto; }
+.vault-check { display: flex; align-items: center; gap: var(--space-2); min-height: 44px; cursor: pointer; }
+.vault-check input { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
 .vault-audit { list-style: none; margin: var(--space-3) 0 0; padding: 0; display: grid; gap: 0; }
 .vault-audit li { display: grid; grid-template-columns: 6rem minmax(0, 1fr) auto; gap: var(--space-3); align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.83rem; }
 .vault-audit-what { overflow-wrap: anywhere; }
@@ -9680,3 +9684,37 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pbc-one { display:flex; align-items:center; gap:12px; justify-content:space-between; }
 .pbc-one .pbc-text { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1 1 auto; }
 .board-one-switch { min-height:44px; min-width:72px; flex:0 0 auto; }
+.board-one-inherit { min-height:44px; flex:0 0 auto; margin-left:6px; }
+/* MDAI chat: a composer docked under the node, and the conversation in the Chat tab. */
+.mdai-chatbar { display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; padding: 8px 18px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg); }
+.mdai-chatbar[hidden] { display: none; }
+.mdai-chatbar textarea { flex: 1; min-width: 0; min-height: 44px; max-height: 160px; resize: none; line-height: 1.4; font-size: 0.88rem; }
+.mdai-chatbar .btn { min-height: 44px; min-width: 64px; }
+.mdai-chat { display: flex; flex-direction: column; gap: 10px; }
+.mdai-msg { display: flex; flex-direction: column; gap: 3px; max-width: 92%; }
+.mdai-msg.me { align-self: flex-end; align-items: flex-end; }
+.mdai-msg.ai { align-self: flex-start; align-items: stretch; width: 92%; }
+.mdai-bubble { border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px; font-size: 0.86rem; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+.mdai-msg.me .mdai-bubble { background: rgba(88,166,255,0.12); border-color: rgba(88,166,255,0.35); }
+.mdai-bubble.bad { color: var(--red, #f85149); border-color: var(--red, #f85149); background: rgba(248,81,73,0.08); display: block; }
+.mdai-chat-wait { flex-direction: row; align-items: center; color: var(--dim); }
+.mdai-msg-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.72rem; color: var(--dim); white-space: normal; }
+.mdai-diff-wrap > summary { cursor: pointer; font-size: 0.78rem; color: var(--accent); min-height: 32px; display: flex; align-items: center; }
+.mdai-diff { border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; font-size: 0.76rem; line-height: 1.5; max-height: 360px; overflow-y: auto; white-space: pre-wrap; }
+.mdai-diff-l { display: grid; grid-template-columns: 16px 1fr; padding: 0 8px; }
+.mdai-diff-l > span { color: var(--dim); user-select: none; }
+.mdai-diff-l.add { background: rgba(63,185,80,0.14); }
+.mdai-diff-l.del { background: rgba(248,81,73,0.14); text-decoration: line-through; text-decoration-color: rgba(248,81,73,0.5); }
+.mdai-diff-gap { color: var(--dim); text-align: center; font-size: 0.7rem; }
+.mdai-chat-acts { white-space: normal; }
+.mdai-chat-opt { font-size: 0.78rem; color: var(--dim); min-height: 44px; }
+@media (max-width: 600px) {
+  .mdai-chatbar { padding: 6px 8px max(8px, env(safe-area-inset-bottom)); }
+  .mdai-msg, .mdai-msg.ai { max-width: 100%; width: 100%; }
+  .mdai-msg.me { width: auto; max-width: 92%; }
+  .mdai-chat-acts .btn { min-height: 44px; }
+}
+/* A short window keeps its height for the node; the composer shows on the Chat tab only. */
+@media (max-height: 520px) {
+  .mdai-chatbar:not([data-tab="chat"]) { display: none; }
+}

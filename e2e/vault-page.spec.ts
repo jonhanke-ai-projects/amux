@@ -28,7 +28,14 @@ async function addSecret(page: Page, key: string, scope: 'global' | 'group' | 'w
   await page.fill('#vault-e-note', note);
   await expect(page.locator('#vault-e-note-count')).toHaveText(`${note.length}/200`);
   await page.check(`input[name="vault-e-scope"][value="${scope}"]`);
-  if (scope === 'group') await page.selectOption('#vault-e-group', target);
+  if (scope === 'group') {
+    // Groups are checkboxes: exactly the comma-separated targets end up checked.
+    const want = target.split(',');
+    for (const box of await page.locator('#vault-e-group input[type=checkbox]').all()) {
+      const v = await box.getAttribute('value');
+      if (want.includes(v || '')) await box.check(); else await box.uncheck();
+    }
+  }
   if (scope === 'worker') await page.selectOption('#vault-e-worker', target);
   await page.fill('#vault-e-value', value);
   await page.locator('#vault-e-save').click();
@@ -93,6 +100,26 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await expect(page.locator('.vault-row', { hasText: R })).toContainText('research');
     await expect(page.locator('.vault-row', { hasText: K })).toContainText(wb);
 
+    // One secret, two groups: it reaches a worker in either one, and the row
+    // names both (Ethan, 2026-10-17: "make sure we can add multiple groups").
+    const M = `VP_MULTI_${suffix.toUpperCase()}`;
+    await page.locator('#vault-add-btn').click();
+    await page.fill('#vault-e-key', M);
+    await page.check('input[name="vault-e-scope"][value="group"]');
+    for (const box of await page.locator('#vault-e-group input[type=checkbox]').all()) {
+      const v = await box.getAttribute('value');
+      if (v === 'research' || v === 'devops') await box.check(); else await box.uncheck();
+    }
+    await expect(page.locator('#vault-e-reach')).toContainText(wa);
+    await expect(page.locator('#vault-e-reach')).toContainText(wb);
+    await page.fill('#vault-e-value', VALUES.group);
+    await page.locator('#vault-e-save').click();
+    await expect(page.locator('#vault-edit')).toHaveCount(0);
+    await expect(page.locator('.vault-row', { hasText: M })).toContainText('devops, research');
+    const multi = (await (await request.get('/api/vault/secrets', { headers: auth })).json()).items.find((i: any) => i.key === M);
+    expect(multi.scope).toBe('group');
+    expect(multi.target).toBe('devops,research');
+
     // Search and filters.
     await page.fill('#vault-q', 'research only');
     await expect(page.locator('.vault-row')).toHaveCount(1);
@@ -101,12 +128,12 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await expect(page.locator('.vault-row')).toHaveCount(1);
     await page.selectOption('#vault-f-scope', '');
     await page.selectOption('#vault-f-group', 'research');
-    await expect(page.locator('.vault-row')).toHaveCount(1);
+    await expect(page.locator('.vault-row')).toHaveCount(2);
     await page.selectOption('#vault-f-group', '');
     // The per-worker view: what wa receives and from where.
     await page.selectOption('#vault-f-worker', wa);
-    await expect(page.locator('.vault-worker-card')).toContainText(`${wa} receives 2 secrets`);
-    await expect(page.locator('.vault-row')).toHaveCount(2);
+    await expect(page.locator('.vault-worker-card')).toContainText(`${wa} receives 3 secrets`);
+    await expect(page.locator('.vault-row')).toHaveCount(3);
     await expect(page.locator('.vault-worker-card')).toContainText('At next start');
     await page.selectOption('#vault-f-worker', '');
     await page.selectOption('#vault-sort', 'name-desc');

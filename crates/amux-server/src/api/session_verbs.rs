@@ -7959,7 +7959,9 @@ pub(crate) async fn cmd_hist_record_with_id(
     // the widening can only add the attachment, never a card.
     let isolated = session_is_isolated(&session);
     let project_executor = !isolated && parse_env(&session).get("CC_PROJECT").is_some();
+    // No board for this worker (every Board tab switch off): no ledger card.
     let capture_pending = !isolated
+        && !crate::api::board_lifecycle::board_unused(&session)
         && !project_executor
         && task_bearing
         && landed
@@ -8465,7 +8467,7 @@ pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
         }
     };
     // Recheck on recovery too: the mode may have changed after acceptance.
-    if session_is_isolated(&cap_session) {
+    if crate::api::board_lifecycle::no_board(&cap_session) {
         let result = state
             .store
             .write_async(move |conn| {
@@ -8636,7 +8638,7 @@ pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
     let res = state
         .store
         .write_async(move |conn| {
-            if session_is_isolated(&cap_session) {
+            if crate::api::board_lifecycle::no_board(&cap_session) {
                 conn.execute("UPDATE cmd_history SET capture_pending=0 WHERE id=?1", [row_id])?;
                 tracing::info!(session=%cap_session, message_id=row_id, verdict="isolated_capture_suppressed",
                     "isolation enabled during intake; no fallback board changes applied");
@@ -9195,6 +9197,9 @@ async fn steer_enqueue_precond_with_id(
     // configuration of that worker, not amux steering it, so it is exempt
     // here; board nudges, callbacks and peer relays still are not.
     let isolated_schedule = is_owner_configured_guard(guard) && session_is_isolated(name);
+    if automation {
+        if let Some(why) = board_off_refusal(name, guard) { return Err(why); }
+    }
     if automation && !isolated_schedule && session_is_isolated(name) {
         return Err(
             "target is an isolated (raw-agent) worker: amux automation is not \
@@ -12359,6 +12364,26 @@ pub(crate) enum SendOrigin {
 /// prove the gate is not "refuse everything". A control that has to invoke the
 /// side-effecting path to prove a negative is the wrong shape; assert the
 /// decision, not the delivery.
+/// Automated sends that exist only because of the board: the drive's pickup,
+/// continue and needsyou nags, card-note relays, promise and owner-ask steers,
+/// and the accountability "open a card for this" nag. A worker with every
+/// Board tab switch off gets none of them (`board_lifecycle::board_unused`).
+pub(crate) fn is_board_guard(guard: &str) -> bool {
+    guard.starts_with("board")
+        || matches!(guard, "promise-nudge" | "owner-ask" | "commit-nudge" | "accountability")
+}
+
+/// `Some(reason)` when `guard` is board automation and `name` has the board off.
+pub(crate) fn board_off_refusal(name: &str, guard: &str) -> Option<&'static str> {
+    // Isolation has its own, stricter rules and its own refusal text.
+    if !is_board_guard(guard) || session_is_isolated(name) || !crate::api::board_lifecycle::board_unused(name) {
+        return None;
+    }
+    tracing::info!(session = name, guard, verdict = "board_unused_suppressed", measured = true, n_considered = 1,
+        "board automation not delivered: every board switch is off for this worker");
+    Some("target has every board switch off: board automation is not delivered into it.")
+}
+
 pub(crate) fn isolation_refusal(name: &str, origin: SendOrigin) -> Option<&'static str> {
     (origin == SendOrigin::Automation && session_is_isolated(name)).then_some(
         "target is an isolated (raw-agent) worker: amux automation is not delivered into it. \
@@ -12529,6 +12554,9 @@ pub(crate) async fn deliver_automated(
         queue_id: None,
         refused: true,
     };
+    if let Some(why) = board_off_refusal(name, guard) {
+        return refuse(why.to_string());
+    }
     let classify = |ok: bool, msg: String| {
         let (submitted, submission) = submission_verdict(ok, &msg);
         AutoDelivery {
@@ -19945,7 +19973,7 @@ fn roster_footer(n: usize) -> String {
         "\n{n} discoverable peer worker(s). {WORKER_MESSAGING_POLICY}{open_line} Members of the \
          `{ADMIN_GROUP}` group act with the owner's reach and may message any worker, isolated ones \
          included. To reach a worker outside \
-         your groups, ask the owner on your card (the owner can put you in a shared group); a \
+         your groups, ask the owner (the owner can put you in a shared group); a \
          refused send is not retried or rerouted.\n"
     )
 }
@@ -27559,7 +27587,7 @@ async fn put_cross_group_config(headers: HeaderMap, body: Option<Json<Value>>) -
             .get(*h)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|s| !s.trim().is_empty())
-    }) {
+    }) && admin_origin(&headers, "cross_group_default").is_none() {
         return jresp(
             StatusCode::FORBIDDEN,
             json!({
@@ -27633,7 +27661,7 @@ async fn put_board_drain_config(headers: HeaderMap, body: Option<Json<Value>>) -
             .get(*h)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|s| !s.trim().is_empty())
-    }) {
+    }) && admin_origin(&headers, "board_drain_default").is_none() {
         return jresp(
             StatusCode::FORBIDDEN,
             json!({
@@ -28004,15 +28032,29 @@ pub(crate) fn chat_speaks_for_owner(origin: &str) -> bool {
 
 /// ADMIN GROUP (Ethan, 2026-10-17: "workers in the group called admin should
 /// have the ability to do anything. meaning even if its isolated work with
-/// other workers"). A member of `admin` (its `CC_TAGS`) acts with the owner's
+/// other workers"; later the same day: "admin workers should be able to do
+/// anything"). A member of `admin` (its `CC_TAGS`) acts with the owner's
 /// reach: it messages any worker across groups and receive policies, sends to
-/// isolated workers, and its input is never treated as amux automation. It
-/// does not stand in for the human on approvals (grants, spend), which stay
-/// dashboard-only.
+/// isolated workers, its input is never treated as amux automation, and it
+/// passes the owner-only gates through [`admin_origin`], which keeps its name
+/// in the audit trail.
 pub(crate) const ADMIN_GROUP: &str = "admin";
 
 pub(crate) fn is_admin_worker(origin: &str) -> bool {
     !origin.is_empty() && lane_groups(origin).contains(ADMIN_GROUP)
+}
+
+/// The admin-group worker behind a request, if any. Every owner-only gate (group
+/// membership, owner-only scope keys, vault secrets, grant decisions, standing
+/// approvals, fleet-wide defaults) lets this caller through as the owner and
+/// keeps its name for the audit trail (Ethan, 2026-10-17: "admin workers
+/// should be able to do anything").
+pub(crate) fn admin_origin(headers: &HeaderMap, gate: &str) -> Option<String> {
+    let w = crate::api::groups::hdr_worker(headers);
+    if !is_admin_worker(&w) { return None; }
+    tracing::info!(origin = %w, gate, verdict = "admin_group_owner_gate", measured = true, n_considered = 1,
+        "an admin-group worker passed an owner-only gate");
+    Some(w)
 }
 
 /// Owner-equivalent worker input: a chat (see [`chat_speaks_for_owner`]) or an
@@ -28361,7 +28403,8 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     // documented boundary for an isolated lane is "the owner's own send still
     // works" — a peer lane addressing it through amux's messaging is amux
     // mediation, which is what "raw LLM pass through" excludes.
-    let send_origin = if origin.is_empty() {
+    // A chat or an admin-group worker speaks for the owner (speaks_for_owner).
+    let send_origin = if origin.is_empty() || speaks_for_owner(&origin) {
         SendOrigin::Owner
     } else {
         SendOrigin::Automation
@@ -30119,6 +30162,13 @@ pub const SCOPED_CONTEXT_MARKER: &str = "[amux scoped context]";
 /// rules, then global/group/worker memory, then the browser guide, then the
 /// pointer that lets a later change be re-read from `worker_rules_file`.
 /// Empty for an isolated worker with nothing set (it receives none of it).
+/// The standing instruction a worker with every Board tab switch off starts
+/// with. The global CLAUDE.md board and task-ledger sections key on this.
+pub(crate) const BOARD_OFF_CONTEXT: &str = "# Board off for this worker\n\n\
+Every board switch is off for this worker, so you have no board: do not read, create, append to, \
+move or close board cards, and skip the board and task-ledger sections of CLAUDE.md. The board API \
+refuses your calls with code board_off. Keep task state in your own files.";
+
 pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let lane = compose_lane_context(name, &std::fs::read_to_string(mem_file(name)).unwrap_or_default());
     let rules = compose_rules_block(name);
@@ -30131,6 +30181,9 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     // enforces it.
     let bounds = crate::api::boundaries::boundaries_context_block();
     let block = [bounds, block].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+    let block = if crate::api::board_lifecycle::board_unused(name) {
+        format!("{block}\n\n{BOARD_OFF_CONTEXT}")
+    } else { block };
     let file = worker_rules_file(name);
     format!(
         "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Keeping this scoped context current\n\n\
@@ -33166,7 +33219,8 @@ async fn apply_live_config_change(
 /// that did not need clearing costs one rebuild; NOT clearing one that did is
 /// the bug this fixes.
 pub(crate) fn membership_patch_refusal(headers: &HeaderMap, membership_named: bool) -> Option<Response> {
-    if !membership_named || hdr_worker(headers).is_empty() || super::org::local_member_actor(headers).is_some() { return None; }
+    if !membership_named || hdr_worker(headers).is_empty() || super::org::local_member_actor(headers).is_some()
+        || admin_origin(headers, "group_membership").is_some() { return None; }
     tracing::warn!(verdict="worker_group_membership_refused", measured=true, n_considered=1,
         "worker cannot widen messaging authority by editing group membership");
     Some(jresp(StatusCode::FORBIDDEN,json!({"ok":false,"code":"worker_group_membership_refused",
@@ -36631,6 +36685,27 @@ mod tests {
         assert!(steer_enqueue(&st, "raw", "nudge", "commit-nudge", "").await.is_err());
     }
 
+    /// Ethan, 2026-10-17: "admin workers should be able to do anything". The
+    /// owner-only gates let an admin-group worker through and refuse a peer.
+    #[test]
+    fn an_admin_group_worker_passes_owner_only_gates_and_a_peer_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("boss.env"), "CC_TAGS=amux,admin\n").unwrap();
+        std::fs::write(sessions.join("peer.env"), "CC_TAGS=amux\n").unwrap();
+        for (who, admin) in [("boss", true), ("peer", false)] {
+            let mut h = HeaderMap::new();
+            h.insert("x-amux-session", who.parse().unwrap());
+            assert_eq!(admin_origin(&h, "test").is_some(), admin, "{who}");
+            assert_eq!(membership_patch_refusal(&h, true).is_none(), admin, "group membership: {who}");
+            assert_eq!(crate::api::standing_approvals::is_owner_request(&h), admin, "owner request: {who}");
+            assert_eq!(crate::api::needs_input::refuse_worker(&h, "snooze").is_none(), admin, "triage: {who}");
+        }
+        assert!(admin_origin(&HeaderMap::new(), "test").is_none(), "the owner is not an admin worker");
+    }
+
     /// Ethan, 2026-10-17: an `admin` group member can do anything a chat can:
     /// reach isolated workers, cross every group boundary and receive policy.
     #[tokio::test]
@@ -37350,7 +37425,7 @@ mod tests {
         let sessions = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join("raw.env"), "CC_DIR=/tmp\nCC_ISOLATED=\"1\"\n").unwrap();
-        std::fs::write(sessions.join("ordinary.env"), "CC_DIR=/tmp\n").unwrap();
+        std::fs::write(sessions.join("ordinary.env"), "CC_DIR=/tmp\nCC_AUTO_PICKUP=1\n").unwrap();
         assert!(
             session_is_isolated("raw"),
             "fixture must actually be isolated, or every assertion below is vacuous"
@@ -40412,7 +40487,8 @@ mod tests {
         );
         drop(c);
         // Same task-bearing prompt into managed mode still captures work.
-        std::fs::write(sessions.join("managed.env"), "CC_ISOLATED=0\n").unwrap();
+        std::fs::write(sessions.join("managed.env"), "CC_ISOLATED=0\nCC_BOARD_CONTINUE=1\n").unwrap();
+        assert!(!crate::api::board_lifecycle::board_unused("managed"), "premise: managed has a board switch on");
         cmd_hist_record_full(
             &st,
             "managed",
@@ -44843,7 +44919,9 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY,
         ];
         let env = || std::fs::read_to_string(home.path().join("sessions/probe.env")).unwrap();
-        for (on, want) in [(true, "1"), (false, "0")] {
+        // Value first: `(false, "0")` reads as a send-failure tuple to
+        // every_send_failure_literal_is_classified's scan.
+        for (want, on) in [("1", true), ("0", false)] {
             let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"board_enabled": on}))).await;
             assert_eq!(st, StatusCode::OK, "{v}");
             assert_eq!(v["board_enabled"], json!(on), "{v}");
@@ -46117,7 +46195,7 @@ mod steer_boundary_tests {
         let _g = crate::api::settings::test_env::set_home(dir.path());
         let sessions = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
-        std::fs::write(sessions.join("orch.env"), "CC_AUTO_START=0\nAMUX_BOARD_DELEGATION=1\n").unwrap();
+        std::fs::write(sessions.join("orch.env"), "CC_AUTO_START=0\nAMUX_BOARD_DELEGATION=1\nCC_AUTO_PICKUP=1\n").unwrap();
         assert!(crate::db::board_store::board_delegation_allowed(Some("orch")));
         let text = "Lane report: rebuilt the shard index for tenant 42, residual count is zero";
         let intake = super::super::board_intake::plan(&state.store, "orch", "agent",
@@ -51014,7 +51092,7 @@ mod steer_coalescing_tests {
         let _guard = crate::api::settings::test_env::set_home(_d.path());
         std::fs::create_dir_all(_d.path().join("sessions")).unwrap();
         for name in ["lane", "peer"] {
-            std::fs::write(_d.path().join(format!("sessions/{name}.env")), "CC_TAGS=test\n").unwrap();
+            std::fs::write(_d.path().join(format!("sessions/{name}.env")), "CC_TAGS=test\nCC_AUTO_PICKUP=1\n").unwrap();
         }
         steer_enqueue_store(&st, "lane", "note one: context", "board-progress", "peer")
             .await
@@ -51068,7 +51146,7 @@ mod steer_coalescing_tests {
         let _guard = crate::api::settings::test_env::set_home(_d.path());
         std::fs::create_dir_all(_d.path().join("sessions")).unwrap();
         for name in ["lane", "peer"] {
-            std::fs::write(_d.path().join(format!("sessions/{name}.env")), "CC_TAGS=test\n").unwrap();
+            std::fs::write(_d.path().join(format!("sessions/{name}.env")), "CC_TAGS=test\nCC_AUTO_PICKUP=1\n").unwrap();
         }
         steer_enqueue_store(&st, "lane", "same text", "board-progress", "peer")
             .await
@@ -54422,7 +54500,7 @@ mod project_steering_tests {
                 .unwrap(),
             3
         );
-        std::fs::write(env_path("normal-fixture"), "CC_COMMAND_LIFECYCLE=1\n").unwrap();
+        std::fs::write(env_path("normal-fixture"), "CC_COMMAND_LIFECYCLE=1\nCC_AUTO_PICKUP=1\n").unwrap();
         assert!(super::super::board_lifecycle::enabled("normal-fixture"));
         let id: String = c
             .query_row(

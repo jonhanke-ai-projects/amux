@@ -9974,6 +9974,19 @@ function showHostPressure() {
   html += '<p class="ui-help">Load ' + (r.load5 != null ? r.load5.toFixed(1) : '?') + ' on ' + (r.ncpu || '?') + ' cores · memory level '
     + (r.mem_level ?? '?') + ' · ' + (r.disk_free_gb != null ? Math.round(r.disk_free_gb) + ' GiB free' : 'disk ?') + '</p>';
   if (p.level === 'critical') html += '<p>Automated dispatch, schedules and worker starts are paused until this eases. Your own actions are not affected.</p>';
+  // Who is using the CPU: workers, and where the rest is, so the remainder is
+  // never read as zero (host_guard::utilization).
+  const u = p.utilization;
+  if (u) {
+    const pct = x => Math.round(x) + '%';
+    html += '<h4>Who is using the CPU</h4><p class="ui-help">' + esc(pct(u.cpu_percent_total) + ' of ' + pct(u.capacity_percent) + ' busy · workers '
+      + pct(u.workers_cpu_percent) + ' · everything else ' + pct(u.unattributed_cpu_percent)) + '</p><ul class="chip-detail-list">'
+      + (u.workers || []).filter(w => w.cpu_percent >= 10).slice(0, 8).map(w => '<li><div class="chip-detail-row"><strong>' + esc(w.name)
+        + '</strong><span class="ui-help">' + esc(pct(w.cpu_percent) + ' · ' + (w.rss_mb / 1024).toFixed(1) + ' GB · ' + w.n_processes + ' procs') + '</span></div></li>').join('')
+      + (u.top_unattributed || []).filter(o => o.cpu_percent >= 10).slice(0, 5).map(o => '<li title="' + esc((u.kinds || {})[o.kind] || '') + '"><div class="chip-detail-row"><strong>'
+        + esc(o.kind.replaceAll('_', ' ')) + '</strong><span class="ui-help">' + esc(pct(o.cpu_percent) + ' · pid ' + o.root_pid + ' ' + (o.command || '').split('/').pop()) + '</span></div></li>').join('')
+      + '</ul>';
+  }
   const run = p.runaways || [];
   if (run.length) html += '<h4>Long-running worker processes</h4><ul class="chip-detail-list">' + run.map(x =>
     '<li><div class="chip-detail-row"><strong>' + esc(x.worker) + '</strong><span class="ui-help">' + esc((x.command || '').split('/').pop()) + '</span></div>'
@@ -11930,25 +11943,31 @@ function _boardOneSwitchHTML(name, s, cls) {
   return '<button type="button" class="btn board-one-switch' + (b.on ? ' primary' : '') + (cls ? ' ' + cls : '') + '" role="switch"'
     + ' aria-checked="' + (b.mode === 'partial' ? 'mixed' : String(b.on)) + '" data-board-mode="' + b.mode + '"' + dis
     + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',' + (!b.on) + ')"'
-    + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>';
+    + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>'
+    // The way back from a worker-level On or Off to whatever the group or
+    // fleet sets: the switch writes every board key, this removes them.
+    + '<button type="button" class="btn board-one-inherit"' + dis + ' title="Use the group or fleet board setting"'
+    + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',null)">Inherit</button>';
 }
 async function _boardOneSet(name, on) {
   if (!name) return;
-  _pbcPending.board_enabled = !!on;
+  const inherit = on === null;
+  if (!inherit) _pbcPending.board_enabled = !!on;
   if (peekSession === name) _peekBoardPolicySync();
   try {
     const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ board_enabled: !!on })
+      body: JSON.stringify({ board_enabled: inherit ? null : !!on })
     });
     if (r) {
       let d = {};
       try { d = await r.json(); } catch (e) {}
-      showToast(d.message || ('Board ' + (on ? 'on' : 'off')));
+      showToast(d.message || (inherit ? 'Board follows the group or fleet setting' : 'Board ' + (on ? 'on' : 'off')));
       const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
-      if (s) for (const c of _BOARD_SWITCHES) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
-      if (d.board_enabled !== undefined && d.board_enabled !== !!on) {
-        try { window._clientDebug && window._clientDebug('board-one-switch-not-effective', { session: name, requested: !!on, effective: d.board_enabled, measured: true, n_considered: 1 }); } catch (e) {}
+      if (s && !inherit) for (const c of _BOARD_SWITCHES) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
+      if (!inherit && d.board_enabled !== undefined && d.board_enabled !== !!on) {
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+          body: JSON.stringify({ kind: 'board-one-switch-not-effective', session: name, requested: !!on, effective: d.board_enabled, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
       }
     }
     await fetchSessions().catch(() => {});
@@ -14648,6 +14667,15 @@ async function saveGlobalMemory() {
 }
 
 const APP_VER = '__AMUX_ASSET_VER__';   // derived: the server stamps a content hash of static/ here (amux-dashboard build.rs)
+// One structured client beacon, `window._clientDebug(kind, fields)`. Six call
+// sites used it and nothing defined it, so each one was a silent no-op
+// (found 2026-10-17 while fixing a git-check race).
+window._clientDebug = function (kind, fields) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+      body: JSON.stringify(Object.assign({ kind: kind, ver: APP_VER }, fields || {})) }).catch(() => {});
+  } catch (e) {}
+};
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -30582,13 +30610,16 @@ function _mdaiMsgParse(path) {
   let days = q.get('days');
   if (days == null) days = (limit || offset) ? 'all' : '14';
   if (/^(none|0)$/.test(days)) days = 'all';
-  return { days, limit, offset, kb };
+  return { days, limit, offset, kb, q: q.get('q') || '', session: q.get('session') || '' };
 }
 function _mdaiMsgPath(b) {
   const q = ['days=' + (b.days || '14')];
   if (b.limit) q.push('limit=' + b.limit);
   if (b.offset && String(b.offset) !== '0') q.push('offset=' + b.offset);
   if (b.kb) q.push('kb=' + b.kb);
+  // Words to match (q) and one worker (session); a chat edit can add these.
+  if (b.q) q.push('q=' + encodeURIComponent(b.q).replace(/%7C/gi, '|'));
+  if (b.session) q.push('session=' + encodeURIComponent(b.session));
   return 'amux:messages?' + q.join('&');
 }
 function _mdaiSrcKind(path) {
@@ -30606,7 +30637,7 @@ function _mdaiSrcSync(prefix) {
     if (!g('prompt')) return;
     s.prompt = g('prompt').value;
     if (s.kind === 'messages') {
-      s.path = _mdaiMsgPath({ days: g('days').value, limit: g('limit').value.trim(), offset: g('offset').value.trim(), kb: g('kb').value.trim() });
+      s.path = _mdaiMsgPath({ days: g('days').value, limit: g('limit').value.trim(), offset: g('offset').value.trim(), kb: g('kb').value.trim(), q: g('q') ? g('q').value.trim() : '', session: g('session') ? g('session').value.trim() : '' });
     } else s.path = g('path').value.trim();
   });
   return list;
@@ -30639,7 +30670,7 @@ function _mdaiSrcHtml(prefix) {
     const label = s.kind === 'messages' ? 'Amux message history' : s.kind === 'mdai' ? 'Another .mdai node' : 'File or folder';
     let fields = '';
     if (s.kind === 'messages') {
-      const b = _mdaiMsgParse(s.path) || { days: '30', limit: '', offset: '', kb: '' };
+      const b = _mdaiMsgParse(s.path) || { days: '30', limit: '', offset: '', kb: '', q: '', session: '' };
       const dayOpt = (v, t) => '<option value="' + v + '"' + (String(b.days) === v ? ' selected' : '') + '>' + t + '</option>';
       const known = ['7', '14', '30', '90', 'all'];
       fields = '<div class="mdai-msg-bounds">'
@@ -30647,7 +30678,9 @@ function _mdaiSrcHtml(prefix) {
         + (known.includes(String(b.days)) ? '' : dayOpt(String(b.days), 'Last ' + esc(b.days) + ' days')) + '</select></label>'
         + '<label class="mdai-lbl">Newest messages<input class="input" type="number" min="1" max="4000" inputmode="numeric" id="' + id('limit') + '" value="' + esc(b.limit) + '" placeholder="4000 (max)"></label>'
         + '<label class="mdai-lbl">Skip newest<input class="input" type="number" min="0" max="20000" inputmode="numeric" id="' + id('offset') + '" value="' + esc(b.offset) + '" placeholder="0"></label>'
-        + '<label class="mdai-lbl">Max size (KB)<input class="input" type="number" min="1" max="600" inputmode="numeric" id="' + id('kb') + '" value="' + esc(b.kb) + '" placeholder="120"></label></div>'
+        + '<label class="mdai-lbl">Max size (KB)<input class="input" type="number" min="1" max="600" inputmode="numeric" id="' + id('kb') + '" value="' + esc(b.kb) + '" placeholder="120"></label>'
+        + '<label class="mdai-lbl">Only messages with<input class="input" id="' + id('q') + '" value="' + esc(b.q || '') + '" placeholder="any word, e.g. lifecycle|restart" autocomplete="off"></label>'
+        + '<label class="mdai-lbl">Only worker<input class="input" id="' + id('session') + '" value="' + esc(b.session || '') + '" placeholder="any worker" autocomplete="off"></label></div>'
         + '<div class="mdai-hint">Your own messages across every worker, newest kept first. At most 4000 messages and the size above (default 120 KB, up to 600 KB) reach the model; anything older is cut and the prompt says so. Skip newest pages back through older history.</div>';
     } else {
       fields = '<label class="mdai-lbl">Path<input class="input" id="' + id('path') + '" value="' + esc(s.path) + '" placeholder="' + (s.kind === 'mdai' ? 'other.mdai' : 'notes/ or plan.md') + '"' + (s.kind === 'mdai' ? ' list="' + prefix + '-mdai-list"' : '') + ' autocomplete="off"></label>'
@@ -30873,6 +30906,7 @@ async function openMdaiNode(path, opts) {
   _mdaiCur = { abs, rel: (path && path.charAt(0) !== '/') ? path : null, doc: null, model: null, sources: [], body: '', content: '', parseOk: true, mtime: null };
   _mdaiHist = []; _mdaiHistIdx = 0; _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = null;
   _mdaiShown = null; _mdaiGraph = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null; _mdaiFormErr = null; _mdaiPendingDoc = null; _mdaiPendingName = null;
+  _mdaiChat = []; _mdaiChatBusy = false; _mdaiChatPending = null; _mdaiChatErr = null; _mdaiChatLoadErr = null;
   _mdaiEditMode = opts.raw ? 'raw' : 'write';
   _mdaiTab = opts.tab || 'preview';
   document.getElementById('mdai-title').textContent = abs.split('/').pop();
@@ -30885,7 +30919,7 @@ async function openMdaiNode(path, opts) {
   await _mdaiLoadDoc();
   if (_mdaiCur !== node) return;
   if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; }).catch(() => {});
-  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph(), _mdaiLoadActive()]);
+  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph(), _mdaiLoadActive(), _mdaiLoadChat()]);
   if (_mdaiCur !== node) return;
   if (_mdaiHist.length && !_mdaiShown) await _mdaiShowRun(_mdaiHist.find(h => h.status === 'ok') || _mdaiHist[0], true);
   _mdaiRender();
@@ -30925,6 +30959,7 @@ function closeMdaiNode() {
   _mdaiStopPoll();
   document.getElementById('mdai-overlay').classList.remove('active');
   _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null;
+  _mdaiChat = []; _mdaiChatBusy = false; _mdaiChatPending = null; _mdaiChatErr = null;
   if (activeView === 'mdai') { _mdaiListData = null; _mdaiTabLoad(); }
 }
 async function _mdaiLoadHistory() {
@@ -31103,6 +31138,10 @@ async function _mdaiPutDoc(req) {
   // response arrives, so the owner can already be typing the next change; a
   // draft that moved while the save was in flight is not the one it saved.
   const draft0 = _mdaiDraft, body0 = _mdaiBodyDraft;
+  // The same holds for form fields: one cleared or retyped while this save is
+  // in flight can look untouched against the value it was drawn with, and the
+  // save's own render would then put the saved value back over it.
+  const fields0 = _mdaiFieldValues();
   try {
     const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', req);
     if (_isLocallyQueued(r)) { showToast('Offline: not saved'); return false; }
@@ -31113,6 +31152,8 @@ async function _mdaiPutDoc(req) {
       return false;
     }
     _mdaiApplyDoc(d);
+    _mdaiInflightEdits = Object.entries(_mdaiFieldValues()).filter(([id, v]) => id in fields0 && fields0[id] !== v)
+      .map(([id, cur]) => ({ id, cur, sent: fields0[id] }));
     if (_mdaiDraft === draft0) _mdaiDraft = null; else _mdaiKeptEdits.push('raw-draft-in-flight');
     if (_mdaiBodyDraft === body0) _mdaiBodyDraft = null; else _mdaiKeptEdits.push('body-draft-in-flight');
     // The graph reload lands after the save's own render, possibly while the
@@ -31339,6 +31380,7 @@ function _mdaiRender() {
   document.querySelectorAll('#mdai-overlay .mdai-tab').forEach(b => {
     const on = b.dataset.tab === _mdaiTab; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
     if (b.dataset.tab === 'runs') b.querySelector('.mdai-tab-n').textContent = _mdaiCur.runsTotal ? String(_mdaiCur.runsTotal) : '';
+    if (b.dataset.tab === 'chat') b.querySelector('.mdai-tab-n').textContent = _mdaiChat.length ? String(_mdaiChat.length) : '';
     if (b.dataset.tab === 'sources') { const n = (_mdaiCur.sources || []).length + (_mdaiCur.doc && _mdaiCur.doc.fetch ? 1 : 0); b.querySelector('.mdai-tab-n').textContent = n ? String(n) : ''; }
   });
   let html = _mdaiBannerHtml();
@@ -31354,14 +31396,18 @@ function _mdaiRender() {
   else if (_mdaiTab === 'sources') html += _mdaiSourcesHtml();
   else if (_mdaiTab === 'runs') html += _mdaiRunsHtml();
   else if (_mdaiTab === 'settings') html += _mdaiSettingsHtml();
+  else if (_mdaiTab === 'chat') html += _mdaiChatHtml();
   else html += _mdaiPreviewHtml();
   const kept = _mdaiTypedFields(el);
   el.innerHTML = html;
   _mdaiRestoreTyped(el, kept);
+  _mdaiRestoreInflight(el);
   el.dataset.tab = _mdaiTab;
   if (_mdaiTab === 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiGutter(ta); }
   _mdaiRenderRunState();
   _mdaiRenderSide();
+  _mdaiChatSyncBar();
+  if (_mdaiTab === 'chat') { const log = document.getElementById('mdai-chat-log'); if (log && log.lastElementChild) log.lastElementChild.scrollIntoView({ block: 'nearest' }); }
 }
 // A render rebuilds the form from the saved node, and renders arrive from
 // saves, graph reloads and run polls at any moment. A field the owner has
@@ -31376,6 +31422,25 @@ function _mdaiFieldState(f) {
   return { cur: f.value, base: f.defaultValue };
 }
 let _mdaiKeptEdits = [];   // field ids a render kept; reported with the next save
+// Fields changed while a save was in flight, kept by the next render when the
+// value it draws is the one that save sent.
+let _mdaiInflightEdits = [];
+function _mdaiFieldValues() {
+  const out = {};
+  const root = document.getElementById('mdai-body');
+  if (root) root.querySelectorAll('input[id], textarea[id], select[id]').forEach(f => { out[f.id] = _mdaiFieldState(f).cur; });
+  return out;
+}
+function _mdaiRestoreInflight(root) {
+  const edits = _mdaiInflightEdits;
+  _mdaiInflightEdits = [];
+  edits.forEach(k => {
+    const f = document.getElementById(k.id);
+    if (!f || !root.contains(f) || _mdaiFieldState(f).cur !== k.sent) return;
+    if (f.type === 'checkbox' || f.type === 'radio') f.checked = k.cur === 'true'; else f.value = k.cur;
+    _mdaiKeptEdits.push(k.id + ':in-flight');
+  });
+}
 function _mdaiTypedFields(root) {
   const kept = [];
   root.querySelectorAll('input[id], textarea[id], select[id]').forEach(f => {
@@ -31430,6 +31495,174 @@ function _mdaiPreviewHtml() {
   if (run.status !== 'ok') h += '<div class="mdai-err"><b>' + esc(st.label) + '.</b> ' + esc(run.error || '') + '</div>';
   else h += '<div class="mdai-output md-content">' + renderMarkdown(run.output || '', _mdaiCur.abs) + '</div>';
   return h;
+}
+// ---- Chat: change the node by telling it what you want ---------------------------
+// POST /api/files/mdai/chat hands the model this file, the latest output and the
+// message; the server validates and writes the revised node and answers with the
+// file before and after. The page shows the exchange with the changed lines, then
+// starts a run through the ordinary run flow so the output catches up.
+let _mdaiChat = [];          // turns for the open node, oldest first
+let _mdaiChatBusy = false;   // a message is with the model
+let _mdaiChatPending = null; // the message being worked on (shown while busy)
+let _mdaiChatErr = null;     // last failure, shown in the Chat tab
+let _mdaiChatLoadErr = null; // the history could not be read
+function _mdaiChatAutoRun() { try { return localStorage.getItem('mdai-chat-autorun') !== '0'; } catch (e) { return true; } }
+function _mdaiChatSetAutoRun(on) { try { localStorage.setItem('mdai-chat-autorun', on ? '1' : '0'); } catch (e) {} }
+async function _mdaiLoadChat() {
+  const node = _mdaiCur;
+  if (!node) return;
+  _mdaiChatLoadErr = null;
+  try {
+    const r = await fetch(API + '/api/files/mdai/chat?path=' + encodeURIComponent(node.abs));
+    const d = await r.json().catch(() => ({}));
+    if (_mdaiCur !== node) return;
+    if (!r.ok || d.error) { _mdaiChat = []; _mdaiChatLoadErr = d.error || ('HTTP ' + r.status); return; }
+    _mdaiChat = d.turns || [];
+    if (d.unreadable) _mdaiChatLoadErr = d.unreadable + ' earlier message(s) could not be read and are not shown.';
+  } catch (e) { if (_mdaiCur === node) { _mdaiChat = []; _mdaiChatLoadErr = 'Could not load the chat history.'; } }
+}
+function _mdaiChatGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; }
+function _mdaiChatKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); _mdaiChatSend(); }
+}
+function _mdaiChatSyncBar() {
+  const bar = document.getElementById('mdai-chatbar');
+  if (!bar) return;
+  const ro = !_mdaiCur || !!_mdaiCur.readOnly || !_mdaiCur.doc;
+  bar.hidden = !_mdaiCur || !!_mdaiCur.readOnly;
+  bar.dataset.tab = _mdaiTab;
+  const ta = document.getElementById('mdai-chat-input'), b = document.getElementById('mdai-chat-send');
+  if (ta) { ta.disabled = ro; ta.placeholder = _mdaiCur && !_mdaiCur.doc ? 'Fix the file in Edit, Raw file first' : 'Ask for a change, e.g. add a column for lifecycle work'; }
+  if (b) { b.disabled = ro || _mdaiChatBusy; b.textContent = _mdaiChatBusy ? 'Working…' : 'Send'; }
+}
+async function _mdaiChatSend(text) {
+  if (!_mdaiCur || _mdaiChatBusy) return;
+  const ta = document.getElementById('mdai-chat-input');
+  const msg = (text != null ? String(text) : (ta ? ta.value : '')).trim();
+  if (!msg) { if (ta) ta.focus(); return; }
+  if (_mdaiCur.readOnly) { showToast(_mdaiCur.readOnly); return; }
+  // Unsaved typing would be overwritten by the edit, so it is saved first.
+  if (_mdaiDirty() && !(await _mdaiSave())) return;
+  const node = _mdaiCur;
+  _mdaiChatBusy = true; _mdaiChatPending = msg; _mdaiChatErr = null;
+  if (ta) { ta.value = ''; _mdaiChatGrow(ta); }
+  if (_mdaiTab === 'edit') _mdaiCaptureDrafts();
+  _mdaiTab = 'chat';
+  _mdaiRender();
+  let ok = false, changed = false;
+  try {
+    const { r, d } = await _mdaiJson('/api/files/mdai/chat', 'POST', { path: node.abs, message: msg, base_mtime_ms: node.mtime });
+    if (_mdaiCur !== node) return;
+    if (_isLocallyQueued(r)) {
+      _mdaiChatErr = 'The server could not be reached, so the message was not sent. Nothing changed.';
+    } else if (!r.ok || d.error) {
+      _mdaiChatErr = d.error || ('The edit failed (HTTP ' + r.status + ')');
+      if (d.turn) _mdaiChat.push(d.turn);
+    } else {
+      ok = true; changed = !!d.changed;
+      _mdaiChat.push(d.turn);
+      if (d.doc) _mdaiApplyDoc(d.doc);
+      _mdaiLoadGraph().then(() => { if (_mdaiCur === node) _mdaiRender(); });
+    }
+  } catch (e) {
+    if (_mdaiCur === node) _mdaiChatErr = 'The edit failed: ' + ((e && e.message) || 'network error');
+  } finally {
+    if (_mdaiCur === node) { _mdaiChatBusy = false; _mdaiChatPending = null; }
+  }
+  if (_mdaiCur !== node) return;
+  // A failed edit keeps what was typed, so it can be sent again.
+  if (!ok && ta && !ta.value) { ta.value = msg; _mdaiChatGrow(ta); }
+  if (_mdaiChatErr) showToast(_mdaiChatErr);
+  try { window._clientDebug && window._clientDebug('mdai-chat', { ok, changed, verdict: ok ? (changed ? 'applied' : 'no_change') : 'failed', measured: true, n_considered: 1 }); } catch (e) {}
+  _mdaiRender();
+  if (ok && changed && _mdaiChatAutoRun() && !_mdaiRunning) _mdaiRun();
+}
+async function _mdaiChatUndo(i) {
+  const t = _mdaiChat[i];
+  if (!_mdaiCur || !t || !t.changed || t.truncated || t.undone) return;
+  if (!confirm('Put the node back to how it was before this change?')) return;
+  const ok = await _mdaiSerial(() => _mdaiPutDoc({ path: _mdaiCur.abs, raw: t.before, base_mtime_ms: _mdaiCur.mtime }));
+  if (!ok) return;
+  t.undone = true;
+  showToast('Change undone. Run again to refresh the output.');
+  _mdaiRender();
+}
+// Line diff (longest common subsequence). Files here are a few hundred lines;
+// past the cap the turn says the diff is too large instead of freezing the page.
+function _mdaiLineDiff(a, b) {
+  const A = String(a || '').split('\n'), B = String(b || '').split('\n');
+  if (A.length * B.length > 4000000) return null;
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { out.push({ t: ' ', s: A[i] }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) out.push({ t: '-', s: A[i++] });
+    else out.push({ t: '+', s: B[j++] });
+  }
+  while (i < n) out.push({ t: '-', s: A[i++] });
+  while (j < m) out.push({ t: '+', s: B[j++] });
+  return out;
+}
+function _mdaiDiffHtml(before, after) {
+  const ops = _mdaiLineDiff(before, after);
+  if (!ops) return '<div class="mdai-dim">The file is too large to show line by line.</div>';
+  const keep = new Array(ops.length).fill(false);
+  ops.forEach((o, k) => { if (o.t !== ' ') for (let x = Math.max(0, k - 2); x <= Math.min(ops.length - 1, k + 2); x++) keep[x] = true; });
+  let h = '', gap = false, add = 0, del = 0;
+  ops.forEach((o, k) => {
+    if (o.t === '+') add++; else if (o.t === '-') del++;
+    if (!keep[k]) { gap = true; return; }
+    if (gap && h) h += '<div class="mdai-diff-gap">⋯</div>';
+    gap = false;
+    h += '<div class="mdai-diff-l ' + (o.t === '+' ? 'add' : o.t === '-' ? 'del' : 'ctx') + '"><span aria-hidden="true">' + (o.t === ' ' ? '' : o.t) + '</span>' + (esc(o.s) || '&#8203;') + '</div>';
+  });
+  return { html: '<div class="mdai-diff mdai-code" role="region" aria-label="Changed lines">' + h + '</div>', add, del };
+}
+function _mdaiChatHtml() {
+  let h = '<div class="mdai-chat" id="mdai-chat-log" aria-live="polite">';
+  if (_mdaiChatLoadErr) h += '<div class="mdai-err" role="alert">' + esc(_mdaiChatLoadErr) + '</div>';
+  if (!_mdaiChat.length && !_mdaiChatBusy) {
+    h += '<div class="mdai-empty"><div class="mdai-empty-title">Talk to this node</div><div>Say what you want the output to show. The model rewrites the instruction (and adds a source if it needs one), you see the changed lines, and the node runs again.</div>'
+      + '<button type="button" class="btn" onclick="_mdaiChatExample()">Try: look at the messages about lifecycle work and include that in the table</button></div>';
+  }
+  const lastApplied = (() => { for (let k = _mdaiChat.length - 1; k >= 0; k--) if (_mdaiChat[k].changed) return k; return -1; })();
+  _mdaiChat.forEach((t, i) => {
+    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(t.message || '') + '</div><div class="mdai-msg-meta">' + (t.ts ? timeAgo(t.ts) : '') + '</div></div>';
+    if (t.error) {
+      h += '<div class="mdai-msg ai"><div class="mdai-bubble bad" role="alert"><b>Not changed.</b> ' + esc(t.error) + '</div></div>';
+      return;
+    }
+    const d = t.changed && !t.truncated ? _mdaiDiffHtml(t.before, t.after) : null;
+    const what = [t.body_changed ? 'instruction' : '', t.sources_changed ? 'sources' : ''].filter(Boolean).join(' and ');
+    h += '<div class="mdai-msg ai"><div class="mdai-bubble">' + esc(t.reply || '')
+      + '<div class="mdai-msg-meta">'
+      + (t.changed ? '<span class="mdai-pill ok">' + (t.undone ? 'undone' : 'changed ' + esc(what || 'file')) + '</span>' : '<span class="mdai-pill">no change</span>')
+      + (d && d.html ? ' <span class="mdai-dim">+' + d.add + ' / -' + d.del + ' lines</span>' : '')
+      + (t.model ? ' <span class="mdai-dim">' + esc(t.model) + '</span>' : '') + (t.dur_ms ? ' <span class="mdai-dim">' + _mdaiDur(t.dur_ms) + '</span>' : '') + '</div>'
+      + (d ? (d.html ? '<details class="mdai-diff-wrap"' + (i === lastApplied ? ' open' : '') + '><summary>Changed lines</summary>' + d.html + '</details>' : d) : '')
+      + (t.changed && t.truncated ? '<div class="mdai-dim">This file is too large to keep a copy for the diff or undo.</div>' : '')
+      + (i === lastApplied && !t.undone ? '<div class="mdai-row-end mdai-chat-acts">'
+        + '<button type="button" class="btn" onclick="_mdaiSetTab(\'preview\')">See output</button>'
+        + (_mdaiRunning ? '' : '<button type="button" class="btn" onclick="_mdaiRun({show:true})">Run again</button>')
+        + (t.truncated ? '' : '<button type="button" class="btn" onclick="_mdaiChatUndo(' + i + ')">Undo</button>') + '</div>' : '')
+      + '</div></div>';
+  });
+  if (_mdaiChatBusy) {
+    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(_mdaiChatPending || '') + '</div></div>'
+      + '<div class="mdai-msg ai"><div class="mdai-bubble mdai-chat-wait" role="status"><span class="mdai-spin"></span> Rewriting the node. This can take a minute.</div></div>';
+  }
+  if (_mdaiChatErr && !(_mdaiChat.length && _mdaiChat[_mdaiChat.length - 1].error === _mdaiChatErr)) h += '<div class="mdai-err" role="alert">' + esc(_mdaiChatErr) + '</div>';
+  h += '</div><label class="mdai-check mdai-chat-opt"><input type="checkbox" id="mdai-chat-autorun"' + (_mdaiChatAutoRun() ? ' checked' : '') + ' onchange="_mdaiChatSetAutoRun(this.checked)"> Run the node after each change</label>';
+  return h;
+}
+function _mdaiChatExample() {
+  const ta = document.getElementById('mdai-chat-input');
+  if (!ta) return;
+  ta.value = 'look at the messages responsible for lifecycle work, and include that in the table';
+  _mdaiChatGrow(ta); ta.focus();
 }
 function _mdaiSrcIcon(kind) { return { amux: '&#128488;', mdai: '&#9672;', folder: '&#128193;', file: '&#128196;', url: '&#127760;', missing: '&#9888;' }[kind] || '&#128196;'; }
 function _mdaiSourcesHtml() {
@@ -32855,11 +33088,23 @@ function _toggleWorktree(on) {
   }
 }
 let _gitCheckTimer = null;
+// Only the newest check may set the box. openCreate checks the default
+// directory without waiting, so when the owner picks a repository right away
+// the default's slower answer used to land last and hide the box again, and
+// the create then omitted worktree:false (create-worktree-optout.spec.ts,
+// ios-safari on 5eb4d629c, 4bd34bf43, d56938bdb and 253e5d4f0).
+let _gitCheckSeq = 0;
 async function _checkDirGit(dir) {
+  const seq = ++_gitCheckSeq;
   if (!dir) { _createDirIsGit = false; document.getElementById('create-worktree-field').style.display = 'none'; return; }
   try {
     const r = await fetch(API + '/api/git-check?dir=' + encodeURIComponent(dir));
     const d = await r.json();
+    if (seq !== _gitCheckSeq) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+        body: JSON.stringify({ kind: 'git-check-stale-dropped', verdict: 'stale_git_check_dropped', measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+      return;
+    }
     _createDirIsGit = !!d.is_git;
     document.getElementById('create-worktree-field').style.display = _createDirIsGit ? '' : 'none';
     _loadWorktreeProfiles();
@@ -32868,6 +33113,7 @@ async function _checkDirGit(dir) {
       document.getElementById('create-worktree-info').style.display = 'none';
     }
   } catch(e) {
+    if (seq !== _gitCheckSeq) return;
     _createDirIsGit = false;
     document.getElementById('create-worktree-field').style.display = 'none';
   }
@@ -47548,8 +47794,14 @@ async function _chatgptPublish(btn) {
 // No list response carries a value. Reveal is the one call that does: owner
 // only, audited server-side, and masked again here after `remask_after_s`.
 function _vaultScopeLabel(i) {
-  return i.scope === 'global' ? 'Global' : (i.scope === 'group' ? 'Group ' : 'Worker ') + i.target;
+  if (i.scope === 'global') return 'Global';
+  if (i.scope === 'worker') return 'Worker ' + i.target;
+  const gs = _vaultGroupsOf(i);
+  return (gs.length > 1 ? 'Groups ' : 'Group ') + gs.join(', ');
 }
+// A group secret's target is one group or a comma set ("mixpeek,amux"); a
+// worker in ANY listed group receives it.
+function _vaultGroupsOf(i) { return String(i.target || '').split(',').map(g => g.trim()).filter(Boolean); }
 const _vault = { items: [], workers: [], groups: [], keystore: '', tab: 'secrets', q: '', scope: '', group: '',
   worker: '', sort: 'name', prov: null, revealed: {}, timers: {}, loadErr: '' };
 const _VAULT_ICONS = {
@@ -47583,7 +47835,7 @@ function _vaultWorkerGroups() {
 }
 function _vaultProvisionedTo(i) {
   const n = i.effective_for ?? 0, o = i.overridden_for ?? 0;
-  const who = i.scope === 'global' ? 'All workers' : esc(i.target);
+  const who = i.scope === 'global' ? 'All workers' : esc(i.scope === 'group' ? _vaultGroupsOf(i).join(', ') : i.target);
   const count = '<span class="ui-help">' + n + ' worker' + (n === 1 ? '' : 's')
     + (o ? ' · overridden for ' + o : '') + '</span>';
   return '<div class="vault-prov"><span>' + who + '</span>' + count + '</div>';
@@ -47721,7 +47973,7 @@ async function _vaultSecretsLoad() {
 function _vaultFillFilters() {
   const g = document.getElementById('vault-f-group'), w = document.getElementById('vault-f-worker');
   if (!g || !w) return;
-  const groups = [...new Set([..._vault.groups, ..._vault.items.filter(i => i.scope === 'group').map(i => i.target)])].sort();
+  const groups = [...new Set([..._vault.groups, ..._vault.items.filter(i => i.scope === 'group').flatMap(_vaultGroupsOf)])].sort();
   const workers = [...new Set([..._vault.workers, ...Object.keys(_vaultWorkerGroups())])].sort();
   g.innerHTML = '<option value="">All Groups</option>' + groups.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
   w.innerHTML = '<option value="">All Workers</option>' + workers.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
@@ -47779,7 +48031,7 @@ function _vaultVisible() {
   let list = _vault.items.slice();
   if (q) list = list.filter(i => (i.key + ' ' + (i.note || '') + ' ' + (i.target || '')).toLowerCase().includes(q));
   if (_vault.scope) list = list.filter(i => i.scope === _vault.scope);
-  if (_vault.group) list = list.filter(i => i.scope === 'group' && i.target === _vault.group);
+  if (_vault.group) list = list.filter(i => i.scope === 'group' && _vaultGroupsOf(i).includes(_vault.group));
   if (_vault.worker && _vault.prov) {
     const ids = new Set();
     for (const x of _vault.prov.resolved || []) { ids.add(x.id); for (const s of x.shadows || []) ids.add(s.id); }
@@ -47908,6 +48160,8 @@ function _vaultEdit(id, mode) {
   const workers = Object.keys(wg).sort();
   const scope = it ? it.scope : 'global';
   const opt = (list, sel) => list.length ? list.map(n => '<option value="' + esc(n) + '"' + (n === sel ? ' selected' : '') + '>' + esc(n) + '</option>').join('') : '<option value="" disabled selected>None yet</option>';
+  const picked = new Set(scope === 'group' ? _vaultGroupsOf(it) : groups.slice(0, 1));
+  const checks = groups.length ? groups.map(n => '<label class="vault-check"><input type="checkbox" value="' + esc(n) + '"' + (picked.has(n) ? ' checked' : '') + ' onchange="_vaultEditScope()"><span>' + esc(n) + '</span></label>').join('') : '<span class="ui-help">No groups yet</span>';
   const radio = (v, label, help, extra) => '<label class="vault-radio"><input type="radio" name="vault-e-scope" value="' + v + '"' + (scope === v ? ' checked' : '') + ' onchange="_vaultEditScope()">'
     + '<span class="vault-radio-text">' + _vaultIcon(v) + '<span><b>' + label + '</b><span class="ui-help">' + help + '</span></span></span></label>' + (extra || '');
   const rotate = mode === 'rotate';
@@ -47921,7 +48175,7 @@ function _vaultEdit(id, mode) {
     + '<span class="ui-error" id="vault-e-value-err" role="alert"></span></label>'
     + (rotate ? '' : '<fieldset class="vault-scope"><legend>Scope</legend><p class="ui-help">Control which workers can access this secret.</p>'
       + radio('global', 'Global', 'Available to all workers')
-      + radio('group', 'Group', 'Available to workers in a specific group', '<select id="vault-e-group" class="input vault-target" aria-label="Group" onchange="_vaultEditScope()">' + opt(groups, scope === 'group' ? it.target : groups[0]) + '</select>')
+      + radio('group', 'Groups', 'Available to workers in any of the checked groups', '<div id="vault-e-group" class="vault-target vault-checks" role="group" aria-label="Groups">' + checks + '</div>')
       + radio('worker', 'Worker', 'Available to a single worker', '<select id="vault-e-worker" class="input vault-target" aria-label="Worker" onchange="_vaultEditScope()">' + opt(workers, scope === 'worker' ? it.target : workers[0]) + '</select>')
       + '<p class="ui-help" id="vault-e-reach" role="status"></p></fieldset>')
     + '<p class="ui-error" id="vault-e-err" role="alert"></p>'
@@ -47955,7 +48209,7 @@ function _vaultEye() {
 }
 function _vaultEditTarget() {
   const scope = document.querySelector('input[name="vault-e-scope"]:checked')?.value || 'global';
-  const target = scope === 'group' ? (document.getElementById('vault-e-group')?.value || '') : scope === 'worker' ? (document.getElementById('vault-e-worker')?.value || '') : '';
+  const target = scope === 'group' ? [...document.querySelectorAll('#vault-e-group input:checked')].map(c => c.value).join(',') : scope === 'worker' ? (document.getElementById('vault-e-worker')?.value || '') : '';
   return { scope, target };
 }
 // Live reach preview: who gets this, and whether a more specific secret with
@@ -47968,11 +48222,11 @@ function _vaultEditScope() {
     const el = document.getElementById(id); if (el) el.hidden = scope !== s;
   }
   const wg = _vaultWorkerGroups();
-  const names = Object.keys(wg).filter(w => scope === 'global' || (scope === 'group' && wg[w].includes(target)) || (scope === 'worker' && w === target)).sort();
+  const names = Object.keys(wg).filter(w => scope === 'global' || (scope === 'group' && target.split(',').some(g => wg[w].includes(g))) || (scope === 'worker' && w === target)).sort();
   const key = (document.getElementById('vault-e-key')?.value || '').trim();
   const rank = { global: 0, group: 1, worker: 2 };
   const over = key ? _vault.items.filter(i => i.key === key && rank[i.scope] > rank[scope]).map(_vaultScopeLabel) : [];
-  reach.textContent = (scope !== 'global' && !target) ? 'Pick a ' + scope + '.'
+  reach.textContent = (scope !== 'global' && !target) ? (scope === 'group' ? 'Check at least one group.' : 'Pick a worker.')
     : 'Reaches ' + names.length + ' worker' + (names.length === 1 ? '' : 's') + (names.length && names.length <= 6 ? ': ' + names.join(', ') : '')
       + '. Precedence is worker, then group, then global.' + (over.length ? ' Overridden by ' + over.join(', ') + ' where those apply.' : '');
 }
@@ -47991,7 +48245,7 @@ async function _vaultSecretSave(id, mode) {
       keyEl.setAttribute('aria-invalid', 'true'); keyEl.focus(); return;
     }
     const { scope, target } = _vaultEditTarget();
-    if (scope !== 'global' && !target) { err.textContent = 'Pick a ' + scope + ' for this secret.'; return; }
+    if (scope !== 'global' && !target) { err.textContent = (scope === 'group' ? 'Check at least one group for this secret.' : 'Pick a worker for this secret.'); return; }
     Object.assign(body, { key, scope, target, description: document.getElementById('vault-e-note').value });
   }
   if (mode !== 'edit' && !value) {
@@ -52792,27 +53046,30 @@ function _messagesRender() {
 
 // Calendar/time review helpers for the Messages timeline (Ethan 2026-08-13).
 // ── Tasks ─────────────────────────────────────────────────────────────────
-// Every task a worker received, oldest first and numbered: owner prompts,
-// Chat-tab messages, peer asks and scheduled sends (the cmd_history rows
-// /api/history already serves), each tagged with its worker. A row opens its
-// detail: delivery, the board cards it created or joined, the other messages
-// on those cards, and the earlier ask it repeats. Rows are the Messages
-// tab's own (_cmdHistItemHTML); only the numbering, pager and detail are new.
+// Every task a worker took on, oldest first and numbered: one row per recorded
+// task name (GET /api/task-history, the task.renamed rows the fleet snapshot
+// writes when the "Task:" line on a worker changes). A row opens its detail:
+// when it started and ended, its board card, and the messages the worker
+// received while it ran. Owner, 2026-10-17: the earlier rows were messages
+// ("tasks still look to be displaying messages not tasks").
 //
 // Two scopes share this code: `main` is the Tasks tab (all workers, with a
 // worker filter) and `peek` is a worker's own Tasks tab (fixed to
 // peekSession). Each scope's DOM ids carry its prefix.
 const _TASKS_PAGE = 100;
 const _TASKS_KINDS = 'human,chat,session,schedule';
+// A task's name is recorded a moment after the message that set it, so its
+// message window opens this much earlier.
+const _TASKS_LEAD_S = 120;
 const _tasksScopes = {
-  main: { prefix: 'tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', withAmux: false, open: new Set(), loading: false, err: '', seq: 0 },
-  peek: { prefix: 'peek-tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', withAmux: false, open: new Set(), loading: false, err: '', seq: 0, fixed: true },
+  main: { prefix: 'tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', open: new Set(), loading: false, err: '', seq: 0 },
+  peek: { prefix: 'peek-tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', open: new Set(), loading: false, err: '', seq: 0, fixed: true },
 };
 const _tasksSel = new Set();
 const _tasksEl = (sc, name) => document.getElementById(_tasksScopes[sc].prefix + name);
+const _taskKey = (t) => (t.session || '') + '@' + t.ts;
 function _tasksParams(sc, extra) {
   const s = _tasksScopes[sc], p = new URLSearchParams();
-  p.set('kind', s.withAmux ? _TASKS_KINDS + ',amux' : _TASKS_KINDS);
   p.set('order', 'asc');
   if (s.worker) p.set('session', s.worker);
   if (s.q) p.set('q', s.q);
@@ -52867,17 +53124,17 @@ async function _tasksLoad(sc, toEnd) {
   _tasksRenderHead(sc);
   try {
     if (toEnd !== false) {
-      const r0 = await fetch(API + '/api/history?' + _tasksParams(sc, { limit: 1, offset: 0 }));
-      const total = parseInt(r0.headers.get('x-amux-total') || '0', 10) || 0;
+      const d0 = await (await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: 1, offset: 0 }), { headers: _authHeaders() })).json();
+      const total = (d0 && d0.total) || 0;
       s.offset = Math.max(0, Math.floor(Math.max(0, total - 1) / _TASKS_PAGE) * _TASKS_PAGE);
     }
-    const r = await fetch(API + '/api/history?' + _tasksParams(sc, { limit: _TASKS_PAGE, offset: s.offset }));
+    const r = await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: _TASKS_PAGE, offset: s.offset }), { headers: _authHeaders() });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const total = parseInt(r.headers.get('x-amux-total') || '0', 10) || 0;
-    const rows = await r.json();
+    const d = await r.json();
     if (seq !== s.seq) return;
-    s.total = total;
-    s.rows = (Array.isArray(rows) ? rows : []).map(_msgNorm);
+    if (d.measured === false) throw new Error(d.why_unmeasured || 'not measured');
+    s.total = d.total || 0;
+    s.rows = Array.isArray(d.tasks) ? d.tasks : [];
   } catch (e) {
     if (seq !== s.seq) return;
     s.err = (e && e.message) || String(e);
@@ -52890,38 +53147,49 @@ async function _tasksLoad(sc, toEnd) {
 function _tasksWorkerOptions() {
   const sel = _tasksEl('main', 'worker');
   if (!sel || sel.dataset.filled) return;
-  fetch(API + '/api/history?' + new URLSearchParams({ sessions: '1', kind: _TASKS_KINDS })).then(r => r.json()).then(d => {
-    const names = (Array.isArray(d) ? d : []).map(x => typeof x === 'string' ? x : (x.session || '')).filter(Boolean).sort();
-    const cur = _tasksScopes.main.worker;
-    if (cur && !names.includes(cur)) names.unshift(cur);
-    sel.innerHTML = '<option value="">All workers</option>' + names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
-    sel.dataset.filled = '1';
-  }).catch(() => {});
+  const names = [...new Set((typeof sessions !== 'undefined' && Array.isArray(sessions) ? sessions : []).map(x => x && x.name).filter(Boolean))].sort();
+  if (!names.length) return;
+  const cur = _tasksScopes.main.worker;
+  if (cur && !names.includes(cur)) names.unshift(cur);
+  sel.innerHTML = '<option value="">All workers</option>' + names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+  sel.dataset.filled = '1';
 }
 function _tasksRenderHead(sc) {
   const s = _tasksScopes[sc], el = _tasksEl(sc, 'count');
   if (!el) return;
   if (s.loading) { el.textContent = 'Loading tasks…'; return; }
   if (s.err) { el.textContent = 'Could not load tasks: ' + s.err; return; }
-  if (!s.total) { el.textContent = 'No tasks match'; return; }
+  if (!s.total) { el.textContent = s.q ? 'No tasks match' : 'No tasks recorded yet'; return; }
   el.textContent = 'Tasks ' + (s.offset + 1) + '–' + (s.offset + s.rows.length) + ' of ' + s.total + (s.worker && !s.fixed ? ' for ' + s.worker : '');
 }
+// The messages inside a task's detail use the Messages tab's row builder.
 function _tasksCtx(sc) {
   return { sel: _tasksSel, key: _msgKey, toggle: '_tasksSelToggle', resend: '_tasksResend',
-           searchId: _tasksScopes[sc].prefix + 'search', rowClass: 'msg-row task-row',
-           title: 'Click to show this task\'s delivery, board cards and related messages',
+           searchId: _tasksScopes[sc].prefix + 'search', rowClass: 'msg-row',
+           title: 'Open this message',
            target: (e) => (typeof e === 'string' ? '' : (e.session || '')),
-           onOpen: (e) => `_tasksToggle('${sc}','${escJs(String(e.id || ''))}')` };
+           onOpen: (e) => `_bdOpenMessage('${escJs(String(e.id || ''))}')` };
 }
 function _tasksSelToggle(key, ev) {
   if (ev) ev.stopPropagation();
   if (_tasksSel.has(key)) _tasksSel.delete(key); else _tasksSel.add(key);
-  Object.keys(_tasksScopes).forEach(_tasksRender);
+  Object.keys(_tasksScopes).forEach(sc => _tasksScopes[sc].open.forEach(k => _tasksFillDetail(sc, k, true)));
 }
 async function _tasksResend(keys) {
-  const all = Object.values(_tasksScopes).flatMap(s => s.rows);
+  const all = Object.values(_tasksScopes).flatMap(s => Object.values(s.msgs || {}).flat());
   const rows = all.filter(m => keys.includes(_msgKey(m)) && (m.session || '')).map(m => ({ session: m.session, text: m.text || '' }));
-  if (await _resendRows(rows)) { _tasksSel.clear(); Object.keys(_tasksScopes).forEach(_tasksRender); }
+  if (await _resendRows(rows)) { _tasksSel.clear(); Object.keys(_tasksScopes).forEach(sc => _tasksScopes[sc].open.forEach(k => _tasksFillDetail(sc, k, true))); }
+}
+function _tasksDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + 's';
+  const m = Math.round(sec / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  return h < 48 ? h + 'h ' + (m % 60) + 'm' : Math.round(h / 24) + 'd';
+}
+function _tasksWhen(sec) {
+  return sec ? new Date(sec * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 }
 function _tasksRender(sc) {
   const s = _tasksScopes[sc], list = _tasksEl(sc, 'list');
@@ -52929,21 +53197,29 @@ function _tasksRender(sc) {
   _tasksRenderHead(sc);
   if (sc === 'main') _tasksWorkerOptions();
   if (s.err) { list.innerHTML = '<div class="tasks-empty">Could not load tasks. <button class="btn" onclick="_tasksLoad(\'' + sc + '\')">Retry</button></div>'; _tasksRenderPager(sc); return; }
-  if (!s.rows.length) { list.innerHTML = '<div class="tasks-empty">' + (s.loading ? 'Loading…' : 'No tasks match.') + '</div>'; _tasksRenderPager(sc); return; }
-  const ctx = _tasksCtx(sc);
+  if (!s.rows.length) { list.innerHTML = '<div class="tasks-empty">' + (s.loading ? 'Loading…' : s.q ? 'No tasks match.' : 'No tasks recorded yet. A task is recorded when the worker\'s "Task:" line changes.') + '</div>'; _tasksRenderPager(sc); return; }
   let day = '', html = '';
-  s.rows.forEach((m, i) => {
-    const k = _msgDayKey(m.ts);
-    if (k !== day) { day = k; html += '<div class="tasks-day">' + esc(_msgDayLabel(m.ts)) + '</div>'; }
-    const id = String(m.id || '');
-    const open = s.open.has(id);
-    html += '<div class="task-item' + (open ? ' open' : '') + '" id="' + s.prefix + 'item-' + esc(id) + '" data-task-id="' + esc(id) + '">'
-      + '<div class="task-num" title="Task ' + (s.offset + i + 1) + ' in sequence">#' + (s.offset + i + 1) + '</div>'
-      + '<div class="task-main">' + _cmdHistItemHTML(m, ctx)
-      + '<div class="task-detail" id="' + s.prefix + 'detail-' + esc(id) + '"' + (open ? '' : ' hidden') + '></div></div></div>';
+  s.rows.forEach((t, i) => {
+    const k = _msgDayKey(t.ts * 1000);
+    if (k !== day) { day = k; html += '<div class="tasks-day">' + esc(_msgDayLabel(t.ts * 1000)) + '</div>'; }
+    const key = _taskKey(t), open = s.open.has(key), n = s.offset + i + 1;
+    const ran = t.ended ? 'ran ' + _tasksDur(t.ended - t.ts) : 'current';
+    const sess = t.session || '';
+    html += '<div class="task-item' + (open ? ' open' : '') + '" id="' + s.prefix + 'item-' + esc(key) + '" data-task-key="' + esc(key) + '">'
+      + '<div class="task-num" title="Task ' + n + ' in sequence">#' + n + '</div>'
+      + '<div class="task-main"><div class="task-row" role="button" tabindex="0" aria-expanded="' + open + '" title="Show when this task ran, its card and its messages"'
+      + ' onclick="_tasksToggle(\'' + sc + '\',\'' + escJs(key) + '\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();_tasksToggle(\'' + sc + '\',\'' + escJs(key) + '\')}">'
+      + '<div class="task-title">' + esc(t.task || '(untitled)') + '</div>'
+      + '<div class="task-meta">'
+      + (s.fixed ? '' : '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>')
+      + '<span>' + esc(_tasksWhen(t.ts)) + '</span>'
+      + '<span class="msg-tag' + (t.ended ? '' : ' task-current') + '">' + esc(ran) + '</span>'
+      + (t.card ? '<button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open this card on the board"><code>' + esc(String(t.card)) + '</code></button>' : '')
+      + '</div></div>'
+      + '<div class="task-detail" id="' + s.prefix + 'detail-' + esc(key) + '"' + (open ? '' : ' hidden') + '></div></div></div>';
   });
   list.innerHTML = html;
-  s.open.forEach(id => _tasksFillDetail(sc, id));
+  s.open.forEach(k => _tasksFillDetail(sc, k));
   _tasksRenderPager(sc);
 }
 function _tasksRenderPager(sc) {
@@ -52969,7 +53245,6 @@ function _tasksFilter(sc) {
   const s = _tasksScopes[sc];
   if (!s.fixed) s.worker = (_tasksEl(sc, 'worker') || {}).value || '';
   s.q = ((_tasksEl(sc, 'search') || {}).value || '').trim();
-  s.withAmux = !!(_tasksEl(sc, 'amux') || {}).checked;
   s.open.clear();
   _tasksLoad(sc, true);
 }
@@ -52977,64 +53252,66 @@ const _tasksSearchT = {};
 function _tasksSearchInput(sc) { clearTimeout(_tasksSearchT[sc]); _tasksSearchT[sc] = setTimeout(() => _tasksFilter(sc), 300); }
 // From anywhere: the Tasks tab narrowed to one worker.
 function _tasksByWorker(name) {
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
   if (activeView !== 'tasks') switchView('tasks');
   const sel = _tasksEl('main', 'worker');
   if (sel) { if (![...sel.options].some(o => o.value === name)) sel.add(new Option(name, name)); sel.value = name; }
   _tasksFilter('main');
 }
-function _tasksToggle(sc, id) {
-  if (!id) return;
+function _tasksToggle(sc, key) {
+  if (!key) return;
   const s = _tasksScopes[sc];
-  if (s.open.has(id)) s.open.delete(id); else s.open.add(id);
-  const item = _tasksEl(sc, 'item-' + id), det = _tasksEl(sc, 'detail-' + id);
-  if (item) item.classList.toggle('open', s.open.has(id));
-  if (det) { det.hidden = !s.open.has(id); if (s.open.has(id)) _tasksFillDetail(sc, id); }
+  if (s.open.has(key)) s.open.delete(key); else s.open.add(key);
+  const item = _tasksEl(sc, 'item-' + key), det = _tasksEl(sc, 'detail-' + key);
+  if (item) { item.classList.toggle('open', s.open.has(key)); const row = item.querySelector('.task-row'); if (row) row.setAttribute('aria-expanded', String(s.open.has(key))); }
+  if (det) { det.hidden = !s.open.has(key); if (s.open.has(key)) _tasksFillDetail(sc, key); }
 }
 function _tasksOpenCard(id) {
   if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
   switchView('board'); setTimeout(() => openBoardDetail(id), 250);
 }
-async function _tasksFillDetail(sc, id) {
-  const det = _tasksEl(sc, 'detail-' + id);
-  const m = _tasksScopes[sc].rows.find(r => String(r.id) === String(id));
-  if (!det || !m || det.dataset.filled === '1') return;
-  det.innerHTML = '<div class="tasks-dim">Loading details…</div>';
-  let full = null;
-  try { const r = await fetch(API + '/api/history/' + encodeURIComponent(id)); if (r.ok) full = await r.json(); } catch (_) {}
-  const cards = (m.linked_cards && m.linked_cards.length) ? m.linked_cards : (m.card_id ? [{ id: m.card_id, title: m.card_title, status: m.card_status }] : []);
-  const cardMsgs = {};
-  await Promise.all(cards.slice(0, 4).map(async c => {
-    try { const r = await fetch(API + '/api/board/' + encodeURIComponent(c.id)); if (r.ok) { const d = await r.json(); cardMsgs[c.id] = { card: d, msgs: Array.isArray(d.messages) ? d.messages : [] }; } } catch (_) {}
-  }));
-  const when = (t) => t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
-  const f = full || m;
-  const delivery = f.delivered === true ? 'Delivered' + (f.delivered_at ? ' ' + when(f.delivered_at) : '') + (f.delivered_source ? ' (' + esc(f.delivered_source) + ')' : '')
-    : f.delivered === false ? 'Not confirmed delivered' : (f.delivery ? esc(f.delivery) : 'Unknown');
-  const sess = m.session || '';
+async function _tasksFillDetail(sc, key, rerender) {
+  const s = _tasksScopes[sc];
+  const det = _tasksEl(sc, 'detail-' + key);
+  const t = s.rows.find(r => _taskKey(r) === key);
+  if (!det || !t || (det.dataset.filled === '1' && !rerender)) return;
+  s.msgs = s.msgs || {};
+  const sess = t.session || '';
+  if (!s.msgs[key]) {
+    det.innerHTML = '<div class="tasks-dim">Loading details…</div>';
+    const p = new URLSearchParams({ session: sess, kind: _TASKS_KINDS, order: 'asc', limit: '50', since: String(Math.floor((t.ts - _TASKS_LEAD_S) * 1000)) });
+    // Milliseconds, and the server's bound is exclusive: the message that
+    // started the next task belongs to that task, not this one.
+    if (t.ended) p.set('until', String(Math.floor(t.ended * 1000)));
+    let msgs = [], card = null, msgErr = '';
+    await Promise.all([
+      fetch(API + '/api/history?' + p.toString(), { headers: _authHeaders() }).then(async r => {
+        if (!r.ok) { msgErr = 'HTTP ' + r.status; return; }
+        const d = await r.json(); msgs = (Array.isArray(d) ? d : []).map(_msgNorm);
+      }).catch(e => { msgErr = (e && e.message) || String(e); }),
+      t.card ? fetch(API + '/api/board/' + encodeURIComponent(t.card), { headers: _authHeaders() }).then(async r => { if (r.ok) card = await r.json(); }).catch(() => {}) : null,
+    ]);
+    s.msgs[key] = msgs; s.cards = s.cards || {}; s.cards[key] = card; s.msgErr = s.msgErr || {}; s.msgErr[key] = msgErr;
+  }
+  const msgs = s.msgs[key], card = (s.cards || {})[key], msgErr = (s.msgErr || {})[key];
   let html = '<div class="task-facts">'
     + '<div><span class="tasks-dim">Worker</span> ' + (sess ? '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>'
       + ' <button type="button" class="btn" onclick="event.stopPropagation();openPeek(\'' + escJs(sess) + '\')">Open worker</button>' : '-') + '</div>'
-    + '<div><span class="tasks-dim">From</span> ' + esc(m.sender || m.origin || 'unknown') + '</div>'
-    + '<div><span class="tasks-dim">Sent</span> ' + esc(when(m.ts)) + ' &middot; MSG-' + esc(String(id)) + '</div>'
-    + '<div><span class="tasks-dim">Delivery</span> ' + delivery + (m.queue_wait_ms ? ' after ' + Math.round(m.queue_wait_ms / 1000) + 's in the queue' : '') + '</div>'
-    + (f.repeat_of ? '<div><span class="tasks-dim">Repeats</span> <button type="button" class="btn" onclick="event.stopPropagation();_bdOpenMessage(\'' + escJs(String(f.repeat_of)) + '\')">MSG-' + esc(String(f.repeat_of)) + '</button></div>' : '')
+    + '<div><span class="tasks-dim">Started</span> ' + esc(_tasksWhen(t.ts)) + '</div>'
+    + '<div><span class="tasks-dim">' + (t.ended ? 'Ended' : 'Status') + '</span> ' + (t.ended ? esc(_tasksWhen(t.ended)) + ' after ' + esc(_tasksDur(t.ended - t.ts)) : 'Current task, running ' + esc(_tasksDur(Date.now() / 1000 - t.ts))) + '</div>'
+    + (t.previous ? '<div><span class="tasks-dim">Before this</span> ' + esc(t.previous) + '</div>' : '')
+    + (t.source ? '<div><span class="tasks-dim">Named from</span> ' + esc(String(t.source).replace(/_/g, ' ')) + '</div>' : '')
     + '</div>';
-  if (!cards.length) html += '<div class="tasks-dim">No board card is linked to this task.</div>';
-  for (const c of cards) {
-    const extra = cardMsgs[c.id];
-    const card = (extra && extra.card) || c;
-    html += '<div class="task-card"><button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(c.id)) + '\')" title="Open this card on the board">'
-      + '<code>' + esc(String(c.id)) + '</code> ' + esc(card.title || c.title || '') + '</button>'
-      + '<span class="msg-tag">' + esc(card.status || c.status || '') + '</span>'
-      + (card.session ? ' <span class="tasks-dim">' + esc(card.session) + '</span>' : '');
-    const others = extra ? extra.msgs.filter(x => String(x.id) !== String(id)) : [];
-    if (others.length) {
-      html += '<div class="task-card-msgs"><div class="tasks-dim">Other messages on this card</div>'
-        + others.slice(0, 10).map(x => '<div class="task-card-msg"><button type="button" class="btn" onclick="event.stopPropagation();_bdOpenMessage(\'' + escJs(String(x.id)) + '\')">MSG-' + esc(String(x.id)) + '</button> <span class="tasks-dim">' + esc(when(x.ts)) + ' ' + esc(x.session || '') + '</span> ' + esc(String(x.text || '').slice(0, 160)) + '</div>').join('')
-        + '</div>';
-    }
-    html += '</div>';
+  if (t.card) {
+    html += '<div class="task-card"><button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open this card on the board">'
+      + '<code>' + esc(String(t.card)) + '</code> ' + esc((card && card.title) || '') + '</button>'
+      + (card && card.status ? '<span class="msg-tag">' + esc(card.status) + '</span>' : '') + '</div>';
   }
+  html += '<div class="task-msgs"><div class="tasks-dim">' + (msgErr ? 'Could not load this task\'s messages: ' + esc(msgErr)
+    : msgs.length ? 'Messages ' + esc(sess) + ' received while on this task (' + msgs.length + (msgs.length >= 50 ? '+' : '') + ')'
+    : 'No messages to ' + esc(sess) + ' while on this task.') + '</div>';
+  const ctx = _tasksCtx(sc);
+  html += msgs.map(m => _cmdHistItemHTML(m, ctx)).join('') + '</div>';
   det.innerHTML = html;
   det.dataset.filled = '1';
 }

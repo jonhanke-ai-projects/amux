@@ -114,9 +114,20 @@ impl Scope {
         match kind.trim() {
             "global" => Ok(Scope::Global),
             // Group names are compared lowercased, as scope_env_layers does.
-            "group" if name_ok(target) => Ok(Scope::Group(target.to_lowercase())),
+            // A comma-separated target is a SET of groups, any of which may use
+            // the item (Ethan, 2026-10-17). It is stored sorted and deduped, so
+            // the associated data binds the exact set and a single group keeps
+            // the bytes it had before sets existed.
+            "group" => {
+                let set: std::collections::BTreeSet<String> =
+                    target.split(',').map(|g| g.trim().to_lowercase()).filter(|g| !g.is_empty()).collect();
+                if set.is_empty() || !set.iter().all(|g| name_ok(g)) || set.len() > 32 {
+                    return Err(format!("scope {kind:?} needs one or more valid group names"));
+                }
+                Ok(Scope::Group(set.into_iter().collect::<Vec<_>>().join(",")))
+            }
             "worker" if name_ok(target) => Ok(Scope::Worker(target.to_string())),
-            "group" | "worker" => Err(format!("scope {kind:?} needs a valid target name")),
+            "worker" => Err(format!("scope {kind:?} needs a valid target name")),
             other => Err(format!("scope must be global, group or worker, not {other:?}")),
         }
     }
@@ -413,7 +424,7 @@ fn worker_groups(home: &Path, worker: &str) -> std::collections::BTreeSet<String
 fn applies(scope: &Scope, worker: &str, groups: &std::collections::BTreeSet<String>) -> bool {
     match scope {
         Scope::Global => true,
-        Scope::Group(g) => groups.contains(g),
+        Scope::Group(set) => set.split(',').any(|g| groups.contains(g)),
         Scope::Worker(w) => w == worker,
     }
 }
@@ -760,6 +771,10 @@ fn refuse_worker(home: &Path, who: &str, action: &str) -> Response {
 /// can do that (the same rule as `worker_identity::owner_allowed`). The
 /// dashboard sends the bearer on every call (`_authHeaders`).
 fn owner_only(state: &super::AppState, headers: &HeaderMap, uri: &Uri, home: &Path, action: &str) -> Result<(), Box<Response>> {
+    if let Some(w) = super::session_verbs::admin_origin(headers, "vault_secrets") {
+        audit(home, json!({"ts": now_f64(), "event": "secret_admin_access", "action": action, "by": w}));
+        return Ok(());
+    }
     if let Some(w) = worker_origin(headers) {
         return Err(Box::new(refuse_worker(home, &w, action)));
     }
@@ -803,8 +818,10 @@ async fn list(headers: HeaderMap, RawQuery(q): RawQuery) -> Response {
         Ok(i) => i,
         Err(e) => return store_unreadable(e),
     };
-    // A worker sees the metadata of what applies to it, nothing else.
-    let origin = worker_origin(&headers);
+    // A worker sees the metadata of what applies to it, nothing else. An
+    // admin-group worker sees the owner's view.
+    let origin = worker_origin(&headers)
+        .filter(|_| super::session_verbs::admin_origin(&headers, "vault_list").is_none());
     let viewer = origin.clone().or_else(|| qs(&q, "worker"));
     let visible: Vec<&Value> = match &origin {
         Some(w) => {
@@ -1354,6 +1371,9 @@ async fn import(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         Ok(s) => s,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e})),
     };
+    if matches!(&scope, Scope::Group(set) if set.contains(',')) {
+        return err(StatusCode::BAD_REQUEST, json!({"error": "import reads one group's env file; import into one group, then add the others"}));
+    }
     let src = env_source(&home, &scope, body.get("source").and_then(Value::as_str));
     let env = super::session_verbs::EnvFile::load(&src);
     let Some(value) = env.get(&key).map(str::to_string).filter(|v| !v.is_empty()) else {
@@ -1469,6 +1489,29 @@ mod tests {
         let r2 = resolve(&rev, h.path(), "w1");
         assert_eq!(r2["A"].0["id"], r["A"].0["id"]);
         assert_eq!(r2["B"].0["id"], r["B"].0["id"]);
+    }
+
+    /// Ethan, 2026-10-17: a secret can be used by several groups.
+    #[test]
+    fn a_group_set_reaches_members_of_any_listed_group_and_binds_the_set() {
+        let h = home();
+        std::fs::write(h.path().join("sessions/inside.env"), "CC_TAGS=\"amux\"\n").unwrap();
+        std::fs::write(h.path().join("sessions/other.env"), "CC_TAGS=\"claude-account-x\"\n").unwrap();
+        std::fs::write(h.path().join("sessions/outside.env"), "CC_TAGS=\"gtm\"\n").unwrap();
+        let set = Scope::parse("group", " Claude-Account-X, amux ,amux").unwrap();
+        assert_eq!(set, Scope::Group("amux,claude-account-x".into()), "sorted, lowercased, deduped");
+        assert!(Scope::parse("group", " , ").is_err() && Scope::parse("group", "ok,bad name").is_err());
+        assert_eq!(Scope::parse("group", "solo").unwrap(), Scope::Group("solo".into()), "one group keeps its old form");
+        let master = [3u8; 32];
+        let mut items = Vec::new();
+        put(&mut items, &master, "PW", set.clone(), "secret");
+        for (w, gets) in [("inside", true), ("other", true), ("outside", false)] {
+            assert_eq!(resolve(&items, h.path(), w).contains_key("PW"), gets, "{w}");
+        }
+        // The set is in the associated data: shrinking it without re-sealing fails.
+        let mut narrowed = items[0].clone();
+        narrowed["target"] = json!("amux");
+        assert!(open(&master, &narrowed).is_err());
     }
 
     #[test]

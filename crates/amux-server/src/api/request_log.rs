@@ -1345,6 +1345,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/proxy/{port}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/proxy/{port}/{*rest}",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/_clear_sw",
         methods: &["GET"],
     },
@@ -2611,6 +2619,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/files/mdai/chat",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
         path: "/api/files/mdai/connect",
         methods: &["POST"],
     },
@@ -2625,6 +2637,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/files/mdai/doc",
         methods: &["GET", "PUT"],
+    },
+    RouteEntry {
+        path: "/api/files/mdai/chat",
+        methods: &["GET", "POST"],
     },
     RouteEntry {
         path: "/api/fs/mkdir",
@@ -2817,6 +2833,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // -- a worker's task-name changes, newest first (sessions_legacy::task_history)
     RouteEntry {
         path: "/api/sessions/{name}/task-history",
+        methods: &["GET"],
+    },
+    // -- every worker's tasks, oldest first (sessions_legacy::task_list, the Tasks tab)
+    RouteEntry {
+        path: "/api/task-history",
         methods: &["GET"],
     },
     // -- Converse tab: voice conversations with a worker (api/converse.rs)

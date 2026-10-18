@@ -263,7 +263,7 @@ pub(crate) async fn promise_sweep(state: &AppState) -> usize {
         if promise_uuid.is_empty() || sv::meta_str(&meta, "promise_nudged_uuid") == promise_uuid {
             continue;
         }
-        if sv::session_is_isolated(name) {
+        if sv::session_is_isolated(name) || crate::api::board_lifecycle::board_unused(name) {
             continue;
         }
         if !enabled(name, PROMISE_KEY) {

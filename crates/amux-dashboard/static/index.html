@@ -1258,7 +1258,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     .tasks-scope .tasks-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--border); }
     .tasks-scope .tasks-bar .input { min-height:44px; }
     .tasks-scope .tasks-bar .tasks-search { flex:1 1 200px; min-width:0; }
-    .tasks-scope .tasks-amux { display:flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--dim); min-height:44px; }
+    .tasks-scope .task-row { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:6px; padding:8px 12px; background:var(--card); cursor:pointer; min-height:44px; display:flex; flex-direction:column; gap:4px; }
+    .tasks-scope .task-title { font-size:0.9rem; font-weight:600; color:var(--text); word-break:break-word; }
+    .tasks-scope .task-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:0.76rem; color:var(--dim); }
+    .tasks-scope .task-current { color:var(--accent); }
+    .tasks-scope .task-msgs { display:flex; flex-direction:column; gap:6px; }
     .tasks-scope .tasks-count { font-size:0.8rem; color:var(--dim); padding:6px 12px 0; }
     .tasks-scope .tasks-list { flex:1; min-height:0; overflow-y:auto; padding:6px 12px 12px; display:flex; flex-direction:column; gap:6px; }
     .tasks-scope .tasks-day { font-size:0.72rem; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 2px; }
@@ -1287,7 +1291,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div class="tasks-bar">
     <select id="tasks-worker" class="input tasks-worker" onchange="_tasksFilter('main')" aria-label="Filter by worker"><option value="">All workers</option></select>
     <input id="tasks-search" class="input tasks-search" type="search" placeholder="Search tasks" aria-label="Search tasks" oninput="_tasksSearchInput('main')">
-    <label class="tasks-amux" title="Also list amux's own automatic nudges (board pickup, system)"><input id="tasks-amux" type="checkbox" onchange="_tasksFilter('main')"> amux nudges</label>
   </div>
   <div id="tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
   <div id="tasks-list" class="tasks-list"></div>
@@ -3195,7 +3198,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope" style="padding:0;gap:0;flex-direction:column;">
     <div class="tasks-bar">
       <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">
-      <label class="tasks-amux" title="Also list amux's own automatic nudges (board pickup, system)"><input id="peek-tasks-amux" type="checkbox" onchange="_tasksFilter('peek')"> amux nudges</label>
     </div>
     <div id="peek-tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
     <div id="peek-tasks-list" class="tasks-list"></div>
@@ -3801,6 +3803,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <nav class="mdai-tabs" role="tablist">
     <button class="mdai-tab" role="tab" data-tab="edit" onclick="_mdaiSetTab('edit')"><span class="mdai-tab-ico" aria-hidden="true">&#9998;</span>Edit</button>
     <button class="mdai-tab" role="tab" data-tab="preview" onclick="_mdaiSetTab('preview')"><span class="mdai-tab-ico" aria-hidden="true">&#128065;</span>Preview</button>
+    <button class="mdai-tab" role="tab" data-tab="chat" onclick="_mdaiSetTab('chat')"><span class="mdai-tab-ico" aria-hidden="true">&#128172;</span>Chat<span class="mdai-tab-n"></span></button>
     <button class="mdai-tab" role="tab" data-tab="sources" onclick="_mdaiSetTab('sources')"><span class="mdai-tab-ico" aria-hidden="true">&#9636;</span>Sources<span class="mdai-tab-n"></span></button>
     <button class="mdai-tab" role="tab" data-tab="runs" onclick="_mdaiSetTab('runs')"><span class="mdai-tab-ico" aria-hidden="true">&#9719;</span>Runs<span class="mdai-tab-n"></span></button>
     <button class="mdai-tab" role="tab" data-tab="settings" onclick="_mdaiSetTab('settings')"><span class="mdai-tab-ico" aria-hidden="true">&#9881;</span>Settings</button>
@@ -3809,6 +3812,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="mdai-body" class="mdai-node-body mdai-main" role="tabpanel"></div>
     <aside id="mdai-side" class="mdai-side" aria-label="Graph and runs"></aside>
   </div>
+  <form id="mdai-chatbar" class="mdai-chatbar" onsubmit="event.preventDefault();_mdaiChatSend()">
+    <textarea id="mdai-chat-input" class="input" rows="1" maxlength="4000" placeholder="Ask for a change, e.g. add a column for lifecycle work" aria-label="Tell this node what to change" oninput="_mdaiChatGrow(this)" onkeydown="_mdaiChatKey(event)"></textarea>
+    <button id="mdai-chat-send" type="submit" class="btn primary" data-repeatable aria-label="Send to the model">Send</button>
+  </form>
 </div>
 
 <!-- File explorer overlay -->

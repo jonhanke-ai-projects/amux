@@ -58,6 +58,20 @@ fn app_with_store() -> (axum::Router, std::sync::Arc<Store>, tempfile::TempDir) 
 /// and runs in its own process, so the two cannot reach each other.
 fn pin_approval_policy() {
     std::env::set_var("AMUX_APPROVAL_TYPES", "*");
+    pin_home();
+}
+
+/// Point the amux home at an empty directory, once for the whole binary. The
+/// board refuses a registered worker whose every board switch is off, and the
+/// real `~/.amux/sessions/amux.env` on the owner's box has them all off, so
+/// with the real home these headers (`amux`, `amux-frustrations`) read as
+/// board-off workers and 10 tests failed with 403 `board_off` on that box
+/// only (2026-10-17). An empty home has no registered workers, which is the
+/// state these assertions were written against.
+fn pin_home() {
+    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let home = HOME.get_or_init(|| tempfile::tempdir().unwrap().keep());
+    std::env::set_var("AMUX_HOME", home);
 }
 
 fn app() -> (axum::Router, tempfile::TempDir) {
