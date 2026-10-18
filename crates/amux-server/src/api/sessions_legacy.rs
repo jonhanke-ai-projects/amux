@@ -1098,6 +1098,9 @@ fn web_repo_url(remote: &str) -> Option<String> {
     (r.starts_with("https://") || r.starts_with("http://")).then(|| r.to_string())
 }
 
+/// How long a Tasks git read may run before it reports unmeasured.
+const TASK_GIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// (sha, unix s, subject, MSG ids cited)
 type TaskCommit = (String, i64, String, Vec<String>);
 
@@ -1105,12 +1108,17 @@ type TaskCommit = (String, i64, String, Vec<String>);
 /// matched by its `Amux-Session:` trailer and committer time. (sha, unix s,
 /// subject, MSG ids cited). origin/main as last fetched; no fetch here.
 fn commits_during(repo: &std::path::Path, session: &str, since: f64, until: f64) -> Result<Vec<TaskCommit>, String> {
-    let out = std::process::Command::new("git").arg("-C").arg(repo)
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(repo)
         .args(["log", "origin/main", "--max-count=200", "--fixed-strings"])
         .arg(format!("--since=@{}", since as i64)).arg(format!("--until=@{}", until as i64))
         .arg(format!("--grep=Amux-Session: {session}"))
         .arg("--format=%H%x1f%ct%x1f%s%x1f%B%x1e")
-        .output().map_err(|e| e.to_string())?;
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    // Bounded: this file serves the fleet list, and a git that hangs on a
+    // locked or networked repo must not hold a request (AF-300/AF-301).
+    let out = run_bounded_output(cmd, TASK_GIT_BUDGET, "task-commits")
+        .ok_or_else(|| format!("git log did not finish within {}s", TASK_GIT_BUDGET.as_secs()))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect());
     }
@@ -1131,7 +1139,10 @@ fn worker_repo(session: &str) -> Option<std::path::PathBuf> {
     let env = crate::api::session_verbs::parse_env(session);
     let dir = ["CC_WORKTREE_PATH", "CC_DIR"].iter().filter_map(|k| env.get(k)).map(|v| v.trim_matches('\'').trim_matches('"').to_string())
         .find(|d| !d.is_empty() && std::path::Path::new(d).is_dir())?;
-    let out = std::process::Command::new("git").args(["-C", &dir, "rev-parse", "--show-toplevel"]).output().ok()?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", &dir, "rev-parse", "--show-toplevel"])
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let out = run_bounded_output(cmd, TASK_GIT_BUDGET, "task-repo")?;
     let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Some(std::path::PathBuf::from(if top.is_empty() { dir } else { top }))
 }
@@ -1180,7 +1191,10 @@ pub async fn task_links(
     let sess = session.clone();
     let git = tokio::task::spawn_blocking(move || {
         let repo = worker_repo(&sess).ok_or_else(|| "the worker has no git checkout".to_string())?;
-        let url = std::process::Command::new("git").arg("-C").arg(&repo).args(["remote", "get-url", "origin"]).output().ok()
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("-C").arg(&repo).args(["remote", "get-url", "origin"])
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let url = run_bounded_output(cmd, TASK_GIT_BUDGET, "task-remote")
             .and_then(|o| web_repo_url(&String::from_utf8_lossy(&o.stdout)));
         let commits = commits_during(&repo, &sess, start - 120.0, until)?;
         Ok::<_, String>((repo, url, commits))
@@ -10264,10 +10278,12 @@ Checked, nothing of mine was at risk, no action needed from you.
         // Commits on origin/main by this worker's exact trailer, inside the window.
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str], date: &str| {
-            let st = std::process::Command::new("git").arg("-C").arg(dir.path()).args(args)
+            let mut st = std::process::Command::new("git");
+            st.arg("-C").arg(dir.path()).args(args)
                 .env("GIT_COMMITTER_DATE", date).env("GIT_AUTHOR_DATE", date)
                 .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@x").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@x")
-                .output().unwrap();
+                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            let st = run_bounded_output(st, std::time::Duration::from_secs(30), "task-test-git").expect("git ran");
             assert!(st.status.success(), "{:?}", String::from_utf8_lossy(&st.stderr));
         };
         git(&["init", "-q", "-b", "main"], "1700000000 +0000");

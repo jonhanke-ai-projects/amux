@@ -9004,6 +9004,10 @@ if src:
         why = "fetch of %s %s failed" % (remote, branch)
     elif c.returncode != 0:
         why = "git cherry failed: " + c.stderr.strip()[:160]
+    elif subprocess.run(["git", "merge-base", "--is-ancestor", src, remote + "/" + branch], capture_output=True).returncode == 0:
+        # A fast-forward land puts the source commit itself on the remote, and
+        # git cherry lists nothing for an ancestor: that is one commit, landed.
+        n_cmp, on_origin = 1, True
     else:
         rows = [l for l in c.stdout.splitlines() if l[:2] in ("+ ", "- ")]
         n_cmp = len(rows)
