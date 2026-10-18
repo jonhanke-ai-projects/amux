@@ -256,6 +256,25 @@ pub(crate) fn valid_docker_vm(v: &str) -> bool {
 }
 
 /// The shell exports the shared-VM knob adds to a worker's launch, or "".
+/// grpc defaults every worker shell inherits (Mac crashes RCA 20261018-045202).
+///
+/// 26 Python crashes in 24h on this Mac had one stack: a process with grpc
+/// loaded (the google-cloud clients) forked, and in the child grpc's resolver
+/// ran c-ares, which calls macOS dns_configuration_copy into libxpc between
+/// fork and exec ("crashed on child side of fork pre-exec"). Mixpeek's test
+/// conftest already sets these (0a14e384b3f); the crashes went on from plain
+/// `python script.py` runs and other interpreters no conftest reaches. Here
+/// every worker gets them. `${VAR:-default}` after the scope layers, so a
+/// value set at any scope (or by the lane) wins.
+pub(crate) fn grpc_fork_safe_exports(name: &str) -> String {
+    tracing::info!(session = name, measured = true, n_considered = 1,
+        verdict = "grpc_fork_safe_defaults",
+        "worker shell defaults GRPC_ENABLE_FORK_SUPPORT=false and GRPC_DNS_RESOLVER=native unless a scope sets them");
+    "export GRPC_ENABLE_FORK_SUPPORT=\"${GRPC_ENABLE_FORK_SUPPORT:-false}\"; \
+     export GRPC_DNS_RESOLVER=\"${GRPC_DNS_RESOLVER:-native}\"; "
+        .to_string()
+}
+
 pub(crate) fn docker_vm_exports(name: &str) -> String {
     let Some(vm) = scoped_setting_in(&home(), name, "AMUX_DOCKER_VM") else {
         return String::new();
@@ -304,6 +323,7 @@ pub(crate) fn surviving_shell_scope_rc(name: &str) -> String {
     }
     rc.push_str(&workspace_isolation_exports(name));
     rc.push_str(&docker_vm_exports(name));
+    rc.push_str(&grpc_fork_safe_exports(name));
     rc.push_str(&tmux_fleet_exports(name));
     rc
 }
@@ -375,6 +395,7 @@ pub(crate) fn headless_turn_prelude(name: &str, provider: &str, work_dir: &str) 
     }
     rc.push_str(&workspace_isolation_exports(name));
     rc.push_str(&docker_vm_exports(name));
+    rc.push_str(&grpc_fork_safe_exports(name));
     let local_cli_dir = home().join("bin");
     if local_cli_dir.join("amux").is_file() {
         rc.push_str(&format!(
@@ -16170,6 +16191,7 @@ pub(crate) async fn start_session(
     }
     shell_rc.push_str(&workspace_isolation_exports(name));
     shell_rc.push_str(&docker_vm_exports(name));
+    shell_rc.push_str(&grpc_fork_safe_exports(name));
     // Profiles often prepend ~/.local/bin again. An isolated server with its
     // own installed CLI must put that CLI first AFTER profile/scope sourcing;
     // otherwise its workers silently call the unrelated main-server binary.
@@ -55185,6 +55207,33 @@ mod tmux_fleet_shim_tests {
 #[cfg(test)]
 mod docker_vm_tests {
     use super::*;
+
+    /// Every worker shell defaults grpc off c-ares and fork handling, and a
+    /// value a scope already set survives (Mac crashes RCA 20261018-045202).
+    #[test]
+    fn worker_shells_default_grpc_to_fork_safe_and_a_scope_value_wins() {
+        let ex = grpc_fork_safe_exports("lane");
+        let run = |pre: &str| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{pre}{ex} printf '%s %s' \"$GRPC_ENABLE_FORK_SUPPORT\" \"$GRPC_DNS_RESOLVER\""))
+                .env_remove("GRPC_ENABLE_FORK_SUPPORT")
+                .env_remove("GRPC_DNS_RESOLVER")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        assert_eq!(run(""), "false native");
+        assert_eq!(run("GRPC_DNS_RESOLVER=ares; "), "false ares");
+        assert_eq!(run("export GRPC_ENABLE_FORK_SUPPORT=true; "), "true native");
+        // A real worker prelude carries them, after the scope layers.
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions").join("lane.env"), "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\n").unwrap();
+        let rc = headless_turn_prelude("lane", "claude", "/tmp");
+        assert!(rc.contains(&ex), "an isolated worker's prelude carries the grpc defaults: {rc}");
+    }
 
     /// DESKT-72: unset changes nothing; group scope routes Docker and installs
     /// the shims; worker scope overrides; an invalid name is refused; a
