@@ -48219,7 +48219,12 @@ function _vaultEdit(id, mode) {
   const scope = it ? it.scope : 'global';
   const opt = (list, sel) => list.length ? list.map(n => '<option value="' + esc(n) + '"' + (n === sel ? ' selected' : '') + '>' + esc(n) + '</option>').join('') : '<option value="" disabled selected>None yet</option>';
   const picked = new Set(scope === 'group' ? _vaultGroupsOf(it) : groups.slice(0, 1));
-  const checks = groups.length ? groups.map(n => '<label class="vault-check"><input type="checkbox" value="' + esc(n) + '"' + (picked.has(n) ? ' checked' : '') + ' onchange="_vaultEditScope()"><span>' + esc(n) + '</span></label>').join('') : '<span class="ui-help">No groups yet</span>';
+  // Groups are a searchable multi-select: chips for what is picked, a filter
+  // box, and the checkbox list it narrows (the checkboxes stay the source of truth).
+  const checks = groups.length ? '<div class="vault-ms-chips" id="vault-e-group-chips" aria-live="polite"></div>'
+    + '<input id="vault-e-group-q" class="input vault-ms-q" type="search" autocomplete="off" spellcheck="false" placeholder="Search groups" aria-label="Search groups" aria-controls="vault-e-group-list" oninput="_vaultGroupFilter()" onkeydown="_vaultGroupKey(event)">'
+    + '<div class="vault-checks" id="vault-e-group-list">' + groups.map(n => '<label class="vault-check" data-group="' + esc(n) + '"><input type="checkbox" value="' + esc(n) + '"' + (picked.has(n) ? ' checked' : '') + ' onchange="_vaultEditScope()"><span>' + esc(n) + '</span></label>').join('')
+    + '<span class="ui-help" id="vault-e-group-none" hidden>No groups match</span></div>' : '<span class="ui-help">No groups yet</span>';
   const radio = (v, label, help, extra) => '<label class="vault-radio"><input type="radio" name="vault-e-scope" value="' + v + '"' + (scope === v ? ' checked' : '') + ' onchange="_vaultEditScope()">'
     + '<span class="vault-radio-text">' + _vaultIcon(v) + '<span><b>' + label + '</b><span class="ui-help">' + help + '</span></span></span></label>' + (extra || '');
   const rotate = mode === 'rotate';
@@ -48233,7 +48238,7 @@ function _vaultEdit(id, mode) {
     + '<span class="ui-error" id="vault-e-value-err" role="alert"></span></label>'
     + (rotate ? '' : '<fieldset class="vault-scope"><legend>Scope</legend><p class="ui-help">Control which workers can access this secret.</p>'
       + radio('global', 'Global', 'Available to all workers')
-      + radio('group', 'Groups', 'Available to workers in any of the checked groups', '<div id="vault-e-group" class="vault-target vault-checks" role="group" aria-label="Groups">' + checks + '</div>')
+      + radio('group', 'Groups', 'Available to workers in any of the checked groups', '<div id="vault-e-group" class="vault-target vault-ms" role="group" aria-label="Groups">' + checks + '</div>')
       + radio('worker', 'Worker', 'Available to a single worker', '<select id="vault-e-worker" class="input vault-target" aria-label="Worker" onchange="_vaultEditScope()">' + opt(workers, scope === 'worker' ? it.target : workers[0]) + '</select>')
       + '<p class="ui-help" id="vault-e-reach" role="status"></p></fieldset>')
     + '<p class="ui-error" id="vault-e-err" role="alert"></p>'
@@ -48265,6 +48270,32 @@ function _vaultEye() {
   b.setAttribute('aria-pressed', String(show)); b.setAttribute('aria-label', show ? 'Hide value' : 'Show value');
   b.innerHTML = _vaultIcon(show ? 'eyeOff' : 'eye');
 }
+function _vaultGroupFilter() {
+  const q = (document.getElementById('vault-e-group-q')?.value || '').trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll('#vault-e-group-list .vault-check').forEach(l => { const hit = !q || l.dataset.group.toLowerCase().includes(q); l.hidden = !hit; shown += hit; });
+  const none = document.getElementById('vault-e-group-none'); if (none) none.hidden = shown > 0;
+}
+// Enter toggles the first visible match so the picker works from the keyboard.
+function _vaultGroupKey(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const box = [...document.querySelectorAll('#vault-e-group-list .vault-check')].find(l => !l.hidden)?.querySelector('input');
+  if (!box) return;
+  box.checked = !box.checked; _vaultEditScope();
+  e.target.value = ''; _vaultGroupFilter();
+}
+function _vaultGroupUnpick(name) {
+  const box = [...document.querySelectorAll('#vault-e-group-list input')].find(c => c.value === name);
+  if (box) { box.checked = false; _vaultEditScope(); }
+  document.getElementById('vault-e-group-q')?.focus();
+}
+function _vaultGroupChips() {
+  const el = document.getElementById('vault-e-group-chips');
+  if (!el) return;
+  const on = [...document.querySelectorAll('#vault-e-group-list input:checked')].map(c => c.value);
+  el.innerHTML = on.length ? on.map(n => '<span class="vault-ms-chip"><span class="vault-ms-name">' + esc(n) + '</span><button type="button" class="vault-ms-x" aria-label="Remove ' + esc(n) + '" onclick="_vaultGroupUnpick(\'' + escJs(n) + '\')">&#x2715;</button></span>').join('') : '<span class="ui-help">No groups selected</span>';
+}
 function _vaultEditTarget() {
   const scope = document.querySelector('input[name="vault-e-scope"]:checked')?.value || 'global';
   const target = scope === 'group' ? [...document.querySelectorAll('#vault-e-group input:checked')].map(c => c.value).join(',') : scope === 'worker' ? (document.getElementById('vault-e-worker')?.value || '') : '';
@@ -48279,6 +48310,7 @@ function _vaultEditScope() {
   for (const [s, id] of [['group', 'vault-e-group'], ['worker', 'vault-e-worker']]) {
     const el = document.getElementById(id); if (el) el.hidden = scope !== s;
   }
+  _vaultGroupChips();
   const wg = _vaultWorkerGroups();
   const names = Object.keys(wg).filter(w => scope === 'global' || (scope === 'group' && target.split(',').some(g => wg[w].includes(g))) || (scope === 'worker' && w === target)).sort();
   const key = (document.getElementById('vault-e-key')?.value || '').trim();
