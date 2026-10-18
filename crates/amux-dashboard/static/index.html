@@ -1258,7 +1258,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     .tasks-scope .tasks-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--border); }
     .tasks-scope .tasks-bar .input { min-height:44px; }
     .tasks-scope .tasks-bar .tasks-search { flex:1 1 200px; min-width:0; }
-    .tasks-scope .tasks-amux { display:flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--dim); min-height:44px; }
+    .tasks-scope .task-row { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:6px; padding:8px 12px; background:var(--card); cursor:pointer; min-height:44px; display:flex; flex-direction:column; gap:4px; }
+    .tasks-scope .task-title { font-size:0.9rem; font-weight:600; color:var(--text); word-break:break-word; }
+    .tasks-scope .task-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:0.76rem; color:var(--dim); }
+    .tasks-scope .task-current { color:var(--accent); }
+    .tasks-scope .task-msgs { display:flex; flex-direction:column; gap:6px; }
     .tasks-scope .tasks-count { font-size:0.8rem; color:var(--dim); padding:6px 12px 0; }
     .tasks-scope .tasks-list { flex:1; min-height:0; overflow-y:auto; padding:6px 12px 12px; display:flex; flex-direction:column; gap:6px; }
     .tasks-scope .tasks-day { font-size:0.72rem; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 2px; }
@@ -1287,7 +1291,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div class="tasks-bar">
     <select id="tasks-worker" class="input tasks-worker" onchange="_tasksFilter('main')" aria-label="Filter by worker"><option value="">All workers</option></select>
     <input id="tasks-search" class="input tasks-search" type="search" placeholder="Search tasks" aria-label="Search tasks" oninput="_tasksSearchInput('main')">
-    <label class="tasks-amux" title="Also list amux's own automatic nudges (board pickup, system)"><input id="tasks-amux" type="checkbox" onchange="_tasksFilter('main')"> amux nudges</label>
   </div>
   <div id="tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
   <div id="tasks-list" class="tasks-list"></div>
@@ -3195,7 +3198,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope" style="padding:0;gap:0;flex-direction:column;">
     <div class="tasks-bar">
       <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">
-      <label class="tasks-amux" title="Also list amux's own automatic nudges (board pickup, system)"><input id="peek-tasks-amux" type="checkbox" onchange="_tasksFilter('peek')"> amux nudges</label>
     </div>
     <div id="peek-tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
     <div id="peek-tasks-list" class="tasks-list"></div>
