@@ -48,8 +48,12 @@ STATE = os.path.join(DIR, "state.json")
 LOCK = os.path.join(DIR, "switch.lock")
 LOG = os.environ.get("CLAUDE_ROTATE_LOG", os.path.join(HOME, ".amux", "logs", "claude-rotate.log"))
 CLAUDE_JSON = os.environ.get("CLAUDE_ROTATE_CLAUDE_JSON", os.path.join(HOME, ".claude.json"))
-SWITCH_AT = float(os.environ.get("CLAUDE_SWITCH_AT", "99"))
-MIN_HEADROOM = float(os.environ.get("CLAUDE_MIN_HEADROOM", "2"))
+# SWITCH BY 4% REMAINING (Ethan, 2026-10-17: "make sure the login change
+# happens [when] we're at 4% remaining"). An account is spent once either
+# window has MIN_HEADROOM or less left under SWITCH_AT, so the current one is
+# left at 96% used at the latest and no target is picked at or above it.
+SWITCH_AT = float(os.environ.get("CLAUDE_SWITCH_AT", "100"))
+MIN_HEADROOM = float(os.environ.get("CLAUDE_MIN_HEADROOM", "4"))
 # SWITCH BEFORE THE LIMIT (Ethan, 2026-10-15: "workers shouldn't never be rate
 # limited, u needs to switch login before then"). Switching only once the
 # current account was exhausted (SWITCH_AT) let amux-app hit the weekly limit:
@@ -216,8 +220,13 @@ def record(email, five=None, five_reset=None, week=None, week_reset=None, source
         acct = data["accounts"].setdefault(email, {})
         changed = source != "statusline"
         if source == "statusline":
-            for key, used in (("seven_day", week), ("five_hour", five)):
+            # Weekly only: the five-hour window can climb 15 points between
+            # probes (2026-10-17 22:17: 85-86% status lines were rejected
+            # against a 73% probe, the live trigger never fired, and the
+            # account reached 98% before the next tick).
+            for key, used in (("seven_day", week),):
                 if used is not None and contradicts_probe(acct, key, used):
+
                     log("claude_rotate_reading_rejected", account=email, source=source, reason="contradicts_probe",
                         window=key, used=used, probed=acct["probed"][key]["used"])
                     return False
@@ -286,7 +295,7 @@ def trigger_if_exhausted(email, five, week):
     5-minute schedule overshoots. At most one trigger per 90 s; the switch
     lock stops two switches running at once."""
     used = max(float(five.get("used_percentage") or 0), float(week.get("used_percentage") or 0))
-    if SWITCH_AT - used >= MIN_HEADROOM:
+    if SWITCH_AT - used > MIN_HEADROOM:
         return False
     stamp = os.path.join(DIR, "last-trigger")
     try:
@@ -376,8 +385,8 @@ def rank(at=None):
         u7, r7 = window(a.get("seven_day"), at)
         known = u5 is not None or u7 is not None
         head = min(SWITCH_AT - (u5 or 0), SWITCH_AT - (u7 or 0))
-        usable = head >= MIN_HEADROOM
-        blockers = [r for u, r in ((u5, r5), (u7, r7)) if u is not None and SWITCH_AT - u < MIN_HEADROOM and r]
+        usable = head > MIN_HEADROOM
+        blockers = [r for u, r in ((u5, r5), (u7, r7)) if u is not None and SWITCH_AT - u <= MIN_HEADROOM and r]
         rows.append({"email": email, "known": known, "usable": usable, "headroom": round(head, 1),
                      "five_hour": u5, "weekly": u7,
                      "weekly_resets": r7.isoformat() if r7 else None,
@@ -454,9 +463,17 @@ def dead_mailboxes():
 def decide(current, rows, state, at=None, unreachable=()):
     """Return (target or None, reason). `unreachable` accounts are never targets."""
     at = at or now()
-    skip = (backed_off(state) | {e.lower() for e in unreachable}) - {current}
-    if skip:
-        rows = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
+    dead = {e.lower() for e in unreachable} - {current}
+    skip = (backed_off(state) | dead) - {current}
+    marked = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
+    # A backoff saves sign-in time; it must never leave the fleet with no
+    # account. 2026-10-17 22:28: ethan@trymixpeek.com at 98% held with
+    # "no_usable_account" while hello@amux.io (76 points free) sat in a backoff
+    # earned during a browser outage. With nothing else usable, a backed-off
+    # account is tried again; a dead mailbox still is not.
+    if not any(r["usable"] and r["email"] != current for r in marked):
+        marked = [dict(r, usable=False) if r["email"] in dead else r for r in rows]
+    rows = marked
     # A target already over the preempt line would be preempted on the next
     # tick, so prefer accounts under it (2026-10-16: the soonest-expiring account
     # sat at 93% weekly and was picked first, which would flap straight back).
@@ -662,10 +679,25 @@ def stranded(sessions):
     return out, isolated
 
 
+# Newer Claude Code parks a limited worker on a timer instead of a menu:
+# "Usage limit reached · limit resets 1:40am / Continuing automatically at
+# 1:40am · esc to cancel". 2026-10-17 22:32: three workers sat on it after the
+# switch to hello@amux.io, logged not_on_prompt_or_recent, because only the
+# menu was recognised. Escape cancels the timer and the "continue" that follows
+# runs on the new login.
+AUTO_WAIT = re.compile(r"Continuing automatically at[^\n]{0,40}esc to cancel")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
 def resume_action(screen):
     """The keys that leave Claude's limit prompt, or None when it is not on screen
     (a worker in any other state must not get a stray keypress)."""
-    return "1" if LIMIT_PROMPT in (screen or "") else None
+    plain = ANSI.sub("", screen or "")
+    if LIMIT_PROMPT in plain:
+        return "1"
+    if AUTO_WAIT.search(plain):
+        return "Escape"
+    return None
 
 
 def _amux(path, body=None):

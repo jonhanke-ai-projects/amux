@@ -317,6 +317,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Open sidebar | `_mapToggleSidebar` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_mapToggleTagMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Stop | `_mdaiCancel` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Undo | `_mdaiChatUndo` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | All nodes | `_mdaiCreateCancel` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Cancel | `_mdaiCreateCancel` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | New MDAI | `_mdaiCreatePage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -333,6 +334,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | button | `_mdaiNewFile` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Open raw .mdai file | `_mdaiOpenRaw` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Run | `_mdaiRun` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Run again | `_mdaiRun` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Run again | `_mdaiRun` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Run | `_mdaiRun` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Run options | `_mdaiRunMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -1153,11 +1155,14 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Next match | `_mdSearchStep` | onclick |
 | index.html | Previous match | `_mdSearchStep` | onclick |
 | index.html | Find | `_mdSearchToggle` | onclick |
+| app.js | Try: look at the messages about lifecycle work a | `_mdaiChatExample` | onclick |
 | index.html | Preview | `_mdaiNewBodyMode` | onclick |
 | index.html | Write | `_mdaiNewBodyMode` | onclick |
 | app.js | … | `_mdaiSetEditMode` | onclick |
+| app.js | See output | `_mdaiSetTab` | onclick |
 | app.js | View all runs → | `_mdaiSetTab` | onclick |
 | app.js | View all → | `_mdaiSetTab` | onclick |
+| index.html | button | `_mdaiSetTab` | onclick |
 | index.html | button | `_mdaiSetTab` | onclick |
 | index.html | button | `_mdaiSetTab` | onclick |
 | index.html | button | `_mdaiSetTab` | onclick |
