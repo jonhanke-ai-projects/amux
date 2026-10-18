@@ -127,14 +127,16 @@
     padding: 8px 2px; min-height: 44px; display: inline-flex; align-items: center;
   }
   .site-header nav a:hover { color: var(--fg); }
-  .nav-star {
+  .site-header nav a.nav-star {
+    min-height: 38px; line-height: 1;
     display: inline-flex; align-items: center; gap: 7px;
     padding: 7px 12px; border: 1px solid var(--line-2); border-radius: 999px;
     background: var(--bg-2); font-size: 12.5px; font-weight: 600; color: var(--fg);
   }
   .nav-star:hover { border-color: var(--fg-3); }
   .nav-star .st { color: var(--accent); }
-  .nav-dl {
+  .site-header nav a.nav-dl {
+    min-height: 38px; line-height: 1; white-space: nowrap;
     display: inline-flex; align-items: center; gap: 8px;
     padding: 9px 16px; border-radius: 999px;
     background: var(--fg); color: var(--bg) !important;
@@ -728,7 +730,6 @@
   .install-line.mini { margin: 8px 0 4px; padding: 9px 10px; font-size: 11px; gap: 8px; max-width: 100%; }
   .install-line.mini .copy-btn { padding: 5px 7px; font-size: 10px; }
   #get { padding: 90px 0 70px; }
-  .nav-dl { white-space: nowrap; padding: 8px 16px; line-height: 1.2; }
   .start-plan { min-width: 0; }
   .install-line { overflow: hidden; }
   .install-line > span { overflow-x: auto; min-width: 0; scrollbar-width: none; }
