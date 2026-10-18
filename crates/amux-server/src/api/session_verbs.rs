@@ -49007,6 +49007,57 @@ mod composer_state_tests {
     }
 
     #[test]
+    fn codex_0163_hint_row_under_the_model_bar_is_still_a_boundary() {
+        // C6-2 (amux Cloud round 2, 2026-10-18): Codex 0.163 paints
+        // `? for shortcuts ... ⚠ 2 warnings · f2 to view` BELOW the model bar.
+        // The Codex reader required the bar to be the last row, so this idle
+        // frame was "not Codex", the lane never reached a delivery boundary,
+        // and the customer's first task stayed queued with status unknown.
+        let idle = include_str!("../../tests/fixtures/boundary/codex-0.163-warnings-footer.txt");
+        assert_eq!(
+            crate::backend::adapter::codex_pane_generation_state(idle),
+            Some(false),
+            "a Codex 0.163 frame must be read as Codex, idle"
+        );
+        assert!(pane_is_at_boundary(idle));
+        assert_eq!(composer_state(idle).typed(), None);
+        assert!(agent_ui_visible(&strip_ansi(idle)));
+        // The boot gate releases the queued first task on this frame.
+        assert!(fresh_boot_frame(idle, "", false));
+        assert!(!boot_delivery_held(idle, "", true, false, false, false));
+        // Hint row without warnings.
+        let plain = idle.replace(
+            "⚠ \u{1b}[38;5;179m2 warnings\u{1b}[39m · \u{1b}[1mf2\u{1b}[0m to view",
+            "",
+        );
+        assert!(pane_is_at_boundary(&plain));
+        // Busy and drafted frames with the same footer are not boundaries.
+        let busy = idle.replace(
+            "\u{1b}[1m›\u{1b}[0m",
+            "• Working (3s • esc to interrupt)\n\u{1b}[1m›\u{1b}[0m",
+        );
+        assert_eq!(
+            crate::backend::adapter::codex_pane_generation_state(&busy),
+            Some(true)
+        );
+        assert!(!pane_is_at_boundary(&busy));
+        let draft = idle.replace("\u{1b}[2mAsk Codex to do anything\u{1b}[0m", "my unsent draft");
+        assert!(!pane_is_at_boundary(&draft));
+        // Any other row under the bar is still foreign: a pasted frame does
+        // not become Codex state.
+        let foreign = format!("{idle}\n\u{276f}\u{a0}");
+        assert_eq!(
+            crate::backend::adapter::codex_pane_generation_state(&foreign),
+            None
+        );
+        let unknown_row = idle.replace("for shortcuts", "for something else");
+        assert_eq!(
+            crate::backend::adapter::codex_pane_generation_state(&unknown_row),
+            None
+        );
+    }
+
+    #[test]
     fn codex_interrupted_named_footer_is_a_boundary_only_without_work_or_draft() {
         let idle="■ Conversation interrupted - tell the model what to do differently.\n\n\u{1b}[1m›\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  gpt-6-astra medium · ~/private/repo · Resume AAB-1 worker\n";
         assert_eq!(
