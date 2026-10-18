@@ -231,6 +231,14 @@ fn is_worker_origin(headers: &HeaderMap) -> bool {
     })
 }
 
+/// A worker that does not act for the owner. An admin-group worker acts with
+/// the owner's reach (CLAUDE.md), so it adds items as active and may edit
+/// them; every other worker is held to the pending/refused path below.
+/// `admin_origin` logs each admin pass (`admin_group_owner_gate`).
+fn non_owner_worker(headers: &HeaderMap, gate: &str) -> bool {
+    is_worker_origin(headers) && super::session_verbs::admin_origin(headers, gate).is_none()
+}
+
 fn origin_name(headers: &HeaderMap) -> String {
     headers
         .get("x-amux-session")
@@ -327,7 +335,7 @@ fn create_login(home: &Path, headers: &HeaderMap, name: String, body: &Value) ->
             "error": "rules.origins is required: the hosts this login may be typed into, e.g. [\"netsuite.com\"]",
             "why": "amux checks the page's host against it before every fill, so a worker cannot send the password to a page of its choosing"}));
     }
-    let from_worker = is_worker_origin(headers);
+    let from_worker = non_owner_worker(headers, "vault_create");
     let by = origin_name(headers);
     let item = json!({
         "id": new_id(),
@@ -484,8 +492,8 @@ async fn list() -> Response {
     .into_response()
 }
 
-/// Add an item. From the dashboard it is active at once. From a worker (a
-/// request carrying X-Amux-Session) it is stored PENDING: nothing can use it
+/// Add an item. From the dashboard or an admin-group worker it is active at
+/// once. From any other worker (a request carrying X-Amux-Session) it is stored PENDING: nothing can use it
 /// until the owner activates it, so a worker cannot mint itself a spendable
 /// card.
 async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
@@ -530,7 +538,7 @@ async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
             Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "spend_limits_usd"})),
         },
     };
-    let from_worker = is_worker_origin(&headers);
+    let from_worker = non_owner_worker(&headers, "vault_create");
     let by = origin_name(&headers);
     let item = json!({
         "id": new_id(),
@@ -555,11 +563,11 @@ async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     (StatusCode::CREATED, Json(json!({"ok": true, "item": view}))).into_response()
 }
 
-/// Owner only: activate a pending item, or change its rules.
+/// Owner or an admin-group worker: activate a pending item, or change its rules.
 async fn update(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<Value>) -> Response {
-    if is_worker_origin(&headers) {
+    if non_owner_worker(&headers, "vault_update") {
         return err(StatusCode::FORBIDDEN, json!({"error": "a worker may not change a vault item or its rules",
-            "why": "the rules exist to bound what workers can spend; only the owner (the dashboard) sets them"}));
+            "why": "the rules exist to bound what workers can spend; only the owner (the dashboard) or an admin-group worker sets them"}));
     }
     let home = amux_home();
     let mut items = load_items(&home);
@@ -585,14 +593,15 @@ async fn update(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json
     if let Err(e) = save_items(&home, &items) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": format!("could not save vault: {e}")}));
     }
-    audit(&home, json!({"ts": now_f64(), "event": "item_updated", "item": id, "change": body}));
+    audit(&home, json!({"ts": now_f64(), "event": "item_updated", "item": id, "by": origin_name(&headers), "change": body}));
     Json(json!({"ok": true, "item": view})).into_response()
 }
 
-/// Owner only: remove an item.
+/// Owner or an admin-group worker: remove an item.
 async fn remove(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
-    if is_worker_origin(&headers) {
-        return err(StatusCode::FORBIDDEN, json!({"error": "a worker may not delete a vault item"}));
+    if non_owner_worker(&headers, "vault_delete") {
+        return err(StatusCode::FORBIDDEN, json!({"error": "a worker may not delete a vault item",
+            "why": "only the owner (the dashboard) or an admin-group worker removes vault items"}));
     }
     let home = amux_home();
     let mut items = load_items(&home);
@@ -604,7 +613,7 @@ async fn remove(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
     if let Err(e) = save_items(&home, &items) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": format!("could not save vault: {e}")}));
     }
-    audit(&home, json!({"ts": now_f64(), "event": "item_removed", "item": id}));
+    audit(&home, json!({"ts": now_f64(), "event": "item_removed", "item": id, "by": origin_name(&headers)}));
     Json(json!({"ok": true})).into_response()
 }
 
