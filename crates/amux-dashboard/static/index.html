@@ -3801,6 +3801,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <nav class="mdai-tabs" role="tablist">
     <button class="mdai-tab" role="tab" data-tab="edit" onclick="_mdaiSetTab('edit')"><span class="mdai-tab-ico" aria-hidden="true">&#9998;</span>Edit</button>
     <button class="mdai-tab" role="tab" data-tab="preview" onclick="_mdaiSetTab('preview')"><span class="mdai-tab-ico" aria-hidden="true">&#128065;</span>Preview</button>
+    <button class="mdai-tab" role="tab" data-tab="chat" onclick="_mdaiSetTab('chat')"><span class="mdai-tab-ico" aria-hidden="true">&#128172;</span>Chat<span class="mdai-tab-n"></span></button>
     <button class="mdai-tab" role="tab" data-tab="sources" onclick="_mdaiSetTab('sources')"><span class="mdai-tab-ico" aria-hidden="true">&#9636;</span>Sources<span class="mdai-tab-n"></span></button>
     <button class="mdai-tab" role="tab" data-tab="runs" onclick="_mdaiSetTab('runs')"><span class="mdai-tab-ico" aria-hidden="true">&#9719;</span>Runs<span class="mdai-tab-n"></span></button>
     <button class="mdai-tab" role="tab" data-tab="settings" onclick="_mdaiSetTab('settings')"><span class="mdai-tab-ico" aria-hidden="true">&#9881;</span>Settings</button>
@@ -3809,6 +3810,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="mdai-body" class="mdai-node-body mdai-main" role="tabpanel"></div>
     <aside id="mdai-side" class="mdai-side" aria-label="Graph and runs"></aside>
   </div>
+  <form id="mdai-chatbar" class="mdai-chatbar" onsubmit="event.preventDefault();_mdaiChatSend()">
+    <textarea id="mdai-chat-input" class="input" rows="1" maxlength="4000" placeholder="Ask for a change, e.g. add a column for lifecycle work" aria-label="Tell this node what to change" oninput="_mdaiChatGrow(this)" onkeydown="_mdaiChatKey(event)"></textarea>
+    <button id="mdai-chat-send" type="submit" class="btn primary" data-repeatable aria-label="Send to the model">Send</button>
+  </form>
 </div>
 
 <!-- File explorer overlay -->

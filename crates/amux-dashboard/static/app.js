@@ -30610,13 +30610,16 @@ function _mdaiMsgParse(path) {
   let days = q.get('days');
   if (days == null) days = (limit || offset) ? 'all' : '14';
   if (/^(none|0)$/.test(days)) days = 'all';
-  return { days, limit, offset, kb };
+  return { days, limit, offset, kb, q: q.get('q') || '', session: q.get('session') || '' };
 }
 function _mdaiMsgPath(b) {
   const q = ['days=' + (b.days || '14')];
   if (b.limit) q.push('limit=' + b.limit);
   if (b.offset && String(b.offset) !== '0') q.push('offset=' + b.offset);
   if (b.kb) q.push('kb=' + b.kb);
+  // Words to match (q) and one worker (session); a chat edit can add these.
+  if (b.q) q.push('q=' + encodeURIComponent(b.q).replace(/%7C/gi, '|'));
+  if (b.session) q.push('session=' + encodeURIComponent(b.session));
   return 'amux:messages?' + q.join('&');
 }
 function _mdaiSrcKind(path) {
@@ -30634,7 +30637,7 @@ function _mdaiSrcSync(prefix) {
     if (!g('prompt')) return;
     s.prompt = g('prompt').value;
     if (s.kind === 'messages') {
-      s.path = _mdaiMsgPath({ days: g('days').value, limit: g('limit').value.trim(), offset: g('offset').value.trim(), kb: g('kb').value.trim() });
+      s.path = _mdaiMsgPath({ days: g('days').value, limit: g('limit').value.trim(), offset: g('offset').value.trim(), kb: g('kb').value.trim(), q: g('q') ? g('q').value.trim() : '', session: g('session') ? g('session').value.trim() : '' });
     } else s.path = g('path').value.trim();
   });
   return list;
@@ -30667,7 +30670,7 @@ function _mdaiSrcHtml(prefix) {
     const label = s.kind === 'messages' ? 'Amux message history' : s.kind === 'mdai' ? 'Another .mdai node' : 'File or folder';
     let fields = '';
     if (s.kind === 'messages') {
-      const b = _mdaiMsgParse(s.path) || { days: '30', limit: '', offset: '', kb: '' };
+      const b = _mdaiMsgParse(s.path) || { days: '30', limit: '', offset: '', kb: '', q: '', session: '' };
       const dayOpt = (v, t) => '<option value="' + v + '"' + (String(b.days) === v ? ' selected' : '') + '>' + t + '</option>';
       const known = ['7', '14', '30', '90', 'all'];
       fields = '<div class="mdai-msg-bounds">'
@@ -30675,7 +30678,9 @@ function _mdaiSrcHtml(prefix) {
         + (known.includes(String(b.days)) ? '' : dayOpt(String(b.days), 'Last ' + esc(b.days) + ' days')) + '</select></label>'
         + '<label class="mdai-lbl">Newest messages<input class="input" type="number" min="1" max="4000" inputmode="numeric" id="' + id('limit') + '" value="' + esc(b.limit) + '" placeholder="4000 (max)"></label>'
         + '<label class="mdai-lbl">Skip newest<input class="input" type="number" min="0" max="20000" inputmode="numeric" id="' + id('offset') + '" value="' + esc(b.offset) + '" placeholder="0"></label>'
-        + '<label class="mdai-lbl">Max size (KB)<input class="input" type="number" min="1" max="600" inputmode="numeric" id="' + id('kb') + '" value="' + esc(b.kb) + '" placeholder="120"></label></div>'
+        + '<label class="mdai-lbl">Max size (KB)<input class="input" type="number" min="1" max="600" inputmode="numeric" id="' + id('kb') + '" value="' + esc(b.kb) + '" placeholder="120"></label>'
+        + '<label class="mdai-lbl">Only messages with<input class="input" id="' + id('q') + '" value="' + esc(b.q || '') + '" placeholder="any word, e.g. lifecycle|restart" autocomplete="off"></label>'
+        + '<label class="mdai-lbl">Only worker<input class="input" id="' + id('session') + '" value="' + esc(b.session || '') + '" placeholder="any worker" autocomplete="off"></label></div>'
         + '<div class="mdai-hint">Your own messages across every worker, newest kept first. At most 4000 messages and the size above (default 120 KB, up to 600 KB) reach the model; anything older is cut and the prompt says so. Skip newest pages back through older history.</div>';
     } else {
       fields = '<label class="mdai-lbl">Path<input class="input" id="' + id('path') + '" value="' + esc(s.path) + '" placeholder="' + (s.kind === 'mdai' ? 'other.mdai' : 'notes/ or plan.md') + '"' + (s.kind === 'mdai' ? ' list="' + prefix + '-mdai-list"' : '') + ' autocomplete="off"></label>'
@@ -30901,6 +30906,7 @@ async function openMdaiNode(path, opts) {
   _mdaiCur = { abs, rel: (path && path.charAt(0) !== '/') ? path : null, doc: null, model: null, sources: [], body: '', content: '', parseOk: true, mtime: null };
   _mdaiHist = []; _mdaiHistIdx = 0; _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = null;
   _mdaiShown = null; _mdaiGraph = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null; _mdaiFormErr = null; _mdaiPendingDoc = null; _mdaiPendingName = null;
+  _mdaiChat = []; _mdaiChatBusy = false; _mdaiChatPending = null; _mdaiChatErr = null; _mdaiChatLoadErr = null;
   _mdaiEditMode = opts.raw ? 'raw' : 'write';
   _mdaiTab = opts.tab || 'preview';
   document.getElementById('mdai-title').textContent = abs.split('/').pop();
@@ -30913,7 +30919,7 @@ async function openMdaiNode(path, opts) {
   await _mdaiLoadDoc();
   if (_mdaiCur !== node) return;
   if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; }).catch(() => {});
-  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph(), _mdaiLoadActive()]);
+  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph(), _mdaiLoadActive(), _mdaiLoadChat()]);
   if (_mdaiCur !== node) return;
   if (_mdaiHist.length && !_mdaiShown) await _mdaiShowRun(_mdaiHist.find(h => h.status === 'ok') || _mdaiHist[0], true);
   _mdaiRender();
@@ -30953,6 +30959,7 @@ function closeMdaiNode() {
   _mdaiStopPoll();
   document.getElementById('mdai-overlay').classList.remove('active');
   _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null;
+  _mdaiChat = []; _mdaiChatBusy = false; _mdaiChatPending = null; _mdaiChatErr = null;
   if (activeView === 'mdai') { _mdaiListData = null; _mdaiTabLoad(); }
 }
 async function _mdaiLoadHistory() {
@@ -31373,6 +31380,7 @@ function _mdaiRender() {
   document.querySelectorAll('#mdai-overlay .mdai-tab').forEach(b => {
     const on = b.dataset.tab === _mdaiTab; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
     if (b.dataset.tab === 'runs') b.querySelector('.mdai-tab-n').textContent = _mdaiCur.runsTotal ? String(_mdaiCur.runsTotal) : '';
+    if (b.dataset.tab === 'chat') b.querySelector('.mdai-tab-n').textContent = _mdaiChat.length ? String(_mdaiChat.length) : '';
     if (b.dataset.tab === 'sources') { const n = (_mdaiCur.sources || []).length + (_mdaiCur.doc && _mdaiCur.doc.fetch ? 1 : 0); b.querySelector('.mdai-tab-n').textContent = n ? String(n) : ''; }
   });
   let html = _mdaiBannerHtml();
@@ -31388,6 +31396,7 @@ function _mdaiRender() {
   else if (_mdaiTab === 'sources') html += _mdaiSourcesHtml();
   else if (_mdaiTab === 'runs') html += _mdaiRunsHtml();
   else if (_mdaiTab === 'settings') html += _mdaiSettingsHtml();
+  else if (_mdaiTab === 'chat') html += _mdaiChatHtml();
   else html += _mdaiPreviewHtml();
   const kept = _mdaiTypedFields(el);
   el.innerHTML = html;
@@ -31397,6 +31406,8 @@ function _mdaiRender() {
   if (_mdaiTab === 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiGutter(ta); }
   _mdaiRenderRunState();
   _mdaiRenderSide();
+  _mdaiChatSyncBar();
+  if (_mdaiTab === 'chat') { const log = document.getElementById('mdai-chat-log'); if (log && log.lastElementChild) log.lastElementChild.scrollIntoView({ block: 'nearest' }); }
 }
 // A render rebuilds the form from the saved node, and renders arrive from
 // saves, graph reloads and run polls at any moment. A field the owner has
@@ -31484,6 +31495,174 @@ function _mdaiPreviewHtml() {
   if (run.status !== 'ok') h += '<div class="mdai-err"><b>' + esc(st.label) + '.</b> ' + esc(run.error || '') + '</div>';
   else h += '<div class="mdai-output md-content">' + renderMarkdown(run.output || '', _mdaiCur.abs) + '</div>';
   return h;
+}
+// ---- Chat: change the node by telling it what you want ---------------------------
+// POST /api/files/mdai/chat hands the model this file, the latest output and the
+// message; the server validates and writes the revised node and answers with the
+// file before and after. The page shows the exchange with the changed lines, then
+// starts a run through the ordinary run flow so the output catches up.
+let _mdaiChat = [];          // turns for the open node, oldest first
+let _mdaiChatBusy = false;   // a message is with the model
+let _mdaiChatPending = null; // the message being worked on (shown while busy)
+let _mdaiChatErr = null;     // last failure, shown in the Chat tab
+let _mdaiChatLoadErr = null; // the history could not be read
+function _mdaiChatAutoRun() { try { return localStorage.getItem('mdai-chat-autorun') !== '0'; } catch (e) { return true; } }
+function _mdaiChatSetAutoRun(on) { try { localStorage.setItem('mdai-chat-autorun', on ? '1' : '0'); } catch (e) {} }
+async function _mdaiLoadChat() {
+  const node = _mdaiCur;
+  if (!node) return;
+  _mdaiChatLoadErr = null;
+  try {
+    const r = await fetch(API + '/api/files/mdai/chat?path=' + encodeURIComponent(node.abs));
+    const d = await r.json().catch(() => ({}));
+    if (_mdaiCur !== node) return;
+    if (!r.ok || d.error) { _mdaiChat = []; _mdaiChatLoadErr = d.error || ('HTTP ' + r.status); return; }
+    _mdaiChat = d.turns || [];
+    if (d.unreadable) _mdaiChatLoadErr = d.unreadable + ' earlier message(s) could not be read and are not shown.';
+  } catch (e) { if (_mdaiCur === node) { _mdaiChat = []; _mdaiChatLoadErr = 'Could not load the chat history.'; } }
+}
+function _mdaiChatGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; }
+function _mdaiChatKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); _mdaiChatSend(); }
+}
+function _mdaiChatSyncBar() {
+  const bar = document.getElementById('mdai-chatbar');
+  if (!bar) return;
+  const ro = !_mdaiCur || !!_mdaiCur.readOnly || !_mdaiCur.doc;
+  bar.hidden = !_mdaiCur || !!_mdaiCur.readOnly;
+  bar.dataset.tab = _mdaiTab;
+  const ta = document.getElementById('mdai-chat-input'), b = document.getElementById('mdai-chat-send');
+  if (ta) { ta.disabled = ro; ta.placeholder = _mdaiCur && !_mdaiCur.doc ? 'Fix the file in Edit, Raw file first' : 'Ask for a change, e.g. add a column for lifecycle work'; }
+  if (b) { b.disabled = ro || _mdaiChatBusy; b.textContent = _mdaiChatBusy ? 'Working…' : 'Send'; }
+}
+async function _mdaiChatSend(text) {
+  if (!_mdaiCur || _mdaiChatBusy) return;
+  const ta = document.getElementById('mdai-chat-input');
+  const msg = (text != null ? String(text) : (ta ? ta.value : '')).trim();
+  if (!msg) { if (ta) ta.focus(); return; }
+  if (_mdaiCur.readOnly) { showToast(_mdaiCur.readOnly); return; }
+  // Unsaved typing would be overwritten by the edit, so it is saved first.
+  if (_mdaiDirty() && !(await _mdaiSave())) return;
+  const node = _mdaiCur;
+  _mdaiChatBusy = true; _mdaiChatPending = msg; _mdaiChatErr = null;
+  if (ta) { ta.value = ''; _mdaiChatGrow(ta); }
+  if (_mdaiTab === 'edit') _mdaiCaptureDrafts();
+  _mdaiTab = 'chat';
+  _mdaiRender();
+  let ok = false, changed = false;
+  try {
+    const { r, d } = await _mdaiJson('/api/files/mdai/chat', 'POST', { path: node.abs, message: msg, base_mtime_ms: node.mtime });
+    if (_mdaiCur !== node) return;
+    if (_isLocallyQueued(r)) {
+      _mdaiChatErr = 'The server could not be reached, so the message was not sent. Nothing changed.';
+    } else if (!r.ok || d.error) {
+      _mdaiChatErr = d.error || ('The edit failed (HTTP ' + r.status + ')');
+      if (d.turn) _mdaiChat.push(d.turn);
+    } else {
+      ok = true; changed = !!d.changed;
+      _mdaiChat.push(d.turn);
+      if (d.doc) _mdaiApplyDoc(d.doc);
+      _mdaiLoadGraph().then(() => { if (_mdaiCur === node) _mdaiRender(); });
+    }
+  } catch (e) {
+    if (_mdaiCur === node) _mdaiChatErr = 'The edit failed: ' + ((e && e.message) || 'network error');
+  } finally {
+    if (_mdaiCur === node) { _mdaiChatBusy = false; _mdaiChatPending = null; }
+  }
+  if (_mdaiCur !== node) return;
+  // A failed edit keeps what was typed, so it can be sent again.
+  if (!ok && ta && !ta.value) { ta.value = msg; _mdaiChatGrow(ta); }
+  if (_mdaiChatErr) showToast(_mdaiChatErr);
+  try { window._clientDebug && window._clientDebug('mdai-chat', { ok, changed, verdict: ok ? (changed ? 'applied' : 'no_change') : 'failed', measured: true, n_considered: 1 }); } catch (e) {}
+  _mdaiRender();
+  if (ok && changed && _mdaiChatAutoRun() && !_mdaiRunning) _mdaiRun();
+}
+async function _mdaiChatUndo(i) {
+  const t = _mdaiChat[i];
+  if (!_mdaiCur || !t || !t.changed || t.truncated || t.undone) return;
+  if (!confirm('Put the node back to how it was before this change?')) return;
+  const ok = await _mdaiSerial(() => _mdaiPutDoc({ path: _mdaiCur.abs, raw: t.before, base_mtime_ms: _mdaiCur.mtime }));
+  if (!ok) return;
+  t.undone = true;
+  showToast('Change undone. Run again to refresh the output.');
+  _mdaiRender();
+}
+// Line diff (longest common subsequence). Files here are a few hundred lines;
+// past the cap the turn says the diff is too large instead of freezing the page.
+function _mdaiLineDiff(a, b) {
+  const A = String(a || '').split('\n'), B = String(b || '').split('\n');
+  if (A.length * B.length > 4000000) return null;
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { out.push({ t: ' ', s: A[i] }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) out.push({ t: '-', s: A[i++] });
+    else out.push({ t: '+', s: B[j++] });
+  }
+  while (i < n) out.push({ t: '-', s: A[i++] });
+  while (j < m) out.push({ t: '+', s: B[j++] });
+  return out;
+}
+function _mdaiDiffHtml(before, after) {
+  const ops = _mdaiLineDiff(before, after);
+  if (!ops) return '<div class="mdai-dim">The file is too large to show line by line.</div>';
+  const keep = new Array(ops.length).fill(false);
+  ops.forEach((o, k) => { if (o.t !== ' ') for (let x = Math.max(0, k - 2); x <= Math.min(ops.length - 1, k + 2); x++) keep[x] = true; });
+  let h = '', gap = false, add = 0, del = 0;
+  ops.forEach((o, k) => {
+    if (o.t === '+') add++; else if (o.t === '-') del++;
+    if (!keep[k]) { gap = true; return; }
+    if (gap && h) h += '<div class="mdai-diff-gap">⋯</div>';
+    gap = false;
+    h += '<div class="mdai-diff-l ' + (o.t === '+' ? 'add' : o.t === '-' ? 'del' : 'ctx') + '"><span aria-hidden="true">' + (o.t === ' ' ? '' : o.t) + '</span>' + (esc(o.s) || '&#8203;') + '</div>';
+  });
+  return { html: '<div class="mdai-diff mdai-code" role="region" aria-label="Changed lines">' + h + '</div>', add, del };
+}
+function _mdaiChatHtml() {
+  let h = '<div class="mdai-chat" id="mdai-chat-log" aria-live="polite">';
+  if (_mdaiChatLoadErr) h += '<div class="mdai-err" role="alert">' + esc(_mdaiChatLoadErr) + '</div>';
+  if (!_mdaiChat.length && !_mdaiChatBusy) {
+    h += '<div class="mdai-empty"><div class="mdai-empty-title">Talk to this node</div><div>Say what you want the output to show. The model rewrites the instruction (and adds a source if it needs one), you see the changed lines, and the node runs again.</div>'
+      + '<button type="button" class="btn" onclick="_mdaiChatExample()">Try: look at the messages about lifecycle work and include that in the table</button></div>';
+  }
+  const lastApplied = (() => { for (let k = _mdaiChat.length - 1; k >= 0; k--) if (_mdaiChat[k].changed) return k; return -1; })();
+  _mdaiChat.forEach((t, i) => {
+    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(t.message || '') + '</div><div class="mdai-msg-meta">' + (t.ts ? timeAgo(t.ts) : '') + '</div></div>';
+    if (t.error) {
+      h += '<div class="mdai-msg ai"><div class="mdai-bubble bad" role="alert"><b>Not changed.</b> ' + esc(t.error) + '</div></div>';
+      return;
+    }
+    const d = t.changed && !t.truncated ? _mdaiDiffHtml(t.before, t.after) : null;
+    const what = [t.body_changed ? 'instruction' : '', t.sources_changed ? 'sources' : ''].filter(Boolean).join(' and ');
+    h += '<div class="mdai-msg ai"><div class="mdai-bubble">' + esc(t.reply || '')
+      + '<div class="mdai-msg-meta">'
+      + (t.changed ? '<span class="mdai-pill ok">' + (t.undone ? 'undone' : 'changed ' + esc(what || 'file')) + '</span>' : '<span class="mdai-pill">no change</span>')
+      + (d && d.html ? ' <span class="mdai-dim">+' + d.add + ' / -' + d.del + ' lines</span>' : '')
+      + (t.model ? ' <span class="mdai-dim">' + esc(t.model) + '</span>' : '') + (t.dur_ms ? ' <span class="mdai-dim">' + _mdaiDur(t.dur_ms) + '</span>' : '') + '</div>'
+      + (d ? (d.html ? '<details class="mdai-diff-wrap"' + (i === lastApplied ? ' open' : '') + '><summary>Changed lines</summary>' + d.html + '</details>' : d) : '')
+      + (t.changed && t.truncated ? '<div class="mdai-dim">This file is too large to keep a copy for the diff or undo.</div>' : '')
+      + (i === lastApplied && !t.undone ? '<div class="mdai-row-end mdai-chat-acts">'
+        + '<button type="button" class="btn" onclick="_mdaiSetTab(\'preview\')">See output</button>'
+        + (_mdaiRunning ? '' : '<button type="button" class="btn" onclick="_mdaiRun({show:true})">Run again</button>')
+        + (t.truncated ? '' : '<button type="button" class="btn" onclick="_mdaiChatUndo(' + i + ')">Undo</button>') + '</div>' : '')
+      + '</div></div>';
+  });
+  if (_mdaiChatBusy) {
+    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(_mdaiChatPending || '') + '</div></div>'
+      + '<div class="mdai-msg ai"><div class="mdai-bubble mdai-chat-wait" role="status"><span class="mdai-spin"></span> Rewriting the node. This can take a minute.</div></div>';
+  }
+  if (_mdaiChatErr && !(_mdaiChat.length && _mdaiChat[_mdaiChat.length - 1].error === _mdaiChatErr)) h += '<div class="mdai-err" role="alert">' + esc(_mdaiChatErr) + '</div>';
+  h += '</div><label class="mdai-check mdai-chat-opt"><input type="checkbox" id="mdai-chat-autorun"' + (_mdaiChatAutoRun() ? ' checked' : '') + ' onchange="_mdaiChatSetAutoRun(this.checked)"> Run the node after each change</label>';
+  return h;
+}
+function _mdaiChatExample() {
+  const ta = document.getElementById('mdai-chat-input');
+  if (!ta) return;
+  ta.value = 'look at the messages responsible for lifecycle work, and include that in the table';
+  _mdaiChatGrow(ta); ta.focus();
 }
 function _mdaiSrcIcon(kind) { return { amux: '&#128488;', mdai: '&#9672;', folder: '&#128193;', file: '&#128196;', url: '&#127760;', missing: '&#9888;' }[kind] || '&#128196;'; }
 function _mdaiSourcesHtml() {

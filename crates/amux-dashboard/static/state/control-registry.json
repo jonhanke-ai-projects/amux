@@ -2232,6 +2232,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdaiChatKey": {
+      "kind": "command._mdaiChatKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiChatSend": {
+      "kind": "command._mdaiChatSend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdaiChatUndo": {
+      "kind": "command._mdaiChatUndo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiConnectPicker": {
       "kind": "command._mdaiConnectPicker",
       "feedback_required": true,
