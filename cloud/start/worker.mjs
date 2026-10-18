@@ -473,7 +473,7 @@ async function route(req, env) {
     const api = env.MODE === 'test' ? `&api=${encodeURIComponent(url.origin)}` : '';
     const s = await stripe(env, 'POST', '/checkout/sessions', {
       mode: 'subscription', line_items: [{ price: price.id, quantity: 1 }], customer_email: email,
-      allow_promotion_codes: true, automatic_tax: { enabled: true }, billing_address_collection: 'auto',
+      allow_promotion_codes: true, billing_address_collection: 'auto',   // no automatic tax: amux Cloud does not collect EU VAT
       branding_settings: BRANDING, metadata: meta, subscription_data: { metadata: meta },
       success_url: `${SITE}/start/welcome/?session_id={CHECKOUT_SESSION_ID}${api}`,
       cancel_url: `${SITE}/start/?canceled=1`,
