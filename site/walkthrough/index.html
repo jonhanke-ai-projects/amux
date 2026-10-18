@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>amux walkthrough: one agent to a whole AI engineering team</title>
+<meta name="description" content="Watch amux end to end: start one coding agent, run a team in parallel, approve from your phone, and track every task on a shared board.">
+<meta property="og:title" content="amux walkthrough">
+<meta property="og:type" content="video.other">
+<meta property="og:image" content="https://amux.io/walkthrough/amux-walkthrough-desktop.jpg">
+<meta property="og:video" content="https://amux.io/walkthrough/amux-walkthrough-desktop.mp4">
+<script type="application/ld+json">
+[
+ {
+  "@context": "https://schema.org",
+  "@type": "VideoObject",
+  "name": "amux walkthrough: from one agent to a whole AI engineering team",
+  "description": "A narrated tour of amux on the desktop: start one coding agent, then run a team in parallel worktrees, approve permissions, track work on the board, schedule prompts, share context and reach it all from your phone.",
+  "thumbnailUrl": "https://amux.io/walkthrough/amux-walkthrough-desktop.jpg",
+  "contentUrl": "https://amux.io/walkthrough/amux-walkthrough-desktop.mp4",
+  "uploadDate": "2026-10-17",
+  "duration": "PT3M29S"
+ },
+ {
+  "@context": "https://schema.org",
+  "@type": "VideoObject",
+  "name": "amux on your phone: run and approve coding agents from anywhere",
+  "description": "A narrated tour of the amux mobile dashboard: start an agent, approve a blocked one, read progress in plain English, send the next task, and track the board from your phone.",
+  "thumbnailUrl": "https://amux.io/walkthrough/amux-walkthrough-mobile.jpg",
+  "contentUrl": "https://amux.io/walkthrough/amux-walkthrough-mobile.mp4",
+  "uploadDate": "2026-10-17",
+  "duration": "PT1M25S"
+ },
+ {
+  "@context": "https://schema.org",
+  "@type": "VideoObject",
+  "name": "amux in 45 seconds",
+  "description": "A silent, captioned 45-second tour of amux: start an agent, watch it work, approve it, tile the team, track the board and schedule prompts.",
+  "thumbnailUrl": "https://amux.io/walkthrough/amux-walkthrough-desktop-short.jpg",
+  "contentUrl": "https://amux.io/walkthrough/amux-walkthrough-desktop-short.mp4",
+  "uploadDate": "2026-10-17",
+  "duration": "PT0M45S"
+ },
+ {
+  "@context": "https://schema.org",
+  "@type": "VideoObject",
+  "name": "amux on your phone in 30 seconds",
+  "description": "A silent, captioned tour of amux on a phone: approve a blocked agent, read its progress, send the next task.",
+  "thumbnailUrl": "https://amux.io/walkthrough/amux-walkthrough-mobile-short.jpg",
+  "contentUrl": "https://amux.io/walkthrough/amux-walkthrough-mobile-short.mp4",
+  "uploadDate": "2026-10-17",
+  "duration": "PT0M32S"
+ }
+]
+</script>
+  <link rel="canonical" href="https://amux.io/walkthrough/">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+<style>
+.wt-video{width:100%;display:block;border-radius:12px;background:#000;border:1px solid var(--border,#2a2d35)}
+.wt-main{margin:1.5rem 0 1rem}
+.wt-phone{max-width:380px;margin:1rem auto 2rem}
+.wt-shorts{display:grid;grid-template-columns:2fr 1fr;gap:1.25rem;align-items:start;margin:1rem 0 2rem}
+.wt-short figcaption{font-size:.85rem;color:var(--text-dim,#9aa0aa);margin-top:.5rem}
+.wt-install{font-family:'JetBrains Mono',monospace;background:var(--surface,#16181d);border:1px solid var(--border,#2a2d35);border-radius:10px;padding:.9rem 1.1rem;overflow-x:auto;margin:1rem 0}
+.wt-transcript h3{margin-top:1.4rem;font-size:1rem}
+.wt-transcript p{margin:.35rem 0;color:var(--text-dim,#c4c8d0)}
+@media (max-width:600px){.wt-shorts{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+<div class="wrap">
+<div class="breadcrumb"><a href="/demos/">Demos</a> → Walkthrough</div>
+<h1>amux, end to end</h1>
+<p class="desc">A narrated tour of amux on the desktop: start one coding agent, then run a team in parallel worktrees, approve permissions, track work on the board, schedule prompts, share context and reach it all from your phone.</p>
+<div class="wt-main"><video class="wt-video" controls preload="metadata" playsinline poster="amux-walkthrough-desktop.jpg" title="amux walkthrough: from one agent to a whole AI engineering team"><source src="amux-walkthrough-desktop.mp4" type="video/mp4"></video></div>
+<div class="wt-install">curl -fsSL https://amux.io/install.sh | bash</div>
+<div class="cta">
+  <a class="btn btn-primary" href="https://github.com/mixpeek/amux">Get started free →</a>
+  <a class="btn btn-secondary" href="/start/">Run it in the cloud</a>
+</div>
+<h2>On your phone</h2><p class="desc">A narrated tour of the amux mobile dashboard: start an agent, approve a blocked one, read progress in plain English, send the next task, and track the board from your phone.</p><div class="wt-phone"><video class="wt-video" controls preload="metadata" playsinline poster="amux-walkthrough-mobile.jpg" title="amux on your phone: run and approve coding agents from anywhere"><source src="amux-walkthrough-mobile.mp4" type="video/mp4"></video></div>
+<h2>Short cuts</h2><div class="wt-shorts"><figure class="wt-short"><video class="wt-video" controls preload="metadata" playsinline poster="amux-walkthrough-desktop-short.jpg" title="amux in 45 seconds"><source src="amux-walkthrough-desktop-short.mp4" type="video/mp4"></video><figcaption>amux in 45 seconds</figcaption></figure><figure class="wt-short wt-tall"><video class="wt-video" controls preload="metadata" playsinline poster="amux-walkthrough-mobile-short.jpg" title="amux on your phone in 30 seconds"><source src="amux-walkthrough-mobile-short.mp4" type="video/mp4"></video><figcaption>amux on your phone in 30 seconds</figcaption></figure></div>
+<h2>Transcript</h2>
+<div class="wt-transcript">
+<h3>Your first agent</h3>
+<p>This is amux. It runs your coding agents, Claude Code, Codex or Gemini, as a team you can watch, steer, and reach from anywhere. We&#x27;ll start from a fresh install and build up to the whole platform.</p>
+<p>Skip the tour for now. Click plus, then New worker. Give it a name, point it at a repo, and tell it what to do. Here that&#x27;s a failing discount test in a small store API.</p>
+<p>Create. That card is a real Claude Code session running in its own terminal. amux tracks its status, its current task, and what it costs.</p>
+<p>Open it and you&#x27;re in the live terminal. It reads the code, sees the discount was applied after tax, fixes it, and runs the tests.</p>
+<p>You can talk to it from right here. Messages queue and land at the next safe point, even in the middle of a task.</p>
+<h3>Run a team</h3>
+<p>One agent is handy. The real gain is running several. Here are five, each in its own git worktree so they never collide: API, frontend, docs, tests, and ops.</p>
+<p>Groups keep them organized. Filter to backend and you see only that lane.</p>
+<p>When one needs you, it says so. The ops worker wants permission to run a command. Click the badge to see why, open the worker, and approve. It picks up right where it stopped.</p>
+<p>The workspace tiles their terminals side by side, so you can watch the whole team at once.</p>
+<h3>Watch and steer</h3>
+<p>Inside any worker, Translate turns raw terminal output into plain English. That&#x27;s the view you want when you check in from your phone.</p>
+<p>Steering lines up a redirect while it&#x27;s busy. It lands as soon as the current step finishes.</p>
+<p>And every worker shows its token spend, task by task.</p>
+<h3>The board</h3>
+<p>As the team grows you need one shared list of work. That&#x27;s the board. Agents create cards, claim them atomically so two never grab the same one, and move them as they go.</p>
+<p>Open a card to see who owns it, what was asked, and every action the worker took. amux won&#x27;t mark work done without evidence.</p>
+<p>For a bigger outcome, start a project. Describe the result, give one lead worker the goal and a check to pass, and you review the verified work before it ships.</p>
+<p>Turn on auto-drain and an idle worker pulls the next card from the backlog by itself.</p>
+<h3>Automate</h3>
+<p>Some work belongs on a clock. The scheduler sends a prompt to a worker every weekday at nine, every night, or just once.</p>
+<p>Agents can add events to the calendar too, and the feed syncs to Google or Apple Calendar.</p>
+<h3>Shared context</h3>
+<p>Context is layered. Write team notes once, add rules per group, and every worker inherits both. You can always see which layer wins.</p>
+<p>Files lets you browse and edit any worker&#x27;s folder from the browser.</p>
+<h3>Beyond the repo</h3>
+<p>Agents can work outside the repo as well. The browser tab gives them a real Chrome with your saved logins, and you can watch it live.</p>
+<p>Connectors link Gmail, Calendar, Drive, Slack and more. Any email an agent drafts waits for your approval before it sends.</p>
+<h3>Anywhere, together</h3>
+<p>All of this works on your phone. Add it to your home screen, get an alert when a worker is blocked, and approve it from wherever you are.</p>
+<p>Invite teammates, give them scoped access, and run the same fleet together.</p>
+<p>amux is open source and installs with one command. Start with one worker, and add the rest as you need it. Links are below.</p>
+</div>
+</div>
+<footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source agent multiplexer for Claude Code.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

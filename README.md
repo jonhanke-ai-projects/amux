@@ -22,6 +22,8 @@ You need tmux 3.2+ and at least one agent CLI (Claude Code, Codex or Gemini CLI)
 
 <p align="center"><a href="https://amux.io"><img src="site/amux.gif" alt="amux dashboard running parallel agents" width="920"/></a></p>
 
+<p align="center"><a href="https://amux.io/walkthrough/"><img src="site/walkthrough/amux-walkthrough-desktop-short.jpg" alt="Watch the amux walkthrough" width="920"/></a><br/><a href="https://amux.io/walkthrough/"><b>▶ Watch the walkthrough</b></a> (desktop and phone, with transcript)</p>
+
 ## What your agents get
 
 - **A shared task board.** Claiming a card is atomic, so two agents never grab the same work.

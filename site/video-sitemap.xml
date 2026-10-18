@@ -309,4 +309,43 @@
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
+  <url>
+    <loc>https://amux.io/walkthrough/</loc>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-desktop.jpg</video:thumbnail_loc>
+      <video:title>amux walkthrough: from one agent to a whole AI engineering team</video:title>
+      <video:description>A narrated tour of amux on the desktop: start one coding agent, then run a team in parallel worktrees, approve permissions, track work on the board, schedule prompts, share context and reach it all from your phone.</video:description>
+      <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-desktop.mp4</video:content_loc>
+      <video:duration>209</video:duration>
+      <video:publication_date>2026-10-17</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-mobile.jpg</video:thumbnail_loc>
+      <video:title>amux on your phone: run and approve coding agents from anywhere</video:title>
+      <video:description>A narrated tour of the amux mobile dashboard: start an agent, approve a blocked one, read progress in plain English, send the next task, and track the board from your phone.</video:description>
+      <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-mobile.mp4</video:content_loc>
+      <video:duration>85</video:duration>
+      <video:publication_date>2026-10-17</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-desktop-short.jpg</video:thumbnail_loc>
+      <video:title>amux in 45 seconds</video:title>
+      <video:description>A silent, captioned 45-second tour of amux: start an agent, watch it work, approve it, tile the team, track the board and schedule prompts.</video:description>
+      <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-desktop-short.mp4</video:content_loc>
+      <video:duration>45</video:duration>
+      <video:publication_date>2026-10-17</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-mobile-short.jpg</video:thumbnail_loc>
+      <video:title>amux on your phone in 30 seconds</video:title>
+      <video:description>A silent, captioned tour of amux on a phone: approve a blocked agent, read its progress, send the next task.</video:description>
+      <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-mobile-short.mp4</video:content_loc>
+      <video:duration>32</video:duration>
+      <video:publication_date>2026-10-17</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+  </url>
 </urlset>
