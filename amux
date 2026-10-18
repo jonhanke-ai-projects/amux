@@ -5413,6 +5413,167 @@ USAGE
 }
 
 
+# ── amux export / amux import: the move bundle (cloud-self-service.md 7.1) ──
+# One JSON file carries a whole server: config (the `amux iac` document) plus
+# allowlisted data (board cards and their history, schedules, memories, CRM,
+# messages, skills, calendar, journal). Never secrets: the server's export has
+# no token, credential or env table, and its import refuses any table off the
+# allowlist. Import only ADDS rows (existing ones are left as they are) and
+# always shows a dry run first.
+cmd_export() {
+  local out="" from="${AMUX_API:-https://localhost:8824}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from) from="${2:?--from needs a URL}"; shift 2 ;;
+      -h|--help)
+        echo "usage: amux export [file] [--from <url>]"
+        echo "  writes the move bundle (default amux-<host>-<YYYYMMDD>.amuxmove.json)"
+        echo "  then: amux import <file> --to https://<you>.amux.io"
+        return 0 ;;
+      -*) die "amux export: unknown option '$1'" ;;
+      *) out="$1"; shift ;;
+    esac
+  done
+  [[ -n "$out" ]] || out="amux-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d).amuxmove.json"
+  local dir tmp code
+  dir="$(dirname "$out")"
+  [[ -d "$dir" ]] || die "amux export: directory $dir does not exist"
+  # Write beside the target and rename, so a failed export never leaves a
+  # truncated bundle under the real name. 0600: it holds your cards and contacts.
+  tmp="$(mktemp "$dir/.amuxmove.XXXXXX")" || die "amux export: cannot write in $dir"
+  chmod 600 "$tmp"
+  code=$(_curl -sk --max-time 600 -o "$tmp" -w '%{http_code}' "${from%/}/api/move/export") || code="000"
+  if [[ "$code" != "200" ]]; then
+    local why; why=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error",""))' "$tmp" 2>/dev/null) || why=""
+    [[ "$code" == "000" ]] && why="could not reach the server"
+    rm -f "$tmp"
+    die "amux export: ${from%/}/api/move/export answered HTTP $code${why:+: $why}"
+  fi
+  python3 - "$tmp" <<'PY' || { rm -f "$tmp"; die "amux export: the server did not return a move bundle"; }
+import json, sys
+d = json.load(open(sys.argv[1]))
+if d.get("format") != "amuxmove":
+    sys.exit(1)
+counts = d.get("counts") or {k: len(v) for k, v in (d.get("tables") or {}).items()}
+total = sum(counts.values())
+cfg = d.get("config") or {}
+print("exported %d rows (schema %s, commit %s)" % (total, d.get("schema_version"), d.get("source_commit")))
+for k, v in sorted(counts.items()):
+    if v:
+        print("  %-20s %d" % (k, v))
+print("  %-20s %d workers, %d columns" % ("config", len(cfg.get("workers") or []), len(cfg.get("columns") or [])))
+PY
+  mv "$tmp" "$out"
+  echo "wrote $out"
+  echo "Move it to amux Cloud: amux import $out --to https://<you>.amux.io --user <email>"
+}
+
+cmd_import() {
+  local file="" to="" user="" yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --to) to="${2:?--to needs a URL}"; shift 2 ;;
+      --user) user="${2:?--user needs an email}"; shift 2 ;;
+      -y|--yes) yes=1; shift ;;
+      -h|--help)
+        cat <<'USAGE'
+usage: amux import <file> [--to <url>] [--user <email>] [--yes]
+  Shows a dry run (rows new vs already there, config changes), then applies
+  only with --yes or a typed y. Existing rows are never overwritten.
+  --to    another amux server, e.g. https://<you>.amux.io (default: this one)
+  --user  account email for an amux Cloud server; the password is read from
+          AMUX_IMPORT_PASSWORD or prompted for (never passed on the command line)
+USAGE
+        return 0 ;;
+      -*) die "amux import: unknown option '$1'" ;;
+      *) file="$1"; shift ;;
+    esac
+  done
+  [[ -n "$file" ]] || die "usage: amux import <file> [--to <url>] [--user <email>] [--yes]"
+  [[ -r "$file" ]] || die "amux import: cannot read $file"
+  local base="${to:-${AMUX_API:-https://localhost:8824}}"
+  base="${base%/}"
+  # Basic auth goes to curl through a config on stdin (-K -), so the password
+  # is never in argv, the process list or a breadcrumb.
+  local pass="" authcfg=""
+  if [[ -n "$user" ]]; then
+    pass="${AMUX_IMPORT_PASSWORD:-}"
+    if [[ -z "$pass" ]]; then
+      [[ -t 0 ]] || die "amux import: set AMUX_IMPORT_PASSWORD (no terminal to prompt on)"
+      read -rs -p "Password for $user at $base: " pass; echo >&2
+    fi
+    local esc_user="${user//\\/\\\\}"; esc_user="${esc_user//\"/\\\"}"
+    local esc_pass="${pass//\\/\\\\}"; esc_pass="${esc_pass//\"/\\\"}"
+    authcfg="user = \"${esc_user}:${esc_pass}\""
+  fi
+  local resp code
+  resp="$(mktemp "${TMPDIR:-/tmp}/amux-import.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -f '$resp'" EXIT
+  _move_post() {  # $1 = dry_run value
+    printf '%s\n' "$authcfg" | _curl -sk --max-time 900 -K - -o "$resp" -w '%{http_code}' \
+      -X POST -H 'Content-Type: application/json' --data-binary "@$file" \
+      "$base/api/move/import?dry_run=$1"
+  }
+  code=$(_move_post 1) || code="000"
+  case "$code" in
+    200) ;;
+    401) die "amux import: $base refused the sign-in (HTTP 401). Check --user and the password." ;;
+    403) die "amux import: $base refused the import (HTTP 403): $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error",""))' "$resp" 2>/dev/null). Only the server owner can import." ;;
+    *) die "amux import: dry run failed (HTTP $code): $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error",""))' "$resp" 2>/dev/null || head -c 300 "$resp")" ;;
+  esac
+  local new
+  new=$(python3 - "$resp" "$base" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("Dry run against %s (nothing written yet):" % sys.argv[2], file=sys.stderr)
+new = 0
+for name, t in sorted((d.get("tables") or {}).items()):
+    new += t.get("new", 0)
+    print("  %-20s %5d new  %5d already there" % (name, t.get("new", 0), t.get("existing", 0)), file=sys.stderr)
+    for s in t.get("skipped") or []:
+        print("    skipped: %s" % s.get("reason"), file=sys.stderr)
+cfg = d.get("config") or {}
+changes = cfg.get("changed") or []
+print("  config: %s" % cfg.get("summary", ""), file=sys.stderr)
+for c in changes:
+    print("    would change %s" % c, file=sys.stderr)
+print(new + len(changes))
+PY
+) || die "amux import: could not read the dry-run answer"
+  if [[ "$new" == "0" ]]; then
+    echo "Nothing to import: everything in $file is already on $base."
+    return 0
+  fi
+  if [[ "$yes" != 1 ]]; then
+    if [[ -t 0 ]]; then
+      local ans; read -r -p "Apply this import to $base? [y/N] " ans
+      [[ "$ans" == y || "$ans" == Y || "$ans" == yes ]] || { echo "Not applied."; return 0; }
+    else
+      echo "Not applied. Re-run with --yes to import."
+      return 0
+    fi
+  fi
+  code=$(_move_post 0) || code="000"
+  [[ "$code" == 200 || "$code" == 207 ]] || die "amux import: apply failed (HTTP $code): $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error",""))' "$resp" 2>/dev/null)"
+  python3 - "$resp" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d.get("summary", "imported"))
+for name, t in sorted((d.get("tables") or {}).items()):
+    if t.get("new") or t.get("skipped"):
+        print("  %-20s %5d imported" % (name, t.get("new", 0)))
+    for s in t.get("skipped") or []:
+        print("    skipped: %s" % s.get("reason"))
+cfg = d.get("config") or {}
+print("  config: %s" % cfg.get("summary", ""))
+for e in cfg.get("errors") or []:
+    print("    ERROR %s: %s" % (e.get("item"), e.get("error")))
+if d.get("note"):
+    print(d["note"])
+PY
+}
+
 # ── CRM ──────────────────────────────────────────────────────────────────────
 # AMUX-2932. Global ~/.claude/CLAUDE.md has documented `amux crm add` to every
 # session in every project for months; the verb did not exist and the HTTP API
@@ -6166,6 +6327,13 @@ ${BOLD}Web Dashboard:${RESET}
   amux serve [port]              Start the Rust server (normally launchd's job;
                                  installed service 8824, bare default 8823;
                                  8822 is retired — the compat bind is gone)
+
+${BOLD}Move (local and amux Cloud):${RESET}
+  amux export [file]             Write this server's move bundle: config plus cards,
+                                 schedules, memories, CRM, messages. No secrets.
+  amux import <file> [--to <url>] [--user <email>] [--yes]
+                                 Dry run, then add the rows (never overwrites).
+                                 ${DIM}amux import amux-*.amuxmove.json --to https://<you>.amux.io${RESET}
 
 ${BOLD}CRM:${RESET}
   amux crm list [query]          List contacts (search name/company/role)
@@ -9757,6 +9925,8 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     alert)            shift; cmd_alert "$@" ;;
     approvals)        shift; cmd_approvals "$@" ;;
     iac)              shift; cmd_config "$@" ;;
+    export)           shift; cmd_export "$@" ;;
+    import)           shift; cmd_import "$@" ;;
     whoami)           cmd_whoami ;;
     fresh)            shift; cmd_fresh "$@" ;;
     url)              shift; cmd_url "$@" ;;

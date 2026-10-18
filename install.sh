@@ -807,3 +807,6 @@ echo "  Auth token  $AMUX_HOME/auth_token    (the dashboard + amux-rs read this 
 echo "  CLI         amux-rs --url https://localhost:$PORT health"
 echo "  Logs        $AMUX_HOME/logs/server-rs.log"
 echo "  Uninstall   ./uninstall.sh   (removes binaries + agents; never touches $AMUX_HOME data)"
+echo ""
+echo "Want it running 24/7 at yourname.amux.io? Get amux Cloud at https://amux.io/start/ and"
+echo "move this install with: amux export, then amux import <file> --to https://<you>.amux.io"

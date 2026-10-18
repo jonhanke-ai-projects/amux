@@ -273,6 +273,11 @@ pub(crate) fn authorize_local_member_request(
     if path == "/api/org" || path.starts_with("/api/org/") {
         return Some(forbidden(&scope, "organization administration"));
     }
+    // Moving a whole server (every card, contact and memory out, or rows in)
+    // is the host owner's alone, whatever the member's scope.
+    if path == "/api/move" || path.starts_with("/api/move/") {
+        return Some(forbidden(&scope, "server move (export/import)"));
+    }
     if scope.is_global() {
         // Global members created before AMUX-5334 got host-level access by
         // default. Say so once per process, where an operator will see it.

@@ -63,6 +63,7 @@
       <h2>Your server is ready</h2>
       <p><a class="btn btn-primary" id="open" href="#">Open your server</a></p>
       <p>Sign in with <strong id="who">your email</strong> and the password you chose. Then connect a model: sign in with Claude, ChatGPT or Google, or paste an API key.</p>
+      <p><strong>Bring your local amux.</strong> On your own machine run <code>amux export</code>, then <code>amux import &lt;file&gt; --to <span id="move-url">https://you.amux.io</span> --user &lt;your email&gt;</code>. Your cards, schedules, memories and contacts come across; keys and passwords stay behind.</p>
     </div>
     <p class="hint" id="note">We will also email you when it is ready, so you can close this page.</p>
     <p class="hint">Billing, invoices and cancellation: <a href="/start/billing/">manage billing</a>.</p>
@@ -153,6 +154,7 @@ async function poll() {
     document.querySelector('h1').textContent = 'Your server is ready';
     document.getElementById('sub').textContent = 'Payment received and your server is running.';
     document.getElementById('open').href = d.url; document.getElementById('open').textContent = 'Open ' + d.url.replace('https://', '');
+    document.getElementById('move-url').textContent = d.url.replace(/\/$/, '');
     if (d.email) document.getElementById('who').textContent = d.email;
     document.getElementById('note').style.display = 'none';
     return;

@@ -36,6 +36,7 @@ pub mod chat_worker;
 pub mod commit_mentions;
 pub mod computer;
 pub mod config_iac;
+pub mod move_bundle;
 pub mod connection;
 pub mod gcal;
 pub mod connectors;
@@ -457,6 +458,15 @@ pub fn router_with_connector_transport(
         .route("/api/skin", axum::routing::get(skin::get_skin))
         .route("/api/config/export", axum::routing::get(config_iac::export))
         .route("/api/config/apply", axum::routing::put(config_iac::apply))
+        // The move bundle (cloud-self-service.md 7.1): config plus allowlisted
+        // data, one document. A whole board can be large; Cloudflare caps a
+        // request at 100 MB, so that is the ceiling worth allowing.
+        .route("/api/move/export", axum::routing::get(move_bundle::export))
+        .route(
+            "/api/move/import",
+            axum::routing::post(move_bundle::import)
+                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+        )
         .route(
             "/api/board/commit-mentions",
             axum::routing::get(commit_mentions::commit_mentions),

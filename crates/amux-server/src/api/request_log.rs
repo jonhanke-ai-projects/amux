@@ -3476,6 +3476,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["PUT"],
     },
     RouteEntry {
+        path: "/api/move/export",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/move/import",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/board/themes",
         methods: &["GET"],
     },
