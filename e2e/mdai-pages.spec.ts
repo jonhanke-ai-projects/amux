@@ -672,7 +672,7 @@ test('MDAI chat: a reply slower than the 15s write bound still lands, once, with
       await new Promise(res => setTimeout(res, 17_000));
       const doc = await (await request.get('/api/files/mdai/doc?path=' + encodeURIComponent(s.file), { headers: s.headers })).json();
       return r.fulfill({ json: { ok: true, changed: false, doc,
-        turn: { ts: Date.now(), message: body.message, reply: 'The table already covers lifecycle work.', changed: false, model: 'sonnet', dur_ms: 17000, error: null } } }).catch(() => {});
+        turn: { ts: Date.now() - 7_200_000, message: body.message, reply: 'The table already covers lifecycle work.', changed: false, model: 'sonnet', dur_ms: 17000, error: null } } }).catch(() => {});
     });
     await openNode(page, s.file);
     await page.locator('#mdai-chat-input').fill(ASK);
@@ -680,6 +680,8 @@ test('MDAI chat: a reply slower than the 15s write bound still lands, once, with
     await expect(page.locator('#mdai-chat-send')).toHaveText('Working…');
     await expect(page.locator('#mdai-chat-log .mdai-msg.ai .mdai-bubble').first()).toContainText('already covers lifecycle work', { timeout: 30_000 });
     await expect(page.locator('#mdai-overlay')).not.toContainText('could not be reached');
+    // Turn times are milliseconds; read as seconds every turn said "just now".
+    await expect(page.locator('#mdai-chat-log .mdai-msg.me .mdai-msg-meta').first()).toHaveText('2h ago');
     const queued = await page.evaluate(() => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]')
       .filter((q: any) => String(q.url || '').includes('/api/files/mdai/chat')).length);
     expect(queued, 'no chat left in the offline outbox').toBe(0);

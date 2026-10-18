@@ -31668,7 +31668,7 @@ function _mdaiChatHtml() {
   }
   const lastApplied = (() => { for (let k = _mdaiChat.length - 1; k >= 0; k--) if (_mdaiChat[k].changed) return k; return -1; })();
   _mdaiChat.forEach((t, i) => {
-    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(t.message || '') + '</div><div class="mdai-msg-meta">' + (t.ts ? timeAgo(t.ts) : '') + '</div></div>';
+    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(t.message || '') + '</div><div class="mdai-msg-meta">' + (t.ts ? timeAgo(Math.floor(t.ts / 1000)) : '') + '</div></div>';
     if (t.error) {
       h += '<div class="mdai-msg ai"><div class="mdai-bubble bad" role="alert"><b>Not changed.</b> ' + esc(t.error) + '</div></div>';
       return;
