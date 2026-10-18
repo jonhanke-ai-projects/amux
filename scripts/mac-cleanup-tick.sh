@@ -287,6 +287,14 @@ VM_IDLE_MIN=${AMUX_CLEANUP_VM_IDLE_MIN:-60}
 # Seams. PROFILE is the colima profile. The load probe prints /proc/loadavg; the
 # events probe prints one docker event action per line.
 VM_LOAD_CMD=${AMUX_CLEANUP_VM_LOAD_CMD:-colima ssh -p PROFILE -- cat /proc/loadavg /proc/uptime}
+# check_utilization: who is using the CPU (GET /api/resources), and when the CPU
+# is UTIL_ACT_SHARE busy, detached trees at UTIL_RENICE_MIN_PCT+ lowered to nice 10.
+UTIL_CMD=${AMUX_CLEANUP_UTIL_CMD:-curl -sk --max-time 20 -H X-Amux-Session:desktop $(amux url 2>/dev/null || echo https://localhost:8824)/api/resources}
+UTIL_ACT_SHARE=${AMUX_CLEANUP_UTIL_ACT_SHARE:-0.85}
+UTIL_RENICE_MIN_PCT=${AMUX_CLEANUP_UTIL_RENICE_MIN_PCT:-100}
+UTIL_RENICE_EXCLUDE=${AMUX_CLEANUP_UTIL_RENICE_EXCLUDE:-(^|/)tmux( |$)|gs12}
+UTIL_TREE_PS_CMD=${AMUX_CLEANUP_UTIL_TREE_PS_CMD:-ps -axo pid=,ppid=,uid=,nice=,args=}
+RENICE_CMD=${AMUX_CLEANUP_RENICE_CMD:-renice}
 VM_EVENTS_CMD=${AMUX_CLEANUP_VM_EVENTS_CMD:-docker --context colima-PROFILE events --since MINm --until 0s --format \{\{.Action\}\}}
 # Running containers: any one not in VM_IDLE_IGNORE makes the VM busy. A proof
 # stack waiting between legs only runs healthchecks, and on 2026-10-04 at
@@ -1149,11 +1157,76 @@ check_self_runs() {
   return 0
 }
 
+# Who is using the CPU, from the server's census (GET /api/resources: workers,
+# and the CPU no worker owns by kind and root tree), and the one reversible
+# thing this tick does about it. host_guard renices runaway tool processes
+# under a WORKER'S pane; a tree whose shell or worker exited is reparented to
+# launchd and escapes it. 2026-10-17, load 87 on 28 cores: two `amux land`
+# trees, a pytest and a backfill were among them, and finding them took a
+# dozen hand-written ps walks. Busy over UTIL_ACT_SHARE of the cores, each such
+# detached tree at or over UTIL_RENICE_MIN_PCT is lowered to nice 10 (never
+# killed; the work only runs slower). UTIL_RENICE_EXCLUDE (an extended regex on
+# the root's command line) is never touched: tmux, because every new worker
+# pane would inherit the priority, and gs12 by the owner's standing priority.
+# UTIL_SUMMARY names the heaviest consumers for the cpu constraint.
+UTIL_SUMMARY=""; UTIL_RENICED=0
+check_utilization() { # <dry:0|1>
+  local DRY=${1:-0} json parsed busy cap total line root pct cmd pids p n_trees=0 n_pids=0 log="$STATE_DIR/util-renice.log"
+  UTIL_SUMMARY=""; UTIL_RENICED=0
+  json=$($UTIL_CMD 2>/dev/null) || json=""
+  parsed=$(printf '%s' "$json" | python3 -c '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: print("unmeasured the server did not answer"); sys.exit()
+m = d.get("machine") or {}
+if not m.get("measured"): print("unmeasured " + str(m.get("why_unmeasured") or "no machine block (server older than the census)")); sys.exit()
+pc = lambda x: "%d%%" % round(x)
+top = ", ".join("%s %s" % (w["name"], pc(w["cpu_percent"])) for w in (d.get("top_by_cpu") or [])[:3] if w["cpu_percent"] >= 50)
+rest = ", ".join("%s %s" % (k, pc(v)) for k, v in sorted((m.get("by_kind") or {}).items(), key=lambda kv: -kv[1]) if v >= 50)
+print("busy %s %s %s %s" % (m["cpu_percent_total"], m["capacity_percent"], m["workers_cpu_percent"], m["unattributed_cpu_percent"]))
+print("who workers " + (top or "none over 50%") + "; rest " + (rest or "none over 50%"))
+for o in m.get("top_unattributed") or []:
+    if o["kind"] == "detached": print("tree %d %s %s" % (o["root_pid"], o["cpu_percent"], o["command"].rsplit("/", 1)[-1][:60]))
+' 2>/dev/null)
+  case "$parsed" in
+    busy*) ;;
+    *) parsed=${parsed#unmeasured }; echo "mac-cleanup: utilization: unmeasured: ${parsed:-no reading} (verdict=util_unmeasured)"; return 0 ;;
+  esac
+  read -r _ total cap _ _ <<< "$(printf '%s\n' "$parsed" | sed -n 1p)"
+  UTIL_SUMMARY=$(printf '%s\n' "$parsed" | sed -n 's/^who //p')
+  echo "mac-cleanup: utilization: $(printf '%s\n' "$parsed" | awk 'NR==1{printf "%d%% of %d%% busy, workers %d%%, everything else %d%%", $2, $3, $4, $5}'); $UTIL_SUMMARY"
+  busy=$(awk -v t="$total" -v c="$cap" -v s="$UTIL_ACT_SHARE" 'BEGIN{print (c>0 && t/c >= s) ? 1 : 0}')
+  local snap; snap=$($UTIL_TREE_PS_CMD 2>/dev/null)
+  while read -r _ root pct cmd; do
+    [ -n "$root" ] || continue
+    awk -v p="$pct" -v m="$UTIL_RENICE_MIN_PCT" 'BEGIN{exit !(p+0 >= m+0)}' || continue
+    line=$(printf '%s\n' "$snap" | awk -v r="$root" '$1==r' | head -1)
+    if [ -z "$line" ]; then echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: gone before it was read"; continue; fi
+    if printf '%s\n' "$line" | awk '{$1=$2=$3=$4=""; print}' | grep -Eq -- "$UTIL_RENICE_EXCLUDE"; then
+      echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: excluded, not touched"; continue
+    fi
+    if [ "$busy" != 1 ]; then echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: reported (CPU under ${UTIL_ACT_SHARE} busy)"; continue; fi
+    # The tree: the root and every descendant, own uid, not already low.
+    pids=$(printf '%s\n' "$snap" | awk -v r="$root" -v me="$(id -u)" '
+      { pp[$1]=$2; uid[$1]=$3; ni[$1]=$4; order[NR]=$1 }
+      END { for (i=1;i<=NR;i++) { p=order[i]; q=p; for (k=0;k<64 && q!="" && q!=r && q>1;k++) q=pp[q]
+              if (q==r && uid[p]==me && ni[p]+0 < 10) printf "%s ", p } }')
+    if [ -z "$pids" ]; then echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: already at low priority"; continue; fi
+    if [ "$DRY" = 1 ]; then echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: would lower $(echo $pids | wc -w | tr -d ' ') process(es) to nice 10 (dry run)"; continue; fi
+    n=0; for p in $pids; do $RENICE_CMD -n 10 -p "$p" >/dev/null 2>&1 && n=$((n+1)); done
+    n_trees=$((n_trees+1)); n_pids=$((n_pids+n))
+    mkdir -p "$STATE_DIR"; printf '%s\treniced\t%s\t%s%%\t%s procs\t%s\n' "$(date '+%F %T')" "$root" "$pct" "$n" "$cmd" >> "$log"
+    echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: lowered $n process(es) to nice 10 (verdict=util_detached_reniced)"
+  done <<< "$(printf '%s\n' "$parsed" | grep '^tree ' || true)"
+  UTIL_RENICED=$n_pids
+  echo "mac-cleanup: utilization: detached trees lowered ${n_trees} (${n_pids} processes) at or over ${UTIL_RENICE_MIN_PCT}% while the CPU is ${UTIL_ACT_SHARE}+ busy; log $log"
+}
+
 system_health() { # <dry:0|1>
   HEALTH_VERDICTS=""; CPU_RESTARTED=0; TEST_ORPHANS_STOPPED=0; CRASH_PRUNED=0
   if [ "$HEALTH_PROBES" = off ]; then echo "mac-cleanup: system health: probes off (AMUX_CLEANUP_HEALTH_PROBES=off)"; return 0; fi
   check_cpu_hogs "$1"; reap_test_orphans "$1"; check_limits; check_crash_reports "$1"
-  check_launchd_failing; check_network; check_thermal; check_agent_volume; check_self_runs
+  check_launchd_failing; check_network; check_thermal; check_agent_volume; check_utilization "$1"; check_self_runs
   HEALTH_VERDICTS=$(printf '%s\n' "$HEALTH_VERDICTS" | grep . || true)
 }
 
@@ -2490,6 +2563,9 @@ if [ "$level_now" = 1 ] && printf '%s' "$swap_free_now" | grep -qE '^[0-9.]+$' &
 fi
 if [ -n "${fse_verdict:-}" ]; then verdicts=$(printf '%s\n%s\n' "$verdicts" "$fse_verdict" | grep . || true); fi
 if [ -n "${HEALTH_VERDICTS:-}" ]; then verdicts=$(printf '%s\n%s\n' "$verdicts" "$HEALTH_VERDICTS" | grep . || true); fi
+# A cpu constraint names who is using the CPU, so the escalation starts from
+# the consumers rather than from a load number (check_utilization).
+if [ -n "${UTIL_SUMMARY:-}" ]; then verdicts=$(printf '%s\n' "$verdicts" | U="$UTIL_SUMMARY" awk '/^cpu /{$0=$0 " (who: " ENVIRON["U"] ")"} {print}'); fi
 echo "mac-cleanup: assess disk=${disk_now}G burn=${burn_txt} ${htf_txt} pressure=${level_now} swap_free=${swap_free_now}MB swap_total=${swap_total_now}MB load15=${load15}/${ncpu}"
 escalated=0
 if [ -z "$verdicts" ]; then
@@ -2576,5 +2652,5 @@ if [ "$SECONDS" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: WARN tick took ${SECONDS}s, over ${TICK_WARN_S}s: the scheduler kills it at 600s, so a slower run is lost; tighten the budgets"
 fi
 tick_mark end
-echo "mac-cleanup: done elapsed=${SECONDS}s slowest=${TICK_SLOWEST:-none} purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} skipped=${TICK_SKIPPED:-none} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
+echo "mac-cleanup: done elapsed=${SECONDS}s slowest=${TICK_SLOWEST:-none} purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} util_reniced=${UTIL_RENICED:-0} skipped=${TICK_SKIPPED:-none} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
 exit 0

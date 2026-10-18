@@ -6267,8 +6267,9 @@ cmd_resources() {
         cat <<'HELP'
 Usage: amux resources [--worker <name>] [--json]
 
-The machine's capacity and pressure, the heaviest workers, and one worker's own
-CPU and memory (default: $AMUX_SESSION) against its declared resource profile.
+The machine's capacity and pressure, the heaviest workers by CPU, where the CPU
+no worker owns is going (VMs, detached processes, apps, macOS), and one worker's
+own CPU and memory (default: $AMUX_SESSION) against its declared resource profile.
 Declare a profile with AMUX_WORKER_CPUS / AMUX_WORKER_MEM_GB in the Scope tab.
 Run this before heavy work: builds, test suites, browsers, simulators, containers.
 HELP
@@ -6298,14 +6299,28 @@ if p.get('reasons'):
 if p.get('why_unmeasured'):
     line += '  [%s]' % p['why_unmeasured']
 print(line)
-print('Workers  %d running, %.1f GB between them (of %d registered)' % (d.get('workers_running', 0), d.get('workers_rss_mb', 0) / 1024, d.get('n_considered', 0)))
-for r in d.get('top_by_memory') or []:
-    print('  %-28s %5.1f GB  %5.0f%% CPU  %3d procs' % (r['name'][:28], r['rss_mb'] / 1024, r['cpu_percent'], r['n_processes']))
+m = d.get('machine') or {}
+if m.get('measured'):
+    cap = m.get('capacity_percent') or 100.0
+    print('  cpu     %.0f%% of %.0f%% busy: workers %.0f%%, everything else %.0f%%  (sample %ss old)' % (
+        m['cpu_percent_total'], cap, m['workers_cpu_percent'], m['unattributed_cpu_percent'], m.get('sample_age_s', '?')))
+else:
+    print('  cpu     not attributed: %s' % m.get('why_unmeasured', 'no sample'))
+print('Workers  %d running, %.1f GB between them, heaviest CPU first' % (d.get('workers_running', 0), d.get('workers_rss_mb', 0) / 1024))
+for r in d.get('top_by_cpu') or d.get('top_by_memory') or []:
+    print('  %-28s %5.0f%% CPU  %5.1f GB  %3d procs' % (r['name'][:28], r['cpu_percent'], r['rss_mb'] / 1024, r['n_processes']))
+if m.get('measured') and m.get('unattributed_cpu_percent', 0) > 0:
+    kinds = sorted((m.get('by_kind') or {}).items(), key=lambda kv: -kv[1])
+    print('Rest     ' + ', '.join('%s %.0f%%' % (k, v) for k, v in kinds if v >= 1))
+    for o in (m.get('top_unattributed') or [])[:5]:
+        if o['cpu_percent'] < 10:
+            break
+        print('  %-10s %5.0f%% CPU  %5.1f GB  %3d procs  pid %d %s' % (o['kind'], o['cpu_percent'], o['rss_mb'] / 1024, o['n_processes'], o['root_pid'], o['command'].rsplit('/', 1)[-1][:40]))
 w = d.get('worker')
 if w:
     print('You      %s' % w['name'])
     if w.get('measured'):
-        print('  using   %.0f%% CPU, %.2f GB in %d processes (%.0f%% of all worker memory)' % (w['cpu_percent'], w['rss_mb'] / 1024, w['n_processes'], 100 * w.get('share_of_worker_memory', 0)))
+        print('  using   %.0f%% CPU (%.1f%% of the machine), %.2f GB in %d processes (%.0f%% of all worker memory)' % (w['cpu_percent'], 100 * w.get('share_of_machine_cpu', 0), w['rss_mb'] / 1024, w['n_processes'], 100 * w.get('share_of_worker_memory', 0)))
     else:
         print('  using   unknown: %s' % w.get('why_unmeasured'))
     pr = w.get('profile') or {}

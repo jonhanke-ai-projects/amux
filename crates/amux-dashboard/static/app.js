@@ -9974,6 +9974,19 @@ function showHostPressure() {
   html += '<p class="ui-help">Load ' + (r.load5 != null ? r.load5.toFixed(1) : '?') + ' on ' + (r.ncpu || '?') + ' cores · memory level '
     + (r.mem_level ?? '?') + ' · ' + (r.disk_free_gb != null ? Math.round(r.disk_free_gb) + ' GiB free' : 'disk ?') + '</p>';
   if (p.level === 'critical') html += '<p>Automated dispatch, schedules and worker starts are paused until this eases. Your own actions are not affected.</p>';
+  // Who is using the CPU: workers, and where the rest is, so the remainder is
+  // never read as zero (host_guard::utilization).
+  const u = p.utilization;
+  if (u) {
+    const pct = x => Math.round(x) + '%';
+    html += '<h4>Who is using the CPU</h4><p class="ui-help">' + esc(pct(u.cpu_percent_total) + ' of ' + pct(u.capacity_percent) + ' busy · workers '
+      + pct(u.workers_cpu_percent) + ' · everything else ' + pct(u.unattributed_cpu_percent)) + '</p><ul class="chip-detail-list">'
+      + (u.workers || []).filter(w => w.cpu_percent >= 10).slice(0, 8).map(w => '<li><div class="chip-detail-row"><strong>' + esc(w.name)
+        + '</strong><span class="ui-help">' + esc(pct(w.cpu_percent) + ' · ' + (w.rss_mb / 1024).toFixed(1) + ' GB · ' + w.n_processes + ' procs') + '</span></div></li>').join('')
+      + (u.top_unattributed || []).filter(o => o.cpu_percent >= 10).slice(0, 5).map(o => '<li title="' + esc((u.kinds || {})[o.kind] || '') + '"><div class="chip-detail-row"><strong>'
+        + esc(o.kind.replaceAll('_', ' ')) + '</strong><span class="ui-help">' + esc(pct(o.cpu_percent) + ' · pid ' + o.root_pid + ' ' + (o.command || '').split('/').pop()) + '</span></div></li>').join('')
+      + '</ul>';
+  }
   const run = p.runaways || [];
   if (run.length) html += '<h4>Long-running worker processes</h4><ul class="chip-detail-list">' + run.map(x =>
     '<li><div class="chip-detail-row"><strong>' + esc(x.worker) + '</strong><span class="ui-help">' + esc((x.command || '').split('/').pop()) + '</span></div>'

@@ -20,6 +20,7 @@ alive() { kill -0 "$1" 2>/dev/null && echo alive || echo gone; }
 AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_SCOPE_FILE=/dev/null . "$TICK"
 STATE_DIR="$FIX/state"; HEALTH_PROBES=on
 AGENT_VOLUME_CMD="echo agent-volume: TestVol exists=no"   # never the live diskutil from a test
+UTIL_CMD=true   # never the live server (scripts/test-mac-cleanup-utilization.sh tests it)
 SELF_DB="$FIX/no-self.db"   # the self-check must not read the live run history (scripts/test-mac-cleanup-self.sh tests it)
 ME=$(id -u)
 # A long-lived real child. Its name and args in each cell come from the fixture
@@ -164,7 +165,7 @@ if [ "$(uname)" = Darwin ]; then
         AMUX_CLEANUP_NET_CMD=true AMUX_CLEANUP_THERMAL_CMD=true AMUX_CLEANUP_CRASH_DIR="$FIX/none" \
         AMUX_CLEANUP_LIMITS_CMD="echo 10 1000 10 100 5 300 $$ 300" \
         AMUX_CLEANUP_SELF_DB="$FIX/no-self.db" \
-        AMUX_CLEANUP_AGENT_VOLUME_CMD="echo agent-volume: TestVol exists=no" \
+        AMUX_CLEANUP_AGENT_VOLUME_CMD="echo agent-volume: TestVol exists=no" AMUX_CLEANUP_UTIL_CMD=true \
         AMUX_CLEANUP_STATE_DIR="$FIX/tick" AMUX_CLEANUP_TARGET_ROOTS="$FIX/none" AMUX_CLEANUP_PURGE_CMD=true \
         AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/none" AMUX_CLEANUP_LANE_TMP_ROOT="$FIX/none" AMUX_CLEANUP_USER_TMP="$FIX/none" \
         AMUX_CLEANUP_CHURN_ROOTS="$FIX/none" AMUX_CLEANUP_VM_LIST_CMD=true AMUX_CLEANUP_SESSIONS_CMD=false \

@@ -549,6 +549,20 @@ pub(crate) fn collect_session_metrics() -> Vec<serde_json::Value> {
     };
     // Discover tmux sessions + pane PIDs
     let tmux_pids = tmux_session_pids();
+    // One `ps` for every worker, the tree built in memory. This used to spawn
+    // `pgrep -P` per process and `ps -p` per worker: ~1300 spawns, 71s at
+    // load 87 on 2026-10-17 (AMUX resources visibility, desktop lane).
+    let mut children: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+    let mut stats: std::collections::HashMap<u64, (u64, f64)> = std::collections::HashMap::new();
+    for line in cmd_output("ps", &["-axo", "pid=,ppid=,rss=,%cpu="]).unwrap_or_default().lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if let [pid, ppid, rss, cpu, ..] = f[..] {
+            if let (Ok(pid), Ok(ppid)) = (pid.parse::<u64>(), ppid.parse::<u64>()) {
+                children.entry(ppid).or_default().push(pid);
+                stats.insert(pid, (rss.parse().unwrap_or(0), cpu.parse().unwrap_or(0.0)));
+            }
+        }
+    }
 
     let mut sessions = Vec::new();
     for entry in entries.flatten() {
@@ -587,28 +601,18 @@ pub(crate) fn collect_session_metrics() -> Vec<serde_json::Value> {
         // Process stats: find all descendant PIDs then ps them
         if active {
             if let Some(pane_pid) = tmux_pids.get(&tmux_name) {
-                let mut all_pids = vec![*pane_pid];
-                collect_descendants(*pane_pid, &mut all_pids);
-                let pid_list = all_pids
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                if let Some(ps_out) = cmd_output("ps", &["-o", "pid=,rss=,pcpu=", "-p", &pid_list])
-                {
-                    let mut pids = Vec::new();
-                    let mut total_rss = 0u64;
-                    let mut total_cpu = 0.0f64;
-                    for line in ps_out.lines() {
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 3 {
-                            if let Ok(pid) = parts[0].parse::<u64>() {
-                                pids.push(pid);
-                            }
-                            total_rss += parts[1].parse::<u64>().unwrap_or(0);
-                            total_cpu += parts[2].parse::<f64>().unwrap_or(0.0);
-                        }
+                let all_pids = descendants_of(*pane_pid, &children);
+                let mut pids = Vec::new();
+                let mut total_rss = 0u64;
+                let mut total_cpu = 0.0f64;
+                for pid in all_pids {
+                    if let Some((rss, cpu)) = stats.get(&pid) {
+                        pids.push(pid);
+                        total_rss += rss;
+                        total_cpu += cpu;
                     }
+                }
+                if !pids.is_empty() {
                     s["pids"] = json!(pids);
                     s["rss_mb"] = json!((total_rss as f64 / 1024.0 * 10.0).round() / 10.0);
                     s["cpu_percent"] = json!((total_cpu * 10.0).round() / 10.0);
@@ -621,15 +625,18 @@ pub(crate) fn collect_session_metrics() -> Vec<serde_json::Value> {
     sessions
 }
 
-fn collect_descendants(pid: u64, out: &mut Vec<u64>) {
-    if let Some(pgrep_out) = cmd_output("pgrep", &["-P", &pid.to_string()]) {
-        for line in pgrep_out.lines() {
-            if let Ok(child) = line.trim().parse::<u64>() {
-                out.push(child);
-                collect_descendants(child, out);
-            }
+/// `root` and everything under it, from a ppid -> children map.
+fn descendants_of(root: u64, children: &std::collections::HashMap<u64, Vec<u64>>) -> Vec<u64> {
+    let mut out = vec![root];
+    let mut i = 0;
+    while i < out.len() && out.len() < 100_000 {
+        let cur = out[i];
+        if let Some(kids) = children.get(&cur) {
+            out.extend(kids.iter().copied().filter(|k| *k != cur));
         }
+        i += 1;
     }
+    out
 }
 
 fn tmux_session_pids() -> std::collections::HashMap<String, u64> {
