@@ -28948,20 +28948,30 @@ function _filesNewFile() {
 // ~/Vault/Scratchpad (150 of them, cleaned by hand 2026-10-18).
 let _SP_ROOT = '~/Vault/Scratchpad';
 let _spPath = _SP_ROOT;
-let _spRootRead = false;
-async function _spLoadRoot() {
-  if (_spRootRead) return;
-  try {
-    const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
-    const dir = String((d && d.dir) || '').trim().replace(/\/+$/, '');
-    if (dir && dir !== _SP_ROOT) {
-      if (_spPath === _SP_ROOT) _spPath = dir;
-      else if (_spPath.startsWith(_SP_ROOT + '/')) _spPath = dir + _spPath.slice(_SP_ROOT.length);
-      _SP_ROOT = dir;
-    }
-    _spRootRead = true;
-  } catch (e) {}
+let _spRootRead = null;   // the in-flight or finished read, shared by every caller
+function _spUseRoot(dir) {
+  dir = String(dir || '').trim().replace(/\/+$/, '');
+  if (!dir || dir === _SP_ROOT) return;
+  if (_spPath === _SP_ROOT) _spPath = dir;
+  else if (_spPath.startsWith(_SP_ROOT + '/')) _spPath = dir + _spPath.slice(_SP_ROOT.length);
+  _SP_ROOT = dir;
 }
+// Every path that WRITES into the scratchpad awaits this first: a note made
+// the moment the tab opened went to the fallback folder while the config read
+// was still in flight (two CI failures on #359). Offline, the folder last read
+// is used, so an offline note still lands where the online ones do.
+function _spLoadRoot() {
+  if (_spRootRead) return _spRootRead;
+  try { _spUseRoot(localStorage.getItem('amux_sp_root')); } catch (e) {}
+  _spRootRead = (async () => {
+    try {
+      const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
+      if (d && d.dir) { _spUseRoot(d.dir); try { localStorage.setItem('amux_sp_root', _SP_ROOT); } catch (e) {} }
+    } catch (e) { _spRootRead = null; }
+  })();
+  return _spRootRead;
+}
+
 let _spLastData = null;
 let _spLoadGen = 0;
 let _spSort = { col: 'modified', dir: -1 };
@@ -29140,6 +29150,7 @@ function _spUniqueName(base, ext, also) {
   return name;
 }
 async function _spCaptureSave(text) {
+  await _spLoadRoot();
   if (!text || !text.trim()) return false;
   // Name the note from its own first line (no LLM), timestamp only if blank.
   // The cached listing _spUniqueName reads can be missing or stale (a phone
@@ -29193,6 +29204,7 @@ function _spNamed(file) {
   return new File([file], _spUniqueName(_spStamp(), '.' + ext), {type: file.type});
 }
 async function _spUploadFiles(list) {
+  await _spLoadRoot();
   const files = [...(list || [])].map(_spNamed);
   if (!files.length) return;
   const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
@@ -29293,6 +29305,7 @@ function _spWireCapture() {
 }
 
 async function _scratchpadNewNote() {
+  await _spLoadRoot();
   const existing = (_spLastData?.data?.entries || []).map(e => e.name);
   let fname = 'untitled.md';
   let n = 1;
@@ -29474,6 +29487,7 @@ async function _spCleanArchive() {
 }
 
 async function _scratchpadNewFolder() {
+  await _spLoadRoot();
   const name = prompt('Folder name:');
   if (!name || !name.trim()) return;
   const dirPath = _spPath.replace(/\/$/, '') + '/' + name.trim();
