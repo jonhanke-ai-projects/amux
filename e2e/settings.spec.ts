@@ -984,6 +984,15 @@ test('settings_team_section', async ({ page, request }, testInfo) => {
   expect(teams.some((team: any) => team.id === 'team_global')).toBe(true);
   await page.locator('#invite-team-id').selectOption('team_global');
   await expect(page.locator('#host-access-ack')).toBeVisible();
+  // Unticked: the form says what to do and sends nothing, rather than relaying the
+  // server's API wording (amux Cloud e2e C8-2).
+  let posted = 0;
+  const countPost = (r: any) => { if (r.url().endsWith('/api/org/invites') && r.method() === 'POST') posted++; };
+  page.on('request', countPost);
+  await page.locator('#team-scope-submit').click();
+  await expect(page.locator('#team-scope-error')).toContainText('Tick the box above');
+  expect(posted).toBe(0);
+  page.off('request', countPost);
   await page.locator('#host-access-ack').check();
   const [invRes] = await Promise.all([
     page.waitForResponse(

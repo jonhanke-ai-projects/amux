@@ -49189,6 +49189,15 @@ function _wireHostAccess(modal, isGlobal, ...controls) {
   update();
   return () => !!modal.querySelector('#host-access-ack')?.checked && isGlobal();
 }
+// The Global box is shown but not ticked: say so in the form before the server refuses with API
+// wording ("send grant_host_access"), which a person cannot act on (amux Cloud e2e C8-2).
+function _hostAccessUnconfirmed(modal) {
+  const wrap = modal.querySelector('#host-access-wrap');
+  if (!wrap || wrap.style.display === 'none' || modal.querySelector('#host-access-ack')?.checked) return false;
+  _teamScopeError(modal, 'Tick the box above to grant host-level access, or choose a team with a narrower scope.');
+  modal.querySelector('#host-access-ack')?.focus();
+  return true;
+}
 function _teamIsGlobal(id) {
   return (_workspaceTeams.find(t => t.id === id) || {}).scope_level === 'global';
 }
@@ -49342,6 +49351,7 @@ async function openTeamInvite() {
     const email = (modal.querySelector('#team-invite-email')?.value || '').trim();
     const team_id = teamSel.value;
     if (!team_id) { _teamScopeError(modal, 'Choose a team'); return; }
+    if (_hostAccessUnconfirmed(modal)) return;
     submit.disabled = true;
     submit.textContent = 'Creating…';
     let res;
@@ -49394,6 +49404,7 @@ function openTeamEditor(teamId) {
   const levelSel = modal.querySelector('#team-scope-level');
   const teamAck = _wireHostAccess(modal, () => levelSel.value === 'global', levelSel);
   modal.querySelector('#team-scope-submit').onclick = async () => {
+    if (_hostAccessUnconfirmed(modal)) return;
     const scope_level = levelSel.value;
     const scope_name = scope_level === 'global' ? '' : modal.querySelector('#team-scope-name').value;
     const name = modal.querySelector('#team-name').value.trim();
@@ -49492,6 +49503,7 @@ async function openMemberScope(id, email, teamId) {
   const memberAck = _wireHostAccess(modal, () => _teamIsGlobal(memberSel.value), memberSel);
   submit.addEventListener('click', async () => {
     const team_id = memberSel.value;
+    if (_hostAccessUnconfirmed(modal)) return;
     submit.disabled = true;
     const response = await fetch('/api/org/members/' + encodeURIComponent(id), {
       method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({team_id, grant_host_access: memberAck()})
