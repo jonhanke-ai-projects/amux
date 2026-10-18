@@ -103,6 +103,12 @@ for (const home of Object.values(homes)) {
     `ANTHROPIC_API_KEY=${E2E_ANTHROPIC_KEY}\n`,
     { mode: 0o600 },
   );
+  // Each server's scratchpad lives in its own temp home. The default,
+  // ~/Vault/Scratchpad under the REAL $HOME, collected 150 test notes in the
+  // owner's folder before this (2026-10-18). e2e/scratchpad-dir.ts refuses
+  // to run a scratchpad test against the real folder.
+  fs.mkdirSync(path.join(home, 'scratchpad'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'scratchpad.json'), JSON.stringify({ retain_days: 0, dir: path.join(home, 'scratchpad') }));
 }
 console.log(
   '[e2e] provider prerequisite: seeded each isolated server.env with a non-secret test key; ' +
