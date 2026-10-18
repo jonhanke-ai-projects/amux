@@ -30164,7 +30164,7 @@ pub const SCOPED_CONTEXT_MARKER: &str = "[amux scoped context]";
 /// Empty for an isolated worker with nothing set (it receives none of it).
 /// The standing instruction a worker with every Board tab switch off starts
 /// with. The global CLAUDE.md board and task-ledger sections key on this.
-pub(crate) const BOARD_OFF_CONTEXT: &str = "# The amux board is off for you\n\n\
+pub(crate) const BOARD_OFF_CONTEXT: &str = "# Board off for this worker\n\n\
 Every board switch is off for this worker, so you have no board: do not read, create, append to, \
 move or close board cards, and skip the board and task-ledger sections of CLAUDE.md. The board API \
 refuses your calls with code board_off. Keep task state in your own files.";
