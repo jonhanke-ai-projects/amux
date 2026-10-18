@@ -58,6 +58,7 @@
 //   clicks the visible .theme-track sibling, so the tests do too.
 import { test, expect } from './fixtures';
 import { E2E_ANTHROPIC_KEY } from './test-env';
+import { cleanup } from './teardown';
 import type { Page, APIRequestContext } from '@playwright/test';
 
 // Deterministic theme baseline: initTheme falls back to prefers-color-scheme
@@ -1045,7 +1046,7 @@ test('settings_team_section', async ({ page, request }, testInfo) => {
 
 // The owner removes a teammate from Settings, and the teammate is signed out
 // (amux Cloud e2e C8-3: People offered only "change", so revoking took the API).
-test('settings_team_member_remove', async ({ page, request, browser }) => {
+test('settings_team_member_remove', async ({ page, request, browser }, testInfo) => {
   await settle(page);
   const token = await appToken(page);
   const email = `remove-${Date.now()}@example.com`;
@@ -1084,7 +1085,7 @@ test('settings_team_member_remove', async ({ page, request, browser }) => {
     expect(members.some((m: any) => m.email === email)).toBe(false);
     expect(await mate.evaluate(async () => (await fetch('/api/identity')).status)).toBe(401);
   } finally {
-    await mateCtx.close();
+    await cleanup('close teammate context', () => mateCtx.close(), testInfo);
   }
 });
 
