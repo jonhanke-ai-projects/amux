@@ -99,6 +99,21 @@ async function slugTaken(env, slug) {
   return s.servers.length > 0;
 }
 
+// A paid order owns its name before its server and DNS record exist (Hetzner can take minutes, or
+// fail and be retried by the cron). Without this a second visitor, or the same one in another tab,
+// could open a new payable checkout for a name already bought (codex e2e round 3, C15-3).
+async function paidOrder(env, slug) {
+  let after;
+  for (let i = 0; i < 10; i++) {
+    const page = await stripe(env, 'GET', '/subscriptions', { status: 'active', limit: 100, ...(after ? { starting_after: after } : {}) });
+    const hit = page.data.find(s => s.metadata?.slug === slug);
+    if (hit) return hit;
+    if (!page.has_more || !page.data.length) return null;
+    after = page.data[page.data.length - 1].id;
+  }
+  return null;
+}
+
 // ------------------------------------------------------------------ Stripe signature
 async function verifyStripe(env, body, header) {
   const parts = Object.fromEntries((header || '').split(',').map(p => p.split('=')));
@@ -599,7 +614,7 @@ async function route(req, env) {
     const name = (url.searchParams.get('name') || '').toLowerCase();
     const problem = slugProblem(name);
     if (problem) return json({ available: false, reason: problem }, 200, cors(req));
-    const taken = await slugTaken(env, name);
+    const taken = await slugTaken(env, name) || !!(await paidOrder(env, name));
     return json({ available: !taken, reason: taken ? 'That name is taken.' : '' }, 200, cors(req));
   }
 
@@ -614,6 +629,14 @@ async function route(req, env) {
       (!/^scrypt\$[A-Za-z0-9+/=]{20,40}\$[A-Za-z0-9+/=]{40,50}$/.test(b.pw_hash || '') && 'Password could not be prepared; reload and try again.');
     if (problem) return json({ error: problem }, 400, cors(req));
     if (await slugTaken(env, slug)) return json({ error: 'That name is taken.' }, 409, cors(req));
+    const prior = await paidOrder(env, slug);
+    if (prior) {
+      const mine = (prior.metadata?.email || '').toLowerCase() === email;
+      log('checkout.refused_paid_name', { slug, same_email: mine });
+      return json({ error: mine
+        ? `You already paid for ${host(slug)}. It is being set up; the "ready" email goes to ${email}.`
+        : 'That name is taken.' }, 409, cors(req));
+    }
     const price = (await stripe(env, 'GET', '/prices', { lookup_keys: [plan.stripe_lookup_key], active: 'true' })).data[0];
     const meta = { slug, plan: plan.id, email, pw_hash: b.pw_hash, source: (b.source || 'start').slice(0, 40) };
     const api = env.MODE === 'test' ? `&api=${encodeURIComponent(url.origin)}` : '';
@@ -708,8 +731,11 @@ async function route(req, env) {
     const claims = await verifyToken(env, b.t || '');
     if (!claims) return json({ error: 'This link has expired. Ask for a new one on the billing page.' }, 400, cors(req));
     const subs = await accountSubs(env, claims.email);
+    // One host per name: a canceled earlier subscription for a name bought again is still erased
+    // below, but listing it twice read as two servers (codex e2e round 3, C12-3).
+    const hosts = [...new Set(subs.map(s => host(s.metadata.slug)))];
     if (url.searchParams.get('peek') === '1')
-      return json({ servers: subs.map(s => host(s.metadata.slug)) }, 200, cors(req));
+      return json({ servers: hosts }, 200, cors(req));
     if (!subs.some(s => s.metadata.slug === String(b.slug || '').trim().toLowerCase()))
       return json({ error: 'Type your server name exactly as shown to confirm.' }, 400, cors(req));
     for (const s of subs) {
@@ -720,10 +746,10 @@ async function route(req, env) {
       await erase(env, s.id);
     }
     await sendMail(env, claims.email, 'Your amux Cloud account is deleted',
-      `Your server${subs.length > 1 ? 's are' : ' is'} deleted, with ${subs.length > 1 ? 'their' : 'its'} backups and snapshots, ` +
+      `Your server${hosts.length > 1 ? 's are' : ' is'} deleted, with ${hosts.length > 1 ? 'their' : 'its'} backups and snapshots, ` +
       `and billing has stopped. Thank you for trying amux Cloud. amux itself stays free: https://amux.io`);
     log('delete.confirmed', { subs: subs.length });
-    return json({ ok: true, deleted: subs.map(s => host(s.metadata.slug)) }, 200, cors(req));
+    return json({ ok: true, deleted: hosts }, 200, cors(req));
   }
 
   if (p === '/webhooks/stripe' && req.method === 'POST') {

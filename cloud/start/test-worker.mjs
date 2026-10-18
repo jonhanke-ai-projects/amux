@@ -180,6 +180,19 @@ await test('C15-1 the same signup submitted twice leaves one payable checkout', 
   eq(r1.url !== r2.url, true, 'first was replaced');
 });
 
+await test('C15-3 a paid name gets no second checkout before its server exists', async () => {
+  const w = world(); paid(w, 'paidname');
+  const b = { plan: 'team', slug: 'paidname', email: 'hello+paidname@amux.io', pw_hash: 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44) };
+  const r = await api(w, '/api/checkout', b, { 'x-test-key': 'k' });
+  eq(r.status, 409, 'status');
+  eq((await r.json()).error.includes('already paid'), true, 'owner is told it is being set up');
+  const r2 = await api(w, '/api/checkout', { ...b, email: 'someone@else.io' }, { 'x-test-key': 'k' });
+  eq((await r2.json()).error, 'That name is taken.', 'stranger');
+  eq(w.sessions.length, 0, 'no checkout opened');
+  w.subs.sub_paidname.status = 'canceled';   // deleted account: the name is free again
+  eq((await api(w, '/api/checkout', b, { 'x-test-key': 'k' })).status, 200, 'resubscribe');
+});
+
 await test('checkout collects no tax (no EU VAT)', async () => {
   const w = world();
   await api(w, '/api/checkout', { plan: 'team', slug: 'notax', email: 'hello+notax@amux.io', pw_hash: 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44) }, { 'x-test-key': 'k' });
@@ -209,6 +222,20 @@ await test('C12 delete: link, confirm with the wrong name refused, right name er
   eq(w.servers.length, 1, 'still there');
   const r = await api(w, '/api/delete/confirm', { t, slug: 'gone' });
   eq([r.status, w.servers.length, w.dns.length, w.subs[sub].status], [200, 0, 0, 'canceled'], 'after confirm');
+});
+
+await test('C12-3 a name bought again is listed once for deletion', async () => {
+  const w = world(); const sub = paid(w, 'again'); await webhook(w, sub);
+  w.subs.sub_again_old = { ...w.subs[sub], id: 'sub_again_old', status: 'canceled' };   // the first purchase, deleted earlier
+  await api(w, '/api/delete', { email: 'hello+again@amux.io' });
+  const text = Buffer.from(w.mail.at(-1).raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString();
+  const t = decodeURIComponent(text.match(/\?t=([^&\s]+)/)[1]);
+  const peek = await (await api(w, '/api/delete/confirm?peek=1', { t })).json();
+  eq(peek.servers.length, 1, 'one host');
+  const r = await (await api(w, '/api/delete/confirm', { t, slug: 'again' })).json();
+  eq(r.deleted.length, 1, 'deleted once');
+  const done = Buffer.from(w.mail.at(-1).raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString();
+  eq(done.includes('Your server is deleted'), true, 'singular');
 });
 
 await test('C12 delete link with a forged token refused', async () => {

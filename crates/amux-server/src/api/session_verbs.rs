@@ -15867,6 +15867,10 @@ pub(crate) async fn start_session(
             if codex_yolo {
                 codex_flags = strip_provider_yolo_flags(&codex_flags);
             }
+            // Inside a container where Codex's own OS sandbox cannot start,
+            // `--sandbox workspace-write` fails every command, even `pwd`, so
+            // the container is the boundary instead.
+            let codex_yolo = codex_yolo || codex_container_sandbox_fallback(base_bin).await;
             // An unattended worker must reach its composer without stopping at
             // Codex's optional npm upgrade picker. This is a per-process
             // override, so we do not change the owner's global Codex settings.
@@ -17108,6 +17112,59 @@ async fn codex_api_key_login(bin: &str, codex_home: &std::path::Path, key: Optio
         Ok(Ok(st)) if st.success() => "codex_api_key_login_ok",
         Ok(_) => "codex_api_key_login_failed",
         Err(_) => "codex_api_key_login_timed_out",
+    }
+}
+
+/// Should this Codex launch skip Codex's OS sandbox because it cannot run here?
+///
+/// On Linux, `--sandbox workspace-write` runs every command through
+/// bubblewrap, which needs a network namespace. An unprivileged Docker
+/// container refuses that ("bwrap: loopback: Failed RTM_NEWADDR"), so a
+/// Codex worker on an amux Cloud server could not even run `pwd` (codex e2e
+/// round 3, C6-3). Probed once per process. Only a container falls back,
+/// because there the container already isolates the worker; a bare host with
+/// a broken sandbox keeps it and says so in the log.
+async fn codex_container_sandbox_fallback(bin: &str) -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    static USABLE: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
+    let usable = *USABLE
+        .get_or_init(|| async {
+            let verdict = codex_os_sandbox_probe(bin).await;
+            let in_container = std::path::Path::new("/.dockerenv").exists()
+                || std::path::Path::new("/run/.containerenv").exists();
+            if verdict == "codex_os_sandbox_ok" {
+                tracing::info!(verdict, "codex OS sandbox works; workers keep --sandbox workspace-write");
+            } else if in_container {
+                tracing::warn!(verdict, fallback = "container_is_the_sandbox",
+                    "codex OS sandbox cannot start in this container; codex workers launch with --dangerously-bypass-approvals-and-sandbox");
+            } else {
+                tracing::warn!(verdict, fallback = "none",
+                    "codex OS sandbox cannot start on this host; codex workers will fail every command until bubblewrap can create namespaces (or pass --dangerously-bypass-approvals-and-sandbox in the worker's flags)");
+            }
+            verdict == "codex_os_sandbox_ok" || !in_container
+        })
+        .await;
+    !usable
+}
+
+/// Run `true` inside Codex's own sandbox and name the outcome.
+async fn codex_os_sandbox_probe(bin: &str) -> &'static str {
+    let child = tokio::process::Command::new(bin)
+        .args(["sandbox", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let Ok(mut child) = child else {
+        return "codex_os_sandbox_probe_spawn_failed";
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(20), child.wait()).await {
+        Ok(Ok(st)) if st.success() => "codex_os_sandbox_ok",
+        Ok(_) => "codex_os_sandbox_unavailable",
+        Err(_) => "codex_os_sandbox_probe_timed_out",
     }
 }
 
@@ -55606,7 +55663,25 @@ mod session_limit_banner_tests {
 
 #[cfg(test)]
 mod codex_saved_key_login_tests {
-    use super::codex_api_key_login;
+    use super::{codex_api_key_login, codex_os_sandbox_probe};
+
+    /// The probe reports what `codex sandbox true` did, so a sandbox that
+    /// cannot start is told apart from one that works.
+    #[tokio::test]
+    async fn the_sandbox_probe_names_a_sandbox_that_cannot_start() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("codex");
+        for (body, want) in [
+            ("[ \"$1 $2\" = \"sandbox true\" ] && exit 0; exit 9", "codex_os_sandbox_ok"),
+            ("echo 'bwrap: loopback: Failed RTM_NEWADDR' >&2; exit 1", "codex_os_sandbox_unavailable"),
+        ] {
+            std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(codex_os_sandbox_probe(bin.to_str().unwrap()).await, want);
+        }
+        assert_eq!(codex_os_sandbox_probe("/nonexistent/codex").await, "codex_os_sandbox_probe_spawn_failed");
+    }
 
     /// A stub `codex` that records its arguments and stdin the way `codex login --with-api-key`
     /// would store a login.

@@ -1043,6 +1043,51 @@ test('settings_team_section', async ({ page, request }, testInfo) => {
   expect(orgRestored.name).toBe('My Workspace');
 });
 
+// The owner removes a teammate from Settings, and the teammate is signed out
+// (amux Cloud e2e C8-3: People offered only "change", so revoking took the API).
+test('settings_team_member_remove', async ({ page, request, browser }) => {
+  await settle(page);
+  const token = await appToken(page);
+  const email = `remove-${Date.now()}@example.com`;
+  const inv = await (await request.post('/api/org/invites', {
+    headers: authHeaders(token),
+    data: { email, scope_level: 'group', scope_name: 'remove-e2e' },
+  })).json();
+  const mateCtx = await browser.newContext({ ignoreHTTPSErrors: true, serviceWorkers: 'block' });
+  const mate = await mateCtx.newPage();
+  try {
+    await mate.goto(`/invite/${inv.token}`);
+    await mate.locator('#name').fill('Removable Mate');
+    await Promise.all([
+      mate.waitForURL((url) => url.pathname === '/'),
+      mate.getByRole('button', { name: 'Join workspace' }).click(),
+    ]);
+    expect(await mate.evaluate(async () => (await fetch('/api/identity')).status)).toBe(200);
+
+    await openSettings(page);
+    const remove = page.locator(`#settings-members-list button[data-member-remove][data-email="${email}"]`);
+    await expect(remove).toBeVisible();
+    // Cancel keeps them.
+    await remove.click();
+    await page.locator('#modal-btns button[onclick="_modalClose(false)"]').click();
+    let members = await (await request.get('/api/org/members', { headers: authHeaders(token) })).json();
+    expect(members.some((m: any) => m.email === email)).toBe(true);
+    // Confirm removes them, and their open session stops working.
+    await remove.click();
+    const [del] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/org/members/') && r.request().method() === 'DELETE'),
+      page.locator('#modal-btns .btn.danger').click(),
+    ]);
+    expect(del.status()).toBe(200);
+    await expect(page.locator(`#settings-members-list [data-email="${email}"]`)).toHaveCount(0);
+    members = await (await request.get('/api/org/members', { headers: authHeaders(token) })).json();
+    expect(members.some((m: any) => m.email === email)).toBe(false);
+    expect(await mate.evaluate(async () => (await fetch('/api/identity')).status)).toBe(401);
+  } finally {
+    await mateCtx.close();
+  }
+});
+
 // UN-FIXME'd 2026-08-11 (AMUX-2621/AMUX-2587): routed native [GET].
 test('settings_about_token_stats', async ({ page, request }) => {
   await settle(page);

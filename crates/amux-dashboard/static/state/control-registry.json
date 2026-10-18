@@ -5424,6 +5424,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "removeMember": {
+      "kind": "command.removeMember",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "removePeekFile": {
       "kind": "command.removePeekFile",
       "feedback_required": true,

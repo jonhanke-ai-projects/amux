@@ -49340,6 +49340,7 @@ async function loadTeamSection() {
             <span style="display:flex;align-items:center;gap:7px;color:var(--dim);font-size:0.7rem;">
               ${esc(m.team_name || 'Legacy access')}
               <button class="btn" data-member-scope="${esc(m.id)}" data-email="${esc(m.email || '')}" data-team="${esc(m.team_id || '')}" onclick="openMemberScope(this.dataset.memberScope,this.dataset.email,this.dataset.team)" style="font-size:0.64rem;padding:1px 6px;">change</button>
+              ${m.role === 'owner' ? '' : `<button class="btn danger" data-member-remove="${esc(m.id)}" data-email="${esc(m.email || m.name || '')}" onclick="removeMember(this.dataset.memberRemove,this.dataset.email)" style="font-size:0.64rem;padding:1px 6px;">remove</button>`}
             </span>
           </div>`).join('');
       }
@@ -49362,6 +49363,16 @@ async function deleteInvite(token) {
   const r = await fetch('/api/org/invites/' + token, {method: 'DELETE'}).catch(() => null);
   if (!r || !r.ok) { showToast('Failed to revoke invite'); return; }
   showToast('Invite revoked');
+  loadTeamSection();
+}
+
+// Revoking a teammate was API-only: People offered "change" and nothing else
+// (codex e2e round 3, C8-3). The DELETE also ends their signed-in sessions.
+async function removeMember(id, email) {
+  if (!await showConfirm(`Remove ${email}? They are signed out and can no longer sign in.`, 'Remove', true)) return;
+  const r = await fetch('/api/org/members/' + encodeURIComponent(id), {method: 'DELETE'}).catch(() => null);
+  if (!r || !r.ok) { showToast('Failed to remove member'); return; }
+  showToast('Member removed');
   loadTeamSection();
 }
 
