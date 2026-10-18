@@ -65,7 +65,10 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   await page.locator('#tasks-search').fill(nonce);
   await fetched;
 
-  const items = page.locator('#tasks-list .task-item');
+  // The peer's task matches the nonce too (the timeline below needs its
+  // lane); these checks are about the worker's own tasks.
+  const items = page.locator('#tasks-list .task-item')
+    .filter({ has: page.locator('.msg-sess-link', { hasText: new RegExp('^' + seed.worker + '$') }) });
   await expect(items).toHaveCount(2, { timeout: 15000 });
   await expect(items.nth(0).locator('.task-title')).toHaveText('First task ' + nonce);
   await expect(items.nth(1).locator('.task-title')).toHaveText('Second task ' + nonce);
