@@ -11966,7 +11966,8 @@ async function _boardOneSet(name, on) {
       const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
       if (s && !inherit) for (const c of _BOARD_SWITCHES) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
       if (!inherit && d.board_enabled !== undefined && d.board_enabled !== !!on) {
-        try { window._clientDebug && window._clientDebug('board-one-switch-not-effective', { session: name, requested: !!on, effective: d.board_enabled, measured: true, n_considered: 1 }); } catch (e) {}
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+          body: JSON.stringify({ kind: 'board-one-switch-not-effective', session: name, requested: !!on, effective: d.board_enabled, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
       }
     }
     await fetchSessions().catch(() => {});
@@ -14666,6 +14667,15 @@ async function saveGlobalMemory() {
 }
 
 const APP_VER = '__AMUX_ASSET_VER__';   // derived: the server stamps a content hash of static/ here (amux-dashboard build.rs)
+// One structured client beacon, `window._clientDebug(kind, fields)`. Six call
+// sites used it and nothing defined it, so each one was a silent no-op
+// (found 2026-10-17 while fixing a git-check race).
+window._clientDebug = function (kind, fields) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+      body: JSON.stringify(Object.assign({ kind: kind, ver: APP_VER }, fields || {})) }).catch(() => {});
+  } catch (e) {}
+};
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -32899,11 +32909,23 @@ function _toggleWorktree(on) {
   }
 }
 let _gitCheckTimer = null;
+// Only the newest check may set the box. openCreate checks the default
+// directory without waiting, so when the owner picks a repository right away
+// the default's slower answer used to land last and hide the box again, and
+// the create then omitted worktree:false (create-worktree-optout.spec.ts,
+// ios-safari on 5eb4d629c, 4bd34bf43, d56938bdb and 253e5d4f0).
+let _gitCheckSeq = 0;
 async function _checkDirGit(dir) {
+  const seq = ++_gitCheckSeq;
   if (!dir) { _createDirIsGit = false; document.getElementById('create-worktree-field').style.display = 'none'; return; }
   try {
     const r = await fetch(API + '/api/git-check?dir=' + encodeURIComponent(dir));
     const d = await r.json();
+    if (seq !== _gitCheckSeq) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+        body: JSON.stringify({ kind: 'git-check-stale-dropped', verdict: 'stale_git_check_dropped', measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+      return;
+    }
     _createDirIsGit = !!d.is_git;
     document.getElementById('create-worktree-field').style.display = _createDirIsGit ? '' : 'none';
     _loadWorktreeProfiles();
@@ -32912,6 +32934,7 @@ async function _checkDirGit(dir) {
       document.getElementById('create-worktree-info').style.display = 'none';
     }
   } catch(e) {
+    if (seq !== _gitCheckSeq) return;
     _createDirIsGit = false;
     document.getElementById('create-worktree-field').style.display = 'none';
   }

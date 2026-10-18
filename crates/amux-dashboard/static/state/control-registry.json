@@ -738,6 +738,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_checkDirGit": {
+      "kind": "command._checkDirGit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_checkSessionTransitions": {
       "kind": "command._checkSessionTransitions",
       "feedback_required": true,
