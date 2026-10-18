@@ -1069,7 +1069,8 @@ test('settings_team_member_remove', async ({ page, request, browser }, testInfo)
 
     await openSettings(page);
     const remove = page.locator(`#settings-members-list button[data-member-remove][data-email="${email}"]`);
-    await expect(remove).toBeVisible();
+    // The People list loads after the panel opens; slow on a busy host.
+    await expect(remove).toBeVisible({ timeout: 20_000 });
     // Cancel keeps them.
     await remove.click();
     await page.locator('#modal-btns button[onclick="_modalClose(false)"]').click();

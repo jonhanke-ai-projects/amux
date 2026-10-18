@@ -50,11 +50,16 @@ const fileMatchers = (files: string[]): RegExp[] =>
 // would have come back the moment anyone added a fourth project or a fourth
 // state-mutating spec. A port and a home each is the boundary; adding a target
 // below now costs nothing and races nothing.
+// The ports are fixed, and every lane on one machine runs this suite against
+// the same three. A second concurrent run fails "is already used", or worse,
+// a test reaches the other lane's server. AMUX_E2E_PORT_OFFSET moves all
+// three (e.g. 1000 -> 19823/19833/19843).
+const PORT_OFFSET = Number(process.env.AMUX_E2E_PORT_OFFSET || 0) || 0;
 const TARGETS = [
-  { name: 'desktop', port: 18823, use: { viewport: { width: 1280, height: 800 } } },
+  { name: 'desktop', port: 18823 + PORT_OFFSET, use: { viewport: { width: 1280, height: 800 } } },
   // Mobile is a first-class target (amux is mobile-first): 375px must
   // render without overflow.
-  { name: 'mobile', port: 18833, use: { viewport: { width: 375, height: 667 } } },
+  { name: 'mobile', port: 18833 + PORT_OFFSET, use: { viewport: { width: 375, height: 667 } } },
   // iOS SAFARI IS ITS OWN TARGET, not a viewport (AMUX tab-customizer, 2026-08-13).
   // A bottom-sheet fix passed desktop+mobile Chromium at 375px while Ethan still
   // could not see the menu on his phone — Chromium at a phone WIDTH is not Safari
@@ -67,7 +72,7 @@ const TARGETS = [
   // wrong in effect — a new mobile spec would silently never reach iOS, which
   // is the one target that motivated the project. Isolation removed the reason
   // for it, so the list is gone; do not reintroduce one to quiet a red.
-  { name: 'ios-safari', port: 18843, use: { ...devices['iPhone 15'] } },
+  { name: 'ios-safari', port: 18843 + PORT_OFFSET, use: { ...devices['iPhone 15'] } },
 ];
 
 // The broad suite exercises dashboard/runtime behaviour, not a real Anthropic
