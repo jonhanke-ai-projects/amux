@@ -4152,7 +4152,17 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
             }
         }
     }
-    let project_dir = claude_home().join("projects").join(project_name(&wd));
+    // Guess from the dir the provider actually ran in. A worktree worker's
+    // CC_DIR is the repo root while claude runs (and writes its transcript)
+    // under cc_cwd, the worktree. Guessing from CC_DIR alone found the root's
+    // project dir, several unrelated transcripts, and returned None, so every
+    // worktree worker with no recorded conversation id had no Translate.
+    let project_dir = [cc_cwd.trim(), wd.as_str()]
+        .into_iter()
+        .filter(|b| !b.is_empty())
+        .map(|b| claude_home().join("projects").join(project_name(b)))
+        .find(|d| d.is_dir())
+        .unwrap_or_else(|| claude_home().join("projects").join(project_name(&wd)));
     let Ok(rd) = std::fs::read_dir(&project_dir) else {
         return None;
     };
@@ -4231,6 +4241,20 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
     if unclaimed.len() == 1 {
         Some(unclaimed[0].clone())
     } else {
+        // Once per session per process: transcript readers run on every sweep.
+        static AMBIGUOUS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+            std::sync::OnceLock::new();
+        let first = AMBIGUOUS
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+            .lock()
+            .map(|mut s| s.insert(name.to_string()))
+            .unwrap_or(false);
+        if first {
+            tracing::warn!(session = %name, dir = %project_dir.display(), measured = true,
+                n_considered = files.len(), unclaimed = unclaimed.len(),
+                verdict = "transcript_ambiguous",
+                "no recorded conversation id and the project-dir guess is ambiguous; transcript readers (Translate, history) see nothing");
+        }
         None
     }
 }
