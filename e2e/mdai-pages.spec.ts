@@ -619,7 +619,18 @@ test('MDAI chat: the page shows the exchange and the changed lines, runs again, 
     // A change starts a run through the ordinary run flow.
     await expect.poll(() => runs, { message: 'the node runs after the edit' }).toBe(1);
     await expect(page.locator('#mdai-body .mdai-err')).toContainText('no model in this test');
-    if (narrow) for (const b of await page.locator('#mdai-chat-log .mdai-chat-acts .btn').all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    if (narrow) {
+      // The run re-renders the log and can leave the Chat tab, and Run again
+      // only appears once the run settles: measure after all three are shown.
+      await page.locator('#mdai-overlay .mdai-tab[data-tab=chat]').click();
+      const acts = page.locator('#mdai-chat-log .mdai-chat-acts .btn');
+      await expect(acts).toHaveText(['See output', 'Run again', 'Undo']);
+      for (const name of ['See output', 'Run again', 'Undo']) {
+        const b = acts.filter({ hasText: name });
+        await expect(b).toBeVisible();
+        expect((await b.boundingBox())?.height ?? 0, name).toBeGreaterThanOrEqual(44);
+      }
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: info.outputPath('mdai-chat-applied.png') });
 
