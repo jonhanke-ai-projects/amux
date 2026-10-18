@@ -44,11 +44,14 @@ class DoorJoin(unittest.TestCase):
                               capture_output=True, text=True, check=True).stdout
         with open(os.path.join(etc, "users"), "w") as f:
             f.write(line)                                    # the owner: a password, and no member token
+        cls.entry_secret = "ab" * 32                          # what cloud.amux.io sends in user_data (bootstrap.sh)
+        with open(os.path.join(etc, "entry"), "w") as f:
+            f.write(f"AMUX_SLUG=acme\nAMUX_FLEET_SECRET={cls.entry_secret}\n")
         cls.members, cls.joined = os.path.join(etc, "members"), os.path.join(etc, "joined")
         open(cls.members, "w").close()
         cls.door_proc = subprocess.Popen([sys.executable, os.path.join(HERE, "door.py"), "serve"], env=dict(os.environ,
                                     DOOR_PORT=str(cls.door_port), DOOR_USERS=os.path.join(etc, "users"), DOOR_SECRET=os.path.join(etc, "secret"),
-                                    DOOR_MEMBERS=cls.members, DOOR_JOINED=cls.joined, DOOR_FLEET_ENV=os.path.join(etc, "none"),
+                                    DOOR_MEMBERS=cls.members, DOOR_JOINED=cls.joined, DOOR_FLEET_ENV=os.path.join(etc, "none"), DOOR_ENTRY=os.path.join(etc, "entry"),
                                     DOOR_UPDATE_STATUS=os.path.join(etc, "status.json"),
                                     DOOR_AMUX_URL=f"https://127.0.0.1:{cls.amux_port}", DOOR_MEMBER_RECHECK="0.5"),
                                     stdout=open(os.path.join(cls.tmp, "door.log"), "w"), stderr=subprocess.STDOUT)
@@ -136,6 +139,26 @@ class DoorJoin(unittest.TestCase):
         st = json.loads(body)
         self.assertEqual(code, 200)
         self.assertTrue(st["live_commit"]); self.assertIs(st["dashboard"], True); self.assertEqual(st["verdict"], "unknown")
+
+
+    def entry(self, sub, aud="acme", exp=None, secret=None):
+        """A sign-in link token signed the way cloud/start/worker.mjs entryLink signs it."""
+        import hashlib, hmac
+        b64 = lambda x: base64.urlsafe_b64encode(x).decode().rstrip("=")
+        body = b64(json.dumps({"sub": sub, "aud": aud, "exp": exp or time.time() + 120, "via": "apple"}).encode())
+        return body + "." + b64(hmac.new((secret or self.entry_secret).encode(), body.encode(), hashlib.sha256).digest())
+
+    def test_4_owner_signs_in_from_the_app_link(self):
+        code, r, _ = self.door("GET", "/_door/enter?t=" + self.entry(OWNER))
+        self.assertEqual((code, r.getheader("Location")), (303, "/"))
+        cookie = "; ".join(v.split(";")[0] for k, v in r.getheaders() if k.lower() == "set-cookie")
+        self.assertEqual(self.check(cookie=cookie)[:3], (200, OWNER, None))
+        # Expired, forged, another server's, and a stranger's links do not sign anyone in.
+        for t in (self.entry(OWNER, exp=time.time() - 1), self.entry(OWNER, secret="cd" * 32),
+                  self.entry(OWNER, aud="other"), self.entry("stranger@example.com")):
+            code, r, _ = self.door("GET", "/_door/enter?t=" + t)
+            self.assertNotIn("amux_door", r.getheader("Set-Cookie") or "", t)
+            self.assertNotEqual(code, 303, t)
 
 
 if __name__ == "__main__":

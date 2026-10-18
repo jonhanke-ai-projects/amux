@@ -72,6 +72,7 @@ PORT = int(os.environ.get("DOOR_PORT", "8890"))
 MEMBERS_FILE = os.environ.get("DOOR_MEMBERS", "/etc/amux-door/members")
 JOINED_FILE = os.environ.get("DOOR_JOINED", "/etc/amux-door/joined")   # teammates' own passwords
 FLEET_ENV = os.environ.get("DOOR_FLEET_ENV", "/etc/amux/fleet.env")
+ENTRY_FILE = os.environ.get("DOOR_ENTRY", "/etc/amux-door/entry")    # standalone: this server's app sign-in key
 AMUX = os.environ.get("DOOR_AMUX_URL", "https://127.0.0.1:8824")
 MEMBER_RECHECK = float(os.environ.get("DOOR_MEMBER_RECHECK", "60"))
 _member_ok_cache = {}   # token -> (ok, checked_at)
@@ -138,11 +139,11 @@ def save_member(name, token):
     os.replace(tmp, MEMBERS_FILE)
 
 
-def fleet():
+def fleet(path=None):
     """AMUX_* settings written by cloud-init on amux Cloud servers; empty elsewhere."""
     out = {}
     try:
-        for line in open(FLEET_ENV):
+        for line in open(path or FLEET_ENV):
             k, _, v = line.strip().partition("=")
             if k:
                 out[k] = json.loads(v) if v.startswith('"') else v
@@ -180,8 +181,10 @@ def member_valid(token, now=None):
 
 
 def verify_entry_token(token, now=None):
-    """The control plane's token (cloud/control/tokens.py): payload.mac, HMAC-SHA256 with this server's secret."""
-    cfg = fleet()
+    """A sign-in link's token: payload.mac, HMAC-SHA256 with this server's secret. Standalone servers get
+    the secret from cloud.amux.io at creation (ENTRY_FILE; the iOS app's Sign in with Apple), fleet
+    servers from fleet.env."""
+    cfg = fleet() if fleet().get("AMUX_FLEET_SECRET") else fleet(ENTRY_FILE)
     sec, slug = cfg.get("AMUX_FLEET_SECRET"), cfg.get("AMUX_SLUG")
     if not sec or not slug:
         raise ValueError("token sign-in is not enabled on this server")
@@ -383,6 +386,10 @@ class Door(BaseHTTPRequestHandler):
             try:
                 claims = verify_entry_token(q.get("t", [""])[0])
                 email = claims["sub"].lower()
+                if email in users():       # the server's owner (a standalone server's paying customer)
+                    log(event="enter", user=email, ip=ip, role="owner", via=claims.get("via"), verdict="door_enter_ok")
+                    nxt = safe_next(q.get("next", ["/"])[0])
+                    return self.send(303, headers=[("Location", nxt), ("Cache-Control", "no-store")] + session_cookies(email))
                 known = members().get(email)
                 if claims.get("invite") and not (known and member_valid(known)):
                     redeem_invite(email, claims["invite"])     # invites are single use; a member skips this
@@ -393,7 +400,7 @@ class Door(BaseHTTPRequestHandler):
                 log(event="enter", ip=ip, verdict="door_enter_refused", reason=str(e)[:120])
                 body = ("<!doctype html><meta charset=utf-8><title>Link expired</title><p>This sign-in link has expired "
                         "or is not for this server. <a href='%s'>Sign in again</a></p>" %
-                        html.escape(fleet().get("AMUX_CONTROL_URL", "https://cloud.amux.io"))).encode()
+                        html.escape(fleet().get("AMUX_CONTROL_URL", "/_door/login"))).encode()
                 return self.send(401, body, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])
             log(event="enter", user=email, ip=ip, role=claims.get("role"), verdict="door_enter_ok")
             nxt = safe_next(q.get("next", ["/"])[0])

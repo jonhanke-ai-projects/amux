@@ -38,7 +38,7 @@ fi
 [[ -s "$WF" ]] || { log "FATAL: the $MODE webhook exists but its secret is not in $WF"; exit 1; }
 GOLDEN=$(curl -fsS -H "Authorization: Bearer $HC" 'https://api.hetzner.cloud/v1/images?type=snapshot&label_selector=amux-golden&sort=created:desc' | python3 -c 'import json,sys;print(json.load(sys.stdin)["images"][0]["id"])')
 META=$(mktemp); trap 'rm -f "$META"' EXIT; chmod 600 "$META"
-python3 - "$META" "$MODE" "$KEY" "$(cat "$WF")" "$HC" "$CF" "$ZID" "$GOLDEN" "$HERE/../control/plans.json" "$S" "$(cat "$PF")" <<'EOF'
+APPLE_BUNDLE_ID="$(envv APPLE_BUNDLE_ID)" python3 - "$META" "$MODE" "$KEY" "$(cat "$WF")" "$HC" "$CF" "$ZID" "$GOLDEN" "$HERE/../control/plans.json" "$S" "$(cat "$PF")" <<'EOF'
 import base64, json, os, sys
 meta, mode, key, whs, hc, cf, zid, golden, plans, s, portal = sys.argv[1:]
 gt = os.path.expanduser("~/.amux/gmail-tokens/hello@amux.io.json")
@@ -60,6 +60,19 @@ if os.path.exists(gt):
     b.append({"type": "secret_text", "name": "GMAIL_OAUTH", "text": base64.b64encode(open(gt, "rb").read()).decode()})
 if not (os.path.exists(sa) or os.path.exists(gt)):
     print("WARN no mail credential: billing, deletion and operator emails will fail", file=sys.stderr)
+# Sign in with Apple from the iOS app: the Worker checks Apple's token against the app's bundle id
+# and signs each server's two-minute sign-in link with a key derived from DOOR_ENTRY_SECRET.
+de = os.path.join(s, f"door-entry-secret-{mode}")
+if not os.path.exists(de):
+    import secrets
+    fd = os.open(de, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(fd, secrets.token_hex(32).encode()); os.close(fd)
+b.append({"type": "secret_text", "name": "DOOR_ENTRY_SECRET", "text": open(de).read().strip()})
+bundle = os.environ.get("APPLE_BUNDLE_ID", "")
+if bundle:
+    b.append({"type": "plain_text", "name": "APPLE_BUNDLE_ID", "text": bundle})
+else:
+    print("WARN APPLE_BUNDLE_ID unset: the iOS app's Sign in with Apple will be refused", file=sys.stderr)
 if mode == "test":
     b.append({"type": "secret_text", "name": "TEST_KEY", "text": open(os.path.join(s, "start-test-key")).read().strip()})
 json.dump({"main_module": "worker.mjs", "compatibility_date": "2026-10-01", "bindings": b,

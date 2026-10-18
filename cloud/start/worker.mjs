@@ -7,6 +7,7 @@
 //   GET  /api/slug?name=     -> {available, reason}
 //   GET  /api/status?session_id=cs_...  -> {state: paying|creating|booting|ready|failed, url}
 //   POST /api/billing        {email} -> emails a Stripe billing-portal link
+//   POST /api/apple/servers  {identity_token} -> the Apple ID's servers, each with a two-minute sign-in link
 //   POST /api/delete         {email} -> emails a one-hour link to /start/delete/?t=...
 //   POST /api/delete/confirm {t, slug} -> ends the subscription now and erases the server,
 //                            its address, backups and snapshots (no 30-day keep)
@@ -17,7 +18,7 @@
 //                            webhook did not (reconcile); check each server every 10 minutes
 //
 // Bindings (cloud/start/deploy.sh): STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, HCLOUD_TOKEN,
-// CF_TOKEN, CF_ZONE_ID, GMAIL_OAUTH, GOLDEN_IMAGE, PLANS (JSON), MODE (live|test), TEST_KEY.
+// APPLE_BUNDLE_ID, DOOR_ENTRY_SECRET, CF_TOKEN, CF_ZONE_ID, GMAIL_OAUTH, GOLDEN_IMAGE, PLANS (JSON), MODE (live|test), TEST_KEY.
 
 const SITE = 'https://amux.io';
 const DOMAIN = 'amux.io';
@@ -165,12 +166,12 @@ const BOOT = [
   '[ -f $B ] || B=/opt/amux/bootstrap.sh',
   'bash $B >>/var/log/amux-standalone.log 2>&1 || echo BOOTSTRAP_FAILED >>/var/log/amux-standalone.log',
 ].join('; ');
-function userData(slug, email, pwHash) {
+function userData(slug, email, pwHash, entryKey) {
   // Standalone: the golden image's bootstrap gets its domain and its one owner login. The
   // password arrives already hashed (door.py scrypt format); nothing else about the customer.
   // `owner`: no member token, so amux treats this login as the host owner (Settings can invite teammates).
   const envFile = [`AMUX_DOMAIN='${host(slug)}'`, `AMUX_WEB_USERS='${email}:${pwHash}:${email}:owner'`,
-    `AMUX_SKIP_PACKAGES=1`].join('\n');
+    `AMUX_SKIP_PACKAGES=1`, ...(entryKey ? [`AMUX_ENTRY_SECRET='${entryKey}'`] : [])].join('\n');
   return `#cloud-config
 write_files:
   - path: /etc/amux/standalone.env
@@ -213,7 +214,7 @@ async function provision(env, { sub, meta, email }) {
   for (const location of ['fsn1', 'nbg1', 'hel1']) {
     try {
       srv = (await hetzner(env, 'POST', '/servers', { name: `amux-${slug}`, server_type: plan.server_type, image,
-        location, labels, user_data: userData(slug, email, meta.pw_hash), start_after_create: true })).server;
+        location, labels, user_data: userData(slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
       break;
     } catch (e) { lastErr = e; if (!['resource_unavailable', 'placement_error'].includes(e.code)) throw e; }
   }
@@ -429,6 +430,59 @@ async function tokenKey(env) {
   return crypto.subtle.importKey('raw', new TextEncoder().encode('amux-delete:' + env.STRIPE_WEBHOOK_SECRET),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }
+// ------------------------------------------------------------------ Sign in with Apple (iOS app)
+// The app sends Apple's identity token. The answer lists the account's servers, each with a
+// two-minute sign-in link that the server's door checks with its own key (/_door/enter).
+// Each server's key is derived from DOOR_ENTRY_SECRET and reaches it in user_data at creation.
+async function entryKey(env, slug) {
+  if (!env.DOOR_ENTRY_SECRET) return '';
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.DOOR_ENTRY_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode('amux-entry|' + slug)));
+  return [...mac].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+async function entryLink(env, slug, email) {
+  const key = await entryKey(env, slug);
+  if (!key) return '';
+  const body = b64u(new TextEncoder().encode(JSON.stringify({ sub: email, aud: slug, exp: Math.floor(Date.now() / 1000) + 120, via: 'apple' })));
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return `https://${host(slug)}/_door/enter?t=${body}.${b64u(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(body)))}`;
+}
+let appleKeys = { keys: [], at: 0 };
+const unb64u = x => Uint8Array.from(atob(x.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+async function appleClaims(env, token) {
+  const [h, p, sig] = String(token || '').split('.');
+  if (!h || !p || !sig) throw new Error('malformed token');
+  const head = JSON.parse(new TextDecoder().decode(unb64u(h))), c = JSON.parse(new TextDecoder().decode(unb64u(p)));
+  if (head.alg !== 'RS256') throw new Error('unexpected algorithm');
+  if (!appleKeys.keys.some(k => k.kid === head.kid) || Date.now() - appleKeys.at > 3600e3)
+    appleKeys = { keys: (await (await fetch('https://appleid.apple.com/auth/keys')).json()).keys || [], at: Date.now() };
+  const jwk = appleKeys.keys.find(k => k.kid === head.kid);
+  if (!jwk) throw new Error('unknown signing key');
+  const key = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+  if (!(await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, unb64u(sig), new TextEncoder().encode(h + '.' + p))))
+    throw new Error('bad signature');
+  if (c.iss !== 'https://appleid.apple.com') throw new Error('wrong issuer');
+  if (c.aud !== env.APPLE_BUNDLE_ID) throw new Error('token is for another app');
+  if (!(c.exp * 1000 > Date.now())) throw new Error('expired');
+  return c;
+}
+// The subscriptions this Apple ID may open: those already linked to it, otherwise those whose
+// account email is the verified email in the token (which then links it, so a later sign-in with a
+// private relay address still finds them).
+async function appleSubs(env, c) {
+  const linked = (await stripe(env, 'GET', '/customers/search', { query: `metadata['apple_sub']:'${String(c.sub).replace(/'/g, '')}'` })).data;
+  const out = [];
+  for (const cu of linked)
+    for (const s of (await stripe(env, 'GET', '/subscriptions', { customer: cu.id, status: 'all', limit: 20 })).data)
+      if (s.metadata?.slug) out.push(s);
+  if (out.length || !c.email || String(c.email_verified) !== 'true') return out;
+  const byEmail = await accountSubs(env, String(c.email).toLowerCase());
+  for (const cu of new Set(byEmail.map(s => s.customer?.id || s.customer)))
+    await stripe(env, 'POST', `/customers/${cu}`, { metadata: { apple_sub: c.sub } });
+  return byEmail;
+}
+
 async function signToken(env, claims) {
   const body = b64u(new TextEncoder().encode(JSON.stringify(claims)));
   return body + '.' + b64u(await crypto.subtle.sign('HMAC', await tokenKey(env), new TextEncoder().encode(body)));
@@ -514,6 +568,25 @@ async function route(req, env) {
       break;
     }
     return json({ ok: true }, 200, cors(req));
+  }
+
+  if (p === '/api/apple/servers' && req.method === 'POST') {
+    const b = await req.json().catch(() => ({}));
+    let c;
+    try { c = await appleClaims(env, b.identity_token); }
+    catch (e) {
+      log('apple.refused', { reason: e.message });
+      return json({ error: 'Apple sign-in could not be verified. Try again.' }, 401, cors(req));
+    }
+    const live = (await appleSubs(env, c)).filter(s => ['active', 'trialing', 'past_due'].includes(s.status) && !s.metadata.pw_hash);
+    const servers = [];
+    for (const s of live)
+      servers.push({ name: s.metadata.slug, url: `https://${host(s.metadata.slug)}`,
+                     login_url: await entryLink(env, s.metadata.slug, s.metadata.email || '') });
+    log('apple.servers', { found: servers.length, linked_by: c.email ? 'email_or_sub' : 'sub' });
+    if (!servers.length)
+      return json({ servers, error: 'No amux Cloud server for this Apple ID. Add your server below with its address, or sign in with Apple using the email you signed up with.' }, 404, cors(req));
+    return json({ servers }, 200, cors(req));
   }
 
   if (p === '/api/delete' && req.method === 'POST') {

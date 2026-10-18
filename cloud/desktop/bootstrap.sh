@@ -485,6 +485,13 @@ DOOR_PY="$(dirname "$(readlink -f "$0")")/door.py"            # shipped beside t
 install -m 755 "$DOOR_PY" /opt/amux-door/door.py
 [[ -s /etc/amux-door/secret ]] || openssl rand -hex 32 > /etc/amux-door/secret
 chown root:amux-door /etc/amux-door/secret; chmod 640 /etc/amux-door/secret
+# amux Cloud's app sign-in (Sign in with Apple through cloud.amux.io): the Worker signs a two-minute
+# link with this server's key, which it sent in user_data. Fleet servers use fleet.env instead.
+if [[ -n "${AMUX_ENTRY_SECRET:-}" && -n "$DOMAIN" ]]; then
+  printf 'AMUX_SLUG=%s\nAMUX_FLEET_SECRET=%s\n' "${DOMAIN%%.*}" "$AMUX_ENTRY_SECRET" > /etc/amux-door/entry.new
+  chown root:amux-door /etc/amux-door/entry.new; chmod 640 /etc/amux-door/entry.new
+  mv /etc/amux-door/entry.new /etc/amux-door/entry
+fi
 cat > /etc/systemd/system/amux-door.service <<'UNIT'
 [Unit]
 Description=amux-door sign-in for the dedicated amux host

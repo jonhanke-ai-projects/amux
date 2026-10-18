@@ -49,8 +49,17 @@ function world() {
       }
       if (m === 'DELETE') { const id = p.split('/').pop(); w.dns = w.dns.filter(r => r.id !== id); return ok({ success: true, result: {} }); }
     }
+    if (u.host === 'appleid.apple.com') return ok({ keys: w.appleKeys || [] });
     if (u.host === 'api.stripe.com') {
       const f = new URLSearchParams(o.body || u.search.slice(1));
+      if (p === '/v1/customers/search') {
+        const sub = (f.get('query').match(/'([^']*)'$/) || [])[1];
+        return ok({ data: Object.keys(w.appleLinks || {}).filter(c => w.appleLinks[c] === sub).map(id => ({ id })) });
+      }
+      let cm;
+      if ((cm = p.match(/^\/v1\/customers\/([^/]+)$/)) && m === 'POST') {
+        (w.appleLinks ||= {})[cm[1]] = f.get('metadata[apple_sub]'); return ok({ id: cm[1] });
+      }
       if (p === '/v1/prices') return ok({ data: [{ id: 'price_team' }] });
       if (p === '/v1/checkout/sessions' && m === 'POST') {
         const meta = {}; for (const [k, v] of f) { const x = k.match(/^metadata\[(.+)\]$/); if (x) meta[x[1]] = v; }
@@ -66,7 +75,7 @@ function world() {
         return s ? ok(s) : Response.json({ error: { message: `No such checkout.session: ${mm[1]}` } }, { status: 404 });
       }
       if (p === '/v1/subscriptions' && m === 'GET')
-        return ok({ data: Object.values(w.subs).filter(s => s.status === 'active').map(s => ({ ...s, customer: { email: s.email } })) });
+        return ok({ data: Object.values(w.subs).filter(s => s.status === 'active').map(s => ({ ...s, customer: { id: s.customer_id, email: s.email } })) });
       if ((mm = p.match(/^\/v1\/subscriptions\/([^/]+)$/)) && m === 'POST') {
         const s = w.subs[mm[1]]; for (const [k, v] of f) { const x = k.match(/^metadata\[(.+)\]$/); if (x) { if (v === '') delete s.metadata[x[1]]; else s.metadata[x[1]] = v; } }
         return ok(s);
@@ -243,6 +252,66 @@ await test('mail: delegation not yet approved, the user grant still sends', asyn
 await test('C8 the paying customer is the server owner (no member token)', async () => {
   const w = world(); const sub = paid(w, 'owner'); await webhook(w, sub);
   eq(/AMUX_WEB_USERS='hello\+owner@amux\.io:scrypt\$x\$y:hello\+owner@amux\.io:owner'/.test(w.servers[0].user_data), true, 'user_data owner grant');
+});
+
+// Sign in with Apple: a fake Apple signing key, and the real door.py checking the Worker's link.
+function apple(w, claims, { key, kid = 'k' + Math.random() } = {}) {
+  const pair = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  w.appleKeys = [{ ...pair.publicKey.export({ format: 'jwk' }), kid, alg: 'RS256', use: 'sig' }];
+  const enc = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const body = enc({ alg: 'RS256', kid }) + '.' + enc({ iss: 'https://appleid.apple.com', aud: 'com.example.app',
+    exp: Math.floor(Date.now() / 1000) + 600, ...claims });
+  return body + '.' + crypto.sign('sha256', Buffer.from(body), key || pair.privateKey).toString('base64url');
+}
+function appleWorld(slug) {
+  const w = world(); w.env.APPLE_BUNDLE_ID = 'com.example.app'; w.env.DOOR_ENTRY_SECRET = 'entry-root';
+  const sub = paid(w, slug); return { w, sub };
+}
+async function doorAccepts(w, link) {
+  const { execFileSync } = await import('node:child_process');
+  const os = await import('node:os'), path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'door-entry-'));
+  const secret = w.servers[0].user_data.match(/AMUX_ENTRY_SECRET='([0-9a-f]+)'/)[1];
+  fs.writeFileSync(path.join(dir, 'entry'), `AMUX_SLUG=${w.servers[0].name.replace(/^amux-/, "")}\nAMUX_FLEET_SECRET=${secret}\n`);
+  const t = new URL(link).searchParams.get('t');
+  const door = new URL('../desktop/', import.meta.url).pathname;
+  try {
+    return JSON.parse(execFileSync('python3', ['-I', '-c', 'import sys,json; sys.path.insert(0, sys.argv[1]); import door; print(json.dumps(door.verify_entry_token(sys.argv[2])))', door, t],
+      { env: { PATH: process.env.PATH, DOOR_ENTRY: path.join(dir, 'entry'), DOOR_FLEET_ENV: path.join(dir, 'none') } }).toString());
+  } finally { fs.rmSync(dir, { recursive: true }); }
+}
+
+await test('C7 Sign in with Apple: the signup email finds the server and the door accepts its link', async () => {
+  const { w, sub } = appleWorld('ios1'); await webhook(w, sub);
+  const r = await api(w, '/api/apple/servers', { identity_token: apple(w, { sub: 'apple-1', email: 'hello+ios1@amux.io', email_verified: 'true' }) });
+  const d = await r.json();
+  eq([r.status, d.servers.map(s => s.name)], [200, ['ios1']], 'servers');
+  const c = await doorAccepts(w, d.servers[0].login_url);
+  eq([c.sub, c.aud, c.via], ['hello+ios1@amux.io', 'ios1', 'apple'], 'door claims');
+  eq(w.appleLinks?.cus_ios1, 'apple-1', 'Apple ID linked to the customer');
+  // A later sign-in with a private relay address still finds it through the link.
+  const r2 = await api(w, '/api/apple/servers', { identity_token: apple(w, { sub: 'apple-1', email: 'x@privaterelay.appleid.com', email_verified: 'true' }) });
+  eq(r2.status, 200, 'relay address sign-in');
+});
+
+await test('C7 Sign in with Apple: a link for one server is refused by another', async () => {
+  const { w, sub } = appleWorld('ios2'); await webhook(w, sub);
+  const d = await (await api(w, '/api/apple/servers', { identity_token: apple(w, { sub: 'a2', email: 'hello+ios2@amux.io', email_verified: 'true' }) })).json();
+  w.servers[0].name = "amux-other";
+  let err = ''; try { await doorAccepts(w, d.servers[0].login_url); } catch (e) { err = String(e.stderr || e.message); }
+  eq(/bad signature|wrong server/.test(err), true, 'door refusal');
+});
+
+await test('C4 Sign in with Apple: forged, wrong-app and unverified tokens are refused', async () => {
+  const { w, sub } = appleWorld('ios3'); await webhook(w, sub);
+  const other = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey;
+  const claims = { sub: 'a3', email: 'hello+ios3@amux.io', email_verified: 'true' };
+  eq((await api(w, '/api/apple/servers', { identity_token: apple(w, claims, { key: other }) })).status, 401, 'forged signature');
+  eq((await api(w, '/api/apple/servers', { identity_token: apple(w, { ...claims, aud: 'com.evil.app' }) })).status, 401, 'other app');
+  eq((await api(w, '/api/apple/servers', { identity_token: 'x.y.z' })).status, 401, 'garbage');
+  eq(w.logs.filter(l => l.event === 'apple.refused').length, 3, 'refusals logged');
+  eq((await api(w, '/api/apple/servers', { identity_token: apple(w, { ...claims, email_verified: 'false' }) })).status, 404, 'unverified email finds nothing');
+  eq((await api(w, '/api/apple/servers', { identity_token: apple(w, { sub: 'a4', email: 'stranger@example.com', email_verified: 'true' }) })).status, 404, 'no account');
 });
 
 process.exitCode = failures;

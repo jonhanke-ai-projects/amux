@@ -20,6 +20,16 @@ platform :ios do
       is_key_content_base64: true
     )
 
+    # Sign in with Apple (ServerPickerView) needs the capability on the App ID before match can
+    # mint a profile that carries the entitlement. Idempotent: re-dispatching skips it.
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(hash: api_key)
+    siwa = Spaceship::ConnectAPI::BundleIdCapability::Type::APPLE_ID_AUTH
+    app_id = Spaceship::ConnectAPI::BundleId.find("com.EthanSteininger.nextup")
+    if app_id.get_capabilities.none? { |c| c.capability_type == siwa }
+      app_id.create_capability(siwa, settings: [{ key: "APPLE_ID_AUTH_APP_CONSENT", options: [{ key: "PRIMARY_APP_CONSENT" }] }])
+      UI.message("Enabled Sign in with Apple on com.EthanSteininger.nextup")
+    end
+
     match(
       type: "appstore",
       api_key: api_key,
