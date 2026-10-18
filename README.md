@@ -16,6 +16,8 @@ curl -fsSL https://amux.io/install.sh | bash
 
 Then open **https://localhost:8824**. It clones amux to `~/Dev/amux`, asks before installing anything (Rust, tmux), and keeps your data in `~/.amux`.
 
+Already running amux? Move it to [amux Cloud](https://amux.io/start/): `amux export`, then `amux import <file> --to https://<you>.amux.io`.
+
 You need tmux 3.2+ and at least one agent CLI (Claude Code, Codex or Gemini CLI). Runs on macOS and Linux. Prefer to read first? `git clone https://github.com/mixpeek/amux && cd amux && ./install.sh` does the same thing.
 
 <p align="center"><a href="https://amux.io"><img src="site/amux.gif" alt="amux dashboard running parallel agents" width="920"/></a></p>

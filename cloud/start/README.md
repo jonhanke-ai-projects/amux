@@ -32,6 +32,20 @@ failed checks in a row.
 State lives in Hetzner labels (`amux-sub`, `amux-slug`, `amux-mode`, `amux-ready`, `amux-ending`)
 and Stripe metadata. The password hash is removed from Stripe once the server exists.
 
+## Moving a local amux in
+
+The customer is the server's owner (`AMUX_WEB_USERS` entry marked `owner`, no member token), so
+the door's Basic auth with their email and password is all an import needs:
+
+```bash
+amux export                                    # on the local machine: amux-<host>-<date>.amuxmove.json
+amux import amux-*.amuxmove.json --to https://<slug>.amux.io --user <email>   # dry run, then y
+```
+
+The password comes from `AMUX_IMPORT_PASSWORD` or a prompt, never argv. Import adds rows and
+never overwrites; teammates (org members) are refused with 403. Format and rules:
+`docs/design/cloud-self-service.md` section 7.1, `crates/amux-server/src/api/move_bundle.rs`.
+
 ## Testing it
 
 Stripe runs an invisible hCaptcha on Checkout that holds back automated browsers (Playwright,

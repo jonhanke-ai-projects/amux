@@ -94,6 +94,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/orchestrate", "voice fleet-orchestrator: transcript -> helper-model routing plan (api/orchestrate.rs, AMUX-3074)"),
     ("/api/skin", "resolved skin (terms/colours/tabs) for a worker"),
     ("/api/config", "declarative instance config: export + idempotent apply"),
+    ("/api/move", "move bundle: config plus allowlisted data, export and add-only import (api/move_bundle.rs)"),
     // AMUX-2888. Complete: the relay client is ported, so start/stop drive a
     // real tunnel rather than answering the honest 501 they carried while the
     // client was missing.
