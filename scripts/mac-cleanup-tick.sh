@@ -1178,7 +1178,21 @@ check_self_runs() {
   fi
   [ "$n_skip" -ge "$SELF_SKIP_24H" ] && self_verdict "$n_skip runs of $SELF_SCHED_ID in 24h skipped cleanup arms for lack of time"
   [ "$n_coll" -ge "$SELF_COLLIDE_24H" ] && self_verdict "$n_coll fires of $SELF_SCHED_ID in 24h found another tick holding the lock and did no work (the scheduler records them as ok)"
-  [ "$fb" -ge "$SELF_FALLBACK_24H" ] && self_verdict "the launchd fallback ran this check ${fb} times in 24h; it runs only when the scheduled run's output is stale or unfinished, so $SELF_SCHED_ID is not finishing on schedule"
+  # Raised again only for a fallback run NEWER than the last self escalation.
+  # Self RCA 20261018-165251: the same three runs (10-17 17:30 and 18:19, 10-18
+  # 10:25), each already escalated with its fix landed, re-escalated at 16:52
+  # because the 6h cooldown ran out while they were still inside the 24h window.
+  if [ "$fb" -ge "$SELF_FALLBACK_24H" ]; then
+    local esc_at esc_str fb_new
+    esc_at=$(state_get "$STATE_DIR/state" esc_self 2>/dev/null); case "$esc_at" in ''|*[!0-9]*) esc_at=0 ;; esac
+    esc_str=$(date -r "$esc_at" '+%F %T' 2>/dev/null || date -d "@$esc_at" '+%F %T' 2>/dev/null)
+    fb_new=$(awk -v s="${esc_str:-0}" '/so launchd is$/ { if ($2" "$3 > s) n++ } END { print n+0 }' "$SELF_FALLBACK_LOG" 2>/dev/null); fb_new=${fb_new:-0}
+    if [ "$esc_at" -eq 0 ] || [ "$fb_new" -gt 0 ]; then
+      self_verdict "the launchd fallback ran this check ${fb} times in 24h; it runs only when the scheduled run's output is stale or unfinished, so $SELF_SCHED_ID is not finishing on schedule"
+    else
+      echo "mac-cleanup: self: all ${fb} fallback runs in 24h predate the last self escalation (${esc_str}), which already answered them; not raised again until a new one (verdict=self_fallback_already_escalated)"
+    fi
+  fi
   return 0
 }
 
@@ -1797,13 +1811,19 @@ classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swa
 # Burn rate from the host-metrics history (5-minute samples), by least squares
 # over the window. Two readings 15 minutes apart are noise: round 2 of DESKT-57
 # read 65 G/h off exactly that while a peer's delete sat in the window. Prints
-# "<burn_gbh> <hours|-> <n> <span_h>", or "- - <n> <span_h>" when there are fewer
+# "<burn_gbh> <hours|-> <n> <span_h> <run|->", or "- - <n> <span_h> <run|->" when there are fewer
 # than 6 samples or under an hour of span, so the caller falls back and says so.
 # The burn is capped at the window's NET loss (oldest minus newest over the
 # span): a dip that has already recovered is not burning. On 2026-10-05 the
 # disk fell 46 G at 05:00Z and was back to 269.7 G by 05:30Z, yet the slope
 # across that dip read 12.1 G/h, "full in 22h" (escalation 20261005-013827).
-burn_from_history() { # <history json on stdin> <min_gbh>
+# The optional <now_ts> <now_free_gb> is this run's own reading, taken AFTER its
+# cleanup arms. The host history's newest sample predates them, so without it the
+# space this run just reclaimed is invisible: disk RCA 20261018-135254 fitted
+# 233G down to 206G (13.3 G/h, "full in 15.5h" off the pre-prune 206.2G) while
+# the same run had just pruned 21.9G and the disk read 228.4G. The writer was
+# real and bounded: the hourly prune takes back what it builds, a sawtooth.
+burn_from_history() { # <history json on stdin> <min_gbh> [now_ts now_free_gb]
   python3 -c '
 import json,sys
 m=float(sys.argv[1])
@@ -1811,15 +1831,22 @@ try:
     d=json.load(sys.stdin); rows=[(r["ts"],r["disk_free_gb"]) for r in d.get("samples",[]) if r.get("measured") and r.get("disk_free_gb") is not None]
 except Exception:
     rows=[]
+hn=len(rows); ran="-"
+try:
+    nt,nf=float(sys.argv[2]),float(sys.argv[3])
+    # Only a reading just after the history: a stale history is not stretched to now.
+    if rows and nf>=0 and 0<nt-max(r[0] for r in rows)<=3600: rows.append((nt,nf)); ran="run"
+except (IndexError,ValueError):
+    pass
 n=len(rows); span=(max(r[0] for r in rows)-min(r[0] for r in rows))/3600 if n else 0
-if n<6 or span<1: print("- - %d %.1f"%(n,span)); sys.exit()
+if n<6 or span<1: print("- - %d %.1f %s"%(hn,span,ran)); sys.exit()
 xs=[(t-rows[0][0])/3600 for t,_ in rows]; ys=[f for _,f in rows]
 mx=sum(xs)/n; my=sum(ys)/n
 slope=sum((x-mx)*(y-my) for x,y in zip(xs,ys))/max(1e-9,sum((x-mx)**2 for x in xs))
 o=sorted(zip(xs,ys)); net=(o[0][1]-o[-1][1])/max(1e-9,o[-1][0]-o[0][0])
 burn=min(-slope,net); last=ys[-1] if xs[-1]==max(xs) else ys[xs.index(max(xs))]
-print(("%.1f -" if burn<m else "%.1f %.1f")%((burn,) if burn<m else (burn,last/burn)), n, "%.1f"%span)
-' "$1" 2>/dev/null || echo "- - 0 0.0"
+print(("%.1f -" if burn<m else "%.1f %.1f")%((burn,) if burn<m else (burn,last/burn)), hn, "%.1f"%span, ran)
+' "$1" "${2:-}" "${3:-}" 2>/dev/null || echo "- - 0 0.0"
 }
 
 # Read a key from the state file; empty if absent.
@@ -2639,10 +2666,11 @@ ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 0)
 STATE="$STATE_DIR/state"
 prev_ts=$(state_get "$STATE" last_ts); prev_free=$(state_get "$STATE" last_disk_free_gb)
 HISTORY_CMD=${AMUX_CLEANUP_HISTORY_CMD:-curl -sk --max-time 15 $(amux url 2>/dev/null || echo https://localhost:8824)/api/metrics/host/history?since_h=2}
-read -r burn htf hist_n hist_span <<EOF
-$($HISTORY_CMD 2>/dev/null | burn_from_history "$BURN_MIN_GBH")
+read -r burn htf hist_n hist_span hist_run <<EOF
+$($HISTORY_CMD 2>/dev/null | burn_from_history "$BURN_MIN_GBH" "$(date +%s)" "$disk_now")
 EOF
 burn_src="history ${hist_n} samples over ${hist_span}h"
+[ "${hist_run:-}" = "run" ] && burn_src="$burn_src + this run's post-cleanup ${disk_now}G"
 if [ "$htf" = "-" ] && [ "$burn" = "-" ]; then
 read -r burn htf <<EOF
 $(disk_trend "${prev_ts:-0}" "${prev_free:-0}" "$now" "$disk_now" "$BURN_MIN_GBH")

@@ -51,6 +51,18 @@ check "fewer than 6 samples is unmeasured"                 "- -"  "$(mkhist 5 1 
 check "12 samples (55 min) is under an hour: unmeasured"   "- -"  "$(mkhist 12 1 | burn_from_history 1 | awk '{print $1, $2}')"
 check "unmeasured rows (free 0) do not drag the slope"     "12.0" "$(mkhist 13 1 5 | burn_from_history 1 | awk '{print $1}')"
 check "a filling-up disk has no ETA"                       "-"    "$(mkhist 13 -1 | burn_from_history 1 | awk '{print $2}')"
+# Disk RCA 20261018-135254: history falls 233G -> 206G over 2h, then this run's
+# own prune brings it back to 228.4G. The pre-prune fit alone says full in ~15h.
+sawtooth() { python3 -c '
+import json
+rows=[{"ts":10000+i*300,"disk_free_gb":233-i*27/24,"measured":True} for i in range(25)]
+print(json.dumps({"measured":True,"samples":rows}))'; }
+check "control: history alone (pre-prune) reads a 24h-scale ETA" "yes" "$(sawtooth | burn_from_history 1 | awk '{print ($2!="-" && $2+0<24) ? "yes" : "no"}')"
+check "this run's post-cleanup reading is the newest point: no ETA" "no" "$(sawtooth | burn_from_history 1 17620 228.4 | awk '{print ($2!="-" && $2+0<24) ? "yes" : "no"}')"
+check "the post-cleanup reading is used and marked"      "25 run" "$(sawtooth | burn_from_history 1 17620 228.4 | awk '{print $3, $5}')"
+check "an unmeasured run reading (-1) is not appended"    "-"    "$(sawtooth | burn_from_history 1 17620 -1 | awk '{print $5}')"
+check "a run reading older than the history is not appended" "-" "$(sawtooth | burn_from_history 1 9000 228.4 | awk '{print $5}')"
+check "a run reading hours after the history is not appended" "-" "$(sawtooth | burn_from_history 1 99999 228.4 | awk '{print $5}')"
 check "garbage input is unmeasured, not a crash"           "- -"  "$(echo 'not json' | burn_from_history 1 | awk '{print $1, $2}')"
 
 echo "2. classification"

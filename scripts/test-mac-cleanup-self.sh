@@ -35,7 +35,7 @@ addlog() { printf '%s\n' "$3" > "$LOGS/$1.log"; age "$2" "$LOGS/$1.log"; }   # <
 probe() { # the self line, a blank line, then the verdicts
   # Env, never positional args: the tick parses "$@" as its own flags when sourced.
   TICK_PATH="$TICK" AMUX_CLEANUP_SELF_SCHED_ID=SCHED-T AMUX_CLEANUP_SELF_DB="$DB" AMUX_CLEANUP_SELF_RUNS_DIR="$LOGS" \
-  AMUX_CLEANUP_SELF_FALLBACK_LOG="$FB" bash -c '
+  AMUX_CLEANUP_SELF_FALLBACK_LOG="$FB" AMUX_CLEANUP_STATE_DIR="$FIX/state" bash -c '
     AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_SCOPE_FILE=/dev/null . "$TICK_PATH"; HEALTH_VERDICTS=""
     check_self_runs; echo; printf "%s\n" "$HEALTH_VERDICTS" | grep . || true'; }
 DONE="mac-cleanup: done elapsed=300s purge=no skipped=none constraints=0"
@@ -108,6 +108,13 @@ echo "mac-cleanup-fallback: $(stamp "$NOW") scheduler ran within 80m, nothing to
 out=$(probe)
 check "three fallback runs in 24h are a constraint"   yes "$(has "$out" '^self the launchd fallback ran this check 3 times in 24h')"
 check "older runs and no-op lines are not counted"    yes "$(has "$out" 'the launchd fallback ran it 3x')"
+# Self RCA 20261018-165251: runs already escalated are not raised again.
+mkdir -p "$FIX/state"; echo "esc_self=$((NOW-1800))" > "$FIX/state/state"; out=$(probe)
+check "runs older than the last self escalation are not raised again" no "$(has "$out" '^self the launchd fallback')"
+check "and it says why"                               yes "$(has "$out" 'verdict=self_fallback_already_escalated')"
+echo "mac-cleanup-fallback: $(stamp $((NOW-60))) the last tick did not finish: the amux scheduler is not running SCHED-T, so launchd is" >> "$FB"; out=$(probe)
+check "control: one newer fallback run raises it again" yes "$(has "$out" '^self the launchd fallback ran this check 4 times in 24h')"
+rm -f -- "$FIX/state/state"
 
 echo "6. a disabled or missing schedule"
 newdb 0 <<<""; newlogs; out=$(probe)
