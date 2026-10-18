@@ -10,6 +10,7 @@ pub mod backend;
 mod cargo_target_guard;
 pub mod config;
 mod fanout_retirement;
+mod parent_watch;
 pub mod fanout_workspace;
 pub mod legacy_port;
 pub mod listener_handoff;
@@ -718,6 +719,11 @@ async fn async_main() {
     // 38845948860: "python3: can't open file .../native-status.py"). The tick
     // still repairs drift later; this makes the first install unconditional,
     // including on servers where that job is disabled.
+    // A test harness killed before its teardown leaves this server orphaned
+    // under a temp AMUX_HOME, running every loop for nobody (CPU RCA
+    // 20261018-015302). It exits with its parent instead.
+    parent_watch::start(&config::amux_home());
+
     if let Err(error) = api::native_status::ensure_observer(&config::amux_home()) {
         tracing::warn!(%error, measured = false, n_considered = 1, verdict = "native_status_observer_startup_install_failed",
             "passive observer could not be installed at startup; status_history's tick will retry");
