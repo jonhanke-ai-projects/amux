@@ -388,6 +388,7 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-targets.sh
+          ./scripts/test-mac-cleanup-superseded.sh
       - name: the Remotion bundle reaper takes only stale, unopened remotion-webpack-bundle dirs (RCA 20261010-211803)
         run: |
           set -uo pipefail

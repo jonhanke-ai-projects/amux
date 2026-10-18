@@ -459,7 +459,7 @@ check "the per-session scratchpads are scanned by default" "yes" "$(printf '%s' 
 # Disk RCA 20261011-174748: the amux home's side targets (~/.amux/rust-build-target-*)
 # were outside every root. Default list, the depth that reaches them, and the shared one kept.
 check "the amux home's side targets are scanned by default" "yes" "$(printf '%s' "$DEFAULT_ROOTS" | grep -q ":$HOME/.amux@2:" && echo yes || echo no)"
-check "per-agent and per-worker-TMPDIR targets under ~/.amux/tmp are scanned deep enough, and before anything else (disk RCAs 2026-10-13/14)" "$HOME/.amux/tmp@9" "$(printf '%s' "$DEFAULT_ROOTS" | cut -d: -f1)"
+check "per-agent and per-worker-TMPDIR targets under ~/.amux/tmp are scanned shallow first, then deep enough, before anything else (disk RCAs 2026-10-13/14, 20261018-075226)" "$HOME/.amux/tmp@3:$HOME/.amux/tmp@9" "$(printf '%s' "$DEFAULT_ROOTS" | cut -d: -f1-2)"
 check "the shared amux target stays protected" "yes" "$(printf '%s' "$DEFAULT_KEEP" | grep -q "$HOME/.amux/rust-build-target\(:\|$\)" && echo yes || echo no)"
 mkdir -p "$FIX/ahome/rust-build-target-side" "$FIX/ahome/logs/deep/x"
 cp "$FIX/sig.tag" "$FIX/ahome/rust-build-target-side/CACHEDIR.TAG" 2>/dev/null || printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "$FIX/ahome/rust-build-target-side/CACHEDIR.TAG"

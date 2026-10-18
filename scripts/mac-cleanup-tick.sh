@@ -179,6 +179,12 @@ USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
 # <worker>/<run>/<tree>/server/mvs/shard-rs/target, eight levels down. mxp-gs12 had
 # 183.1G in seven of them, 155G idle past 6h, none visible at @2. The depth-9 scan
 # of the whole tree takes about 8s.
+# @3 AND @9, @3 first (disk RCA 20261018-075226): the @9 walk no longer finishes
+# in its share of the scan budget (complete=no), and find walks depth-first, so
+# it timed out inside one checkout before reaching mxp-gs12/_target (55G, two
+# levels down, growing ~20G/h). The @3 pass finds every per-worker target in
+# well under a second (maxdepth counts the CACHEDIR.TAG file itself, so a
+# target two directories down needs 3); sort -u drops the duplicates the @9 pass adds.
 # /private/tmp/claude-<uid>@8 (disk RCA 2026-10-12): a session that keeps its clones under
 # scratchpad/work/<clone>/ puts the tag at <proj>/<session>/scratchpad/work/<clone>/target/CACHEDIR.TAG,
 # seven levels down. At @6 the scan never saw them: one session held 47G and 23G of targets idle
@@ -188,8 +194,17 @@ USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
 # 2026-09-28. The tag sits at ~/.<lane>/target/CACHEDIR.TAG, three levels down,
 # and no root above reached it, so every tick reported "consumers above 10G:
 # none". Last, so the high-yield roots spend the budget first.
-TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@9:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8:$HOME@3}
+TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@3:$HOME/.amux/tmp@9:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8:$HOME@3}
 TARGET_IDLE_H=${AMUX_CLEANUP_TARGET_IDLE_H:-24}
+# Superseded build output INSIDE an active target (disk RCA 20261018-075226).
+# The idle reaper above needs the whole target quiet; a lane that builds one
+# crate from many trees never is. mxp-gs12's target held 33 debug + 31 release
+# copies of one test binary (one per source path, each a new hash) and 8937
+# orphaned *.rcgu.o from compiles killed by `timeout`, growing ~20G/h. Kept per
+# stem: the newest N executables; anything younger than the age floor or open
+# is never touched. 0 disables the arm.
+SUPERSEDED_KEEP=${AMUX_CLEANUP_SUPERSEDED_KEEP:-3}
+SUPERSEDED_MIN_AGE_MIN=${AMUX_CLEANUP_SUPERSEDED_MIN_AGE_MIN:-60}
 # Under disk pressure the idle floor drops (DESKT-62). On 2026-10-01 the disk fell
 # from 574G to 155G in five days, and about 60G of build output sat 21-23h idle in
 # one lane's scratchpad, just inside the 24h floor, on every tick that measured it.
@@ -1326,6 +1341,61 @@ reap_idle_cargo_targets() { # <roots> <idle_hours> <dry:0|1>
   rm -f -- "${cands:?}" "${eligible:?}" "${lsofsnap:?}"
 }
 
+# Prune superseded artifacts inside cargo targets, active ones included
+# (disk RCA 20261018-075226). Two kinds, both regenerable and neither an input
+# to any later build:
+#  - test/bin executables deps/<stem>-<16 hex> beyond the newest N per stem
+#    (each source path or flag set hashes to a new copy; cargo only ever runs
+#    the one its current fingerprint names), with their .d and .dSYM;
+#  - *.rcgu.o codegen units, which rustc deletes after a link it finishes, so
+#    one older than the age floor was left by a compile that was killed.
+# Never a file younger than the floor, and never one any process holds open.
+prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1>
+  local roots=$1 keep=$2 age=$3 dry=${4:-0}
+  local cands lsofsnap list t d now cutoff mt sz f stem last n kb=0 k_open=0 k_recent=0 n_exe=0 n_obj=0 n_targets=0 n_fail=0
+  SUPERSEDED_PRUNED=0; SUPERSEDED_PRUNED_KB=0
+  if [ "${keep:-0}" -le 0 ]; then echo "mac-cleanup: superseded artifacts: off (AMUX_CLEANUP_SUPERSEDED_KEEP=0)"; return 0; fi
+  cands=$(mktemp "${TMPDIR:-/tmp}/sup-cands.XXXXXX"); lsofsnap=$(mktemp "${TMPDIR:-/tmp}/sup-lsof.XXXXXX"); list=$(mktemp "${TMPDIR:-/tmp}/sup-list.XXXXXX")
+  find_cargo_targets "$roots" "$TARGET_DEPTH" "$TARGET_SCAN_S" | sort -u > "$cands"
+  if ! { $LSOF_CMD > "$lsofsnap" 2>/dev/null && [ -s "$lsofsnap" ]; }; then
+    echo "mac-cleanup: superseded artifacts: open handles UNMEASURED (lsof produced nothing): pruned 0, nothing is deleted without it"
+    rm -f -- "${cands:?}" "${lsofsnap:?}" "${list:?}"; return 0
+  fi
+  now=$(date +%s); cutoff=$(( now - age * 60 ))
+  while IFS= read -r t; do
+    [ -d "$t" ] || continue
+    n_targets=$((n_targets+1))
+    for d in "$t"/*/deps "$t"/*/*/deps; do
+      [ -d "$d" ] || continue
+      # Executables, newest first within each stem; everything past the first N is superseded.
+      : > "$list"
+      find "$d" -maxdepth 1 -type f -perm -u+x -name '*-????????????????' 2>/dev/null \
+        | grep -E -- '-[0-9a-f]{16}$' | while IFS= read -r f; do stat -c '%Y %s %n' "$f" 2>/dev/null || stat -f '%m %z %N' "$f" 2>/dev/null; done \
+        | awk '{ f=$0; sub(/^[0-9]+ [0-9]+ /,"",f); stem=f; sub(/-[0-9a-f]{16}$/,"",stem); print stem "\t" $1 "\t" $2 "\t" f }' \
+        | sort -t$'\t' -k1,1 -k2,2nr > "$list"
+      last=""; n=0
+      while IFS=$'\t' read -r stem mt sz f; do
+        if [ "$stem" != "$last" ]; then last=$stem; n=0; fi
+        n=$((n+1)); [ "$n" -le "$keep" ] && continue
+        if [ "$mt" -gt "$cutoff" ]; then k_recent=$((k_recent+1)); continue; fi
+        if has_open_handle "$f" "$lsofsnap"; then k_open=$((k_open+1)); continue; fi
+        n_exe=$((n_exe+1)); kb=$((kb + sz/1024))
+        if [ "$dry" != 1 ]; then rm -rf -- "${f:?}" "${f:?}.d" "${f:?}.dSYM"; [ -e "$f" ] && n_fail=$((n_fail+1)); fi
+      done < "$list"
+      # Orphaned codegen units.
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if has_open_handle "$f" "$lsofsnap"; then k_open=$((k_open+1)); continue; fi
+        sz=$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f" 2>/dev/null || echo 0); n_obj=$((n_obj+1)); kb=$((kb + sz/1024))
+        if [ "$dry" != 1 ]; then rm -f -- "${f:?}"; [ -e "$f" ] && n_fail=$((n_fail+1)); fi
+      done < <(find "$d" -maxdepth 1 -type f -name '*.rcgu.o' -mmin +"$age" 2>/dev/null)
+    done
+  done < "$cands"
+  SUPERSEDED_PRUNED=$((n_exe+n_obj)); SUPERSEDED_PRUNED_KB=$kb
+  echo "mac-cleanup: superseded artifacts: targets ${n_targets}, $( [ "$dry" = 1 ] && echo 'would prune' || echo pruned ) ${n_exe} superseded executable(s) + ${n_obj} orphaned .rcgu.o ($(fmt_kb "$kb")), kept: newest ${keep} per stem, younger than ${age}m ${k_recent}, open ${k_open}, failed ${n_fail}"
+  rm -f -- "${cands:?}" "${lsofsnap:?}" "${list:?}"
+}
+
 # Find candidate detached worktree scratch checkouts (MO-3631/3633): a directory
 # whose top level IS `.git`-as-a-FILE (not a directory). `git worktree add`
 # writes a one-line `gitdir: <path>` file there; a real clone's `.git` is a
@@ -2410,6 +2480,7 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
   echo "mac-cleanup: disk tight (${tgt_free}G free, under ${TARGET_TIGHT_FREE_GB}G): build output idle ${tgt_idle}h is reclaimable this tick, not ${TARGET_IDLE_H}h"
 fi
 tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S && reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
+tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP" "$SUPERSEDED_MIN_AGE_MIN" "$DRY"
 VMS_PRUNED=0
 # Images BEFORE the trim (Mac disk RCA 20261010-162636): the trim is what hands
 # freed VM blocks back to the host, and with images swept after it, the 2-4
