@@ -17409,7 +17409,10 @@ async fn codex_os_sandbox_probe(bin: &str) -> &'static str {
 /// `amux` command's attribution, which is exactly what CLAUDE.md "Isolated
 /// workers" strips. mxp-gs12 typed `AMUX_SESSION=mxp-gs12` by hand on 246
 /// commands because nothing in its env said who it was. This variable says
-/// so, and nothing in amux keys behaviour on it.
+/// so. One reader keys behaviour on it: the boundary guard
+/// (`scripts/hooks/boundary-guard.py`), which uses it to apply
+/// `boundaries.toml` to isolated workers under `apply_to_isolated` (refusals
+/// only, no routing).
 pub(crate) const ISOLATED_IDENTITY_ENV: &str = "AMUX_ISOLATED_WORKER";
 
 fn provider_command_in_workspace(work_dir: &str, command: &str, isolated_as: Option<&str>) -> String {

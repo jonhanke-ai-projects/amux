@@ -266,6 +266,41 @@ disk_warn_fraction = 0.8
 disk_ttl_s = 600
 
 [[boundary]]
+id = "subagents"
+title = "Fan out within the account's capacity"
+kind = "subagents"
+rule = """
+Every worker on this machine draws on one Claude account. Subagents (the Agent
+or Task tool) share its usage windows, and when a window runs out every running
+agent stops at once. Keep the number of subagents you run at the same time
+small: a new one is refused while you already have the limit running
+(AMUX_MAX_SUBAGENTS, default below) or while the account has less usage left
+than the floor below. When refused, wait for one of your agents to finish, do
+the step yourself, or retry after the window resets. `amux usage` and
+GET $AMUX_URL/api/sessions/<you>/quota show the remaining window.
+"""
+enforced_by = [
+  "hook: boundary-guard (new Agent/Task call refused at the running-subagent cap or under the usage headroom floor)",
+]
+
+[boundary.subagents]
+# mxp-gs12 review, 2026-10-18: usage limits stopped every subagent of one
+# isolated worker five times in four days (up to 21 agents on one plan).
+tools = ["Agent", "Task"]
+# AMUX_MAX_SUBAGENTS in the worker's env wins; 0 turns the count cap off.
+env_max = "AMUX_MAX_SUBAGENTS"
+max_running_default = 4
+# Refuse new subagents while the highest account-wide window in /api/usage
+# has less than this percent left. 0 turns the floor off.
+min_headroom_pct = 10
+# A subagent counts as running while its meta has no "finished" flag and its
+# transcript was written in the last stale_s (a killed agent never gets the
+# flag). A transcript with no meta file counts only while written in the last
+# no_meta_warm_s.
+stale_s = 1800
+no_meta_warm_s = 240
+
+[[boundary]]
 id = "fleet-tmux"
 title = "The fleet's tmux server is not yours to stop"
 rule = """

@@ -40,8 +40,10 @@ metadata; a restarted raw CLI must not inherit harness routing.
 Three owner-configured exceptions reach isolated workers: their schedules, the
 goal keeper continuing an owner-set Claude Code `/goal` that is not met
 (`AMUX_GOAL_CONTINUE=0` opts out), and the worker boundaries in
-`boundaries.toml` (payments, email, credentials, resources), whose guard refuses
-the same tool calls for isolated workers (`apply_to_isolated = false` opts out).
+`boundaries.toml` (payments, email, credentials, resources, the subagent cap),
+whose guard refuses the same tool calls for isolated workers
+(`apply_to_isolated = false` opts out). The guard knows an isolated worker by
+`AMUX_ISOLATED_WORKER`.
 A refusal injects no prompt and routes nothing.
 A chat speaks for the owner: a worker's Chat tab or a `chat`-type worker can read,
 send to, queue for and leave card notes that reach any worker, isolated included.

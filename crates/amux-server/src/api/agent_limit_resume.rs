@@ -23,10 +23,11 @@
 //!
 //! [`resume_text`] appends the dead set, and the current plan-window reading
 //! when amux has a fresh one, to the continuation amux was already going to
-//! send. Whether to relaunch, and how many at once, stays the worker's call:
-//! amux hands it the list and the remaining window, it does not cap the
-//! fan-out itself (a cap would be a behavioral hook, which an isolated worker
-//! does not get).
+//! send. Whether to relaunch stays the worker's call: amux hands it the list
+//! and the remaining window. How many run at once is capped by the
+//! `subagents` boundary in `boundaries.toml` (the boundary guard refuses a new
+//! Agent/Task call at the running limit or under the usage headroom floor),
+//! which reaches isolated workers as a refusal only, under `apply_to_isolated`.
 //!
 //! `GET /api/sessions/{name}/quota` is the same reading on demand, for a
 //! worker deciding how wide to fan out before it hits the wall.
