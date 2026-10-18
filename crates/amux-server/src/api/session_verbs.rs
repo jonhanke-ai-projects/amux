@@ -25107,7 +25107,23 @@ fn session_subagents_from(
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
             let (kind, description, turns) = subagent_head(&p);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let silent_s = (now - modified).max(0);
+            let (state, waiting_on) = if silent_s <= SUBAGENT_STATE_WINDOW_S {
+                subagent_state(&iter_jsonl_tail(&p, 64 * 1024), silent_s, subagent_silent_after_s())
+            } else {
+                (None, None)
+            };
+            if state == Some("silent") {
+                warn_subagent_silent(name, &stem, agent, silent_s, waiting_on.as_deref());
+            }
             out.push(json!({
+                "state": state,
+                "waiting_on": waiting_on,
+                "silent_s": state.map(|_| silent_s),
                 "id": p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
                 "conversation": stem,
                 "type": kind,
@@ -25129,6 +25145,65 @@ fn session_subagents_from(
     // Most recently active first: a switcher is read to jump to what is moving.
     out.sort_by_key(|v| -(v["last_active"].as_i64().unwrap_or(0)));
     json!({"session": name, "subagents": out, "source": "transcripts"})
+}
+
+/// Subagents older than this are not classified; `state` is null for them.
+const SUBAGENT_STATE_WINDOW_S: i64 = 7 * 86_400;
+
+/// How long an unfinished subagent may go without writing before it reads as
+/// silent. `AMUX_SUBAGENT_SILENT_S` overrides the 30-minute default.
+fn subagent_silent_after_s() -> i64 {
+    std::env::var("AMUX_SUBAGENT_SILENT_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v: &i64| *v > 0)
+        .unwrap_or(1800)
+}
+
+/// (state, waiting_on) from a subagent transcript's tail. A subagent has
+/// finished when its last conversational record is an assistant reply with no
+/// tool call. Anything else is unfinished: `running` while it keeps writing,
+/// `silent` once it has not written for `silent_after_s`. Claude Code can show
+/// such a subagent as running for hours (MSG-90283); silence is what amux can
+/// measure, and `waiting_on` says whether a tool or the model owes the next
+/// record, since a long tool call is silent without being stuck.
+fn subagent_state(tail: &[Value], silent_s: i64, silent_after_s: i64) -> (Option<&'static str>, Option<String>) {
+    let Some(last) = tail
+        .iter()
+        .rev()
+        .find(|r| matches!(r["type"].as_str(), Some("assistant" | "user")))
+    else {
+        return (None, None);
+    };
+    let blocks = last["message"]["content"].as_array().cloned().unwrap_or_default();
+    let tool = blocks
+        .iter()
+        .rev()
+        .find(|b| b["type"] == "tool_use")
+        .map(|b| b["name"].as_str().unwrap_or("unknown").to_string());
+    if last["type"] == "assistant" && tool.is_none() {
+        return (Some("finished"), None);
+    }
+    let waiting_on = Some(tool.map(|t| format!("tool:{t}")).unwrap_or_else(|| "model".to_string()));
+    let state = if silent_s >= silent_after_s { "silent" } else { "running" };
+    (Some(state), waiting_on)
+}
+
+/// One WARN per silent subagent per server process, so a sweep of
+/// `server-rs.log` counts them without a listing poll repeating each one.
+fn warn_subagent_silent(session: &str, conversation: &str, agent: &str, silent_s: i64, waiting_on: Option<&str>) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    let key = format!("{conversation}:{agent}");
+    let fresh = SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut s| s.insert(key))
+        .unwrap_or(false);
+    if fresh {
+        tracing::warn!(session, conversation, agent, silent_s, waiting_on = waiting_on.unwrap_or(""),
+            measured = true, n_considered = 1, verdict = "subagent_silent",
+            "an unfinished subagent has stopped writing its transcript");
+    }
 }
 
 /// (subagent_type, description, turn count). Scans only the head of the file —
@@ -36041,6 +36116,22 @@ mod tests {
         assert!(worker_deny.explicit_deny);
         assert!(worker_deny.reason.contains("Explicit worker deny"));
         assert!(cross_group_send_ok("roamer", "target").is_err());
+    }
+
+    #[test]
+    fn a_subagent_that_stops_writing_mid_turn_reads_as_silent() {
+        let reply = json!({"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}});
+        let tool = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}});
+        let result = json!({"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}});
+        let att = json!({"type":"attachment","attachment":{"type":"credential_org"}});
+        // Finished: the last conversational record is a reply, whatever trails it.
+        assert_eq!(subagent_state(&[tool.clone(), reply.clone(), att.clone()], 50_000, 1800), (Some("finished"), None));
+        // Waiting on the model after a tool result, silent past the threshold.
+        assert_eq!(subagent_state(&[tool.clone(), result.clone(), att.clone()], 53_000, 1800), (Some("silent"), Some("model".into())));
+        assert_eq!(subagent_state(&[tool.clone(), result.clone()], 60, 1800), (Some("running"), Some("model".into())));
+        // A long tool call is silent too, and says which tool owes the record.
+        assert_eq!(subagent_state(&[result.clone(), tool.clone()], 4_000, 1800), (Some("silent"), Some("tool:Bash".into())));
+        assert_eq!(subagent_state(&[att], 4_000, 1800), (None, None), "no conversation yet: unclassified");
     }
 
     #[test]
