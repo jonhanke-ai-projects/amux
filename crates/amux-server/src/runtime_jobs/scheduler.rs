@@ -21,15 +21,12 @@
 //!
 //! # Dual-scheduler safety (see runtime_jobs/mod.rs for the full statement)
 //!
-//! ONLY the Python server fires schedules until `AMUX_RS_SCHEDULER=1` is
-//! set. With firing disabled, [`run_scheduler`] runs in SHADOW MODE: it
-//! computes due schedules and journals `Other("schedule_shadow")` events
-//! into `_amux_state_events` — never touching `schedules`/`schedule_runs` —
-//! so Phase 11 can diff shadow events against Python's actual fires. Even
-//! with firing enabled, each fire re-checks the row inside the write
-//! transaction, so an occurrence Python already advanced is not re-fired.
-//! NOTE: enabling `AMUX_RS_SCHEDULER=1` while the Python scheduler is also
-//! running is the double-fire configuration; don't.
+//! Firing is ON by default. `AMUX_RS_SCHEDULER=0` selects SHADOW MODE, a
+//! leftover of the Python cutover: [`run_scheduler`] computes due schedules
+//! and journals `Other("schedule_shadow")` events into `_amux_state_events`,
+//! never touching `schedules`/`schedule_runs`. Each real fire re-checks the
+//! row inside the write transaction, so an occurrence already advanced by
+//! another writer is not re-fired.
 //!
 //! # Timezone semantics
 //!
@@ -66,14 +63,28 @@ pub const CATCH_UP_CAP: usize = 10;
 /// exact count — an announced omission, not a silent one.
 pub const SCAN_LIMIT: usize = 1000;
 
-/// Is real firing enabled? Anything but the literal `1` is shadow mode.
+/// Is real firing enabled? ON unless `AMUX_RS_SCHEDULER` says off.
 /// Read per-call (not cached) so a test or operator change is honored
 /// without a restart; [`run_scheduler`] still takes `enabled` explicitly so
 /// the loop's mode is decided once, visibly, by its caller.
+///
+/// The default was OFF while the Python server owned firing, to avoid a
+/// double fire. Python was deleted at 792ce1f and the default stayed, so
+/// every install that had not copied `AMUX_RS_SCHEDULER=1` into its env,
+/// every amux Cloud server included, accepted schedules and never ran one
+/// (amux-cloud e2e, 2026-10-18: `every 1m`, run_count 0 after four minutes).
 pub fn firing_enabled() -> bool {
-    std::env::var("AMUX_RS_SCHEDULER")
-        .map(|v| v == "1")
-        .unwrap_or(false)
+    firing_from(std::env::var("AMUX_RS_SCHEDULER").ok().as_deref())
+}
+
+/// The parse behind [`firing_enabled`], separate so tests need no env var.
+/// `0`, `false`, `off` and `no` (any case) select shadow mode; anything
+/// else, unset included, fires for real.
+pub fn firing_from(v: Option<&str>) -> bool {
+    !matches!(
+        v.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("0" | "false" | "off" | "no")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -3003,6 +3014,18 @@ mod shell_output_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn firing_defaults_on_and_only_explicit_off_words_disable_it() {
+        use super::firing_from;
+        assert!(firing_from(None), "unset must fire: the cloud servers never set it");
+        for on in ["1", "true", "yes", "", "on"] {
+            assert!(firing_from(Some(on)), "{on:?} fires");
+        }
+        for off in ["0", "false", "OFF", " no "] {
+            assert!(!firing_from(Some(off)), "{off:?} is shadow mode");
+        }
+    }
+
 
     #[tokio::test]
     async fn reserve_refusal_preserves_a_one_off_but_never_replays_uncertain_delivery() {

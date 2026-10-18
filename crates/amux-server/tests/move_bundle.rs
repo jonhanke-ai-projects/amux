@@ -268,3 +268,50 @@ async fn an_agent_session_may_dry_run_but_not_apply() {
     assert_eq!(st, StatusCode::FORBIDDEN, "{v}");
     assert_eq!(rows(&export(&b).await, "crm_contacts"), 0);
 }
+
+/// `amux import` sends the bundle gzipped, and a bundle past the old 100 MB
+/// ceiling still imports (amux Cloud e2e 2026-10-18: a real 239 MB board got
+/// 413). Imported schedules arrive paused, so a move never fires one twice.
+#[tokio::test]
+async fn a_gzipped_bundle_past_100_mb_imports_with_schedules_paused() {
+    use std::io::Write;
+    let (a, _da) = server();
+    let (b, _db) = server();
+    seed(&a).await;
+    let (st, _, v) = send(
+        &a,
+        "POST",
+        "/api/schedules",
+        Some(json!({"title": "nightly", "schedule_expr": "every 1h", "command": "true", "kind": "shell"}).to_string()),
+        &[],
+    )
+    .await;
+    assert!(st.is_success(), "{v}");
+    let mut bundle = export(&a).await;
+    assert_eq!(bundle["tables"]["schedules"][0]["enabled"], 1, "source schedule is on");
+    // Card history is what makes a real bundle big; 101 MB of it here.
+    bundle["tables"]["issues"][0]["desc"] = json!("x".repeat(101 * 1024 * 1024));
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(bundle.to_string().as_bytes()).unwrap();
+    let gz = gz.finish().unwrap();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/move/import?dry_run=0")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONTENT_ENCODING, "gzip")
+        .body(Body::from(gz))
+        .unwrap();
+    let res = b.clone().oneshot(req).await.unwrap();
+    let st = res.status();
+    let body: Value =
+        serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap_or(Value::Null);
+    assert_eq!(st, StatusCode::OK, "{}", body.to_string().chars().take(400).collect::<String>());
+    assert_eq!(body["tables"]["schedules"]["new"], 1, "{}", body["tables"]);
+    assert!(body["note"].as_str().unwrap_or("").contains("paused"), "{}", body["note"]);
+
+    let after = export(&b).await;
+    let sched = &after["tables"]["schedules"][0];
+    assert_eq!(sched["title"], "nightly");
+    assert_eq!(sched["enabled"], 0, "imported schedule must arrive paused: {sched}");
+}

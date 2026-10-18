@@ -25,21 +25,17 @@
 //! DB row. If you find yourself wanting a hybrid, one of the two lists above
 //! tells you which properties your job actually needs.
 //!
-//! # DUAL-SCHEDULER SAFETY (critical while the strangler fig is live)
+//! # Firing and shadow mode
 //!
-//! The Python server on :8822 keeps running and OWNS schedule firing. Both
-//! servers read/write the SAME `schedules` / `schedule_runs` rows, so two
-//! live firing loops would double-deliver every schedule. Therefore:
+//! The Python server that once owned schedule firing is gone (792ce1f), so
+//! the Rust firing loop is ON by default. `AMUX_RS_SCHEDULER=0` (or
+//! `false`/`off`/`no`) selects SHADOW MODE:
 //!
-//! - The Rust firing loop ships DISABLED. `AMUX_RS_SCHEDULER=1` in the
-//!   environment enables real firing; anything else means SHADOW MODE.
 //! - In shadow mode [`scheduler::run_scheduler`] still computes next-run
 //!   times and, for every schedule that comes due, records what it WOULD
 //!   have fired as an `_amux_state_events` row with entity type
 //!   `Other("schedule_shadow")` — one event per (schedule, occurrence),
-//!   deduped in memory. It touches NEITHER `schedules` nor `schedule_runs`,
-//!   so Python's loop is entirely undisturbed. Phase 11 validation compares
-//!   these shadow events against Python's actual `schedule_runs` fires.
+//!   deduped in memory. It touches NEITHER `schedules` nor `schedule_runs`.
 //! - The CRUD API (`api::schedules`) is always live — creates, edits,
 //!   deletes and audit rows are shared state both servers agree on. The ONE
 //!   exception is run-now: with firing disabled it answers 409

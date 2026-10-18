@@ -5510,9 +5510,13 @@ USAGE
   resp="$(mktemp "${TMPDIR:-/tmp}/amux-import.XXXXXX")"
   # shellcheck disable=SC2064
   trap "rm -f '$resp'" EXIT
+  # Sent gzipped: a board with years of history is hundreds of MB of JSON.
+  local gz; gz=$(mktemp -t amuxmove) || die "amux import: no temp file"
+  trap "rm -f '$resp' '$gz'" EXIT
+  gzip -c "$file" > "$gz" || die "amux import: could not compress $file"
   _move_post() {  # $1 = dry_run value
-    printf '%s\n' "$authcfg" | _curl -sk --max-time 900 -K - -o "$resp" -w '%{http_code}' \
-      -X POST -H 'Content-Type: application/json' --data-binary "@$file" \
+    printf '%s\n' "$authcfg" | _curl -sk --max-time 1800 -K - -o "$resp" -w '%{http_code}' \
+      -X POST -H 'Content-Type: application/json' -H 'Content-Encoding: gzip' --data-binary "@$gz" \
       "$base/api/move/import?dry_run=$1"
   }
   code=$(_move_post 1) || code="000"
@@ -5538,6 +5542,8 @@ changes = cfg.get("changed") or []
 print("  config: %s" % cfg.get("summary", ""), file=sys.stderr)
 for c in changes:
     print("    would change %s" % c, file=sys.stderr)
+if d.get("note"):
+    print("  " + d["note"], file=sys.stderr)
 print(new + len(changes))
 PY
 ) || die "amux import: could not read the dry-run answer"

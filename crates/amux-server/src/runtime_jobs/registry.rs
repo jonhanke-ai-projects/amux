@@ -263,7 +263,7 @@ pub const CATALOG: &[Doc] = &[
         // here would grey out a loop that is very much ticking.
         env: &[EnvControl {
             var: "AMUX_RS_SCHEDULER",
-            effect: "1 = fire for real; anything else = shadow mode (journals what it would fire)",
+            effect: "unset or 1 = fire for real (default); 0/false/off/no = shadow mode (journals what it would fire)",
             off: None,
         }],
         pref: None,

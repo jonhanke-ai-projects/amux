@@ -766,6 +766,17 @@ async fn async_main() {
     {
         let store = store.clone();
         let firing = runtime_jobs::firing_enabled();
+        // Say the mode once at boot. Shadow mode looks exactly like a working
+        // scheduler in the UI (schedules save, next_run advances on screen)
+        // while nothing ever runs, so the log is where a sweep can see it.
+        if firing {
+            tracing::info!(verdict = "scheduler_firing", "schedule firing is on");
+        } else {
+            tracing::warn!(
+                verdict = "scheduler_shadow_mode",
+                "AMUX_RS_SCHEDULER disables schedule firing; schedules are journaled, never run"
+            );
+        }
         let deliverer: std::sync::Arc<dyn runtime_jobs::scheduler::Deliverer> =
             std::sync::Arc::new(runtime_jobs::scheduler::LiveDeliverer::new(state.clone()));
         jobs::spawn_loop(

@@ -1641,9 +1641,9 @@ pub async fn run_now(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    // DUAL-SCHEDULER: while Python owns firing, a Rust run-now that recorded
-    // a run and delivered nothing would be a lie in the run history. Refuse
-    // honestly, with the way out in the body.
+    // SHADOW MODE (AMUX_RS_SCHEDULER=0): a run-now that recorded a run and
+    // delivered nothing would be a lie in the run history. Refuse honestly,
+    // with the way out in the body.
     if !scheduler::firing_enabled() {
         return err(
             StatusCode::CONFLICT,
@@ -2508,11 +2508,11 @@ mod tests {
 
     #[tokio::test]
     async fn run_now_is_409_in_shadow_mode() {
-        // Default deployment: AMUX_RS_SCHEDULER unset -> shadow mode. (No
-        // test in this crate ever SETS the var — the firing paths are
-        // exercised through scheduler_tick's explicit bool — so clearing it
-        // here cannot race another test.)
-        std::env::remove_var("AMUX_RS_SCHEDULER");
+        // Explicit opt-out: AMUX_RS_SCHEDULER=0 -> shadow mode. (No other
+        // test in this crate reads the var — the firing paths are exercised
+        // through scheduler_tick's explicit bool — so setting it here cannot
+        // race another test.)
+        std::env::set_var("AMUX_RS_SCHEDULER", "0");
         let (app, _dir) = app();
         let (_, created) = send(
             &app,

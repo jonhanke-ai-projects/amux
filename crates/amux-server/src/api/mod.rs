@@ -459,13 +459,16 @@ pub fn router_with_connector_transport(
         .route("/api/config/export", axum::routing::get(config_iac::export))
         .route("/api/config/apply", axum::routing::put(config_iac::apply))
         // The move bundle (cloud-self-service.md 7.1): config plus allowlisted
-        // data, one document. A whole board can be large; Cloudflare caps a
-        // request at 100 MB, so that is the ceiling worth allowing.
+        // data, one document. A real board with years of card history exported
+        // at 239 MB and the old 100 MB ceiling answered 413 (amux Cloud e2e,
+        // 2026-10-18; customer hosts are not behind Cloudflare's proxy, so its
+        // cap never applied). `amux import` sends it gzipped (about 4x
+        // smaller), and the handler caps the decompressed JSON too.
         .route("/api/move/export", axum::routing::get(move_bundle::export))
         .route(
             "/api/move/import",
             axum::routing::post(move_bundle::import)
-                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(move_bundle::MAX_IMPORT_BYTES)),
         )
         .route(
             "/api/board/commit-mentions",

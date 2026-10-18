@@ -59,6 +59,30 @@ pub struct MoveTable {
 /// `email_accounts`, `telegram_*`), per-machine runtime state (`_amux_workers`,
 /// `_amux_sessions`, leases, request logs, host metrics) and the CDC log
 /// `board_change_log`, whose rows the target writes itself on insert.
+/// Largest bundle `/api/move/import` accepts, on the wire and after gzip is undone.
+pub const MAX_IMPORT_BYTES: usize = 1024 * 1024 * 1024;
+
+/// The request body as JSON, gunzipped first when `Content-Encoding: gzip`.
+fn bundle_json(headers: &HeaderMap, body: &[u8]) -> Result<Value, String> {
+    let gz = headers
+        .get(axum::http::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("gzip"));
+    if !gz {
+        return serde_json::from_slice(body).map_err(|e| format!("bundle is not valid JSON: {e}"));
+    }
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(body)
+        .take(MAX_IMPORT_BYTES as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("bundle is not valid gzip: {e}"))?;
+    if out.len() > MAX_IMPORT_BYTES {
+        return Err(format!("bundle is larger than {} MB once decompressed", MAX_IMPORT_BYTES >> 20));
+    }
+    serde_json::from_slice(&out).map_err(|e| format!("bundle is not valid JSON: {e}"))
+}
+
 pub const ALLOWLIST: &[MoveTable] = &[
     // Board cards. Each card's history travels in its own `log` column.
     MoveTable { name: "issues", key: &["id"], drop_on_import: &[] },
@@ -295,6 +319,12 @@ fn plan(conn: &rusqlite::Connection, tables: &Map<String, Value>) -> Result<Vec<
                     t.name
                 ));
             }
+            // Schedules arrive PAUSED. The source keeps firing until its owner
+            // turns it off, so an enabled copy here double-fires every one,
+            // and a tmux schedule's worker does not exist on this host yet.
+            if t.name == "schedules" && target_cols.iter().any(|c| c == "enabled") {
+                obj.insert("enabled".into(), json!(0));
+            }
             if t.key.iter().any(|k| obj.get(*k).is_none_or(Value::is_null)) {
                 p.skipped.push(json!({"row": row, "reason": format!("missing key {:?}", t.key)}));
                 continue;
@@ -396,6 +426,9 @@ fn insert_all(conn: &rusqlite::Connection, plans: &mut [TablePlan]) -> rusqlite:
     Ok(())
 }
 
+const SCHEDULES_NOTE: &str = "Imported schedules arrive paused so they do not fire twice. \
+Turn them off where they came from, then enable them here (Schedules tab).";
+
 fn table_report(plans: &[TablePlan]) -> Map<String, Value> {
     plans
         .iter()
@@ -414,8 +447,16 @@ pub async fn import(
     State(state): State<AppState>,
     Query(q): Query<ImportQuery>,
     headers: HeaderMap,
-    Json(bundle): Json<Value>,
+    body: axum::body::Bytes,
 ) -> (StatusCode, Json<Value>) {
+    let bundle = match bundle_json(&headers, &body) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(verdict = "move_import_refused", reason = %e, "move import refused");
+            return err(StatusCode::BAD_REQUEST, e);
+        }
+    };
+    drop(body);
     let dry_run = !matches!(q.dry_run.as_deref(), Some("0" | "false" | "no"));
     if !dry_run {
         if let Some(e) = super::config_iac::agent_write_refusal(&headers, "import a move bundle") {
@@ -464,6 +505,7 @@ pub async fn import(
                 "tables": table_report(&plans),
                 "config": config_report,
                 "summary": format!("{new_total} rows would be imported, {existing_total} already here"),
+                "note": SCHEDULES_NOTE,
             })),
         );
     }
@@ -511,7 +553,7 @@ pub async fn import(
             "tables": report,
             "config": config_report,
             "summary": format!("{imported} rows imported, {existing} already here (skipped, not overwritten)"),
-            "note": "workers are declared, not started: `amux workers start <name>`",
+            "note": format!("workers are declared, not started: `amux workers start <name>`. {SCHEDULES_NOTE}"),
         })),
     )
 }
@@ -563,6 +605,21 @@ mod tests {
                 "{secret_table} columns {cols:?} should look secret-shaped"
             );
         }
+    }
+
+    /// A moved schedule must not fire on both servers at once.
+    #[test]
+    fn imported_schedules_arrive_paused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("move.db")).unwrap();
+        let conn = store.read().unwrap();
+        let tables = json!({"schedules": [{"id": "SCHED-7", "title": "t",
+            "schedule_expr": "every 1m", "enabled": 1}]});
+        let plans = plan(&conn, tables.as_object().unwrap()).unwrap();
+        let p = plans.iter().find(|p| p.name == "schedules").unwrap();
+        let idx = p.columns.iter().position(|c| c == "enabled").unwrap();
+        assert_eq!(p.new_rows.len(), 1);
+        assert!(matches!(p.new_rows[0][idx], SqlValue::Integer(0)), "{:?}", p.new_rows[0][idx]);
     }
 
     #[test]
