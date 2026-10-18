@@ -29,6 +29,12 @@ set -euo pipefail
 SRC_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# A THROWAWAY HOME for every install-hooks.sh run below. Case A used to run it
+# with the real HOME, and install-hooks.sh installs into ~/.amux/hooks when that
+# directory exists, so every run of this test replaced the fleet's LIVE
+# PreToolUse guard with the fixture's copy of the branch under test (found
+# 2026-10-18, when it also replaced the live post-push verify).
+export HOME="$TMP/home"; mkdir -p "$HOME"
 fail=0
 
 note() { printf '  %s\n' "$*"; }
