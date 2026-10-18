@@ -1325,6 +1325,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ${_vaultIcon(plus)}Add Secret | `_vaultEdit` | onclick |
 | app.js | …Add Secret | `_vaultEdit` | onclick |
 | app.js | Show value | `_vaultEye` | onclick |
+| app.js | Remove  | `_vaultGroupUnpick` | onclick |
 | app.js | Actions for  | `_vaultMenu` | onclick |
 | app.js | … | `_vaultMenuClose` | onclick |
 | app.js | Cancel | `_vaultSubClose` | onclick |
