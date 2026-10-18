@@ -239,6 +239,17 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
                 return page(StatusCode::BAD_GATEWAY, "The page stopped mid-response", "<p>Try again.</p>");
             }
         }
+    } else if buffer_whole(status, upstream.content_length()) {
+        // Redirects and small bodies go out with an exact length. WebKit drops the
+        // connection on a 302 relayed as an empty chunked stream (MSG-90852).
+        match upstream.bytes().await {
+            Ok(b) => Body::from(b),
+            Err(e) => {
+                tracing::warn!(port, error = %e, measured = true, n_considered = 1,
+                    verdict = "port_proxy_relay_failed", "the relayed response stopped mid-body");
+                return page(StatusCode::BAD_GATEWAY, "The page stopped mid-response", "<p>Try again.</p>");
+            }
+        }
     } else {
         Body::from_stream(futures::stream::unfold(Some(upstream), |r| async move {
             let mut r = r?;
@@ -253,6 +264,15 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
     *resp.status_mut() = status;
     *resp.headers_mut() = out;
     resp
+}
+
+/// Bodies small enough to hold are relayed whole; video, downloads and
+/// event streams of unknown length keep streaming.
+fn buffer_whole(status: StatusCode, len: Option<u64>) -> bool {
+    status.is_informational()
+        || status.is_redirection()
+        || status == StatusCode::NO_CONTENT
+        || len.is_some_and(|n| n <= 256 * 1024)
 }
 
 /// Hop-by-hop and identity headers stay here: amux cookies and the owner's
@@ -374,6 +394,30 @@ mod tests {
             assert!(!forward_request_header(&HeaderName::from_static(k)), "{k} must not be forwarded");
         }
         assert!(forward_request_header(&HeaderName::from_static("range")), "Range passes through for video");
+    }
+
+    #[tokio::test]
+    async fn an_empty_chunked_redirect_is_relayed_with_an_exact_length() {
+        use axum::body::HttpBody as _;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            s.write_all(b"HTTP/1.1 302 Found\r\nLocation: /landed\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let r = relay("127.0.0.1", port, "/redir", Method::GET, &HeaderMap::new(), Body::empty()).await;
+        assert_eq!(r.status(), StatusCode::FOUND);
+        assert_eq!(r.headers().get("location").unwrap(), &format!("/proxy/{port}/landed"));
+        assert!(r.headers().get("transfer-encoding").is_none());
+        assert_eq!(r.body().size_hint().exact(), Some(0), "a streamed body has no exact length");
+        assert!(buffer_whole(StatusCode::OK, Some(10)));
+        assert!(!buffer_whole(StatusCode::OK, None), "unknown-length streams keep streaming");
+        assert!(!buffer_whole(StatusCode::PARTIAL_CONTENT, Some(50 << 20)), "large video ranges keep streaming");
     }
 
     #[tokio::test]
