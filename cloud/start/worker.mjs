@@ -70,7 +70,7 @@ async function hetzner(env, method, path, body) {
     body: body ? JSON.stringify(body) : undefined });
   const text = await r.text();
   const d = text ? JSON.parse(text) : {};
-  if (!r.ok) { const e = new Error(`hetzner ${r.status}: ${d.error?.code || ''} ${d.error?.message || text}`); e.code = d.error?.code; throw e; }
+  if (!r.ok) { const e = new Error(`hetzner ${r.status}: ${d.error?.code || ''} ${d.error?.message || text}`); e.code = d.error?.code; e.status = r.status; throw e; }
   return d;
 }
 
@@ -78,8 +78,14 @@ async function cf(env, method, path, body) {
   const r = await fetch('https://api.cloudflare.com/client/v4' + path, { method, headers: {
     authorization: `Bearer ${env.CF_TOKEN}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
   const d = await r.json();
-  if (!d.success) throw new Error(`cloudflare: ${JSON.stringify(d.errors)}`);
+  if (!d.success) { const e = new Error(`cloudflare ${r.status}: ${JSON.stringify(d.errors)}`); e.status = r.status; throw e; }
   return d.result;
+}
+
+// A delete that finds the thing already gone has done its job. The Stripe webhook and the delete
+// page both erase an account, and the one that loses the race gets 404 for the server.
+async function gone(f) {
+  try { return await f(); } catch (e) { if (e.status === 404 || / 404:/.test(e.message)) return null; throw e; }
 }
 
 const plans = env => JSON.parse(env.PLANS).plans;
@@ -292,24 +298,31 @@ async function reconcile(env) {
   }
 }
 
-async function erase(env, sub) {
+async function erase(env, sub, slug) {
   // The customer asked to delete their account: server (Hetzner drops its backups with it),
   // address and every snapshot, now.
   const d = await hetzner(env, 'GET', `/servers?label_selector=amux-sub=${sub}`);
-  for (const s of d.servers) {
-    await hetzner(env, 'DELETE', `/servers/${s.id}`);
-    for (const r of await cf(env, 'GET', `/zones/${env.CF_ZONE_ID}/dns_records?name=${host(s.labels['amux-slug'])}`))
-      await cf(env, 'DELETE', `/zones/${env.CF_ZONE_ID}/dns_records/${r.id}`);
+  for (const s of d.servers) await gone(() => hetzner(env, 'DELETE', `/servers/${s.id}`));
+  // The address goes by name, not only through a listed server: when the webhook and the delete
+  // page race, the second finds no server, and the record was left pointing at a deleted IP
+  // (e2efull-ba83, 2026-10-18). A name bought again by another subscription keeps its record.
+  let dns = 0;
+  for (const name of new Set([slug, ...d.servers.map(s => s.labels['amux-slug'])].filter(Boolean))) {
+    const owners = await hetzner(env, 'GET', `/servers?label_selector=amux-slug=${name}`);
+    if (owners.servers.some(s => s.labels['amux-sub'] !== sub)) { log('account.erase_dns_kept', { sub, slug: name }); continue; }
+    for (const r of await cf(env, 'GET', `/zones/${env.CF_ZONE_ID}/dns_records?name=${host(name)}`)) {
+      await gone(() => cf(env, 'DELETE', `/zones/${env.CF_ZONE_ID}/dns_records/${r.id}`)); dns++;
+    }
   }
   const imgs = await hetzner(env, 'GET', `/images?type=snapshot&label_selector=amux-sub=${sub}`);
-  for (const i of imgs.images) await hetzner(env, 'DELETE', `/images/${i.id}`);
-  log('account.erased', { sub, servers: d.servers.length, snapshots: imgs.images.length });
+  for (const i of imgs.images) await gone(() => hetzner(env, 'DELETE', `/images/${i.id}`));
+  log('account.erased', { sub, servers: d.servers.length, dns, snapshots: imgs.images.length });
 }
 
-async function deprovision(env, sub, eraseNow) {
+async function deprovision(env, sub, eraseNow, slug) {
   // Ended subscription: power off, keep a snapshot for 30 days (resubscribing can restore it),
   // and let the cron delete the server and its address once the snapshot exists.
-  if (eraseNow) return erase(env, sub);
+  if (eraseNow) return erase(env, sub, slug);
   const d = await hetzner(env, 'GET', `/servers?label_selector=amux-sub=${sub}`);
   for (const s of d.servers) {
     if (s.labels['amux-ending']) continue;
@@ -743,7 +756,7 @@ async function route(req, env) {
         await stripe(env, 'POST', `/subscriptions/${s.id}`, { metadata: { erase: '1' } });
         await stripe(env, 'DELETE', `/subscriptions/${s.id}`);   // the webhook erases; doing it here too is idempotent
       }
-      await erase(env, s.id);
+      await erase(env, s.id, s.metadata?.slug);
     }
     await sendMail(env, claims.email, 'Your amux Cloud account is deleted',
       `Your server${hosts.length > 1 ? 's are' : ' is'} deleted, with ${hosts.length > 1 ? 'their' : 'its'} backups and snapshots, ` +
@@ -762,7 +775,7 @@ async function route(req, env) {
       const sub = typeof o.subscription === 'string' ? o.subscription : o.subscription?.id;
       await provision(env, { sub, meta: o.metadata, email: (o.customer_details?.email || o.metadata?.email || '').toLowerCase() });
     } else if (ev.type === 'customer.subscription.deleted' && o.metadata?.slug) {
-      await deprovision(env, o.id, o.metadata?.erase === '1');
+      await deprovision(env, o.id, o.metadata?.erase === '1', o.metadata?.slug);
     }
     return json({ received: true });
   }

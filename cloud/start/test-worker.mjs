@@ -76,7 +76,7 @@ function world() {
         return s ? ok(s) : Response.json({ error: { message: `No such checkout.session: ${mm[1]}` } }, { status: 404 });
       }
       if (p === '/v1/subscriptions' && m === 'GET')
-        return ok({ data: Object.values(w.subs).filter(s => f.get('status') === 'all' || s.status === 'active').map(s => ({ ...s, customer: { id: s.customer_id, email: s.email } })) });
+        return ok({ data: Object.values(w.subs).filter(s => (f.get('status') === 'all' || s.status === 'active') && (!f.get('customer') || s.customer_id === f.get('customer'))).map(s => ({ ...s, customer: { id: s.customer_id, email: s.email } })) });
       if ((mm = p.match(/^\/v1\/subscriptions\/([^/]+)$/)) && m === 'POST') {
         const s = w.subs[mm[1]]; for (const [k, v] of f) { const x = k.match(/^metadata\[(.+)\]$/); if (x) { if (v === '') delete s.metadata[x[1]]; else s.metadata[x[1]] = v; } }
         return ok(s);
@@ -222,6 +222,32 @@ await test('C12 delete: link, confirm with the wrong name refused, right name er
   eq(w.servers.length, 1, 'still there');
   const r = await api(w, '/api/delete/confirm', { t, slug: 'gone' });
   eq([r.status, w.servers.length, w.dns.length, w.subs[sub].status], [200, 0, 0, 'canceled'], 'after confirm');
+});
+
+await test('C12-4 delete after the webhook already removed the server still removes the address', async () => {
+  // e2efull-ba83, 2026-10-18: the webhook and the delete page raced, the page found no server,
+  // and the DNS record was left pointing at a deleted IP.
+  const w = world(); const sub = paid(w, 'raced'); await webhook(w, sub);
+  w.servers = [];                                         // the webhook's erase got there first
+  await api(w, '/api/delete', { email: 'hello+raced@amux.io' });
+  const text = Buffer.from(w.mail.at(-1).raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString();
+  const t = decodeURIComponent(text.match(/\?t=([^&\s]+)/)[1]);
+  const r = await api(w, '/api/delete/confirm', { t, slug: 'raced' });
+  eq([r.status, w.dns.length], [200, 0], 'address removed, confirm answers');
+});
+
+await test('C12-4 an address now owned by another subscription is kept', async () => {
+  // The first owner deleted long ago (server gone, subscription canceled); someone else bought the name.
+  const w = world();
+  w.subs.sub_first = { id: 'sub_first', status: 'canceled', created: 0, email: 'hello+first@amux.io', customer_id: 'cus_first',
+                       metadata: { slug: 'reused', plan: 'team', pw_hash: 'scrypt$x$y', email: 'hello+first@amux.io' } };
+  const now = paid(w, 'reused'); await webhook(w, now);
+  eq(w.dns.length, 1, 'new owner has an address');
+  await api(w, '/api/delete', { email: 'hello+first@amux.io' });
+  const text = Buffer.from(w.mail.at(-1).raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString();
+  const t = decodeURIComponent(text.match(/\?t=([^&\s]+)/)[1]);
+  await api(w, '/api/delete/confirm', { t, slug: 'reused' });
+  eq([w.dns.length, w.servers.length], [1, 1], 'new owner keeps address and server');
 });
 
 await test('C12-3 a name bought again is listed once for deletion', async () => {
