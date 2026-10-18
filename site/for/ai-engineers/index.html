@@ -518,7 +518,7 @@ jobs:
 
     <h2>Getting started as an AI engineer</h2>
     <ol>
-      <li><strong>Install:</strong> <code>brew install mixpeek/tap/amux</code> (or <code>curl -fsSL https://amux.io/install.sh | sh</code>)</li>
+      <li><strong>Install:</strong> <code>curl -fsSL https://amux.io/install.sh | bash</code> (or <code>curl -fsSL https://amux.io/install.sh | sh</code>)</li>
       <li><strong>Register your project:</strong> <code>amux register myproject --dir ~/Dev/myproject --yolo</code></li>
       <li><strong>Configure MCP servers</strong> in <code>mcp.json</code> at the amux root</li>
       <li><strong>Write a CLAUDE.md</strong> with the board claiming workflow, context budget, and task conventions</li>
@@ -531,7 +531,7 @@ jobs:
     <div class="cta-box">
       <h3>Deploy your agent control plane</h3>
       <p>amux is the open-source infrastructure AI engineers deploy once and build their entire agent stack on top of. Single Rust binary, REST API, JSONL observability, self-healing watchdog, MIT licensed.</p>
-      <pre><code>brew install mixpeek/tap/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject
 amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">

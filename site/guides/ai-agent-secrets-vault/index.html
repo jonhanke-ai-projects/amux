@@ -185,8 +185,7 @@ os.environ['STRIPE_SECRET']  # works in agent code
   <ol>
     <li>
       <strong>Install amux</strong> if you haven't already:
-      <pre><code>brew install mixpeek/amux/amux
-# or
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 curl -fsSL https://amux.io/install.sh | sh</code></pre>
     </li>
     <li>
@@ -213,7 +212,7 @@ amux start docs-agent     # gets global only</code></pre>
 
   <div class="cta-box" style="margin-top:2.5rem">
     <p><strong>Run a fleet with proper secret management</strong></p>
-    <pre><code>brew install mixpeek/amux/amux
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux vault set MY_API_KEY=... --scope worker:my-agent
 amux start my-agent</code></pre>
     <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:1rem">

@@ -175,7 +175,7 @@
       A built-in kanban board lets agents atomically claim tasks so no two sessions ever duplicate
       work. The self-healing watchdog handles context exhaustion, crashes, and stuck prompts
       automatically, enabling true overnight unattended operation. Install via
-      <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
+      <code>curl -fsSL https://amux.io/install.sh | bash</code>.
       Single Rust binary, zero external dependencies —
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
     </p>
@@ -338,7 +338,7 @@
         </tr>
         <tr>
           <td>Setup complexity</td>
-          <td><code>brew install mixpeek/amux/amux</code> then <code>amux serve</code></td>
+          <td><code>curl -fsSL https://amux.io/install.sh | bash</code> then <code>amux serve</code></td>
           <td>Set <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code> — no install beyond Claude Code</td>
         </tr>
       </tbody>
@@ -565,14 +565,9 @@
 
     <h2>Quick start with amux</h2>
 
-    <pre><code># Install via Homebrew (recommended on macOS)
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
-# Or via PyPI
-pipx install amux
 
-# Or zero-install trial (no install needed)
-uvx amux serve
 
 # Register a project and launch the dashboard
 amux register myproject --dir ~/Dev/myproject
@@ -605,7 +600,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <div class="cta-box">
       <h3>Get started with amux</h3>
       <p>Run your first parallel agent fleet tonight. Install in 30 seconds.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject
 amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ View on GitHub</a>

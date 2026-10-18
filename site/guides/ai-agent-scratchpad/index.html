@@ -198,7 +198,7 @@ EOF</code></pre>
     <h2>How to set up the scratchpad</h2>
 
     <ol>
-      <li><strong>Install amux</strong> — <code>brew install mixpeek/amux/amux</code> and run <code>amux serve</code>.</li>
+      <li><strong>Install amux</strong> — <code>curl -fsSL https://amux.io/install.sh | bash</code> and run <code>amux serve</code>.</li>
       <li><strong>Open the Scratchpad tab</strong> — click Scratchpad in the global tab bar. The directory <code>~/.amux/scratchpad/</code> is created automatically.</li>
       <li><strong>Create your first note</strong> — click New File, name it <code>context.md</code>, and write the shared context your agents need.</li>
       <li><strong>Reference it from agents</strong> — tell agents the path: <code>cat ~/.amux/scratchpad/context.md</code>. Or add a one-line pinned note pointing to the file.</li>
@@ -237,7 +237,7 @@ EOF</code></pre>
     <div class="cta-box">
       <h3>Give your agent fleet a shared workspace</h3>
       <p>amux is an open-source control plane for running an AI engineering team — with built-in scratchpad, kanban, vault secrets, email, and mobile control.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/guides/ai-agent-pinned-notes/">Pinned notes guide</a>

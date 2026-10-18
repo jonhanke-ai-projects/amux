@@ -176,7 +176,7 @@
         from anywhere. A built-in kanban board lets agents atomically claim tasks so no two sessions
         duplicate work. A self-healing watchdog handles context exhaustion, crashes, and stuck prompts
         automatically. Single Rust binary, MIT + Commons Clause. Install:
-        <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
+        <code>curl -fsSL https://amux.io/install.sh | bash</code>.
         Source at <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
       </p>
     </section>
@@ -238,7 +238,7 @@
             </tr>
             <tr>
               <td><strong>Setup</strong></td>
-              <td>3 CLI commands — no code to write:<br><code>brew install mixpeek/amux/amux</code><br><code>amux register myproject --dir ~/Dev/myproject</code><br><code>amux serve</code></td>
+              <td>3 CLI commands — no code to write:<br><code>curl -fsSL https://amux.io/install.sh | bash</code><br><code>amux register myproject --dir ~/Dev/myproject</code><br><code>amux serve</code></td>
               <td>Python code — define agents, tools, tasks, and crew in Python; run with <code>crew.kickoff()</code></td>
             </tr>
             <tr>
@@ -557,9 +557,9 @@ requests.post(f"{amux_url}/api/sessions/myproject-1/send", json={
         <h3>Get started with amux in 3 commands</h3>
         <p>
           Run an AI engineering team from one dashboard. Open source, single Rust binary,
-          zero external dependencies beyond Python 3 + tmux.
+          zero external dependencies beyond one Rust binary.
         </p>
-        <pre><code>brew install mixpeek/amux/amux
+        <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # → https://localhost:8824</code></pre>
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>

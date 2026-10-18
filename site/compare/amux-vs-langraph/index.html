@@ -167,7 +167,7 @@
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;font-weight:600">Setup</td>
-            <td style="padding:10px 16px;"><code>brew install mixpeek/amux/amux && amux serve</code> — done in 3 commands</td>
+            <td style="padding:10px 16px;"><code>curl -fsSL https://amux.io/install.sh | bash && amux serve</code> — done in 3 commands</td>
             <td style="padding:10px 16px;"><code>pip install langgraph</code>, then write Python/TypeScript code for your graph</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
@@ -359,7 +359,7 @@ def coding_node(state):
     <div class="cta-box">
       <h3>Run your AI agent fleet from one dashboard</h3>
       <p>amux is the open-source control plane for Claude Code, Codex, and Gemini CLI sessions — self-healing watchdog, kanban board, iOS app, and REST API for integration with LangGraph and other orchestrators. Single Rust binary, MIT licensed.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>

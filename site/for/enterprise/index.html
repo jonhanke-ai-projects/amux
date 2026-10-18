@@ -145,8 +145,7 @@
     <p>amux runs on any server your team controls — an EC2 instance in your VPC, an internal GCP VM, an on-prem box. There are no amux cloud accounts, no data transmitted to amux servers, and no external API dependencies beyond the AI model providers your team already uses (Anthropic, OpenAI, or Google). The server is a single Rust binary. Deploy it in under five minutes:</p>
 
     <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># On your team's VM or server
-pip install amux   # or: uvx amux serve (zero-install)
-# or: brew install mixpeek/amux/amux (macOS)
+curl -fsSL https://amux.io/install.sh | bash
 
 amux serve --host 0.0.0.0 --port 8824
 # Dashboard accessible at https://your-server:8824 for your whole team</code></pre>
@@ -284,11 +283,8 @@ amux board add "Write integration tests for PaymentProcessor class"
     <ol>
       <li>
         <strong>Install on your team's server.</strong>
-        <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;overflow-x:auto;font-size:0.85rem;margin-top:0.5rem;"><code># Recommended: pipx for isolated install
-pipx install amux
-
-# Zero-install alternative (no pip)
-uvx amux serve --host 0.0.0.0 --port 8824</code></pre>
+        <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;overflow-x:auto;font-size:0.85rem;margin-top:0.5rem;">curl -fsSL https://amux.io/install.sh | bash
+</pre>
       </li>
       <li>
         <strong>Add org-wide CLAUDE.md to each repository.</strong> Start with your most important repo. The CLAUDE.md should encode standards that currently live only in team memory — things a new engineer would get wrong on their first PR. Commit and have it reviewed like any other change.
@@ -333,7 +329,7 @@ amux register infra-agents --dir /repos/infrastructure --yolo</code></pre>
     <div class="cta-box">
       <h3>Deploy amux for your engineering team</h3>
       <p>Self-hosted, single Rust binary, zero external dependencies. Your code stays inside your network. Runs on any Linux server in under five minutes.</p>
-      <pre><code>pip install amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve --host 0.0.0.0 --port 8824
 # Dashboard at https://your-server:8824 for the whole team</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star amux on GitHub</a>

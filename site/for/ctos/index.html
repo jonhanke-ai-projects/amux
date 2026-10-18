@@ -282,7 +282,7 @@ schedules:
     <h2>What a CTO actually sees on day 1</h2>
     <p>Here's a realistic first-week picture for a 5-developer engineering team that deploys amux on a shared server:</p>
     <ol>
-      <li><strong>Day 1:</strong> Install amux on a team server (<code>brew install mixpeek/amux/amux</code>, configure TLS, add auth). Each developer registers their project: <code>amux register myproject --dir ~/Dev/myproject --yolo</code>. The CTO and team leads get the iOS app and see all sessions on the dashboard within an hour.</li>
+      <li><strong>Day 1:</strong> Install amux on a team server (<code>curl -fsSL https://amux.io/install.sh | bash</code>, configure TLS, add auth). Each developer registers their project: <code>amux register myproject --dir ~/Dev/myproject --yolo</code>. The CTO and team leads get the iOS app and see all sessions on the dashboard within an hour.</li>
       <li><strong>Day 2:</strong> Create the first shared task queue on the board. Five developers add their current sprinted tasks as board issues. The first two developers with Claude Code sessions running claim and complete tasks while the CTO monitors from their phone in a meeting.</li>
       <li><strong>Day 3:</strong> First overnight run. 8 sessions start at midnight. The watchdog fires twice for context compaction, once for a crash recovery. In the morning: 6 of 8 tasks completed, 2 in doing (picked up second tasks after finishing their first). The CTO's morning board review takes 10 minutes from the iOS app.</li>
       <li><strong>Week 1:</strong> The team writes shared CLAUDE.md rules for their coding style and branching conventions, checked into the repo. All sessions now follow them automatically. Cost tracking in the dashboard shows $180 in Claude API spend for the week — CTO sets a per-session daily budget threshold in server.env.</li>
@@ -409,8 +409,7 @@ schedules:
     <div class="cta-box">
       <h3>Deploy amux for your engineering team</h3>
       <p>Get a shared dashboard, self-healing agents, and mobile oversight running in under 30 minutes. Self-hosted on your infrastructure, open source, no per-seat fee.</p>
-      <pre><code>brew install mixpeek/amux/amux
-# or: curl -fsSL https://amux.io/install.sh | sh
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve  # → https://your-server:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>
       <a class="btn" href="/for/enterprise/" style="margin-left:0.75rem;">Enterprise deployment →</a>

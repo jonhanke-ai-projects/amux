@@ -568,14 +568,9 @@ $ docker run --rm \
 
     <p>Install with Homebrew (recommended), pipx, or uvx:</p>
 
-    <pre><code><span class="comment"># Homebrew (macOS / Linux)</span>
-$ brew install mixpeek/amux/amux
+    <pre>$ curl -fsSL https://amux.io/install.sh | bash
 
-<span class="comment"># or pipx</span>
-$ pipx install amux
-
-<span class="comment"># or uvx (no install, run directly)</span>
-$ uvx amux serve</code></pre>
+</pre>
 
     <pre><code>$ amux register myproject --dir ~/Dev/myproject --yolo
 $ amux start worker-1 worker-2 worker-3

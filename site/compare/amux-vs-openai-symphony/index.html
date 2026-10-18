@@ -77,7 +77,7 @@
         <tr><td>Mobile management</td><td>Native iOS app + PWA</td><td>None</td></tr>
         <tr><td>Self-healing</td><td>Python watchdog — context overflow, crash, stuck, rate-limit</td><td>Elixir/OTP supervision trees</td></tr>
         <tr><td>Fault tolerance</td><td>Auto-compact, restart with message replay, YOLO mode</td><td>Process supervision + exponential backoff</td></tr>
-        <tr><td>Runtime</td><td>Python 3 + tmux</td><td>Elixir/OTP (BEAM VM)</td></tr>
+        <tr><td>Runtime</td><td>one Rust binary</td><td>Elixir/OTP (BEAM VM)</td></tr>
         <tr><td>Setup complexity</td><td>Low — <code>./install.sh</code>, 5 min</td><td>High — Elixir, mise, Linear + Codex API keys</td></tr>
         <tr><td>Human-in-the-loop</td><td>Optional (YOLO mode for full autonomy)</td><td>Not in reference implementation</td></tr>
         <tr><td>License</td><td>MIT + Commons Clause</td><td>MIT</td></tr>
@@ -100,7 +100,7 @@
       <li><strong>You prefer Claude Code.</strong> amux is built specifically for Claude Code and its output patterns. Self-healing handles Claude-specific failure modes (context exhaustion, thinking-block corruption) that Codex doesn't have.</li>
       <li><strong>You want observability.</strong> The dashboard, mobile app, per-session token spend, and live peek give you visibility that Symphony's reference implementation doesn't provide.</li>
       <li><strong>You don't use Linear.</strong> amux's built-in SQLite kanban requires no external services.</li>
-      <li><strong>Quick setup.</strong> Python 3 + tmux + one script. Symphony requires Elixir and mise, which most developers don't have installed.</li>
+      <li><strong>Quick setup.</strong> one Rust binary + one script. Symphony requires Elixir and mise, which most developers don't have installed.</li>
       <li><strong>Long-term maintenance.</strong> OpenAI has said Symphony is a reference implementation, not a product they plan to maintain. amux is actively developed with a public roadmap and iOS app.</li>
     </ul>
 
@@ -115,7 +115,7 @@
 
     <div class="cta-box">
       <h3>Get started with amux</h3>
-      <p>Run an AI engineering team from your dashboard or phone. Open source, Python 3 + tmux.</p>
+      <p>Run an AI engineering team from your dashboard or phone. Open source, one Rust binary.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

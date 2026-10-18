@@ -65,7 +65,7 @@
         "@type": "HowToStep",
         "position": 1,
         "name": "Install amux",
-        "text": "Install amux with Homebrew (brew install mixpeek/amux/amux), pip (pipx install amux), or from source (git clone https://github.com/mixpeek/amux && cd amux && ./install.sh). Run amux serve to start the dashboard at https://localhost:8824.",
+        "text": "Install amux with curl -fsSL https://amux.io/install.sh | bash, or from source (git clone https://github.com/mixpeek/amux && cd amux && ./install.sh). Run amux serve to start the dashboard at https://localhost:8824.",
         "url": "https://amux.io/guides/declarative-ai-agent-setup/"
       },
       {
@@ -272,11 +272,8 @@ skills:
     <h2>How to configure AI agents as code: step by step</h2>
 
     <h3>Step 1 — Install amux</h3>
-    <pre><code># Homebrew (macOS)
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
-# pip (any platform)
-pipx install amux
 
 # From source
 git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh

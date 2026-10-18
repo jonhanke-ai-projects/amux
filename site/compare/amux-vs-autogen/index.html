@@ -147,7 +147,7 @@
         </tr>
         <tr>
           <td><strong>Installation</strong></td>
-          <td><code>brew install mixpeek/amux/amux</code> · <code>pipx install amux</code> · <code>uvx amux serve</code></td>
+          <td><code>curl -fsSL https://amux.io/install.sh | bash</code></td>
           <td><code>pip install pyautogen</code> (0.2) or <code>pip install autogen-agentchat</code> (0.4)</td>
         </tr>
         <tr>
@@ -278,7 +278,7 @@ def run_in_coding_agent(task: str, session_name: str = "code-worker") -> str:
     <div class="cta-box">
       <h3>Run an AI engineering team from one dashboard</h3>
       <p>Self-healing, multi-runtime (Claude Code · Codex · Gemini CLI), open source (MIT).</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>

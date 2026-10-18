@@ -56,14 +56,14 @@
     "@type": "HowTo",
     "name": "Set up amux for an engineering team",
     "description": "Configure one amux instance so multiple engineers can share a Claude Code agent fleet with scoped visibility and a shared task board.",
-    "supply": [{"@type": "HowToSupply", "name": "amux (Homebrew: brew install mixpeek/amux/amux)"}],
+    "supply": [{"@type": "HowToSupply", "name": "amux (curl -fsSL https://amux.io/install.sh | bash)"}],
     "tool": [{"@type": "HowToTool", "name": "Claude Code"}, {"@type": "HowToTool", "name": "amux dashboard"}],
     "step": [
       {
         "@type": "HowToStep",
         "position": 1,
         "name": "Install amux on a shared server or dev machine",
-        "text": "Run brew install mixpeek/amux/amux on the machine that will host the shared fleet. On Linux, use the install script: curl -sSL https://amux.io/install.sh | bash. The single binary hosts the dashboard and all agent sessions."
+        "text": "Run curl -fsSL https://amux.io/install.sh | bash on the machine that will host the shared fleet. On Linux, use the install script: curl -sSL https://amux.io/install.sh | bash. The single binary hosts the dashboard and all agent sessions."
       },
       {
         "@type": "HowToStep",
@@ -201,8 +201,7 @@
 
     <p>Pick a machine accessible to your whole team: a cloud VM, a dev server, or a developer's machine on a VPN. Install amux:</p>
 
-    <pre><code># macOS (Homebrew)
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
 # Linux
 curl -sSL https://amux.io/install.sh | bash</code></pre>
@@ -360,7 +359,7 @@ AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1 amux start alice-api</code></pre>
     <div class="cta-box">
       <h3>Give your engineering team a shared AI agent fleet</h3>
       <p>One amux instance. Shared kanban board. Scoped team views. Phone monitoring. Open source, no per-seat fees.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
     </div>

@@ -67,7 +67,7 @@
         "@type": "HowToStep",
         "position": 1,
         "name": "Install or update amux",
-        "text": "Run: brew install mixpeek/tap/amux  or  brew upgrade mixpeek/tap/amux. Workspace isolation requires v0.9.97 or later."
+        "text": "Run: curl -fsSL https://amux.io/install.sh | bash  or  brew upgrade mixpeek/tap/amux. Workspace isolation requires v0.9.97 or later."
       },
       {
         "@type": "HowToStep",
@@ -230,8 +230,7 @@
     <h2>Enabling workspace isolation</h2>
 
     <h3>Step 1: Install or update amux</h3>
-    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>brew install mixpeek/tap/amux
-# or update:
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -fsSL https://amux.io/install.sh | bash
 brew upgrade mixpeek/tap/amux</code></pre>
 
     <p>Workspace isolation requires amux v0.9.97 or later. Check your version: <code>amux --version</code>.</p>
@@ -315,7 +314,7 @@ for s in json.load(sys.stdin):
     <div class="cta-box">
       <h3>Run parallel agents without conflicts</h3>
       <p>Workspace isolation is one environment variable. amux is open source, single Rust binary, MIT licensed. Each agent gets a clean slate every time.</p>
-      <pre><code>brew install mixpeek/tap/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 echo 'AMUX_WORKSPACE_ISOLATION=1' >> ~/.amux/server.env
 amux restart</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">

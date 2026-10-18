@@ -44,7 +44,7 @@
       {"@type":"Question","name":"Can I run pytest across multiple agents with amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. Launch one Claude Code agent per test module or test file. Each agent runs its own pytest loop, fixing failures it encounters. amux shows all agents on a shared dashboard so you can see which tests are passing across the fleet."}},
       {"@type":"Question","name":"How does amux help with Python dependency upgrades?","acceptedAnswer":{"@type":"Answer","text":"When a major dependency like Django, SQLAlchemy, or Pydantic releases a breaking version, spawn one agent per affected module via amux. Add a board card for each migration task, let agents claim them atomically, and monitor progress from the web dashboard or iOS app."}},
       {"@type":"Question","name":"Does amux work with Python virtual environments?","acceptedAnswer":{"@type":"Answer","text":"Yes. Set the venv path in your CLAUDE.md so every agent activates the same environment. Alternatively, use one agent per venv and coordinate via the shared board. amux does not manage Python environments itself — it orchestrates Claude Code agents that run inside whatever environment you configure."}},
-      {"@type":"Question","name":"How do I install amux for Python development?","acceptedAnswer":{"@type":"Answer","text":"Install with Homebrew: brew install mixpeek/amux/amux. Then register your project and start agents. No Python required — amux is a single Rust binary."}}
+      {"@type":"Question","name":"How do I install amux for Python development?","acceptedAnswer":{"@type":"Answer","text":"curl -fsSL https://amux.io/install.sh | bash. Then register your project and start agents. No Python required — amux is a single Rust binary."}}
     ]
   }</script>
   <link rel="stylesheet" href="/nav.css">
@@ -89,7 +89,7 @@
 
     <h2>Python-Specific Workflows</h2>
     <pre><code><span class="dim"># Install amux (single Rust binary)</span>
-brew install mixpeek/amux/amux
+curl -fsSL https://amux.io/install.sh | bash
 
 <span class="dim"># Register separate agents for different parts of your Python project</span>
 amux register auth-agent --dir ~/myproject --yolo
@@ -147,7 +147,7 @@ amux board drain on tests-agent</code></pre>
     <div class="cta-box">
       <h3>Get started with amux</h3>
       <p>Open-source control plane for AI agent teams. Single Rust binary, installs in one command.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>
@@ -193,7 +193,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
         <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">How do I install amux for Python development?</summary>
         <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-          <p>Install with Homebrew: <code>brew install mixpeek/amux/amux</code>. No Python required — amux is a single Rust binary. Register your project directory, start agents, and open the dashboard at <code>https://localhost:8824</code>.</p>
+          <p><code>curl -fsSL https://amux.io/install.sh | bash</code>. No Python required — amux is a single Rust binary. Register your project directory, start agents, and open the dashboard at <code>https://localhost:8824</code>.</p>
         </div>
       </details>
     </div>

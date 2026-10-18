@@ -269,10 +269,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     <h2>Get started</h2>
     <p>Install amux, register your open-source project, write a CLAUDE.md with your project context and triage rules, and queue your first overnight issue triage.</p>
 
-    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Install (choose your preferred method)
-brew install mixpeek/amux/amux      # Homebrew (macOS)
-pipx install amux                    # PyPI
-uvx amux serve                       # Zero-install
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;">curl -fsSL https://amux.io/install.sh | bash      # Homebrew (macOS)
 
 # Register your open-source project
 amux register myproject --dir ~/Dev/myproject --yolo
@@ -302,7 +299,7 @@ amux board add "Triage all open issues — categorize, label, draft responses pe
     <div class="cta-box">
       <h3>Run an AI engineering team tonight — free and open-source</h3>
       <p>Install amux, write a CLAUDE.md with your project context, and queue your first overnight triage run.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>

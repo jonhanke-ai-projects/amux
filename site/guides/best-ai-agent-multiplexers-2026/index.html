@@ -351,7 +351,7 @@
         <li>Built-in Messages tab for email management from the dashboard</li>
         <li>Per-session token spend and cost tracking</li>
         <li>Full REST API for sessions, board, notes, CRM, browser automation, email, and cron</li>
-        <li>Multiple install paths: <code>brew install mixpeek/amux/amux</code> · <code>pipx install amux</code> · <code>uvx amux serve</code> (zero-install)</li>
+        <li>Multiple install paths: <code>curl -fsSL https://amux.io/install.sh | bash</code></li>
       </ul>
       <p><strong>Best for:</strong> Developers who run agents unattended (overnight, during meetings), need mobile monitoring, want agent-to-agent orchestration, or need a REST API for custom automation. Works with any AI coding runtime — Claude Code, Codex CLI, or Gemini CLI. The richest feature set of any multiplexer, at the cost of more moving parts than a simple CLI tool.</p>
       <p><a href="/compare/amux-vs-cmux/">amux vs cmux</a> &middot; <a href="/compare/amux-vs-dmux/">amux vs dmux</a> &middot; <a href="/compare/amux-vs-diy-tmux/">amux vs DIY tmux</a></p>
@@ -744,16 +744,10 @@ ittybitty → dmux → workmux → Agent Teams → Superset → cmux → amux �
     <div class="cta-box" style="margin-top:3rem;">
       <h3>Try amux</h3>
       <p>Run dozens of AI coding agents in parallel with self-healing, mobile monitoring, and token tracking. Works on macOS, Linux, and cloud VMs. Open source, MIT, single Rust binary. Compatible with Claude Code, OpenAI Codex CLI, and Gemini CLI.</p>
-      <pre><code># Homebrew (macOS)
-brew install mixpeek/amux/amux
+      <pre>curl -fsSL https://amux.io/install.sh | bash
 
-# PyPI (any platform)
-pipx install amux
 
-# Zero-install with uvx
-uvx amux serve  # → https://localhost:8824
 
-# Or from source
 git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></pre>
       <pre><code>amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

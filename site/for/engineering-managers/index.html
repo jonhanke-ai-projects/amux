@@ -304,7 +304,7 @@
     <p>A practical rollout for a 3–8 person engineering team takes less than a day:</p>
     <ol>
       <li><strong>Install amux per developer</strong> (5 minutes each):
-        <pre><code>brew install mixpeek/amux/amux</code></pre>
+        <pre><code>curl -fsSL https://amux.io/install.sh | bash</code></pre>
         Each engineer runs their own amux instance. No shared server required for the initial rollout.
       </li>
       <li><strong>Register the shared project</strong> on each machine:
@@ -360,7 +360,7 @@
     <div class="cta-box">
       <h3>Start multiplying your team's velocity today</h3>
       <p>amux is open-source, free to self-host, and installs in minutes per developer. No per-seat fees, no vendor lock-in. Your engineers keep their existing workflows — amux adds the agent layer on top.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myapp --dir ~/Dev/myapp
 amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:1rem;flex-wrap:wrap;">

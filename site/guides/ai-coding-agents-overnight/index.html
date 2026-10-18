@@ -201,7 +201,7 @@ amux board add "Write OpenAPI docs for /api/users endpoints"
 
     <h3>Install and configure</h3>
     <pre><code># Install amux (one command)
-brew install mixpeek/amux/amux
+curl -fsSL https://amux.io/install.sh | bash
 
 # Register sessions -- one per task area
 amux register auth-tests --dir ~/Dev/myapp --yolo
@@ -629,7 +629,7 @@ gcloud compute instances create amux-overnight \
 
 # SSH in and install
 ssh amux-overnight
-brew install mixpeek/amux/amux
+curl -fsSL https://amux.io/install.sh | bash
 
 # Start the dashboard (accessible via Tailscale or SSH tunnel)
 amux serve</code></pre>
@@ -670,7 +670,7 @@ amux cron add --schedule "0 23 * * *" \
     <div class="cta-box">
       <h3>Start running agents overnight</h3>
       <p>amux is the orchestration layer that makes unattended AI coding practical. Self-healing watchdog, atomic task board, mobile dashboard, and fleet monitoring.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve</code></pre>

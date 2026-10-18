@@ -660,7 +660,7 @@
     </div>
 
     <pre><code><span class="dim"># Install amux and run 5 Claude Code agents on your project</span>
-brew install mixpeek/amux/amux
+curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux scale myproject --count 5
 amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>

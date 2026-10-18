@@ -356,7 +356,7 @@ tmux new-session -s antigravity-agent -d 'agy -p "work on feature branch"'</code
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.5rem;margin:1.5rem 0;">
       <code style="display:block;font-size:0.85rem;line-height:1.7;"># Install amux (if not already installed)
-pip install amux
+curl -fsSL https://amux.io/install.sh | bash
 
 # Launch amux server
 amux serve &

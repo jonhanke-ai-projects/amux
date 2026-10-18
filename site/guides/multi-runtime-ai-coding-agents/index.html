@@ -246,7 +246,7 @@ amux board drain on payments-agent</code></pre>
 
     <h2>Getting started with a multi-runtime fleet</h2>
     <ol>
-      <li><strong>Install amux:</strong> <code>brew install mixpeek/amux/amux</code></li>
+      <li><strong>Install amux:</strong> <code>curl -fsSL https://amux.io/install.sh | bash</code></li>
       <li><strong>Install each runtime</strong> you plan to use: <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a></li>
       <li><strong>Register sessions by runtime:</strong> <code>amux register &lt;name&gt; --runtime &lt;claude|codex|gemini&gt;</code></li>
       <li><strong>Write a shared CLAUDE.md</strong> with the board API calls and task-claiming workflow — reference <a href="/guides/claude-md-templates/">CLAUDE.md templates</a></li>

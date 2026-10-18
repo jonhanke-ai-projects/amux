@@ -59,7 +59,7 @@
     "totalTime": "PT30M",
     "supply": [
       {"@type": "HowToSupply", "name": "Server with 8GB+ RAM"},
-      {"@type": "HowToSupply", "name": "amux (Homebrew: brew install mixpeek/amux/amux)"},
+      {"@type": "HowToSupply", "name": "amux (curl -fsSL https://amux.io/install.sh | bash)"},
       {"@type": "HowToSupply", "name": "Claude Code (or Codex / Gemini CLI)"},
       {"@type": "HowToSupply", "name": "amux (open source, MIT)"}
     ],
@@ -420,7 +420,7 @@ amux register payments --dir ../project-feature-payments --yolo</code></pre>
 
     <h2>Step-by-step: scaling from 1 to 10+ agents</h2>
     <ol>
-      <li><strong>Install amux:</strong> <code>brew install mixpeek/amux/amux</code> (or <code>curl -fsSL https://amux.io/install.sh | sh</code>)</li>
+      <li><strong>Install amux:</strong> <code>curl -fsSL https://amux.io/install.sh | bash</code> (or <code>curl -fsSL https://amux.io/install.sh | sh</code>)</li>
       <li><strong>Register your project:</strong> <code>amux register myproject --dir ~/Dev/myproject --yolo</code></li>
       <li><strong>Decompose your work:</strong> break the sprint into independent tasks, add them to the board: <code>amux board add "Implement OAuth refresh flow"</code></li>
       <li><strong>Set up worktrees:</strong> one git worktree per agent, each on its own branch</li>
@@ -433,7 +433,7 @@ amux register payments --dir ../project-feature-payments --yolo</code></pre>
     <div class="cta-box">
       <h3>Run your AI engineering team with amux</h3>
       <p>Open-source control plane for parallel Claude Code, Codex, and Gemini CLI agents. Single Rust binary, zero external dependencies, MIT licensed.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>

@@ -63,7 +63,7 @@
         "@type": "HowToStep",
         "position": 1,
         "name": "Install amux on the remote server",
-        "text": "SSH into your remote machine and install amux: brew install amux (macOS/Linux with Homebrew) or download the single Rust binary from GitHub releases. Run amux serve to start the API server on port 8824."
+        "text": "SSH into your remote machine and install amux: curl -fsSL https://amux.io/install.sh | bash (macOS/Linux with Homebrew) or download the single Rust binary from GitHub releases. Run amux serve to start the API server on port 8824."
       },
       {
         "@type": "HowToStep",
@@ -198,8 +198,7 @@
     <pre><code>ssh user@your-server
 
 # Install amux (single Rust binary)
-brew install amux
-# or download from GitHub releases for Linux
+curl -fsSL https://amux.io/install.sh | bash
 curl -sSL https://github.com/mixpeek/amux/releases/latest/download/amux-linux-x86_64 -o /usr/local/bin/amux
 chmod +x /usr/local/bin/amux
 
@@ -334,7 +333,7 @@ open $AMUX_URL</code></pre>
     <div class="cta-box">
       <h3>Run your AI engineering team on a dedicated server tonight</h3>
       <p>amux is open source, MIT licensed, single Rust binary, zero external dependencies. Install on any Mac or Linux machine and connect from anywhere.</p>
-      <pre><code>brew install amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve  # start the server
 # then from your local machine:
 export AMUX_URL=https://&lt;server-ip&gt;:8824

@@ -92,8 +92,7 @@
     <p>All five agents run in isolated tmux sessions. You review results from the amux web dashboard or iPhone app. The board shows which tasks finished, which are in progress, and which failed — with the error output attached so you don't have to dig through terminal logs.</p>
 
     <h2>Setting up a data science agent fleet</h2>
-    <pre><code># Install amux (single Rust binary, Homebrew)
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
 # Create a workspace pointing to your project
 amux register ds-project --dir ~/Dev/my-ds-project
@@ -105,7 +104,6 @@ amux start ds-project
 amux serve  # → https://localhost:8824
 
 # Launch your first parallel agents from the dashboard
-# or via CLI:
 amux send ds-project "Run EDA on data/sales_q3.csv — describe all columns, flag outliers (3σ), suggest 3 feature engineering candidates, write report to reports/eda_sales_q3.md"</code></pre>
 
     <p>With <code>--yolo</code> mode, agents run without confirmation prompts — safe for automated analysis and pipeline runs where you're not at the keyboard. Use a <code>CLAUDE.md</code> file to give agents domain context: column naming conventions, acceptable null rates, business definitions of key metrics.</p>
@@ -196,7 +194,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
     <h2>Get started</h2>
     <pre><code># Install (single Rust binary, zero dependencies)
-brew install mixpeek/amux/amux
+curl -fsSL https://amux.io/install.sh | bash
 
 # Register your data project
 amux register ds-project --dir ~/Dev/my-project
@@ -210,7 +208,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <div class="cta-box">
       <h3>Run parallel AI agents for your data science workflow</h3>
       <p>EDA, experiment fleets, pipeline automation, notebook conversion. Open source, self-healing, phone-first. Single Rust binary.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★ 505+</a>
     </div>

@@ -237,16 +237,10 @@
     <p><strong>Best for:</strong> Teams, overnight runs, 5&ndash;50 parallel agents, anyone who wants mobile access, cost control, or inter-agent coordination.</p>
     <p><strong>Not ideal if:</strong> You only need 2&ndash;3 sessions and strongly prefer staying in the terminal (use Claude Squad instead).</p>
 
-    <pre><code><span class="comment"># Install via Homebrew (macOS/Linux)</span>
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
-<span class="comment"># Or via PyPI</span>
-pipx install amux
 
-<span class="comment"># Zero-install trial (no pip required)</span>
-uvx amux serve  <span class="comment"># → https://localhost:8824</span>
 
-<span class="comment"># Or self-host from source</span>
 git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 
 <span class="comment"># Register a project and start sessions</span>
@@ -450,7 +444,7 @@ tmux ls</code></pre>
     <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux is open source under the MIT license</a> — free to self-host with no feature limits. A cloud-hosted version is available at <a href="https://amux.io/pricing/" target="_blank" rel="noopener">$20/month or $200/year</a> for teams that want a hosted dashboard without managing the server. Both include the full feature set.</p>
 
     <h3>How do I install amux?</h3>
-    <p>The fastest install is via Homebrew: <code>brew install mixpeek/amux/amux</code>. PyPI: <code>pipx install amux</code>. Zero-install trial (no pip, no clone): <code>uvx amux serve</code>. For self-hosting on Linux servers, <code>./install.sh</code> from the GitHub repo works without any package manager. All paths install the same open-source package.</p>
+    <p>The fastest install is <code>curl -fsSL https://amux.io/install.sh | bash</code>. For self-hosting on Linux servers, <code>./install.sh</code> from the GitHub repo works without any package manager. All paths install the same open-source package.</p>
 
     <!-- EXP-014 -->
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">

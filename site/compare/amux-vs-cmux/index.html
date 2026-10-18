@@ -118,7 +118,7 @@
       <li>Browser automation via Playwright with saved auth profiles</li>
       <li>Built-in Messages tab with Gmail API integration for email management</li>
       <li>Notes, CRM, email integration, and calendar primitives</li>
-      <li>Zero-config install: <code>brew install mixpeek/amux/amux</code> (macOS) or <code>pipx install amux</code></li>
+      <li>Zero-config install: <code>curl -fsSL https://amux.io/install.sh | bash</code></li>
     </ul>
     <p>amux runs alongside your existing terminal. It manages tmux sessions in the background and serves a dashboard you access from any browser. The server persists across reboots and auto-restarts when the file is modified.</p>
 
@@ -235,7 +235,7 @@
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
           <td style="padding:0.6rem;">Homebrew install</td>
-          <td style="padding:0.6rem;color:var(--green);"><code>brew install mixpeek/amux/amux</code></td>
+          <td style="padding:0.6rem;color:var(--green);"><code>curl -fsSL https://amux.io/install.sh | bash</code></td>
           <td style="padding:0.6rem;">macOS app download</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
@@ -543,9 +543,7 @@ amux serve  # → https://localhost:8824
     <h3>Are there other parallel AI agent tools I should consider?</h3>
     <p>Yes. Look at <a href="/compare/amux-vs-dmux/">dmux</a> (worktree-focused CLI), <a href="/compare/amux-vs-claude-code-agent-teams/">Claude Code Agent Teams</a> (Anthropic's built-in feature), <a href="/compare/amux-vs-codex/">OpenAI Codex</a> (cloud-based), and the broader <a href="/compare/">comparison index</a>.</p>
 
-    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run an AI engineering team from one dashboard. Orchestrates Claude Code, Codex CLI, and Gemini CLI with self-healing, mobile monitoring, and token tracking. Works on macOS, Linux, and cloud VMs. Open source, MIT licensed. Updated July 2026.</p><pre><code>brew install mixpeek/amux/amux   # Homebrew (macOS)
-pipx install amux                  # PyPI
-uvx amux serve                     # Zero-install (no install needed)
+    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run an AI engineering team from one dashboard. Orchestrates Claude Code, Codex CLI, and Gemini CLI with self-healing, mobile monitoring, and token tracking. Works on macOS, Linux, and cloud VMs. Open source, MIT licensed. Updated July 2026.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash   # Homebrew (macOS)
 
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

@@ -244,8 +244,7 @@
     <h2>Getting started as an agency</h2>
     <p>The fastest path from zero to agents running across your client portfolio:</p>
 
-    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Install
-brew install mixpeek/amux/amux
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;">curl -fsSL https://amux.io/install.sh | bash
 
 # Create a separate project per client
 amux register client-a --dir ~/Dev/client-a --yolo
@@ -311,7 +310,7 @@ amux board add "Fix checkout redirect on mobile Safari" --session client-b</code
     <div class="cta-box">
       <h3>Start running your AI engineering team across client projects</h3>
       <p>amux is free, open-source, and runs on your existing hardware. No SaaS subscription, no per-seat fees — just AI agents delivering client work while you sleep.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register client-a --dir ~/Dev/client-a --yolo
 amux start client-a
 amux serve  # → https://localhost:8824</code></pre>

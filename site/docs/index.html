@@ -100,15 +100,11 @@
 
 <h3>Install</h3>
 
-<p><strong>Homebrew</strong> (macOS/Linux &mdash; installs tmux for you; <code>brew services start amux</code> runs the dashboard as an always-on service):</p>
+<p><strong>One-line installer</strong> (macOS and Linux; asks before installing Rust or tmux, and sets amux up as an always-on service):</p>
 
-<pre><code>brew install mixpeek/amux/amux</code></pre>
+<pre><code>curl -fsSL https://amux.io/install.sh | bash</code></pre>
 
-<p><strong>pipx / uv</strong> (any platform; <code>uvx amux serve</code> tries it with zero install):</p>
-
-<pre><code>pipx install amux</code></pre>
-
-<p><strong>From source</strong> (the hackable single-file way):</p>
+<p><strong>From source</strong> (what the installer does, by hand):</p>
 
 <pre><code>git clone https://github.com/mixpeek/amux && cd amux
 ./install.sh</code></pre>
