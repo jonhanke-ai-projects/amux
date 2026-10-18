@@ -17118,35 +17118,37 @@ async fn codex_api_key_login(bin: &str, codex_home: &std::path::Path, key: Optio
 /// Should this Codex launch skip Codex's OS sandbox because it cannot run here?
 ///
 /// On Linux, `--sandbox workspace-write` runs every command through
-/// bubblewrap, which needs a network namespace. An unprivileged Docker
-/// container refuses that ("bwrap: loopback: Failed RTM_NEWADDR"), so a
-/// Codex worker on an amux Cloud server could not even run `pwd` (codex e2e
-/// round 3, C6-3). Probed once per process. Only a container falls back,
-/// because there the container already isolates the worker; a bare host with
-/// a broken sandbox keeps it and says so in the log.
+/// bubblewrap, which needs an unprivileged user namespace. Ubuntu 24.04's
+/// AppArmor refuses those by default ("bwrap: loopback: Failed RTM_NEWADDR"),
+/// and so does an unprivileged container, so a Codex worker on an amux Cloud
+/// server could not even run `pwd` (codex e2e round 3, C6-3). Cloud hosts now
+/// allow them (cloud/desktop/update.sh); this probe is the check and the
+/// fallback. Only a container falls back, because there the container already
+/// isolates the worker; a bare host with a broken sandbox keeps it and says so.
+/// A working sandbox is remembered; a broken one is probed again at the next
+/// launch, so a host fixed underneath a running server needs no restart.
 async fn codex_container_sandbox_fallback(bin: &str) -> bool {
-    if !cfg!(target_os = "linux") {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WORKS: AtomicBool = AtomicBool::new(false);
+    if !cfg!(target_os = "linux") || WORKS.load(Ordering::Relaxed) {
         return false;
     }
-    static USABLE: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
-    let usable = *USABLE
-        .get_or_init(|| async {
-            let verdict = codex_os_sandbox_probe(bin).await;
-            let in_container = std::path::Path::new("/.dockerenv").exists()
-                || std::path::Path::new("/run/.containerenv").exists();
-            if verdict == "codex_os_sandbox_ok" {
-                tracing::info!(verdict, "codex OS sandbox works; workers keep --sandbox workspace-write");
-            } else if in_container {
-                tracing::warn!(verdict, fallback = "container_is_the_sandbox",
-                    "codex OS sandbox cannot start in this container; codex workers launch with --dangerously-bypass-approvals-and-sandbox");
-            } else {
-                tracing::warn!(verdict, fallback = "none",
-                    "codex OS sandbox cannot start on this host; codex workers will fail every command until bubblewrap can create namespaces (or pass --dangerously-bypass-approvals-and-sandbox in the worker's flags)");
-            }
-            verdict == "codex_os_sandbox_ok" || !in_container
-        })
-        .await;
-    !usable
+    let verdict = codex_os_sandbox_probe(bin).await;
+    if verdict == "codex_os_sandbox_ok" {
+        WORKS.store(true, Ordering::Relaxed);
+        tracing::info!(verdict, "codex OS sandbox works; workers keep --sandbox workspace-write");
+        return false;
+    }
+    let in_container = std::path::Path::new("/.dockerenv").exists()
+        || std::path::Path::new("/run/.containerenv").exists();
+    if in_container {
+        tracing::warn!(verdict, fallback = "container_is_the_sandbox",
+            "codex OS sandbox cannot start in this container; this codex worker launches with --dangerously-bypass-approvals-and-sandbox");
+    } else {
+        tracing::warn!(verdict, fallback = "none",
+            "codex OS sandbox cannot start on this host; codex workers fail every command until unprivileged user namespaces are allowed (sysctl kernel.apparmor_restrict_unprivileged_userns=0 on Ubuntu 24.04) or the worker's flags pass --dangerously-bypass-approvals-and-sandbox");
+    }
+    in_container
 }
 
 /// Run `true` inside Codex's own sandbox and name the outcome.

@@ -466,6 +466,7 @@ pub async fn list(State(state): State<AppState>, Query(p): Query<ListParams>) ->
             .map(|s| {
                 let mut v = s.to_json();
                 crate::runtime_jobs::schedule_failure::expose(&mut v);
+                expose_instants(&mut v);
                 let f = *fires.get(s.id()).unwrap_or(&0);
                 v["fires_day"] = json!(f);
                 v["fleet_share"] = json!((100.0 * f as f64 / total as f64 * 10.0).round() / 10.0);
@@ -591,6 +592,23 @@ pub(crate) fn cadence_class(expr: Option<&str>, sched_type: &str) -> (&'static s
 
 // ---- GET /api/schedules/{id} ----------------------------------------------
 
+/// `next_run`/`run_at` are this server's wall clock with no zone. A browser in
+/// another zone read them as its own local time, so a cloud server in UTC showed
+/// an every-minute schedule as due in "3h 59m" to a customer in New York (amux
+/// Cloud e2e, 2026-10-18). Publish the same instants as epoch milliseconds.
+fn expose_instants(v: &mut Value) {
+    let Some(o) = v.as_object_mut() else { return };
+    for (field, ms_field) in [("next_run", "next_run_ms"), ("run_at", "run_at_ms")] {
+        let ms = o
+            .get(field)
+            .and_then(Value::as_str)
+            .and_then(scheduler::parse_minute)
+            .map(|t| json!(t.timestamp_millis()))
+            .unwrap_or(Value::Null);
+        o.insert(ms_field.into(), ms);
+    }
+}
+
 pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let store = state.store.clone();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
@@ -602,6 +620,7 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
         Ok(Ok(Some(s))) => {
             let mut v = s.to_json();
             crate::runtime_jobs::schedule_failure::expose(&mut v);
+            expose_instants(&mut v);
             // A tombstone must not read as live (AMUX-3431): the raw row
             // carries enabled:1 next to deleted:<ts>, and SCHED-349's owner
             // read exactly that as a working schedule for five days. Say it
@@ -1541,13 +1560,16 @@ pub async fn skip_next(
                 "api-skip",
                 &by,
             )?;
+            let ms = |v: &str| scheduler::parse_minute(v).map(|t| t.timestamp_millis());
             let body = json!({
                 "ok": true,
                 "id": s.id(),
                 "title": s.str_field("title"),
                 // WHAT WAS GIVEN UP, and where it resumes.
                 "skipped": skipped,
+                "skipped_ms": ms(skipped.as_str()),
                 "next_run": new_next,
+                "next_run_ms": ms(new_next.as_str()),
                 "schedule_expr": s.schedule_expr(),
                 "enabled": s.i64_field("enabled", 0),
             });
@@ -2504,6 +2526,16 @@ mod tests {
         let attached = super::shell_run_ack(false);
         assert_eq!(attached["phase"], json!("noop"));
         assert_eq!(attached["deduped"], json!(true));
+    }
+
+    /// The absolute instant travels beside the zone-less wall-clock string.
+    #[test]
+    fn next_run_is_published_as_epoch_ms_from_the_servers_clock() {
+        let mut v = json!({"next_run": "2026-10-18T16:54", "run_at": ""});
+        super::expose_instants(&mut v);
+        let want = scheduler::parse_minute("2026-10-18T16:54").unwrap().timestamp_millis();
+        assert_eq!(v["next_run_ms"], json!(want));
+        assert_eq!(v["run_at_ms"], Value::Null, "no time, no instant");
     }
 
     #[tokio::test]

@@ -140,6 +140,15 @@ command -v codex &>/dev/null || npm install -g @openai/codex >/dev/null
 command -v gemini &>/dev/null || npm install -g @google/gemini-cli >/dev/null
 fi
 
+# Codex runs every worker command inside its own bubblewrap sandbox, which needs an unprivileged
+# user namespace. Ubuntu 24.04 blocks those through AppArmor, so on a Cloud server every Codex
+# command failed, even `pwd` ("bwrap: loopback: Failed RTM_NEWADDR", codex e2e round 3, C6-3).
+# The server is single tenant, so allow them and let Codex's sandbox work. update.sh does the same for existing servers.
+if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+  echo 'kernel.apparmor_restrict_unprivileged_userns = 0' > /etc/sysctl.d/60-amux-codex-sandbox.conf
+  sysctl -q -p /etc/sysctl.d/60-amux-codex-sandbox.conf || echo "WARN: user namespaces still restricted; Codex workers cannot run commands"
+fi
+
 # ── User ──
 if ! id "$USER_NAME" &>/dev/null; then
   log "creating user $USER_NAME"

@@ -38005,6 +38005,7 @@ function _sxGroupOf(s) {
   return 'routine';   // routine, and unknown (flagged "Unparsed" on the row)
 }
 function _sxNextMs(s) {
+  if (s && s.next_run_ms) return s.next_run_ms;   // the server's own instant; the string is its wall clock
   if (!s || !s.next_run) return 0;
   const v = String(s.next_run);
   const ms = /^\d+$/.test(v) ? (+v > 2e9 ? +v : +v * 1000) : new Date(v.replace(' ', 'T')).getTime();
@@ -38714,7 +38715,7 @@ function _sxRenderDetail() {
         : '<span class="sx-type-line">' + _sxTypeIcon(s) + ' Trigger a worker <span class="sx-dim">(tmux, a full model turn per run)</span></span>'],
       ['Frequency', `${esc(_sxFreq(s))}<div class="sx-dim sx-sub">${esc(_sxDescribe(s.schedule_expr, s.sched_type, s.run_at))}</div>`
         + (s.schedule_expr ? `<code class="sx-expr">${esc(s.schedule_expr)}</code>` : '')],
-      ['Next run', s.enabled ? _sxFmtWhen(s.next_run) : '<span class="sx-dim">paused</span>'],
+      ['Next run', s.enabled ? _sxFmtWhen(s.next_run_ms || s.next_run) : '<span class="sx-dim">paused</span>'],
       ['Runs per day', rs
         ? `${rs.runs} in the last 24h <span class="sx-dim">(counted from run history${s.planned_fires_day != null ? '; planned about ' + esc(_sxFmtRate(s.planned_fires_day)) + '/day' : ''}${s.fleet_share ? '; ' + esc(String(s.fleet_share)) + '% of fleet runs' : ''})</span>`
         : (s.fires_day != null ? esc(String(s.fires_day)) + ' in the last 24h' : '<span class="sx-dim">not reported</span>')],
@@ -39078,8 +39079,8 @@ async function skipSchedule(id) {
   // that can be checked against the card.
   if (d.next_run) {
     showToast(d.skipped
-      ? 'Skipped ' + _schedWhen(d.skipped) + ' — next ' + _schedWhen(d.next_run)
-      : 'Skipped → next ' + relTime(d.next_run));
+      ? 'Skipped ' + _schedWhen(d.skipped_ms || d.skipped) + ' — next ' + _schedWhen(d.next_run_ms || d.next_run)
+      : 'Skipped → next ' + relTime(d.next_run_ms || d.next_run));
   } else {
     showToast('Skip returned no next occurrence');
   }
@@ -39089,7 +39090,7 @@ async function skipSchedule(id) {
 // time. `relTime` alone collapses today and next Tuesday into "in 3h"-ish
 // shapes; the clock time is what a user matches against the schedule.
 function _schedWhen(s) {
-  const d = new Date(String(s).replace(' ', 'T'));
+  const d = typeof s === 'number' ? new Date(s) : new Date(String(s).replace(' ', 'T'));
   if (isNaN(d)) return String(s);
   const today = new Date();
   const sameDay = d.toDateString() === today.toDateString();
@@ -39127,7 +39128,7 @@ async function toggleSchedEnabled(id, enabled) {
   if (r) {
     const s = (schedules || []).find(x => x.id === id);
     showToast((enabled ? 'Resumed ' : 'Paused ') + id
-      + (enabled && s && s.next_run ? ', next run ' + _schedWhen(s.next_run) : ''));
+      + (enabled && s && s.next_run ? ', next run ' + _schedWhen(s.next_run_ms || s.next_run) : ''));
   }
 }
 
@@ -44307,7 +44308,7 @@ function _fcGetEvents() {
       out.push({
         id: 'sched-' + s.id,
         title: '⏰ ' + s.title,
-        start: s.next_run,
+        start: s.next_run_ms ? new Date(s.next_run_ms) : s.next_run,
         allDay: !s.next_run.includes('T'),
         backgroundColor: 'rgba(163,113,247,0.15)',
         borderColor: '#a855f7',

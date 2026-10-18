@@ -30,6 +30,20 @@ as_user() { runuser -u "$USER_NAME" -- env HOME="$HOME_DIR" "$@"; }
 ucl() { as_user XDG_RUNTIME_DIR="/run/user/$UID_N" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$UID_N/bus" systemctl --user "$@"; }
 say() { logger -t amux-update -- "$*"; echo "$*"; }
 health() { curl -sk --max-time 5 https://127.0.0.1:8824/health; }
+
+# Codex runs every worker command inside its own bubblewrap sandbox, which needs an unprivileged
+# user namespace. Ubuntu 24.04 blocks those through AppArmor, so on a Cloud server every Codex
+# command failed, even `pwd` ("bwrap: loopback: Failed RTM_NEWADDR", codex e2e round 3, C6-3).
+# The server is single tenant, so allow them and let Codex's sandbox work.
+USERNS=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+if [[ -f "$USERNS" && "$(cat "$USERNS")" != 0 ]]; then
+  echo 'kernel.apparmor_restrict_unprivileged_userns = 0' > /etc/sysctl.d/60-amux-codex-sandbox.conf
+  if sysctl -q -p /etc/sysctl.d/60-amux-codex-sandbox.conf; then
+    say "verdict=userns_allowed for the Codex sandbox"
+  else
+    say "verdict=userns_allow_failed Codex workers cannot run commands until user namespaces are allowed"
+  fi
+fi
 commit_of() { health | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("commit",""))
 except Exception: print("")'; }
