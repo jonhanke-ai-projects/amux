@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -28,17 +28,26 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux a Cursor alternative?","acceptedAnswer":{"@type":"Answer","text":"amux is not a direct replacement for Cursor — they solve different problems. Cursor is an AI-powered IDE for interactive coding (completions, chat, single-agent refactoring). amux is a headless orchestrator for running 10–50 AI coding agents in parallel, overnight, unattended. Most developers who use amux also use an IDE like Cursor for interactive work."}},{"@type":"Question","name":"Can Cursor run multiple agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent runs one autonomous agent per window. To run 10 agents in parallel, you would need 10 open Cursor windows with no shared coordination. amux is purpose-built for parallel agents: it launches dozens of Claude Code, Codex CLI, or Gemini CLI sessions simultaneously, with a shared kanban board for task coordination and a self-healing watchdog that keeps them running overnight."}},{"@type":"Question","name":"Does amux work with Cursor?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux and Cursor complement each other. Many developers use Cursor for interactive coding during the day (Tab completions, Cursor Chat, quick agent fixes) and amux for overnight batch work (running 10–50 agents to generate tests, refactor modules, or review PRs across a large codebase). They operate at different moments in the development workflow."}},{"@type":"Question","name":"What is the difference between amux and Cursor Agent?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent is a single autonomous agent per Cursor window. It can plan, edit files, and run terminal commands, but it requires Cursor to be open and running, supports only one agent at a time, and has no self-healing — if the agent crashes overnight, it stays crashed until you restart it manually. amux runs agents as persistent tmux sessions — 10, 20, or 50 simultaneously — with a watchdog that auto-compacts context, restarts crashed sessions, and replays the last message, so they keep running while you sleep."}},{"@type":"Question","name":"Which is better for overnight batch coding jobs?","acceptedAnswer":{"@type":"Answer","text":"amux. Its core use case is running AI coding agents overnight while you sleep. The self-healing watchdog auto-compacts context when agents near their limit, restarts crashed sessions, and replays the last message so no work is lost. Cursor Agent is not designed for unattended overnight operation — it requires the IDE to be open and running. amux lets you queue 50 tasks, close your laptop, and wake up to finished pull requests."}}]}</script>
 
+  <link rel="stylesheet" href="/nav.css">
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
       <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
 
@@ -559,7 +568,7 @@
         <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject
 amux serve  # → https://localhost:8824</code></pre>
-        <p style="font-size:0.85rem;color:var(--fg-mute,#8892a4);margin-top:0.5rem">Also available via: <code>pipx install amux</code> &nbsp;|&nbsp; <code>uvx amux serve</code></p>
+        <p style="font-size:0.85rem;color:var(--fg-mute,var(--fg-mute));margin-top:0.5rem">Also available via: <code>pipx install amux</code> &nbsp;|&nbsp; <code>uvx amux serve</code></p>
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       </div>
     </section>
