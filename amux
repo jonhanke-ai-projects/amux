@@ -6215,6 +6215,7 @@ ${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${R
 ${BOLD}Boundaries and resources:${RESET}
   amux boundaries [--json]       The worker boundaries (boundaries.toml), their guard, 24h firings
   amux resources [--worker W]    Machine capacity and pressure, and what this worker uses
+  amux requests [W|--all] [--open] The owner's requests to a worker: open, on main, live, or closed
 
 ${BOLD}Urgent owner alert (USE SPARINGLY — push + iMessage to the owner):${RESET}
   amux alert "message" [reason]  Fire an immediate alert to the amux owner
@@ -8130,6 +8131,192 @@ LAND_BEHAVIOR_VERSION="2026-10-08.55"
 #   - local-only commits refuse unless each is patch-equivalent on origin
 #   - `git read-tree -m -u HEAD <origin>` carries uncommitted edits forward and
 #     refuses, touching nothing, when one sits on a path origin changed
+# cmd_requests: every owner request to a worker, and whether it reached main.
+# Ethan, 2026-10-17: "figure out why these messages didnt result in pushes to
+# main e2e and fix the harness". An audit of 304 owner messages to amux-group
+# workers found ~45 requests with no commit on origin/main: parked in backlog
+# cards nobody dispatched, sent to isolated workers that keep no ledger,
+# committed but unpushed, or left in an open PR. Nothing recorded a request as
+# open, so nobody (the worker, Ethan, or a later turn) could see what was owed.
+# A request is LANDED when a commit on origin/main names it (`Amux-Request:
+# MSG-<id>` trailer, or MSG-<id> anywhere in the message), LIVE when that commit
+# is in the running build, CLOSED when someone closed it with a reason. All of
+# it is computed from the message history, git and /health; no model call.
+cmd_requests() {
+  local days=7 only_open="" raw="" all="" workers=()
+  if [[ "${1:-}" == "close" ]]; then
+    shift
+    local sha=""
+    if [[ "${1:-}" == "--sha" ]]; then sha="${2:-}"; shift 2; fi
+    local id="${1:-}" reason="${*:2}"
+    [[ "$id" =~ ^(MSG-)?[0-9]+$ ]] && [[ -n "$reason" ]] || die "usage: amux requests close [--sha <commit>] MSG-<id> <reason>"
+    python3 - "${AMUX_HOME:-$HOME/.amux}/requests-closed.json" "${id#MSG-}" "$reason" "${AMUX_SESSION:-owner}" "$sha" <<'PY'
+import json, os, sys, time, tempfile
+path, mid, reason, who, sha = sys.argv[1:6]
+try:
+    data = json.load(open(path))
+except (OSError, ValueError):
+    data = {}
+data[mid] = {"reason": reason, "by": who, "at": int(time.time())}
+if sha:
+    data[mid]["sha"] = sha  # status stays computed: on-main or live from git
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=1)
+os.replace(tmp, path)
+print(("linked MSG-%s to %s: %s" % (mid, sha, reason)) if sha else ("closed MSG-%s: %s" % (mid, reason)))
+PY
+    return $?
+  fi
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --days)  days="${2:-7}"; shift 2 ;;
+      --open)  only_open=1; shift ;;
+      --json)  raw=1; shift ;;
+      --all)   all=1; shift ;;
+      -h|--help)
+        cat <<'HELP'
+Usage: amux requests [<worker>...|--all] [--days N] [--open] [--json]
+       amux requests close [--sha <commit>] MSG-<id> <reason>
+
+The owner's requests to a worker (default: $AMUX_SESSION) and where each one
+stands: open, on main, live (in the running build), or closed.
+
+A request is landed when a commit on origin/main of the worker's repo names it:
+put `Amux-Request: MSG-<id>` in the commit message (several ids: comma-separated),
+or cite MSG-<id> in the body. A commit that forgot to cite it: link it with
+`close --sha <commit>`; it still shows as on main or live, checked against git.
+Close one that needs no commit (answered, declined, done outside git) with a
+reason. Acks like "continue" or "ok" are not requests.
+HELP
+        return 0 ;;
+      -*) die "amux requests: unknown option $1" ;;
+      *) workers+=("$1"); shift ;;
+    esac
+  done
+  [[ ${#workers[@]} -eq 0 && -z "$all" ]] && workers=("${AMUX_SESSION:-}")
+  [[ -z "$all" && -z "${workers[0]:-}" ]] && die "amux requests: name a worker (or --all); \$AMUX_SESSION is empty"
+  AMUX_API="$AMUX_API" python3 - "$days" "$only_open" "$raw" "$all" "${AMUX_HOME:-$HOME/.amux}/requests-closed.json" ${workers[@]+"${workers[@]}"} <<'PY'
+import json, os, re, subprocess, sys, time
+days, only_open, raw, all_, closed_path = sys.argv[1:6]
+days = float(days)
+api = os.environ.get("AMUX_API", "https://localhost:8824")
+def get(path):
+    out = subprocess.run(["curl", "-sk", "--max-time", "30", api + path], capture_output=True, text=True).stdout
+    return json.loads(out) if out.strip() else None
+sessions = {s["name"]: s for s in (get("/api/sessions") or [])}
+workers = sorted(n for n, s in sessions.items() if "ephemeral" not in (s.get("tags") or [])) if all_ else sys.argv[6:]
+try:
+    closed = json.load(open(closed_path))
+except (OSError, ValueError):
+    closed = {}
+build = ((get("/health") or {}).get("commit") or "")
+ACK = re.compile(r"^\s*(continue|go|go on|keep going|ok(ay)?|k|yes|yep|y|no|nope|sure|thanks?( you)?|ty|done|proceed|do it|lgtm|nice|great|cool|good)\W*$", re.I)
+landed_by_repo, stale = {}, []
+def landed(repo):
+    # Keyed by the repository, not the worktree: twelve worktrees of one repo
+    # are one fetch and one log (a fleet-wide run took 13.6 minutes without it).
+    key = repo
+    if repo and os.path.isdir(repo):
+        key = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True).stdout.strip() or repo
+    if key in landed_by_repo:
+        return landed_by_repo[key]
+    m = {}
+    fetched = os.path.join(key, "FETCH_HEAD")
+    fresh = os.path.exists(fetched) and time.time() - os.path.getmtime(fetched) < 600
+    if repo and os.path.isdir(repo) and not fresh:
+        try:
+            subprocess.run(["git", "-C", repo, "fetch", "-q", "origin", "main"], capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            stale.append(repo)  # origin/main as last fetched; said in the summary
+    if repo and os.path.isdir(repo):
+        log = subprocess.run(["git", "-C", repo, "log", "origin/main", "--since=%d days ago" % (days + 3),
+                              "--format=%H%x1f%B%x1e"], capture_output=True, text=True).stdout
+        for rec in log.split("\x1e"):
+            if "\x1f" not in rec:
+                continue
+            sha, body = rec.split("\x1f", 1)
+            for mid in re.findall(r"MSG-(\d+)", body):
+                m.setdefault(mid, sha.strip())
+    landed_by_repo[key] = m
+    return m
+def live(repo, sha):
+    if not build or not os.path.isdir(os.path.join(repo, "crates", "amux-server")):
+        return None
+    return subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, build], capture_output=True).returncode == 0
+now = time.time() * 1000
+rows, dropped, unmeasured = [], 0, []
+# Paged: the server clamps a page to 500 rows (x-amux-limit-clamped), which
+# covered 3.2 of 7 days on 2026-10-17 and silently halved the count.
+owner_hist, offset, cutoff = [], 0, time.time() * 1000 - days * 86400000
+while True:
+    page = get("/api/history?sender=owner&kind=human&limit=500&offset=%d" % offset)
+    if not page:
+        break
+    owner_hist += page
+    offset += len(page)
+    if min(h["ts"] for h in page) < cutoff or offset > 50000:
+        break
+by_session = {}
+for h in owner_hist:
+    by_session.setdefault(h.get("session"), []).append(h)
+for w in workers:
+    s = sessions.get(w)
+    hist = by_session.get(w, []) if owner_hist else get("/api/history?session=%s&limit=2000" % w)
+    if s is None or hist is None:
+        unmeasured.append(w)
+        continue
+    # `worktree` is "0" or "" when unset; the top level, not the worker's
+    # subdirectory, decides which repo and whether it is the amux server.
+    cand = [str(c) for c in (s.get("worktree"), s.get("dir")) if c and os.path.isdir(str(c))]
+    repo = cand[0] if cand else ""
+    if repo:
+        repo = subprocess.run(["git", "-C", repo, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True).stdout.strip() or repo
+    lm = landed(repo)
+    for h in hist:
+        if h.get("session") != w or h.get("sender") != "owner" or h.get("kind") != "human":
+            continue
+        if now - h["ts"] > days * 86400000:
+            continue
+        text = (h.get("text") or "").strip()
+        if len(text) < 4 or ACK.match(text):
+            dropped += 1
+            continue
+        mid = str(h["id"])
+        sha = lm.get(mid) or (closed.get(mid) or {}).get("sha")
+        if sha:
+            ok = subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, "origin/main"], capture_output=True).returncode == 0
+            if not ok:
+                sha = None  # a linked sha that is not on origin/main lands nothing
+        if mid in closed and not sha:
+            st, ev = "closed", closed[mid]["reason"]
+        elif sha:
+            lv = live(repo, sha)
+            st, ev = ("live" if lv else "on-main") if lv is not None else "on-main", sha[:9]
+        else:
+            st, ev = "open", ""
+        rows.append({"worker": w, "id": "MSG-" + mid, "age_h": round((now - h["ts"]) / 3600000, 1),
+                     "status": st, "evidence": ev, "repo": repo, "isolated": bool(s.get("isolated")),
+                     "text": re.sub(r"\s+", " ", text)[:200]})
+counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "closed")}
+summary = {"measured": not unmeasured, "n_considered": len(rows), "acks_dropped": dropped, "days": days,
+           "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
+if only_open:
+    rows = [r for r in rows if r["status"] == "open"]
+if raw:
+    print(json.dumps(dict(summary, requests=rows), indent=1))
+    sys.exit(0)
+order = {"open": 0, "on-main": 1, "live": 2, "closed": 3}
+for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"])):
+    print("%-8s %-18s %-10s %6sh  %-10s %s" % (r["status"], r["worker"][:18], r["id"], r["age_h"], r["evidence"][:10], r["text"][:90]))
+print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d closed%s" % (
+    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["closed"],
+    ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
+PY
+}
+
 cmd_sync_checkout() {
   local remote=origin branch="" check=0
   while [ $# -gt 0 ]; do
@@ -9555,6 +9742,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     signal)           shift; cmd_signal "$@" ;;
     land)             shift; cmd_land "$@" ;;
     sync-checkout)    shift; cmd_sync_checkout "$@" ;;
+    requests)         shift; cmd_requests "$@" ;;
     browser|br)      shift; cmd_browser "$@" ;;
     cdp)              shift; cmd_cdp "$@" ;;
     computer|cu)     shift; cmd_computer "$@" ;;
