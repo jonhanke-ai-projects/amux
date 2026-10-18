@@ -730,6 +730,17 @@
     .demo-tab { padding: 8px 12px; font-size: 13px; }
     .cmp th, .cmp td { padding: 12px 10px; font-size: 13px; }
   }
+  .move-note { max-width: 640px; margin: 28px auto 0; text-align: center; color: var(--fg-2); font-size: 15px; }
+  .move-note p { margin: 0; }
+  .move-cmd {
+    display: inline-block; max-width: 100%; overflow-x: auto; margin: 12px 0 0;
+    padding: 12px 16px; text-align: left;
+    border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2);
+    font: 13px/1.7 'JetBrains Mono', ui-monospace, monospace; font-variant-ligatures: none; color: var(--fg);
+  }
+  .move-cmd code { font: inherit; }
+  @media (max-width: 600px) { .move-cmd { font-size: 11px; padding: 10px 12px; } }
+  @media (max-width: 380px) { .move-cmd { font-size: 10px; padding: 10px; } }
 </style>
 <script src="/site.js"></script>
   <link rel="stylesheet" href="/nav.css">
@@ -1028,7 +1039,11 @@
       <a class="start-plan" href="/start/?plan=max"><strong>Max</strong><span class="start-price">$129<small>/mo</small></span><span class="start-spec">16 vCPU &middot; 32 GB RAM</span><span class="start-go">Start with Max &rarr;</span></a>
     </div>
     <p class="start-free reveal">Cloud plans are your own server at yourname.amux.io, running 24/7. Cancel anytime. <a href="/pricing/">Compare plans</a></p>
-    <p class="start-free reveal">Already running amux? Move it in two commands: <code>amux export</code>, then <code>amux import &lt;file&gt; --to https://yourname.amux.io</code>. Your board, schedules and memories come with you.</p>
+    <div class="move-note reveal">
+      <p>Already running amux? Move it to Cloud with your board, schedules and memories.</p>
+      <pre class="move-cmd"><code>amux export
+amux import &lt;file&gt; --to https://yourname.amux.io</code></pre>
+    </div>
   </div>
 </section>
 
