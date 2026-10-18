@@ -356,6 +356,12 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
 fi
 chown "$USER_NAME:$USER_NAME" "$CS" "$CJ"
 
+# Claude status hooks, as install.sh registers them, so workers report their state from the first
+# launch (update.sh re-applies this hourly and says why Codex is left out).
+as_user python3 "$SRC/scripts/hooks/install-native-status-hooks.py" --provider claude \
+  --settings "$HOME_DIR/.claude/settings.json" --script "$HOME_DIR/.amux/native-status.py" >/dev/null \
+  || log "WARN: Claude status hooks not installed"
+
 # ── Server as a systemd user unit, from the same template install.sh uses ──
 UNIT_DIR="$HOME_DIR/.config/systemd/user"
 install -d -o "$USER_NAME" -g "$USER_NAME" "$UNIT_DIR"

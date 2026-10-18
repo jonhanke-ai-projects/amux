@@ -89,6 +89,21 @@ if [[ -f "$SRC/cloud/desktop/door.py" ]] && ! cmp -s "$SRC/cloud/desktop/door.py
   systemctl restart amux-door && say "door.py updated from the checkout"
 fi
 
+# Claude status hooks, as install.sh registers them on a local install. Without them no Claude
+# worker reports its state and its lane reads "unknown" (codex e2e round 3: the first worker never
+# got its start prompt). Idempotent: the installer replaces only amux's own entries. Codex hooks are
+# left out on purpose: Codex holds new hooks behind a "Hooks need review" screen until a person
+# trusts them, which would stop every new Codex worker; its lanes are read from the screen instead.
+HOOKS="$SRC/scripts/hooks/install-native-status-hooks.py"
+if [[ -f "$HOOKS" ]]; then
+  if as_user python3 "$HOOKS" --provider claude --settings "$HOME_DIR/.claude/settings.json" \
+      --script "$HOME_DIR/.amux/native-status.py" >/dev/null; then
+    say "verdict=status_hooks_installed provider=claude"
+  else
+    say "verdict=status_hooks_install_failed provider=claude workers will not report state"
+  fi
+fi
+
 # Config fixes that bootstrap.sh now writes, applied to servers bootstrapped before them. Each is
 # idempotent, validated before it is used, and reverted if Caddy rejects it.
 CF=/etc/caddy/Caddyfile

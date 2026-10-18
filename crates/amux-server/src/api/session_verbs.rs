@@ -2964,7 +2964,8 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     // continues in its background terminal. Its provider-owned active row is
     // already parsed structurally by the adapter (including adjacency to the
     // newest prompt); reuse it so quoted prose cannot become activity.
-    if crate::backend::adapter::codex_pane_generation_state(&clean) == Some(true) {
+    let codex_state = crate::backend::adapter::codex_pane_generation_state(&clean);
+    if codex_state == Some(true) {
         return "active".into();
     }
     let reading_re = cached_re!(r"^Reading \d+ file");
@@ -2986,7 +2987,14 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
         return "active".into();
     }
     // 0. Active spinner, wide window.
-    for l in lines[n.saturating_sub(30)..].iter().rev() {
+    // Codex's own footer says it is idle, so glyph guesses below must not
+    // overrule it: Codex 0.163 draws its welcome logo in braille, and a line
+    // starting with a braille character reads as a spinner. Every freshly
+    // started Codex worker was "active" until its logo scrolled away, and its
+    // start prompt waited out the 10 minute steering deadline (amux Cloud
+    // e2e, 2026-10-18).
+    let glyph_lines = if codex_state == Some(false) { &lines[n..] } else { &lines[n.saturating_sub(30)..] };
+    for l in glyph_lines.iter().rev() {
         let s = l.trim();
         if is_prompt_line(s) {
             continue;
@@ -49597,6 +49605,22 @@ mod composer_state_tests {
             None,
             "a picker is a question, not stuck input"
         );
+    }
+
+    #[test]
+    fn codex_0163_welcome_logo_is_not_a_spinner() {
+        // A just-started Codex 0.163 worker shows its braille welcome logo over
+        // an idle composer. The braille spinner rule read the logo as a turn in
+        // flight, so the worker showed active and its start prompt waited 10
+        // minutes (amux Cloud e2e, builder3, 2026-10-18).
+        let frame = include_str!("../../tests/fixtures/boundary/codex-0.163-welcome-logo-idle.txt");
+        assert!(strip_ansi(frame).lines().any(|l| l.trim().starts_with('\u{28fe}')), "fixture carries the logo");
+        assert_eq!(crate::backend::adapter::codex_pane_generation_state(frame), Some(false));
+        assert_ne!(detect_claude_status(frame), "active", "the logo is not a spinner");
+        assert!(pane_is_at_boundary(frame));
+        // A real Codex turn on the same screen still reads active.
+        let busy = frame.replace("\u{1b}[1m›\u{1b}[0m", "• Working (3s • esc to interrupt)\n\u{1b}[1m›\u{1b}[0m");
+        assert_eq!(detect_claude_status(&busy), "active");
     }
 
     #[test]
