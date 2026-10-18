@@ -158,5 +158,20 @@ expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) is None, "an 
 expect(kc[(rot.CRED_SVC, rot.CRED_ACCT)] == before and rot.current_email() == "b@x",
        "and the previous login is restored")
 
+
+# Nothing under the preempt line: the roomiest account wins over the
+# soonest-resetting nearly full one.
+rows = [row("a", 99, 26, "2026-10-17T21:00:00-04:00"), row("b", 53, 95, "2026-10-23T03:00:00-04:00"),
+        row("c", 0, 90, "2026-10-24T02:00:00-04:00")]
+rows.sort(key=lambda r: (not r["usable"], r["weekly_resets"]))
+t2, why = rot.decide("a", rows, {"switched_at": 0})
+expect(t2 == "c", f"spent current takes the roomiest target, got {(t2, why)}")
+
+# A working browser sign-in clears backoffs caused by the browser, and keeps
+# the one caused by an unreadable sign-in link.
+st = {"switch_failures": {"h@x": [1, 2, 3], "m@x": [4, 4, 4], "t@x": [5]}, "account_failures": ["m@x"]}
+cleared = rot.forgive_browser_failures(st, "t@x")
+expect(cleared == ["h@x"] and list(st["switch_failures"]) == ["m@x"], f"browser failures forgiven, got {st}")
+
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

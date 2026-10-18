@@ -403,6 +403,22 @@ def note_failure(times, steps, at_s=None):
     return times
 
 
+def forgive_browser_failures(state, target):
+    """After a browser sign-in works, drop the backoff of every account whose
+    failures were the browser's, not the account's. 2026-10-17: the sign-in
+    page looped for every account from 19:03 to 19:22, three failures put
+    hello@amux.io (76 points free) in a 6-hour backoff, and two later sign-ins
+    to other accounts worked while the rotator kept picking accounts at 95%.
+    An unreadable sign-in link is the account's own fault and keeps its backoff."""
+    fails = state.get("switch_failures") or {}
+    own = set(state.get("account_failures") or [])
+    cleared = sorted(e for e in fails if e == target or e not in own)
+    for e in cleared:
+        fails.pop(e, None)
+    state["account_failures"] = sorted(own - {target})
+    return [e for e in cleared if e != target]
+
+
 def backed_off(state, at_s=None):
     """Accounts with FAIL_BACKOFF_N failed switches inside FAIL_BACKOFF_S. Each
     failed switch costs ~4 minutes of a 5-minute tick and holds every deploy
@@ -445,7 +461,10 @@ def decide(current, rows, state, at=None, unreachable=()):
     # tick, so prefer accounts under it (2026-10-16: the soonest-expiring account
     # sat at 93% weekly and was picked first, which would flap straight back).
     under = [r for r in rows if r["usable"] and max(r["five_hour"] or 0, r["weekly"] or 0) < PREEMPT_AT]
-    best = next(iter(under), None) or next((r for r in rows if r["usable"]), None)
+    # With nothing under it, take the roomiest: an account with 4 points left
+    # is spent within minutes and costs another sign-in (2026-10-17: 95% weekly
+    # joinmixpeek was picked for its early reset and hit 99% three minutes later).
+    best = next(iter(under), None) or max((r for r in rows if r["usable"]), key=lambda r: r["headroom"], default=None)
     cur = next((r for r in rows if r["email"] == current), None)
     if best is None:
         return None, "no_usable_account"
@@ -1222,10 +1241,10 @@ def _switch(target, reason):
     if ok:
         state = load(STATE, {})
         state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
-        (state.get("switch_failures") or {}).pop(target, None)
+        cleared = forgive_browser_failures(state, target)
         save(STATE, state)
         print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
-                  elapsed_s=elapsed, steps=steps))
+                  elapsed_s=elapsed, steps=steps, backoff_cleared=cleared))
         capture_login()
         resume_stranded(force=True)
         time.sleep(5)
@@ -1235,6 +1254,12 @@ def _switch(target, reason):
     state = load(STATE, {})
     fails = state.setdefault("switch_failures", {})
     fails[target] = note_failure(fails.get(target, []), steps)
+    marked = set(state.get("account_failures") or [])
+    if any("unreadable" in str(x) for x in steps):
+        marked.add(target)
+    else:
+        marked.discard(target)
+    state["account_failures"] = sorted(marked)
     save(STATE, state)
     print(log("claude_rotate_switch_failed", measured=True, target=target, still=after, reason=reason,
               elapsed_s=elapsed, steps=steps, cli_tail=tail, recent_failures=len(fails[target]),
