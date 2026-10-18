@@ -111,6 +111,28 @@ class Policy(unittest.TestCase):
         setup({"mix": acct(86, h(1), 22, h(160)), "join": acct(30, h(1), 50, h(140))})
         self.assertEqual(cr.decide("mix", cr.rank(NOW), {}, NOW), ("join", "preempt_limit"))
 
+    def test_tick_is_off_until_opted_in(self):
+        setup({"join": acct(100, h(1), 52, h(140)), "vec": acct(0, None, 80, h(100))}, current="join")
+        cr.save(cr.STATE, {})
+        calls, real = [], (cr.switch, cr.probe)
+        cr.switch = lambda t, r: calls.append(t) or 0
+        cr.probe = lambda: None
+        try:
+            with redirect_stdout(io.StringIO()):
+                cr.main(["x", "off"])
+                cr.cmd_tick()
+                self.assertEqual(calls, [])
+                os.environ["CLAUDE_ROTATE_ENABLED"] = "1"
+                self.assertTrue(cr.enabled())
+                os.environ["CLAUDE_ROTATE_ENABLED"] = "0"
+                cr.main(["x", "on"])
+                self.assertFalse(cr.enabled())
+                del os.environ["CLAUDE_ROTATE_ENABLED"]
+                self.assertTrue(cr.enabled())
+        finally:
+            cr.switch, cr.probe = real
+            os.environ.pop("CLAUDE_ROTATE_ENABLED", None)
+
     def test_exhausted_tick_falls_back_to_the_next_account(self):
         setup({"join": acct(100, h(1), 52, h(140)), "vec": acct(0, None, 80, h(100)),
                "mix": acct(10, h(3), 30, h(160))}, current="join")
@@ -122,6 +144,7 @@ class Policy(unittest.TestCase):
         cr.rank = lambda at=None: real[3](NOW)
         try:
             with redirect_stdout(io.StringIO()):
+                cr.main(["x", "on"])
                 cr.cmd_tick()
         finally:
             cr.switch, cr.cli_email, cr.probe, cr.rank = real
@@ -158,8 +181,9 @@ class Policy(unittest.TestCase):
             for f in ("last-trigger",):
                 try: os.remove(os.path.join(cr.DIR, f))
                 except OSError: pass
-            self.assertFalse(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 96}))
-            self.assertTrue(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 97.5}))
+            # Fires at MIN_HEADROOM (4%) remaining, i.e. 96% used.
+            self.assertFalse(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 95}))
+            self.assertTrue(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 96.5}))
             self.assertFalse(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 99}))
             self.assertEqual(len(calls), 1)
             self.assertIn("tick", calls[0][0])

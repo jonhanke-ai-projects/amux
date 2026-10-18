@@ -16,6 +16,13 @@ Subcommands:
                  accounts, email sign-in link read from the forwarded inbox.
   record EMAIL 5H 5H_RESET WK WK_RESET   Save a reading by hand (ISO times).
   status         Show the current account, its reading and the last switch.
+  on | off       Opt this machine in to (or out of) automatic switching.
+
+Automatic switching is opt-in and off by default: tick only switches when
+~/.amux/claude-usage/enabled exists (`on` writes it; the installer only with
+CLAUDE_ROTATE_ENABLE=1)
+or CLAUDE_ROTATE_ENABLED=1. CLAUDE_ROTATE_ENABLED=0 or a `paused` file there
+turns it off even when enabled. Manual `switch EMAIL` always works.
 
 State lives in ~/.amux/claude-usage (accounts.json, state.json). Every decision
 is one JSON line in ~/.amux/logs/claude-rotate.log with a `verdict`.
@@ -673,12 +680,27 @@ def install_drift():
     return fields
 
 
+ENABLED_FILE = os.path.join(DIR, "enabled")
+
+
+def enabled():
+    """Opt-in, default off (Ethan, 2026-10-18): the env var or the marker file."""
+    env = os.environ.get("CLAUDE_ROTATE_ENABLED")
+    if env is not None:
+        return env == "1"
+    return os.path.exists(ENABLED_FILE)
+
+
 def cmd_tick():
     try:
         install_drift()
     except Exception as e:
         log("claude_rotate_install_drift", measured=False, why_unmeasured=str(e)[:200])
-    if os.environ.get("CLAUDE_ROTATE_ENABLED", "1") == "0" or os.path.exists(os.path.join(DIR, "paused")):
+    if not enabled():
+        print(log("claude_rotate_disabled", measured=False,
+                  why_unmeasured="automatic switching is opt-in; run `claude-rotate.py on` to enable"))
+        return 0
+    if os.environ.get("CLAUDE_ROTATE_ENABLED") == "0" or os.path.exists(os.path.join(DIR, "paused")):
         print(log("claude_rotate_paused", measured=False, why_unmeasured="paused"))
         return 0
     if not os.path.exists(LOCK) or not _switch_running():
@@ -1384,6 +1406,14 @@ def main(argv):
         return 0
     if cmd == "tick":
         return cmd_tick()
+    if cmd in ("on", "off"):
+        os.makedirs(DIR, exist_ok=True)
+        if cmd == "on":
+            open(ENABLED_FILE, "a").close()
+        elif os.path.exists(ENABLED_FILE):
+            os.remove(ENABLED_FILE)
+        print(log("claude_rotate_" + ("enabled" if cmd == "on" else "disabled"), measured=True, n_considered=1, file=ENABLED_FILE))
+        return 0
     if cmd == "probe":
         return 0 if probe() else 1
     if cmd == "switch" and len(argv) == 3:

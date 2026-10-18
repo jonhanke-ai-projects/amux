@@ -793,6 +793,9 @@ jobs:
           ./scripts/test-authority-launcher-sync.sh
           ./scripts/test-build-shell-run-defer.sh
           python3 scripts/test-claude-rotate.py
+          # Policy unit tests, including opt-in (default off). `|| exit 1`: this
+          # step has no -e, so a middle line's failure would otherwise not count.
+          python3 scripts/tests/test_claude_rotate.py || exit 1
           ./scripts/test-main-ci-watch.sh
           ./scripts/test-board-refusal-why.sh
           # A replacement is complete and signed before its one visible rename;
