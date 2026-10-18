@@ -729,6 +729,15 @@ fn prefixed_message_id(raw: &str) -> Option<i64> {
 const HISTORY_DEFAULT_LIMIT: i64 = 500;
 const HISTORY_MAX_LIMIT: i64 = 500;
 
+/// The Messages ledger's retention in days, read from the same spec the
+/// storage sweep enforces, so the published bound cannot disagree with it.
+fn history_retain_days() -> Option<f64> {
+    crate::runtime_jobs::storage::SPECS
+        .iter()
+        .find(|s| s.table == "cmd_history")
+        .map(crate::runtime_jobs::storage::retain_days)
+}
+
 async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>) -> Response {
     let store = state.store.clone();
     // An unreadable bound is refused, never dropped: dropping it is the
@@ -904,6 +913,20 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                         Value::Array(rows.into_iter().map(|(s, c)| json!({"sender": s, "count": c})).collect()),
                     );
                 }
+                // WHERE THIS HISTORY BEGINS, AND WHY (gs12 review, 2026-10-18).
+                // The ledger used to keep only 200 rows per session, so a busy
+                // worker's Messages tab silently started days into its life.
+                // The age sweep is now the only bound; say what it is beside
+                // the oldest row, so a short history reads as "began here" or
+                // "retention cut it here" rather than as the whole story.
+                let oldest: Option<i64> = if session.is_empty() {
+                    conn.query_row("SELECT MIN(ts) FROM cmd_history", [], |r| r.get(0))?
+                } else {
+                    conn.query_row("SELECT MIN(ts) FROM cmd_history WHERE session=?1", [&session], |r| r.get(0))?
+                };
+                out.insert("oldest_ts".into(), json!(oldest));
+                out.insert("retain_days".into(), json!(history_retain_days()));
+                out.insert("per_session_cap".into(), Value::Null);
                 return Ok((Value::Object(out), None));
             }
 
@@ -2595,6 +2618,12 @@ mod tests {
         assert_eq!(counts["human"], json!(2));
         assert_eq!(counts["amux"], json!(1));
         assert_eq!(counts["all"], json!(3));
+        // Where the session's history begins, and the only bound on it.
+        assert!(counts["oldest_ts"].as_i64().is_some(), "{counts}");
+        assert!(counts["retain_days"].as_f64().is_some_and(|d| d > 0.0), "{counts}");
+        assert_eq!(counts["per_session_cap"], Value::Null, "{counts}");
+        let (_, none) = send(&app, "GET", "/api/history?counts=1&session=nobody", None).await;
+        assert_eq!(none["oldest_ts"], Value::Null, "no rows: no begin, never a 0 epoch");
 
         // sessions=1: dropdown derived from the STORE (AMUX-2548).
         let (_, sess) = send(&app, "GET", "/api/history?sessions=1", None).await;

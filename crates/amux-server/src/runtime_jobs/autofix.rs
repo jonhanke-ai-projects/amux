@@ -8663,6 +8663,44 @@ pub(crate) fn should_refresh_with_counts(
     escalating || now - updated_at >= min_secs
 }
 
+/// Why `worker` cannot read its own board, or `None` when it can.
+///
+/// An isolated worker has no board (CLAUDE.md "Isolated workers"; the board
+/// API answers it 403 `isolated_no_board`), and a worker with every Board tab
+/// switch off has none either. An admin-group isolated worker keeps its board.
+fn board_absence(worker: &str) -> Option<&'static str> {
+    use crate::api::session_verbs::{is_admin_worker, session_is_isolated};
+    if session_is_isolated(worker) && !is_admin_worker(worker) {
+        return Some("is isolated and has no board");
+    }
+    if crate::api::board_lifecycle::board_unused(worker) {
+        return Some("has every board switch off");
+    }
+    None
+}
+
+/// NEVER FILE ON A BOARD ITS OWNER CANNOT SEE (gs12 review, 2026-10-18).
+/// Autofix filed MG-2063, MG-2092 and MG-2123 on mxp-gs12's board after the
+/// board started refusing that isolated worker; it could not read them, and
+/// MG-2063 was auto-discarded after 74 h unread. Such a finding goes to the
+/// fixer lane (`AMUX_AUTOFIX_SESSION`), or unowned on the shared board when
+/// that lane is unset or boardless too. Nothing is sent to the worker:
+/// isolation forbids injected prompts. Returns the owner to file under and,
+/// when rerouted, the worker it came from and why.
+fn boardless_reroute(
+    owner: &str,
+    absence: impl Fn(&str) -> Option<&'static str>,
+    fixer: &str,
+) -> (String, Option<(String, &'static str)>) {
+    let owner = owner.trim();
+    let Some(why) = (!owner.is_empty()).then(|| absence(owner)).flatten() else {
+        return (owner.to_string(), None);
+    };
+    let fixer = fixer.trim();
+    let to = if fixer.is_empty() || fixer == owner || absence(fixer).is_some() { "" } else { fixer };
+    (to.to_string(), Some((owner.to_string(), why)))
+}
+
 async fn file_finding(state: &AppState, f: &Finding) -> anyhow::Result<Option<String>> {
     // PER-TENANT CLOUD: do not drop the server's own health/ops findings onto a
     // customer's board (AMUX-3014). Off by env in the cloud image; on locally
@@ -8729,13 +8767,26 @@ async fn file_finding(state: &AppState, f: &Finding) -> anyhow::Result<Option<St
         }
     }
     let owner = f.owner.clone().unwrap_or_else(fixer_session);
+    let (owner, rerouted) = boardless_reroute(&owner, board_absence, &fixer_session());
+    if let Some((from, why)) = &rerouted {
+        tracing::warn!(detector = %f.signature, from = %from, to = %owner, why, measured = true, n_considered = 1,
+            verdict = "autofix_owner_has_no_board",
+            "autofix: the finding names a worker with no board; filed where it can be read instead");
+    }
     let owner = if owner.trim().is_empty() {
         None
     } else {
         Some(owner)
     };
     let title = truncate(&f.title, 160);
-    let desc = render_desc(f);
+    let desc = match &rerouted {
+        Some((from, why)) => format!(
+            "Routed here from {from}: that worker {why}, so a card on its board is one it can never read. \
+             Nothing was sent to {from}.\n\n{}",
+            render_desc(f)
+        ),
+        None => render_desc(f),
+    };
     let item_type = f.kind.item_type();
     let signature = f.signature.clone();
     let idem = idem_of(&signature);
@@ -9354,6 +9405,26 @@ fn parse_ts(s: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    /// A finding naming a worker with no board is filed where it can be read
+    /// (gs12 review: MG-2063/2092/2123 sat on an isolated worker's board).
+    #[test]
+    fn a_finding_for_a_boardless_worker_is_filed_where_it_can_be_read() {
+        let absence = |w: &str| match w {
+            "raw" => Some("is isolated and has no board"),
+            "off" => Some("has every board switch off"),
+            _ => None,
+        };
+        assert_eq!(super::boardless_reroute("lane", absence, "amux"), ("lane".to_string(), None), "a worker with a board keeps its card");
+        assert_eq!(super::boardless_reroute("", absence, "amux"), (String::new(), None), "unowned stays unowned");
+        let (to, from) = super::boardless_reroute("raw", absence, "amux");
+        assert_eq!(to, "amux");
+        assert_eq!(from, Some(("raw".to_string(), "is isolated and has no board")));
+        assert_eq!(super::boardless_reroute("off", absence, "amux").0, "amux");
+        assert_eq!(super::boardless_reroute("raw", absence, "").0, "", "no fixer lane: unowned on the shared board, never the boardless worker");
+        assert_eq!(super::boardless_reroute("raw", absence, "off").0, "", "a boardless fixer is no better");
+        assert_eq!(super::boardless_reroute("raw", absence, "raw").0, "");
+    }
+
     #[test]
     fn snapshot_listing_requires_a_measured_listing_before_counting_zero() {
         let header = "Snapshots for volume group containing disk /:\n";

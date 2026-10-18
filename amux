@@ -7129,6 +7129,11 @@ cmd_whoami() {
     live_id="${live_id#amux-}"
   fi
   echo "env  AMUX_SESSION : ${env_id:-'(unset)'}"
+  # An isolated worker is launched with AMUX_SESSION unset (it is the hooks'
+  # routing key) and AMUX_ISOLATED_WORKER set to its name, as identity only.
+  if [[ -n "${AMUX_ISOLATED_WORKER:-}" ]]; then
+    echo "isolated worker  : ${AMUX_ISOLATED_WORKER} (identity only; hooks and routing stay off)"
+  fi
   if [[ -n "$live_id" ]]; then
     echo "live tmux pane   : $live_id"
     if [[ -n "$env_id" && "$env_id" != "$live_id" ]]; then

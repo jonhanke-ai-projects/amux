@@ -703,6 +703,26 @@ async fn tick(app: crate::api::AppState) {
                     super::receipts::consume(&home, &name, carried);
                     note_wake(&name, now, "goal keeper");
                 }
+                // IN MESSAGES, LIKE A SCHEDULE FIRE (gs12 review, 2026-10-18):
+                // 357 delivered continues into mxp-gs12 were in no history the
+                // owner reads. Recorded only once delivery is confirmed, the
+                // scheduler's rule, so the tab never shows a send that did not land.
+                let recorded = goal_continue_recordable(&out);
+                if recorded {
+                    crate::api::session_verbs::cmd_hist_record_full(
+                        &app,
+                        &name,
+                        &text,
+                        "system",
+                        GOAL_KEEPER_ORIGIN,
+                        true,
+                        crate::api::session_verbs::DeliveryMeta::direct(),
+                    )
+                    .await;
+                }
+                tracing::info!(target: "amux::goal_keeper", session = %name, recorded, measured = true, n_considered = 1,
+                    verdict = if recorded { "goal_continue_recorded" } else { "goal_continue_not_recorded" },
+                    "goal keeper continue and its Messages record");
                 if let Ok(mut map) = state().lock() {
                     if let Some(k) = map.get_mut(&name) {
                         k.last_sent = now;
@@ -717,6 +737,15 @@ async fn tick(app: crate::api::AppState) {
     tracing::debug!(target: "amux::goal_keeper", measured = true, n_considered = considered, "goal keeper tick");
 }
 
+/// The Messages `origin` of a goal-keeper continue.
+pub const GOAL_KEEPER_ORIGIN: &str = "goal-keeper";
+
+/// A continue goes into Messages only when it landed now: not refused, not
+/// parked on the steering queue, and not read back as unsubmitted.
+pub(crate) fn goal_continue_recordable(out: &crate::api::session_verbs::AutoDelivery) -> bool {
+    !out.refused && out.queue_id.is_none() && out.submitted != Some(false)
+}
+
 pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
     super::spawn_periodic(JOB, 60, move || {
         let app = app.clone();
@@ -726,6 +755,24 @@ pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
 
 #[cfg(test)]
 mod tests {
+    /// Only a continue that landed now is written to Messages.
+    #[test]
+    fn only_a_landed_continue_is_recorded_in_messages() {
+        use crate::api::session_verbs::AutoDelivery;
+        let d = |submitted: Option<bool>, queue: Option<&str>, refused: bool| AutoDelivery {
+            message: String::new(),
+            submitted,
+            submission: "",
+            queue_id: queue.map(str::to_string),
+            refused,
+        };
+        assert!(super::goal_continue_recordable(&d(Some(true), None, false)));
+        assert!(super::goal_continue_recordable(&d(None, None, false)), "unread composer: delivered, as the scheduler counts it");
+        assert!(!super::goal_continue_recordable(&d(Some(false), None, false)), "not submitted");
+        assert!(!super::goal_continue_recordable(&d(None, Some("q1"), false)), "queued, not landed");
+        assert!(!super::goal_continue_recordable(&d(Some(false), None, true)), "refused");
+    }
+
     /// A worker whose transcript cannot be found says so: an absent field was
     /// read as "no goal" (amux-helper, mxp-gs12, 2026-10-08).
     /// The `random` case: the transcript's last goal_status is unmet, but

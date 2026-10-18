@@ -7020,7 +7020,16 @@ pub(crate) fn redact_secrets(text: &str) -> String {
     .into_owned()
 }
 
-const CMD_HIST_KEEP: i64 = 200;
+// NO PER-SESSION ROW CAP on the Messages ledger (gs12 review, 2026-10-18).
+// The recorder used to keep only the newest 200 rows per session and delete
+// the rest on every insert. mxp-gs12 took 200 messages in four days, so its
+// Messages tab began on day five and the owner's first four days of direction
+// (the /goal handoff, "approve all", the DSAR condition) were gone from the one
+// place the owner reads history. CLAUDE.md requires isolation to preserve
+// owner input and message history, and a busy worker lost it fastest. The age
+// sweep in `runtime_jobs::storage` (`AMUX_CMD_HISTORY_RETAIN_DAYS`, 90 days)
+// is the bound, the same for every session, and `GET /api/history?counts=1`
+// publishes where a session's history now begins and why.
 
 /// How a message actually reached the worker (migration 0014).
 ///
@@ -8079,12 +8088,6 @@ pub(crate) async fn cmd_hist_record_with_id(
                 }
             }
             msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
-            conn.execute(
-                "DELETE FROM cmd_history WHERE session=?1 AND project_group IS NULL AND capture_pending=0 AND ts<?3 \
-                 AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.id=cmd_history.card_id AND i.deleted IS NULL AND i.archived=0 AND i.status NOT IN ('done','verified','discarded','quarantined','cancelled')) AND id NOT IN \
-                 (SELECT id FROM cmd_history WHERE session=?1 ORDER BY ts DESC LIMIT ?2)",
-                rusqlite::params![session, CMD_HIST_KEEP, now_ms-3_600_000],
-            )?;
             // cmd_history is the durable Messages ledger, but this write used
             // to publish no StateEvent. A healthy SSE client therefore had no
             // reason to refetch Messages: the row appeared only after a manual
@@ -16628,7 +16631,9 @@ pub(crate) async fn start_session(
         if isolated {
             tracing::info!(
                 session = %name,
-                "spawn: ISOLATED worker, amux harness suppressed (no AMUX_SESSION/AMUX_URL/AMUX_WORKER env, no --mcp-config); owner peek/send still work, peers cannot discover or target it"
+                identity_env = ISOLATED_IDENTITY_ENV,
+                verdict = "isolated_spawn_identity_only",
+                "spawn: ISOLATED worker, amux harness suppressed (no AMUX_SESSION/AMUX_URL/AMUX_WORKER env, no --mcp-config; its name is in AMUX_ISOLATED_WORKER as identity only); owner peek/send still work, peers cannot discover or target it"
             );
         } else {
             for (key, value) in &harness_env {
@@ -16713,7 +16718,7 @@ pub(crate) async fn start_session(
         String::new()
     };
     let cmd =
-        provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated);
+        provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated.then_some(name));
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -16843,7 +16848,7 @@ pub(crate) async fn start_session(
                     build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)
                         + &rules_opts
                 ),
-                isolated,
+                isolated.then_some(name),
             );
             shell_step!(&cmd_fresh, true);
             for _ in 0..10 {
@@ -17170,15 +17175,29 @@ async fn codex_os_sandbox_probe(bin: &str) -> &'static str {
     }
 }
 
-fn provider_command_in_workspace(work_dir: &str, command: &str, isolated: bool) -> String {
+/// The isolated worker's own name, as identity only (gs12 review, finding 6).
+///
+/// `AMUX_SESSION` stays unset: in this harness it is the ROUTING key. The hooks
+/// switch on it (the shared-checkout guard's land-queue push refusal, the
+/// observed-edits recorder, `hook-report.sh` status posts) and so does every
+/// `amux` command's attribution, which is exactly what CLAUDE.md "Isolated
+/// workers" strips. mxp-gs12 typed `AMUX_SESSION=mxp-gs12` by hand on 246
+/// commands because nothing in its env said who it was. This variable says
+/// so, and nothing in amux keys behaviour on it.
+pub(crate) const ISOLATED_IDENTITY_ENV: &str = "AMUX_ISOLATED_WORKER";
+
+fn provider_command_in_workspace(work_dir: &str, command: &str, isolated_as: Option<&str>) -> String {
     // Not adding routing variables is insufficient: tmux and login profiles
     // can inherit them from the server or a previous managed launch. Scrub at
     // the final invocation, after profile/scoped-env loading, on fresh and
     // resumed launches alike. Provider authentication remains untouched.
-    let scrub = if isolated {
-        "unset AMUX_SESSION AMUX_WORKER AMUX_URL AMUX_API AMUX_API_URL AMUX_HOME CC_HOME TMUX_SESSION_NAME AMUX_AUTH_TOKEN AMUX_TOKEN; "
-    } else {
-        ""
+    let scrub = match isolated_as {
+        Some(name) => format!(
+            "unset AMUX_SESSION AMUX_WORKER AMUX_URL AMUX_API AMUX_API_URL AMUX_HOME CC_HOME TMUX_SESSION_NAME AMUX_AUTH_TOKEN AMUX_TOKEN; \
+             export {ISOLATED_IDENTITY_ENV}={}; ",
+            sh_quote(name)
+        ),
+        None => String::new(),
     };
     crate::backend::tmux::native_shell_launch(&format!("{scrub}cd {} && {command}", sh_quote(work_dir)))
 }
@@ -23208,6 +23227,7 @@ async fn warn_on_stalled_lanes(state: &AppState) {
     };
     let now = now_f64();
     let skips = steer_skips().lock().unwrap().clone();
+    let mut draft_held: Vec<crate::runtime_jobs::draft_hold::Held> = Vec::new();
     for (session, oldest, count, senders) in rows {
         let age = now - oldest;
         if age < steer_stall_warn_s() {
@@ -23222,7 +23242,21 @@ async fn warn_on_stalled_lanes(state: &AppState) {
         // only the order moved.
         let blocked = lane_block_reason(&session).await;
         let bucket = crate::log_dedupe::hour_bucket(now);
-        let cond = blocked.unwrap_or(if crate::api::prompt_block::blocked_now(&session, now) {
+        // A DRAFT HOLD IS ITS OWN CONDITION (gs12 review, finding 7). The
+        // drain refuses to type over text in the composer, so "it should have
+        // been forced through mid-turn" was the wrong sentence for 16 hours of
+        // mxp-gs12 holds. Name it, and hand it to the owner card below.
+        let draft_hold = blocked.is_none() && crate::runtime_jobs::draft_hold::is_draft_hold(&reason);
+        if draft_hold {
+            draft_held.push(crate::runtime_jobs::draft_hold::Held {
+                worker: session.clone(),
+                queued: count,
+                oldest_age_s: age,
+            });
+        }
+        let cond = blocked.unwrap_or(if draft_hold {
+            "composer-draft"
+        } else if crate::api::prompt_block::blocked_now(&session, now) {
             "permission-prompt"
         } else {
             "busy-past-deadline"
@@ -23278,6 +23312,18 @@ async fn warn_on_stalled_lanes(state: &AppState) {
                      provider-reported reset, or after a clockless cap clears, AMUX-4154) or paused by its \
                      owner (delivery resumes on unpause). This is the designed behaviour, not a stall."
                 );
+            } else if draft_hold {
+                tracing::warn!(
+                    session = %session,
+                    queued = count,
+                    oldest_min = (age / 60.0) as i64,
+                    last_skip = %reason,
+                    measured = true,
+                    n_considered = count,
+                    verdict = "steering_held_by_draft",
+                    "steering queue HELD behind a composer draft: amux does not overwrite text in the \
+                     composer; the owner is asked after AMUX_STEER_DRAFT_ALERT_MIN"
+                );
             } else {
                 tracing::warn!(
                     session = %session,
@@ -23311,6 +23357,12 @@ async fn warn_on_stalled_lanes(state: &AppState) {
         // all fires every tick, which is the nag AC-310 was filed about.
         let detail = match blocked {
             Some(r) => block_reason_explain(r, &session),
+            None if draft_hold => format!(
+                "'{session}' has text in its composer that amux will not overwrite: {count} message(s) \
+                 wait behind it, oldest {}m. Send or clear the draft in the worker's terminal and \
+                 delivery resumes on the next pass.",
+                (age / 60.0) as i64
+            ),
             None => format!(
                 "'{session}' is reachable but has not reached a turn boundary — {count} message(s) \
                  waiting, oldest {}m. It should have been forced through mid-turn by now; the last \
@@ -23324,6 +23376,7 @@ async fn warn_on_stalled_lanes(state: &AppState) {
             "oldest_age_s": age as i64,
             "deliverable": blocked.is_none(),
             "blocked_reason": blocked,
+            "held_by": draft_hold.then_some("composer_draft"),
             "last_skip_reason": reason,
             "detail": detail,
         });
@@ -23352,6 +23405,30 @@ async fn warn_on_stalled_lanes(state: &AppState) {
             )
             .await;
         }
+    }
+    reconcile_draft_hold_cards(state, &draft_held, now).await;
+}
+
+/// Keep the owner's draft-hold cards in step with the lanes held right now.
+/// Skips the write entirely once nothing is held and no card can be open, so
+/// an idle fleet costs this nothing per tick. The flag starts true so a
+/// restart closes a card left open by the previous process.
+async fn reconcile_draft_hold_cards(
+    state: &AppState,
+    held: &[crate::runtime_jobs::draft_hold::Held],
+    now: f64,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static MAYBE_OPEN: AtomicBool = AtomicBool::new(true);
+    if held.is_empty() && !MAYBE_OPEN.load(Ordering::Relaxed) {
+        return;
+    }
+    let threshold = crate::runtime_jobs::draft_hold::alert_after_s();
+    match crate::runtime_jobs::draft_hold::reconcile(&state.store, held, threshold, now as i64).await {
+        Ok(_) => MAYBE_OPEN.store(!held.is_empty(), Ordering::Relaxed),
+        Err(error) => tracing::warn!(%error, measured = false, n_considered = held.len(),
+            verdict = "steering_draft_hold_card_failed",
+            "could not update the owner's draft-hold cards; the hold is still in the steering.stalled event"),
     }
 }
 
@@ -28483,7 +28560,17 @@ async fn isolated_peer_refusal(
         StatusCode::FORBIDDEN,
         json!({
             "ok": false, "error": reason, "blocked": "isolated", "code": "isolated_target",
-            "what_to_do": "An isolated worker is reachable only by its owner from the dashboard; no approval can authorize peer delivery.",
+            // NAME EVERY TRUTHFUL PATH (gs12 review, finding 6). This text
+            // said "only from the dashboard", so owner directives to mxp-gs12
+            // were relayed as never-firing `0 0 1 1 *` schedules. The owner's
+            // input also arrives through the worker's own Chat tab and through
+            // any admin-group worker (`speaks_for_owner`).
+            "what_to_do": format!(
+                "An isolated worker takes input only from its owner: the dashboard, its own Chat tab \
+                 ({name}@chat), or a worker in the `{ADMIN_GROUP}` group. To relay an owner directive, send it \
+                 from one of those; a schedule is not a message channel. No approval can authorize peer delivery."
+            ),
+            "owner_paths": [format!("{name}@chat"), format!("group:{ADMIN_GROUP}"), "dashboard"],
         }),
     ))
 }
@@ -29601,8 +29688,23 @@ pub(crate) async fn steer_history_verb(
         .map(|r| now - due_at(r))
         .filter(|age| *age >= 0.0)
         .fold(0.0_f64, f64::max);
+    // The drain's last refusal for this lane, when it was a composer draft
+    // (gs12 review, finding 7): the one hold no turn boundary ends.
+    let draft_held = blocked.is_none()
+        && !out.is_empty()
+        && steer_skips()
+            .lock()
+            .ok()
+            .and_then(|m| m.get(name).map(|(_, r, _)| crate::runtime_jobs::draft_hold::is_draft_hold(r)))
+            .unwrap_or(false);
     let waiting_for = if out.is_empty() || blocked.is_some() {
         None
+    } else if draft_held {
+        Some(
+            "the draft in the worker's composer to be sent or cleared: amux does not overwrite text typed \
+             there. Open the worker's terminal and press Enter or clear it; the owner gets a card after \
+             AMUX_STEER_DRAFT_ALERT_MIN minutes.",
+        )
     } else {
         match steer_delivery_for(state, name, oldest_age).await {
             SteerDelivery::Hold => Some(
@@ -29622,6 +29724,7 @@ pub(crate) async fn steer_history_verb(
         } else {
             waiting_for.map(str::to_owned)
         };
+        row["held_by"] = json!((draft_held && due <= now).then_some("composer_draft"));
         row["waiting_for"] = json!(row_waiting);
         let age = (now - due).max(0.0);
         row["age_s"] = json!(age as i64);
@@ -35109,7 +35212,7 @@ mod tests {
     fn isolated_launch_scrubs_inherited_harness_routing_but_keeps_provider_auth() {
         for isolated in [true, false] {
             let script = super::provider_command_in_workspace(
-                "/", "printf '%s|%s|%s|%s|%s|%s|%s|%s' \"${AMUX_SESSION-unset}\" \"${AMUX_WORKER-unset}\" \"${AMUX_URL-unset}\" \"${AMUX_API-unset}\" \"${AMUX_HOME-unset}\" \"${CC_HOME-unset}\" \"${AMUX_AUTH_TOKEN-unset}\" \"$OPENAI_API_KEY\"", isolated);
+                "/", "printf '%s|%s|%s|%s|%s|%s|%s|%s|%s' \"${AMUX_SESSION-unset}\" \"${AMUX_WORKER-unset}\" \"${AMUX_URL-unset}\" \"${AMUX_API-unset}\" \"${AMUX_HOME-unset}\" \"${CC_HOME-unset}\" \"${AMUX_AUTH_TOKEN-unset}\" \"$OPENAI_API_KEY\" \"${AMUX_ISOLATED_WORKER-unset}\"", isolated.then_some("raw lane"));
             let output = std::process::Command::new("sh")
                 .args(["-c", &script])
                 .envs([
@@ -35126,9 +35229,12 @@ mod tests {
                 .unwrap();
             assert!(output.status.success());
             let routing = if isolated { "unset" } else { "inherited" };
+            // Identity without routing (gs12 review, finding 6): the isolated
+            // worker learns its name, and AMUX_SESSION stays unset.
+            let identity = if isolated { "raw lane" } else { "unset" };
             assert_eq!(
                 String::from_utf8(output.stdout).unwrap(),
-                format!("{}|fixture-auth", [routing; 7].join("|"))
+                format!("{}|fixture-auth|{identity}", [routing; 7].join("|"))
             );
         }
     }
@@ -35144,7 +35250,7 @@ mod tests {
             String::from_utf8(out.stdout).unwrap().trim().to_string()
         };
         assert_eq!(probe(bare), "1", "the fixture must reproduce tmux's inherited translation");
-        let script = super::provider_command_in_workspace("/", bare, false);
+        let script = super::provider_command_in_workspace("/", bare, None);
         let expected = if std::env::var("AMUX_NATIVE_ARCH").ok().as_deref() == Some("0") { "1" } else { "0" };
         assert_eq!(probe(&script), expected, "the actual worker launcher must reset the preference seen by provider children");
     }
@@ -35155,7 +35261,7 @@ mod tests {
         let workspace = dir.path().join("worker's checkout");
         std::fs::create_dir(&workspace).unwrap();
         let command =
-            super::provider_command_in_workspace(workspace.to_str().unwrap(), "pwd -P", false);
+            super::provider_command_in_workspace(workspace.to_str().unwrap(), "pwd -P", None);
         let output = std::process::Command::new("sh")
             .args(["-c", &command])
             .current_dir("/")
@@ -35169,7 +35275,7 @@ mod tests {
         let absent = super::provider_command_in_workspace(
             "/nonexistent-amux-fixture-workspace",
             "printf provider-started",
-            false,
+            None,
         );
         let output = std::process::Command::new("sh")
             .args(["-c", &absent])
@@ -36684,6 +36790,20 @@ mod tests {
             body.get("grant_id").is_none(),
             "an impossible send must not ask for approval: {body}"
         );
+        // The refusal names the owner's real paths in, so a relay does not
+        // fall back to fake schedules (gs12 review, finding 6).
+        assert_eq!(body["owner_paths"], json!(["raw@chat", "group:admin", "dashboard"]), "{body}");
+        assert!(body["what_to_do"].as_str().unwrap_or("").contains("raw@chat"), "{body}");
+        // And each named path does pass the isolation gate.
+        for origin in ["raw@chat"] {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert("x-amux-session", origin.parse().unwrap());
+            assert!(isolated_peer_refusal(&state, "raw", &h).await.is_none(), "{origin} speaks for the owner");
+        }
+        std::fs::write(sessions.join("boss.env"), "CC_TAGS=admin\n").unwrap();
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("x-amux-session", "boss".parse().unwrap());
+        assert!(isolated_peer_refusal(&state, "raw", &h).await.is_none(), "an admin-group worker speaks for the owner");
     }
 
     /// AMUX-4566 through the shipped handler: a send between a paused lane and an
@@ -38712,6 +38832,41 @@ mod tests {
     /// — asserting only the NULL half would pass against a version that
     /// blanked the column for everything, which would destroy real information
     /// rather than stop recording false information.
+    /// gs12 review (2026-10-18): the Messages ledger keeps a worker's whole
+    /// life. The recorder used to delete everything past the newest 200 rows
+    /// per session on each insert, so mxp-gs12's history began on day five.
+    /// Rows older than an hour are the ones the old trim removed, so seed 210
+    /// of them; the old code leaves 200 after one more record.
+    #[tokio::test]
+    async fn the_messages_ledger_has_no_per_session_row_cap() {
+        let (st, _dir) = state();
+        let old_ms = (now_f64() * 1000.0) as i64 - 7_200_000;
+        st.store
+            .write(move |c| {
+                for i in 0..210_i64 {
+                    c.execute(
+                        "INSERT INTO cmd_history (text, type, session, ts, origin, capture_pending) VALUES (?1,'chat','lane-cap',?2,'chat-companion',0)",
+                        rusqlite::params![format!("owner direction {i}"), old_ms + i],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        cmd_hist_record_full(&st, "lane-cap", "one more", "user", "", false, DeliveryMeta::direct()).await;
+        let (n, first): (i64, String) = st
+            .store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*), (SELECT text FROM cmd_history WHERE session='lane-cap' ORDER BY ts ASC LIMIT 1) FROM cmd_history WHERE session='lane-cap'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(n, 211, "every recorded message is kept; retention is the age sweep's job");
+        assert_eq!(first, "owner direction 0", "the worker's first message is still in Messages");
+    }
+
     #[tokio::test]
     async fn delivered_at_is_null_for_a_queued_send_and_set_for_a_direct_one() {
         let (st, _dir) = state();

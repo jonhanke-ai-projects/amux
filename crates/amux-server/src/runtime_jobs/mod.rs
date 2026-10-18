@@ -89,6 +89,9 @@ pub mod registry;
 pub mod scheduler;
 pub mod schedule_failure;
 pub mod schedule_wake;
+/// Owner card for queued messages held behind a composer draft (called from
+/// the steering loop, not a periodic job of its own).
+pub mod draft_hold;
 pub mod episodes;
 pub mod status_history;
 pub mod storage;
