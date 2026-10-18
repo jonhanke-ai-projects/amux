@@ -34,7 +34,12 @@ async function seedLog(request: any, page: Page, project: string) {
   lines[AT - 1] = '\x1b[1mCapSolver prepaid, $6 left\x1b[0m needle-here';
   lines[AT - 3] = 'CapSolver mentioned two lines earlier';
   fs.writeFileSync(path.join(home, 'logs', `${NAME}.log`), lines.join('\n') + '\n');
-  await page.waitForFunction((n) => (0, eval)('sessions').some((x: any) => x.name === n), NAME, { timeout: 15_000 });
+  // Fetch the worker list rather than wait for the next poll: a CI mobile
+  // shard took longer than 15s to poll it on its own.
+  await expect.poll(() => page.evaluate(async (n) => {
+    await (window as any).fetchSessions();
+    return (0, eval)('sessions').some((x: any) => x.name === n);
+  }, NAME), { timeout: 30_000 }).toBe(true);
   return auth;
 }
 
