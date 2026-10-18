@@ -12909,7 +12909,7 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-tasks')?.classList.toggle('active', tab === 'tasks');
   const tasksP = document.getElementById('peek-tasks-panel');
   if (tasksP) {
-    if (tab === 'tasks') { tasksP.classList.add('active'); _peekTaskNamesLoad(); }
+    if (tab === 'tasks') { tasksP.classList.add('active'); _tasksLoad('peek', true); }
     else tasksP.classList.remove('active');
   }
   const messages = document.getElementById('peek-messages-panel');
@@ -24265,7 +24265,7 @@ function _cmdHistItemHTML(e, ctx) {
   const _matches = _mq && safe.toLowerCase().includes(_mq.trim().toLowerCase());
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
-  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
 }
 // The sender half of "owner → cowork-bot". `owner` is the server's own login
 // (no team-member or gateway identity on the send); the tooltip says so, and
@@ -24505,6 +24505,7 @@ function _peekMessagesRender() {
   list.innerHTML = (_body || _placeholder)
     + (!_body && !_loaded ? '' : moreHTML);
   _peekMessagesBadge();
+  _msgTaskChipsFill(list);
 }
 // Jump the per-worker Messages list to a chosen day. Unlike the global timeline
 // this view loads one 500-row session window at once (no paging), so the jump is
@@ -42988,7 +42989,11 @@ function _bdRenderMeta(item) {
       + (activity.length > 8 ? '<button class="bd-activity-all" onclick="boardDetailTab(\'history\')">View all '
         + activity.length + ' worker actions</button>' : '') + '</section>';
   }
+  // Worker tasks that came from this card: task names, kept apart from the
+  // card's own facts and filled after the card renders (_bdTasksLoad).
+  html += '<section class="bd-card-section" id="bd-worker-tasks" data-card="' + esc(item.id || '') + '" hidden></section>';
   meta.innerHTML = html;
+  _bdTasksLoad(item.id);
   _bdEnhanceRecord(item);
 }
 
@@ -49940,6 +49945,23 @@ async function _handleDeeplink(hash) {
     tryMenu(0);
     return;
   }
+  // #task=<worker>@<unix s> — one worker task, opened in the Tasks view (the
+  // task detail's "Copy link"). Ethan, 2026-10-18: "shareable links to a
+  // single task".
+  if (hash && hash.startsWith('#task=')) {
+    const raw = decodeURIComponent(hash.slice(6));
+    const at = raw.lastIndexOf('@');
+    const sess = at > 0 ? raw.slice(0, at) : '', ts = at > 0 ? Number(raw.slice(at + 1)) : NaN;
+    if (sess && Number.isFinite(ts)) {
+      const tryOpen = (attempt) => {
+        if (location.hash !== hash) return;
+        if (document.getElementById('tasks-list') && typeof switchView === 'function') { _tasksReveal(sess, ts); return; }
+        if (attempt < 20) setTimeout(() => tryOpen(attempt + 1), 400);
+      };
+      setTimeout(() => tryOpen(0), 0);
+    }
+    return;
+  }
   // #issue=<id> — open a board card directly from anywhere (AMUX-2165), the
   // shareable twin of the task-label id chip.
   if (hash && hash.startsWith('#issue=')) {
@@ -50043,7 +50065,7 @@ function _restoreScreen() {
   // (#view= / ?view=, the rig entry). The saved-tab restore silently beat the
   // view deeplink on 2026-08-08 — the rig asked for ?view=groups, got last
   // session's Workers tab, and the deeplink looked broken while working fine.
-  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)
+  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -50068,7 +50090,7 @@ function _restoreScreen() {
   //    it made the rig land on whichever session was peeked before (verified
   //    2026-08-08: #peek=amux opened amux-frustrations), and a shared link
   //    would misdirect the same way.
-  if (/^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)) return;
+  if (/^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)) return;
   // The split side panel opens only what its URL names. Restoring the outer
   // page's peek here (split included) is how it nested itself.
   if (window._peekSplitChild) return;
@@ -50087,7 +50109,7 @@ function _restoreScreen() {
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
       if (peekSession || _peekOpenGeneration !== restoreGeneration
-          || /^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)) {
+          || /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)) {
         amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
         return;
       }
@@ -53463,91 +53485,69 @@ function _messagesRender() {
     _prevTs = _ts;
     return dateHdr + burst + _cmdHistItemHTML(m, _msgCtxMessages());
   }).join('');
+  _msgTaskChipsFill(list);
 }
 
 // Calendar/time review helpers for the Messages timeline (Ethan 2026-08-13).
 // ── Tasks ─────────────────────────────────────────────────────────────────
-// Every task a worker took on, oldest first and numbered: one row per recorded
-// task name (GET /api/task-history, the task.renamed rows the fleet snapshot
-// writes when the "Task:" line on a worker changes). A row opens its detail:
-// when it started and ended, its board card, and the messages the worker
-// received while it ran. Owner, 2026-10-17: the earlier rows were messages
-// ("tasks still look to be displaying messages not tasks").
+// Every task a worker took on: one row per recorded task name (GET
+// /api/task-history, the task.renamed rows the fleet snapshot writes when the
+// "Task:" line on a worker changes). These are the model's own names for its
+// work and NOT board issues; a task links to a board card only when the worker
+// took it from one (Ethan, 2026-10-18: "indicate these aren't board issues").
 //
-// Two scopes share this code: `main` is the Tasks tab (all workers, with a
-// worker filter) and `peek` is a worker's own Tasks tab (fixed to
-// peekSession). Each scope's DOM ids carry its prefix.
+// Two scopes share this code: `main` is the top-bar Tasks view (every worker,
+// oldest first and numbered, with a List and a Timeline) and `peek` is a
+// worker's own Tasks tab (fixed to peekSession, newest first). Each scope's
+// DOM ids carry its prefix.
+//
+// Every connection is clickable and lands on that thing on its own page: a
+// message opens in Messages, a card on the Board, a worker in its details, and
+// a board card's detail lists the tasks that worked on it (_bdTasksLoad), which
+// open back here (_tasksReveal). Search covers task names, card ids and the
+// text of the messages each task received (`in=all`), and says where it hit.
 const _TASKS_PAGE = 100;
 const _TASKS_KINDS = 'human,chat,session,schedule';
 // A task's name is recorded a moment after the message that set it, so its
-// message window opens this much earlier.
+// message window opens this much earlier (the server's window matches).
 const _TASKS_LEAD_S = 120;
 const _tasksScopes = {
-  main: { prefix: 'tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', open: new Set(), loading: false, err: '', seq: 0 },
-  peek: { prefix: 'peek-tasks-', offset: 0, total: 0, rows: [], worker: '', q: '', open: new Set(), loading: false, err: '', seq: 0, fixed: true },
+  main: { prefix: 'tasks-', order: 'asc', offset: 0, total: 0, rows: [], worker: '', q: '', searchIn: 'all', mode: 'list', open: new Set(), loading: false, err: '', seq: 0 },
+  peek: { prefix: 'peek-tasks-', order: 'desc', offset: 0, total: 0, rows: [], worker: '', q: '', searchIn: 'all', mode: 'list', open: new Set(), loading: false, err: '', seq: 0, fixed: true },
 };
 const _tasksSel = new Set();
 const _tasksEl = (sc, name) => document.getElementById(_tasksScopes[sc].prefix + name);
 const _taskKey = (t) => (t.session || '') + '@' + t.ts;
 function _tasksParams(sc, extra) {
   const s = _tasksScopes[sc], p = new URLSearchParams();
-  p.set('order', 'asc');
+  p.set('order', s.order);
   if (s.worker) p.set('session', s.worker);
-  if (s.q) p.set('q', s.q);
+  if (s.q) { p.set('q', s.q); p.set('in', s.searchIn); }
   for (const [k, v] of Object.entries(extra || {})) p.set(k, String(v));
   return p.toString();
 }
-// toEnd: open on the newest page (the sequence still reads oldest first).
-// A newer load supersedes an older one still in flight (seq).
-// A WORKER'S TASKS ARE THE MODEL'S OWN TASK NAMES (Ethan, 2026-10-17: "the
-// tasks tab ... shows messages it should be task names from the model"). The
-// worker's Messages tab already lists what it was sent; this lists what it
-// worked on, from GET /api/sessions/{name}/task-history (task.renamed rows),
-// newest first. The top-bar Tasks view keeps the request list.
-let _peekTaskNamesSeq = 0;
-async function _peekTaskNamesLoad() {
-  const name = (typeof peekSession !== 'undefined' && peekSession) || '';
-  const list = document.getElementById('peek-tasks-list');
-  const count = document.getElementById('peek-tasks-count');
-  if (!name || !list) return;
-  for (const id of ['peek-tasks-search', 'peek-tasks-pager']) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
-  const amuxToggle = document.getElementById('peek-tasks-amux');
-  if (amuxToggle && amuxToggle.closest('label')) amuxToggle.closest('label').style.display = 'none';
-  const seq = ++_peekTaskNamesSeq;
-  if (count) count.textContent = 'Loading task names';
-  let d = null;
-  try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/task-history?limit=200');
-    d = r.ok ? await r.json() : { measured: false, why_unmeasured: 'HTTP ' + r.status };
-  } catch (e) { d = { measured: false, why_unmeasured: String(e && e.message || e) }; }
-  if (seq !== _peekTaskNamesSeq || peekSession !== name) return;
-  if (!d.measured) {
-    if (count) count.textContent = 'Task names could not be loaded: ' + (d.why_unmeasured || 'unknown error');
-    list.innerHTML = '';
-    _peekPollBeacon('task-names-unmeasured', name, { verdict: 'task_names_unmeasured', measured: false, n_considered: 0, why_unmeasured: d.why_unmeasured || '' });
-    return;
-  }
-  const rows = (d.changes || []).filter(c => (c.to || '').trim());
-  if (count) count.textContent = rows.length ? rows.length + ' task name' + (rows.length === 1 ? '' : 's') + ', newest first' : 'No task names recorded for this worker yet';
-  list.innerHTML = rows.map((c, i) => '<div class="task-item task-name-item" data-task-name-index="' + i + '">'
-    + '<div class="task-row"><div class="task-name-title">' + esc(c.to) + (i === 0 ? ' <span class="task-name-current">current</span>' : '') + '</div>'
-    + '<div class="task-name-meta">' + esc(timeAgo(Math.floor(c.ts || 0)))
-    + (c.card ? ' · <button type="button" class="msg-card-chip" onclick="event.stopPropagation();_msgOpenCard(\'' + escJs(c.card) + '\');">' + esc(c.card) + '</button>' : '')
-    + '</div></div></div>').join('');
-}
+// toEnd: an oldest-first list opens on its newest page (it still reads oldest
+// first). A newer load supersedes an older one still in flight (seq).
 async function _tasksLoad(sc, toEnd) {
   sc = sc || 'main';
   const s = _tasksScopes[sc];
-  if (sc === 'peek') s.worker = (typeof peekSession !== 'undefined' && peekSession) || '';
+  if (sc === 'peek') {
+    const w = (typeof peekSession !== 'undefined' && peekSession) || '';
+    if (w !== s.worker) { s.open.clear(); s.offset = 0; }
+    s.worker = w;
+  }
   if (!_tasksEl(sc, 'list') || (s.fixed && !s.worker)) return;
+  if (s.mode === 'timeline') return _tasksTimelineLoad(sc);
   const seq = ++s.seq;
   s.loading = true; s.err = '';
   _tasksRenderHead(sc);
   try {
     if (toEnd !== false) {
-      const d0 = await (await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: 1, offset: 0 }), { headers: _authHeaders() })).json();
-      const total = (d0 && d0.total) || 0;
-      s.offset = Math.max(0, Math.floor(Math.max(0, total - 1) / _TASKS_PAGE) * _TASKS_PAGE);
+      if (s.order === 'asc') {
+        const d0 = await (await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: 1, offset: 0 }), { headers: _authHeaders() })).json();
+        const total = (d0 && d0.total) || 0;
+        s.offset = Math.max(0, Math.floor(Math.max(0, total - 1) / _TASKS_PAGE) * _TASKS_PAGE);
+      } else s.offset = 0;
     }
     const r = await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: _TASKS_PAGE, offset: s.offset }), { headers: _authHeaders() });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -53580,16 +53580,19 @@ function _tasksRenderHead(sc) {
   if (!el) return;
   if (s.loading) { el.textContent = 'Loading tasks…'; return; }
   if (s.err) { el.textContent = 'Could not load tasks: ' + s.err; return; }
+  const where = s.q ? (s.searchIn === 'names' ? ' whose name matches' : ' matching in their name, card or messages') : '';
   if (!s.total) { el.textContent = s.q ? 'No tasks match' : 'No tasks recorded yet'; return; }
-  el.textContent = 'Tasks ' + (s.offset + 1) + '–' + (s.offset + s.rows.length) + ' of ' + s.total + (s.worker && !s.fixed ? ' for ' + s.worker : '');
+  el.textContent = (s.order === 'desc' ? s.total + ' task' + (s.total === 1 ? '' : 's') + where + ', newest first'
+    : 'Tasks ' + (s.offset + 1) + '–' + (s.offset + s.rows.length) + ' of ' + s.total + where)
+    + (s.worker && !s.fixed ? ' for ' + s.worker : '');
 }
 // The messages inside a task's detail use the Messages tab's row builder.
 function _tasksCtx(sc) {
   return { sel: _tasksSel, key: _msgKey, toggle: '_tasksSelToggle', resend: '_tasksResend',
-           searchId: _tasksScopes[sc].prefix + 'search', rowClass: 'msg-row',
-           title: 'Open this message',
+           searchId: _tasksScopes[sc].prefix + 'search', rowClass: 'msg-row', taskChip: false,
+           title: 'Open this message in Messages',
            target: (e) => (typeof e === 'string' ? '' : (e.session || '')),
-           onOpen: (e) => `_bdOpenMessage('${escJs(String(e.id || ''))}')` };
+           onOpen: (e) => `_tasksOpenMessage('${escJs(String(e.id || ''))}')` };
 }
 function _tasksSelToggle(key, ev) {
   if (ev) ev.stopPropagation();
@@ -53612,6 +53615,29 @@ function _tasksDur(sec) {
 function _tasksWhen(sec) {
   return sec ? new Date(sec * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 }
+// Escaped text with the search term marked.
+function _tasksHl(text, q) {
+  const t = String(text || '');
+  if (!q) return esc(t);
+  const i = t.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return esc(t);
+  return esc(t.slice(0, i)) + '<mark>' + esc(t.slice(i, i + q.length)) + '</mark>' + esc(t.slice(i + q.length));
+}
+// The link chips on a row: its messages, its card (or why there is none).
+function _tasksChips(sc, t, key) {
+  const n = Number(t.messages || 0);
+  let html = '<button type="button" class="task-link task-link-msgs' + (n ? '' : ' none') + '" onclick="event.stopPropagation();_tasksShowMsgs(\'' + sc + '\',\'' + escJs(key) + '\')"'
+    + ' title="' + (n ? n + ' message' + (n === 1 ? '' : 's') + ' this worker received while on this task' : 'No messages while on this task') + '">'
+    + '<span aria-hidden="true">&#x2709;</span> ' + n + '</button>';
+  if (t.card) {
+    html += '<button type="button" class="task-link task-link-card task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Board card this task came from: ' + esc(t.card_title || t.card) + '">'
+      + '<span aria-hidden="true">&#x25A3;</span> <code>' + esc(String(t.card)) + '</code>'
+      + (t.card_status ? ' <span class="task-card-status">' + esc(t.card_status) + '</span>' : '') + '</button>';
+  } else if (t.board_off) {
+    html += '<span class="task-link none" title="Every Board switch is off for this worker, so its tasks have no cards">board off</span>';
+  }
+  return html;
+}
 function _tasksRender(sc) {
   const s = _tasksScopes[sc], list = _tasksEl(sc, 'list');
   if (!list) return;
@@ -53623,20 +53649,25 @@ function _tasksRender(sc) {
   s.rows.forEach((t, i) => {
     const k = _msgDayKey(t.ts * 1000);
     if (k !== day) { day = k; html += '<div class="tasks-day">' + esc(_msgDayLabel(t.ts * 1000)) + '</div>'; }
-    const key = _taskKey(t), open = s.open.has(key), n = s.offset + i + 1;
+    const key = _taskKey(t), open = s.open.has(key);
+    const n = s.order === 'asc' ? s.offset + i + 1 : s.total - s.offset - i;
     const ran = t.ended ? 'ran ' + _tasksDur(t.ended - t.ts) : 'current';
     const sess = t.session || '';
+    const m = t.match || null;
+    const snip = m && m.message_id && m.snippet
+      ? '<button type="button" class="task-hit" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(String(m.message_id)) + '\')" title="Open the matching message in Messages">'
+        + '<span aria-hidden="true">&#x2709;</span> ' + _tasksHl(m.snippet, s.q) + '</button>' : '';
     html += '<div class="task-item' + (open ? ' open' : '') + '" id="' + s.prefix + 'item-' + esc(key) + '" data-task-key="' + esc(key) + '">'
       + '<div class="task-num" title="Task ' + n + ' in sequence">#' + n + '</div>'
-      + '<div class="task-main"><div class="task-row" role="button" tabindex="0" aria-expanded="' + open + '" title="Show when this task ran, its card and its messages"'
+      + '<div class="task-main"><div class="task-row' + (t.ended ? '' : ' is-current') + '" role="button" tabindex="0" aria-expanded="' + open + '" title="Show when this task ran, its card and its messages"'
       + ' onclick="_tasksToggle(\'' + sc + '\',\'' + escJs(key) + '\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();_tasksToggle(\'' + sc + '\',\'' + escJs(key) + '\')}">'
-      + '<div class="task-title">' + esc(t.task || '(untitled)') + '</div>'
+      + '<div class="task-title">' + _tasksHl(t.task || '(untitled)', s.q) + '</div>'
       + '<div class="task-meta">'
       + (s.fixed ? '' : '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>')
       + '<span>' + esc(_tasksWhen(t.ts)) + '</span>'
       + '<span class="msg-tag' + (t.ended ? '' : ' task-current') + '">' + esc(ran) + '</span>'
-      + (t.card ? '<button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open this card on the board"><code>' + esc(String(t.card)) + '</code></button>' : '')
-      + '</div></div>'
+      + _tasksChips(sc, t, key)
+      + '</div>' + snip + '</div>'
       + '<div class="task-detail" id="' + s.prefix + 'detail-' + esc(key) + '"' + (open ? '' : ' hidden') + '></div></div></div>';
   });
   list.innerHTML = html;
@@ -53646,14 +53677,16 @@ function _tasksRender(sc) {
 function _tasksRenderPager(sc) {
   const s = _tasksScopes[sc], el = _tasksEl(sc, 'pager');
   if (!el) return;
+  if (s.mode === 'timeline') { el.innerHTML = ''; return; }
   const pages = Math.max(1, Math.ceil(s.total / _TASKS_PAGE));
   const page = Math.floor(s.offset / _TASKS_PAGE) + 1;
+  const asc = s.order === 'asc';
   const btn = (label, p, dis, title) => '<button class="btn" style="min-height:44px;"' + (dis ? ' disabled' : ' onclick="_tasksGoPage(\'' + sc + '\',' + p + ')"') + ' title="' + title + '">' + label + '</button>';
-  el.innerHTML = s.total <= _TASKS_PAGE ? '' : btn('&laquo; First', 1, page <= 1, 'Oldest tasks')
-    + btn('&lsaquo;', page - 1, page <= 1, 'Earlier tasks')
+  el.innerHTML = s.total <= _TASKS_PAGE ? '' : btn('&laquo; First', 1, page <= 1, asc ? 'Oldest tasks' : 'Newest tasks')
+    + btn('&lsaquo;', page - 1, page <= 1, asc ? 'Earlier tasks' : 'Later tasks')
     + '<span class="tasks-page">Page ' + page + ' of ' + pages + '</span>'
-    + btn('&rsaquo;', page + 1, page >= pages, 'Later tasks')
-    + btn('Latest &raquo;', pages, page >= pages, 'Newest tasks');
+    + btn('&rsaquo;', page + 1, page >= pages, asc ? 'Later tasks' : 'Earlier tasks')
+    + btn((asc ? 'Latest' : 'Oldest') + ' &raquo;', pages, page >= pages, asc ? 'Newest tasks' : 'Oldest tasks');
 }
 function _tasksGoPage(sc, p) {
   const s = _tasksScopes[sc];
@@ -53671,13 +53704,55 @@ function _tasksFilter(sc) {
 }
 const _tasksSearchT = {};
 function _tasksSearchInput(sc) { clearTimeout(_tasksSearchT[sc]); _tasksSearchT[sc] = setTimeout(() => _tasksFilter(sc), 300); }
-// From anywhere: the Tasks tab narrowed to one worker.
+// Search names only, or names, cards and messages (the default).
+function _tasksSetSearchIn(sc, where) {
+  const s = _tasksScopes[sc];
+  s.searchIn = where === 'names' ? 'names' : 'all';
+  document.querySelectorAll('#' + s.prefix + 'in button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.in === s.searchIn)));
+  const inp = _tasksEl(sc, 'search');
+  if (inp) inp.placeholder = s.searchIn === 'names' ? 'Search task names' : (s.fixed ? "Search this worker's tasks, cards and messages" : 'Search tasks, cards and messages');
+  if (s.q) _tasksFilter(sc);
+}
+function _tasksSetMode(sc, mode) {
+  const s = _tasksScopes[sc];
+  s.mode = mode === 'timeline' ? 'timeline' : 'list';
+  document.querySelectorAll('#' + s.prefix + 'mode button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === s.mode)));
+  const range = _tasksEl(sc, 'range'); if (range) range.hidden = s.mode !== 'timeline';
+  _tasksLoad(sc, true);
+}
+// From anywhere: the Tasks view narrowed to one worker.
 function _tasksByWorker(name) {
   if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
   if (activeView !== 'tasks') switchView('tasks');
   const sel = _tasksEl('main', 'worker');
   if (sel) { if (![...sel.options].some(o => o.value === name)) sel.add(new Option(name, name)); sel.value = name; }
   _tasksFilter('main');
+}
+// From anywhere (a timeline bar, a board card): the Tasks list at one task,
+// opened and flashed. The server says where it sits (locate_index), so this
+// lands on the right page however long the worker's history is.
+async function _tasksReveal(session, ts) {
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+  if (typeof closeBoardDetail === 'function' && document.getElementById('board-detail-overlay')?.classList.contains('active')) closeBoardDetail();
+  if (activeView !== 'tasks') switchView('tasks');
+  const s = _tasksScopes.main;
+  s.mode = 'list';
+  document.querySelectorAll('#tasks-mode button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === 'list')));
+  const range = _tasksEl('main', 'range'); if (range) range.hidden = true;
+  s.worker = session; s.q = '';
+  const sel = _tasksEl('main', 'worker');
+  if (sel) { if (![...sel.options].some(o => o.value === session)) sel.add(new Option(session, session)); sel.value = session; }
+  const inp = _tasksEl('main', 'search'); if (inp) inp.value = '';
+  try {
+    const d = await (await fetch(API + '/api/task-history?' + _tasksParams('main', { limit: 1, locate: ts }), { headers: _authHeaders() })).json();
+    const idx = Number(d.locate_index || 0);
+    s.offset = Math.floor(idx / _TASKS_PAGE) * _TASKS_PAGE;
+  } catch (e) { s.offset = 0; }
+  const key = session + '@' + ts;
+  s.open = new Set([key]);
+  await _tasksLoad('main', false);
+  const item = _tasksEl('main', 'item-' + key);
+  if (item) { item.scrollIntoView({ block: 'center' }); item.classList.add('task-flash'); setTimeout(() => item.classList.remove('task-flash'), 1600); }
 }
 function _tasksToggle(sc, key) {
   if (!key) return;
@@ -53687,9 +53762,73 @@ function _tasksToggle(sc, key) {
   if (item) { item.classList.toggle('open', s.open.has(key)); const row = item.querySelector('.task-row'); if (row) row.setAttribute('aria-expanded', String(s.open.has(key))); }
   if (det) { det.hidden = !s.open.has(key); if (s.open.has(key)) _tasksFillDetail(sc, key); }
 }
+// The ✉ chip: open the task and bring its messages into view.
+async function _tasksShowMsgs(sc, key) {
+  const s = _tasksScopes[sc];
+  if (!s.open.has(key)) _tasksToggle(sc, key);
+  await _tasksFillDetail(sc, key);
+  const m = _tasksEl(sc, 'detail-' + key)?.querySelector('.task-msgs');
+  if (m) m.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
 function _tasksOpenCard(id) {
   if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
   switchView('board'); setTimeout(() => openBoardDetail(id), 250);
+}
+function _tasksOpenMessage(id) {
+  if (!id) return;
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+  _bdOpenMessage(id);
+}
+// A tick on the connection track: scroll to that message and flash it.
+function _tasksFocusMsg(sc, key, i) {
+  const row = _tasksEl(sc, 'detail-' + key)?.querySelector('[data-task-msg="' + i + '"]');
+  if (!row) return;
+  row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  row.classList.add('task-flash'); setTimeout(() => row.classList.remove('task-flash'), 1600);
+}
+// The task's connections on one line, start to end: where it was named, every
+// message it received as a tick, and its card. A tick opens that message.
+function _tasksTrack(sc, key, t, msgs, commits) {
+  const start = t.ts - _TASKS_LEAD_S, end = t.ended || Date.now() / 1000;
+  const span = Math.max(1, end - start);
+  const pct = (sec) => Math.min(100, Math.max(0, (sec - start) / span * 100)).toFixed(2) + '%';
+  const ticks = msgs.map((m, i) => {
+    const sec = (m.ts || 0) / 1000;
+    const label = _tasksWhen(sec) + ' · ' + String(m.text || '').replace(/\s+/g, ' ').slice(0, 90);
+    return '<button type="button" class="task-tick" style="left:' + pct(sec) + '" onclick="event.stopPropagation();_tasksFocusMsg(\'' + sc + '\',\'' + escJs(key) + '\',' + i + ')" title="' + esc(label) + '" aria-label="Message at ' + esc(_tasksWhen(sec)) + '"></button>';
+  }).join('');
+  return '<div class="task-track-wrap"><div class="tasks-dim">Connections over the task\'s run: <span aria-hidden="true">&#x25CF;</span> messages, <span aria-hidden="true">&#x25C6;</span> commits</div>'
+    + '<div class="task-track" role="group" aria-label="This task\'s messages over time">'
+    + '<span class="task-track-bar"></span>'
+    + '<span class="task-track-start" style="left:' + pct(t.ts) + '" title="Named ' + esc(_tasksWhen(t.ts)) + '"></span>'
+    + ticks
+    + (commits || []).map(c => '<a class="task-tick-commit" style="left:' + pct(c.ts) + '"' + (c.url ? ' href="' + esc(c.url) + '" target="_blank" rel="noopener"' : '') + ' onclick="event.stopPropagation()" title="' + esc(_tasksWhen(c.ts) + ' · ' + c.sha.slice(0, 9) + ' ' + (c.subject || '')) + '" aria-label="Commit ' + esc(c.sha.slice(0, 9)) + '"></a>').join('')
+    + (t.card ? '<button type="button" class="task-track-card" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open card ' + esc(t.card) + '">' + esc(t.card) + '</button>' : '')
+    + '</div><div class="task-track-ends"><span>' + esc(_tasksWhen(t.ts)) + '</span><span>' + (t.ended ? esc(_tasksWhen(t.ended)) : 'now') + '</span></div></div>';
+}
+// Commits the worker pushed during the task, and the owner requests it closed
+// or landed then. Both come from GET /api/task-history/links; each says when
+// it could not be measured rather than reading as "none".
+function _tasksLinksHtml(links) {
+  if (!links || links.measured === false) return '<div class="task-commits tasks-dim">Commits and requests could not be loaded' + (links && links.why_unmeasured ? ': ' + esc(links.why_unmeasured) : '') + '.</div>';
+  let html = '';
+  const reqs = links.requests || [];
+  if (reqs.length) {
+    html += '<div class="task-reqs"><div class="tasks-dim">Owner requests closed during this task (' + reqs.length + ')</div>'
+      + reqs.map(r => '<div class="task-req"><button type="button" class="task-link" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(String(r.id)) + '\')" title="Open the request in Messages">' + esc(r.id) + '</button> '
+        + '<span class="tasks-dim">' + (r.how === 'landed' ? 'landed in <code>' + esc(String(r.sha || '').slice(0, 9)) + '</code>' : 'closed: ' + esc(String(r.reason || '').slice(0, 120))) + '</span> '
+        + '<span>' + esc(String(r.text || '').slice(0, 140)) + '</span></div>').join('') + '</div>';
+  }
+  if (links.commits_measured === false) {
+    html += '<div class="task-commits tasks-dim">Commits not read: ' + esc(String(links.commits_why_unmeasured || 'unknown')) + '</div>';
+  } else {
+    const cs = links.commits || [];
+    html += '<div class="task-commits"><div class="tasks-dim" title="' + esc(links.commits_note || '') + '">' + (cs.length ? 'Commits pushed during this task (' + cs.length + ')' : 'No commits from this worker on main during this task') + '</div>'
+      + cs.map(c => '<div class="task-commit">' + (c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()"><code>' + esc(c.sha.slice(0, 9)) + '</code></a>' : '<code>' + esc(c.sha.slice(0, 9)) + '</code>')
+        + ' <span>' + esc(c.subject || '') + '</span> <span class="tasks-dim">' + esc(_tasksWhen(c.ts)) + '</span>'
+        + (c.requests || []).map(id => ' <button type="button" class="task-link" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(id) + '\')">' + esc(id) + '</button>').join('') + '</div>').join('') + '</div>';
+  }
+  return html;
 }
 async function _tasksFillDetail(sc, key, rerender) {
   const s = _tasksScopes[sc];
@@ -53704,37 +53843,184 @@ async function _tasksFillDetail(sc, key, rerender) {
     // Milliseconds, and the server's bound is exclusive: the message that
     // started the next task belongs to that task, not this one.
     if (t.ended) p.set('until', String(Math.floor(t.ended * 1000)));
-    let msgs = [], card = null, msgErr = '';
+    let msgs = [], card = null, msgErr = '', links = null;
     await Promise.all([
       fetch(API + '/api/history?' + p.toString(), { headers: _authHeaders() }).then(async r => {
         if (!r.ok) { msgErr = 'HTTP ' + r.status; return; }
         const d = await r.json(); msgs = (Array.isArray(d) ? d : []).map(_msgNorm);
       }).catch(e => { msgErr = (e && e.message) || String(e); }),
       t.card ? fetch(API + '/api/board/' + encodeURIComponent(t.card), { headers: _authHeaders() }).then(async r => { if (r.ok) card = await r.json(); }).catch(() => {}) : null,
+      fetch(API + '/api/task-history/links?' + new URLSearchParams({ session: sess, ts: String(t.ts) }), { headers: _authHeaders() })
+        .then(async r => { links = r.ok ? await r.json() : { measured: false, why_unmeasured: 'HTTP ' + r.status }; })
+        .catch(e => { links = { measured: false, why_unmeasured: (e && e.message) || String(e) }; }),
     ]);
     s.msgs[key] = msgs; s.cards = s.cards || {}; s.cards[key] = card; s.msgErr = s.msgErr || {}; s.msgErr[key] = msgErr;
+    s.links = s.links || {}; s.links[key] = links;
   }
-  const msgs = s.msgs[key], card = (s.cards || {})[key], msgErr = (s.msgErr || {})[key];
+  const msgs = s.msgs[key], card = (s.cards || {})[key], msgErr = (s.msgErr || {})[key], links = (s.links || {})[key] || {};
   let html = '<div class="task-facts">'
-    + '<div><span class="tasks-dim">Worker</span> ' + (sess ? '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>'
-      + ' <button type="button" class="btn" onclick="event.stopPropagation();openPeek(\'' + escJs(sess) + '\')">Open worker</button>' : '-') + '</div>'
+    + '<div><span class="tasks-dim">Worker</span> ' + (sess ? (s.fixed ? esc(sess) : '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>')
+      + ' <button type="button" class="btn" onclick="event.stopPropagation();openPeek(\'' + escJs(sess) + '\')">Open worker</button>'
+      + ' <button type="button" class="btn" onclick="event.stopPropagation();_tasksCopyLink(this,\'' + escJs(sess) + '\',' + t.ts + ')" title="Copy a link that opens this task">Copy link</button>' : '-') + '</div>'
     + '<div><span class="tasks-dim">Started</span> ' + esc(_tasksWhen(t.ts)) + '</div>'
     + '<div><span class="tasks-dim">' + (t.ended ? 'Ended' : 'Status') + '</span> ' + (t.ended ? esc(_tasksWhen(t.ended)) + ' after ' + esc(_tasksDur(t.ended - t.ts)) : 'Current task, running ' + esc(_tasksDur(Date.now() / 1000 - t.ts))) + '</div>'
     + (t.previous ? '<div><span class="tasks-dim">Before this</span> ' + esc(t.previous) + '</div>' : '')
     + (t.source ? '<div><span class="tasks-dim">Named from</span> ' + esc(String(t.source).replace(/_/g, ' ')) + '</div>' : '')
     + '</div>';
-  if (t.card) {
-    html += '<div class="task-card"><button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open this card on the board">'
-      + '<code>' + esc(String(t.card)) + '</code> ' + esc((card && card.title) || '') + '</button>'
-      + (card && card.status ? '<span class="msg-tag">' + esc(card.status) + '</span>' : '') + '</div>';
+  if (links.handoff && links.handoff.from) {
+    html += '<div class="task-handoff"><span class="tasks-dim">Started by</span> a message from '
+      + '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();openPeek(\'' + escJs(links.handoff.from) + '\')">' + esc(links.handoff.from) + '</button> '
+      + '<button type="button" class="task-link" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(String(links.handoff.message_id)) + '\')" title="Open the handoff message in Messages">MSG-' + esc(String(links.handoff.message_id)) + '</button></div>';
   }
+  if (!msgErr) html += _tasksTrack(sc, key, t, msgs, links.commits || []);
+  if (t.card) {
+    html += '<div class="task-card"><span class="tasks-dim">Board card</span> <button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open this card on the board">'
+      + '<code>' + esc(String(t.card)) + '</code> ' + esc((card && card.title) || t.card_title || '') + '</button>'
+      + ((card && card.status) || t.card_status ? '<span class="msg-tag">' + esc((card && card.status) || t.card_status) + '</span>' : '') + '</div>';
+  } else {
+    html += '<div class="task-card tasks-dim">' + (t.board_off ? 'No board card: every Board switch is off for this worker.' : 'No board card: the worker named this task itself.') + '</div>';
+  }
+  html += _tasksLinksHtml(links);
   html += '<div class="task-msgs"><div class="tasks-dim">' + (msgErr ? 'Could not load this task\'s messages: ' + esc(msgErr)
-    : msgs.length ? 'Messages ' + esc(sess) + ' received while on this task (' + msgs.length + (msgs.length >= 50 ? '+' : '') + ')'
+    : msgs.length ? 'Messages ' + esc(sess) + ' received while on this task (' + msgs.length + (msgs.length >= 50 ? '+' : '') + '). Click one to open it in Messages.'
     : 'No messages to ' + esc(sess) + ' while on this task.') + '</div>';
   const ctx = _tasksCtx(sc);
-  html += msgs.map(m => _cmdHistItemHTML(m, ctx)).join('') + '</div>';
+  html += msgs.map((m, i) => '<div class="task-msg" data-task-msg="' + i + '">' + _cmdHistItemHTML(m, ctx) + '</div>').join('') + '</div>';
   det.innerHTML = html;
   det.dataset.filled = '1';
+}
+// ── Tasks timeline: one lane per worker, a bar per task over the chosen
+// window. A bar opens its task in the list; a ▣ on a bar means it came from a
+// board card. Same filters as the list (worker, search).
+const _TASKS_TL_MAX = 1000;
+async function _tasksTimelineLoad(sc) {
+  const s = _tasksScopes[sc], list = _tasksEl(sc, 'list');
+  if (!list) return;
+  const hours = Number((_tasksEl(sc, 'range') || {}).value || 24);
+  const now = Date.now() / 1000, since = now - hours * 3600;
+  const seq = ++s.seq;
+  s.loading = true; s.err = '';
+  _tasksRenderHead(sc);
+  let rows = [];
+  try {
+    const p = new URLSearchParams(_tasksParams(sc, { limit: _TASKS_TL_MAX, offset: 0, since: Math.floor(since), handoffs: 1 }));
+    p.set('order', 'desc');
+    const r = await fetch(API + '/api/task-history?' + p.toString(), { headers: _authHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (d.measured === false) throw new Error(d.why_unmeasured || 'not measured');
+    rows = Array.isArray(d.tasks) ? d.tasks : [];
+    s.total = d.total || 0;
+  } catch (e) { s.err = (e && e.message) || String(e); }
+  if (seq !== s.seq) return;
+  s.loading = false;
+  _tasksRenderPager(sc);
+  const head = _tasksEl(sc, 'count');
+  if (s.err) { if (head) head.textContent = 'Could not load tasks: ' + s.err; list.innerHTML = '<div class="tasks-empty">Could not load the timeline. <button class="btn" onclick="_tasksLoad(\'' + sc + '\')">Retry</button></div>'; return; }
+  const lanes = new Map();
+  rows.forEach(t => { const w = t.session || ''; if (!lanes.has(w)) lanes.set(w, []); lanes.get(w).push(t); });
+  if (head) head.textContent = rows.length + ' task' + (rows.length === 1 ? '' : 's') + ' across ' + lanes.size + ' worker' + (lanes.size === 1 ? '' : 's') + ' in the last ' + (hours < 48 ? hours + 'h' : Math.round(hours / 24) + 'd')
+    + (s.total > rows.length ? ' (showing the newest ' + rows.length + ' of ' + s.total + ')' : '');
+  if (!rows.length) { list.innerHTML = '<div class="tasks-empty">No tasks ran in this window.</div>'; return; }
+  const span = now - since;
+  const pct = (sec) => Math.min(100, Math.max(0, (sec - since) / span * 100));
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => '<span class="tl-tick" style="left:' + (f * 100) + '%">' + esc(_tasksWhen(since + f * span)) + '</span>').join('');
+  let html = '<div class="tl" role="list"><div class="tl-axis"><span class="tl-name"></span><span class="tl-lane">' + ticks + '</span></div>';
+  for (const [w, ts] of lanes) {
+    const bars = ts.map(t => {
+      const a = pct(t.ts), b = pct(t.ended || now);
+      const label = (t.task || '(untitled)') + (t.handoff && t.handoff.from ? ' · started by a message from ' + t.handoff.from : '') + ' · ' + _tasksWhen(t.ts) + ' · ' + (t.ended ? 'ran ' + _tasksDur(t.ended - t.ts) : 'current') + ' · ' + (t.messages || 0) + ' messages' + (t.card ? ' · ' + t.card : '');
+      const h = t.handoff && t.handoff.from ? t.handoff : null;
+      const hAttr = h ? ' data-from="' + esc(h.from) + '" data-from-x="' + pct(h.ts).toFixed(3) + '" data-msg="' + esc(String(h.message_id)) + '"' : '';
+      return '<button type="button" class="tl-bar' + (t.ended ? '' : ' is-current') + (t.match ? ' is-hit' : '') + '"' + hAttr + ' style="left:' + a.toFixed(2) + '%;width:max(6px,' + (b - a).toFixed(2) + '%)"'
+        + ' onclick="_tasksReveal(\'' + escJs(w) + '\',' + t.ts + ')" title="' + esc(label) + '" aria-label="' + esc(label) + '">'
+        + (h ? '<span class="tl-from" aria-hidden="true">&#x21B3;</span>' : '') + (t.card ? '<span class="tl-card" aria-hidden="true">&#x25A3;</span>' : '') + '<span class="tl-label">' + esc(t.task || '') + '</span></button>';
+    }).join('');
+    html += '<div class="tl-row" role="listitem" data-lane="' + esc(w) + '"><button type="button" class="tl-name msg-sess-link" onclick="_tasksByWorker(\'' + escJs(w) + '\')" title="Show only ' + esc(w) + '\'s tasks">' + esc(w) + '</button><span class="tl-lane">' + bars + '</span></div>';
+  }
+  list.innerHTML = html + '<svg class="tl-arrows" aria-hidden="true"></svg></div>';
+  _tasksDrawHandoffs(list);
+}
+// Handoff arrows: from the sender's lane, at the moment it sent the message,
+// to the start of the task that message began in the receiver's lane. Drawn
+// only when both lanes are on screen; the bar's tooltip names the sender either
+// way. An arrow opens its message.
+function _tasksDrawHandoffs(list) {
+  const tl = list && list.querySelector('.tl'), svg = tl && tl.querySelector('.tl-arrows');
+  if (!svg) return;
+  const box = tl.getBoundingClientRect();
+  svg.setAttribute('width', box.width); svg.setAttribute('height', box.height);
+  let paths = '<defs><marker id="tl-arrow-head" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>';
+  let drawn = 0;
+  tl.querySelectorAll('.tl-bar[data-from]').forEach(bar => {
+    const from = tl.querySelector('.tl-row[data-lane="' + CSS.escape(bar.dataset.from) + '"] .tl-lane');
+    if (!from) return;
+    const fb = from.getBoundingClientRect(), bb = bar.getBoundingClientRect();
+    const x1 = fb.left - box.left + fb.width * Number(bar.dataset.fromX) / 100, y1 = fb.top - box.top + fb.height / 2;
+    const x2 = bb.left - box.left, y2 = bb.top - box.top + bb.height / 2;
+    const mid = (y1 + y2) / 2;
+    paths += '<path class="tl-arrow" d="M' + x1.toFixed(1) + ',' + y1.toFixed(1) + ' C' + x1.toFixed(1) + ',' + mid.toFixed(1) + ' ' + x2.toFixed(1) + ',' + mid.toFixed(1) + ' ' + x2.toFixed(1) + ',' + y2.toFixed(1) + '" marker-end="url(#tl-arrow-head)"'
+      + ' data-msg="' + esc(bar.dataset.msg) + '" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(String(bar.dataset.msg || '')) + '\')"><title>Handoff from ' + esc(bar.dataset.from) + ' (MSG-' + esc(bar.dataset.msg) + ')</title></path>';
+    drawn++;
+  });
+  svg.innerHTML = paths;
+  svg.dataset.arrows = String(drawn);
+}
+window.addEventListener('resize', () => {
+  if (_tasksScopes.main.mode !== 'timeline') return;
+  clearTimeout(_tasksDrawHandoffs._t);
+  _tasksDrawHandoffs._t = setTimeout(() => _tasksDrawHandoffs(_tasksEl('main', 'list')), 150);
+});
+// "During: <task>" on a message row, in Messages and a worker's Messages tab:
+// the task the receiving worker was on when it arrived (GET
+// /api/task-history/at, batched, cached per worker@second). A chip opens that
+// task in the Tasks view. Rows with no recorded task stay without a chip.
+const _msgTaskCache = new Map();
+async function _msgTaskChipsFill(root) {
+  if (!root) return;
+  const chips = [...root.querySelectorAll('.msg-task-chip[data-task-at]')];
+  const want = [...new Set(chips.map(c => c.dataset.taskAt))].filter(k => !_msgTaskCache.has(k));
+  for (let i = 0; i < want.length; i += 200) {
+    const part = want.slice(i, i + 200);
+    try {
+      const r = await fetch(API + '/api/task-history/at?at=' + part.map(encodeURIComponent).join(','), { headers: _authHeaders() });
+      const d = r.ok ? await r.json() : null;
+      if (!d || d.measured === false) { try { window._clientDebug && window._clientDebug('msg-task-chips-unmeasured', { measured: false, n_considered: part.length, status: r.status }); } catch (_) {} continue; }
+      part.forEach(k => _msgTaskCache.set(k, (d.tasks || {})[k] || null));
+    } catch (e) { /* the chips stay hidden; the message row is unchanged */ }
+  }
+  chips.forEach(c => {
+    const t = _msgTaskCache.get(c.dataset.taskAt);
+    if (!t || !t.task) return;
+    c.innerHTML = '<button type="button" class="msg-task-link" onclick="event.stopPropagation();_tasksReveal(\'' + escJs(t.session) + '\',' + t.ts + ')" title="The task ' + esc(t.session) + ' was on when this arrived. Open it in Tasks">'
+      + '<span aria-hidden="true">&#x2611;</span> during: ' + esc(String(t.task).slice(0, 80)) + '</button>';
+    c.hidden = false;
+  });
+}
+function _tasksLink(session, ts) {
+  return location.origin + location.pathname + '#task=' + encodeURIComponent(session + '@' + ts);
+}
+function _tasksCopyLink(btn, session, ts) {
+  const url = _tasksLink(session, ts);
+  const done = () => { showToast('Task link copied'); if (btn) { const p = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = p; }, 1200); } };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, () => showToast(url));
+  else showToast(url);
+}
+// A board card's detail: the worker tasks that came from it, each opening its
+// place in the Tasks list. Hidden when no task came from the card.
+async function _bdTasksLoad(id) {
+  const el = document.getElementById('bd-worker-tasks');
+  if (!el || !id) return;
+  el.hidden = true;
+  let d = null;
+  try { d = await (await fetch(API + '/api/task-history?' + new URLSearchParams({ card: id, order: 'desc', limit: '20' }), { headers: _authHeaders() })).json(); } catch (e) { return; }
+  const cur = document.getElementById('bd-worker-tasks');
+  if (!cur || cur.dataset.card !== id || !d || !Array.isArray(d.tasks) || !d.tasks.length) return;
+  cur.innerHTML = '<h4>Worker tasks from this card (' + d.total + ')</h4><p class="ui-help">What the worker said it was doing while on this card. These are task names, not cards.</p>'
+    + d.tasks.map(t => '<div class="board-detail-meta-row"><button type="button" class="task-id-chip bd-link-chip" onclick="event.stopPropagation();_tasksReveal(\'' + escJs(t.session || '') + '\',' + t.ts + ')" title="Open this task in Tasks">'
+      + esc(t.task || '(untitled)') + '</button> <span>' + esc(t.session || '') + ' · ' + esc(_tasksWhen(t.ts)) + ' · ' + (t.ended ? 'ran ' + esc(_tasksDur(t.ended - t.ts)) : 'current')
+      + ' · ' + Number(t.messages || 0) + ' messages</span></div>').join('');
+  cur.hidden = false;
 }
 function _msgDayKey(ts) {
   if (!ts) return 'unknown';

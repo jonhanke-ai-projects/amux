@@ -843,59 +843,163 @@ pub async fn task_history(
     }
 }
 
-/// The Tasks tab's rows: every recorded task, one per `task.renamed` row, with
-/// `ended` set to when the same worker took its next task (null for its current
-/// one). `session` narrows to one worker, `q` matches the task name. Returns the
-/// total that matched and the requested page.
-fn task_rows(
-    c: &rusqlite::Connection,
-    session: Option<&str>,
-    q: Option<&str>,
+/// How long before a task was named a peer's message still counts as the
+/// handoff that started it.
+const HANDOFF_BEFORE_S: i64 = 300;
+
+/// Filters for [`task_rows`]. Every field is optional.
+#[derive(Default)]
+struct TaskQuery<'a> {
+    session: Option<&'a str>,
+    q: Option<&'a str>,
+    /// Match `q` against task names only. Default: names, card ids and the
+    /// text of the messages the worker received during the task.
+    names_only: bool,
+    card: Option<&'a str>,
+    /// Only tasks still running at or after this time (unix seconds): the
+    /// timeline's window.
+    since: Option<f64>,
+    /// A task's start time: `locate_index` is where it sits in this result.
+    locate: Option<f64>,
+    /// Add `handoff`: the peer worker's message that started this task.
+    handoffs: bool,
     asc: bool,
     limit: i64,
     offset: i64,
-) -> rusqlite::Result<(i64, Vec<Value>)> {
+}
+
+/// A task's messages are what a person, a peer worker, a schedule or a chat
+/// sent the worker while it ran: the Tasks detail's kinds. SQL literals, from
+/// constants only.
+fn task_msg_types_sql() -> String {
+    crate::api::history::HUMAN_TYPES.iter().chain(["session", "schedule", "chat"].iter())
+        .map(|t| format!("'{t}'")).collect::<Vec<_>>().join(",")
+}
+
+/// A short excerpt of `text` around the first case-insensitive hit of `q`.
+fn task_snippet(text: &str, q: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let lower: String = text.to_lowercase();
+    let at = if lower.chars().count() == chars.len() {
+        lower.find(&q.to_lowercase()).map(|b| lower[..b].chars().count()).unwrap_or(0)
+    } else { 0 };
+    let from = at.saturating_sub(60);
+    let to = (at + q.chars().count() + 100).min(chars.len());
+    let body: String = chars[from..to].iter().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{}{}{}", if from > 0 { "…" } else { "" }, body, if to < chars.len() { "…" } else { "" })
+}
+
+/// The Tasks tab's rows: every recorded task, one per `task.renamed` row, with
+/// `ended` set to when the same worker took its next task (null for its current
+/// one). Each row carries its message count, its card's title and status, and
+/// (when `q` is set) where the search matched. Returns the total that matched,
+/// the requested page and, with `locate`, that task's index.
+fn task_rows(c: &rusqlite::Connection, f: &TaskQuery) -> rusqlite::Result<(i64, Vec<Value>, Option<i64>)> {
+    use rusqlite::types::Value as Sv;
+    let mut params: Vec<Sv> = Vec::new();
+    let mut bind = |v: Sv| { params.push(v); format!("?{}", params.len()) };
+    // The message window matches the detail's: from TASK_LEAD_S before the task
+    // was named (the message that named it) to when the next task started.
+    let win = format!("m.session = r.session AND m.ts >= CAST((r.ts - 120) * 1000 AS INTEGER) \
+                       AND m.ts < CAST(COALESCE(r.ended, 1e11) * 1000 AS INTEGER) AND m.type IN ({})", task_msg_types_sql());
     let mut filt = String::new();
-    let mut params: Vec<rusqlite::types::Value> = Vec::new();
-    if let Some(s) = session.filter(|s| !s.is_empty()) {
-        filt.push_str(" AND session = ?");
-        params.push(rusqlite::types::Value::Text(s.to_string()));
+    if let Some(s) = f.session.filter(|s| !s.is_empty()) {
+        filt.push_str(&format!(" AND r.session = {}", bind(Sv::Text(s.to_string()))));
     }
-    if let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) {
-        filt.push_str(" AND json_extract(data,'$.to') LIKE ? ESCAPE '\\'");
+    if let Some(card) = f.card.filter(|s| !s.is_empty()) {
+        filt.push_str(&format!(" AND r.card = {}", bind(Sv::Text(card.to_string()))));
+    }
+    if let Some(since) = f.since {
+        filt.push_str(&format!(" AND COALESCE(r.ended, 1e11) >= {}", bind(Sv::Real(since))));
+    }
+    let q = f.q.map(str::trim).filter(|q| !q.is_empty());
+    let mut like = None;
+    if let Some(q) = q {
         let lit = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-        params.push(rusqlite::types::Value::Text(format!("%{lit}%")));
+        let n = bind(Sv::Text(format!("%{lit}%")));
+        filt.push_str(&if f.names_only {
+            format!(" AND r.name LIKE {n} ESCAPE '\\'")
+        } else {
+            format!(" AND (r.name LIKE {n} ESCAPE '\\' OR r.card LIKE {n} ESCAPE '\\' \
+                     OR EXISTS (SELECT 1 FROM cmd_history m WHERE {win} AND m.text LIKE {n} ESCAPE '\\'))")
+        });
+        like = Some(n);
     }
-    // `ended` comes from the worker's whole history, so a filter never shortens a task.
-    let base = "SELECT id, ts, session, data, LEAD(ts) OVER (PARTITION BY session ORDER BY ts, id) AS ended \
-                FROM session_events WHERE type='task.renamed'";
-    let total: i64 = c.query_row(
-        &format!("SELECT COUNT(*) FROM session_events WHERE type='task.renamed'{filt}"),
-        rusqlite::params_from_iter(params.iter()),
-        |r| r.get(0),
-    )?;
-    let dir = if asc { "ASC" } else { "DESC" };
-    let sql = format!("SELECT ts, session, data, ended FROM ({base}) WHERE 1=1{filt} ORDER BY ts {dir}, id {dir} LIMIT ? OFFSET ?");
+    let cte = "WITH t AS (SELECT id, ts, session, data, LEAD(ts) OVER (PARTITION BY session ORDER BY ts, id) AS ended \
+               FROM session_events WHERE type='task.renamed'), \
+               r AS (SELECT id, ts, session, data, ended, json_extract(data,'$.to') AS name, \
+               COALESCE(json_extract(data,'$.card'),'') AS card FROM t)";
+    let n_filter = params.len();
+    let total: i64 = c.query_row(&format!("{cte} SELECT COUNT(*) FROM r WHERE 1=1{filt}"),
+        rusqlite::params_from_iter(params.iter()), |r| r.get(0))?;
+    let locate = match f.locate {
+        Some(at) => {
+            let mut lp = params.clone();
+            lp.push(Sv::Real(at));
+            let cmp = if f.asc { "<" } else { ">" };
+            Some(c.query_row(&format!("{cte} SELECT COUNT(*) FROM r WHERE 1=1{filt} AND r.ts {cmp} ?{}", lp.len()),
+                rusqlite::params_from_iter(lp.iter()), |r| r.get(0))?)
+        }
+        None => None,
+    };
+    let hit = match (&like, f.names_only) {
+        (Some(n), false) => format!("(SELECT m.id FROM cmd_history m WHERE {win} AND m.text LIKE {n} ESCAPE '\\' ORDER BY m.ts LIMIT 1), \
+                                     (SELECT substr(m.text, 1, 4000) FROM cmd_history m WHERE {win} AND m.text LIKE {n} ESCAPE '\\' ORDER BY m.ts LIMIT 1)"),
+        _ => "NULL, NULL".to_string(),
+    };
+    // A handoff is a peer worker's message (type session, origin = the sender)
+    // that arrived up to HANDOFF_BEFORE_S before the task was named.
+    let handoff = if f.handoffs {
+        format!("(SELECT json_object('from', m.origin, 'message_id', m.id, 'ts', m.ts / 1000.0) FROM cmd_history m \
+                 WHERE m.session = r.session AND m.type = 'session' AND m.origin != '' AND m.origin != r.session \
+                 AND m.ts >= CAST((r.ts - {HANDOFF_BEFORE_S}) * 1000 AS INTEGER) AND m.ts <= CAST((r.ts + 30) * 1000 AS INTEGER) \
+                 ORDER BY m.ts DESC LIMIT 1)")
+    } else {
+        "NULL".to_string()
+    };
+    let dir = if f.asc { "ASC" } else { "DESC" };
     let mut all = params.clone();
-    all.push(rusqlite::types::Value::Integer(limit));
-    all.push(rusqlite::types::Value::Integer(offset));
+    debug_assert_eq!(all.len(), n_filter);
+    all.push(Sv::Integer(f.limit));
+    all.push(Sv::Integer(f.offset));
+    let sql = format!("{cte} SELECT r.ts, r.session, r.data, r.ended, (SELECT COUNT(*) FROM cmd_history m WHERE {win}), {hit}, \
+                       b.title, b.status, {handoff} FROM r LEFT JOIN issues b ON r.card != '' AND b.id = r.card \
+                       WHERE 1=1{filt} ORDER BY r.ts {dir}, r.id {dir} LIMIT ?{} OFFSET ?{}", n_filter + 1, n_filter + 2);
     let mut st = c.prepare(&sql)?;
     let rows = st
         .query_map(rusqlite::params_from_iter(all.iter()), |r| {
-            Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<f64>>(3)?))
+            Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<f64>>(3)?,
+                r.get::<_, i64>(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?, r.get::<_, Option<String>>(8)?, r.get::<_, Option<String>>(9)?))
         })?
         .flatten()
-        .map(|(ts, session, d, ended)| {
+        .map(|(ts, session, d, ended, n_msgs, msg_id, msg_text, card_title, card_status, handoff)| {
             let d: Value = serde_json::from_str(&d).unwrap_or(json!({}));
-            json!({"session": session, "task": d["to"], "previous": d["from"], "source": d["source"],
-                   "card": d["card"], "ts": ts, "ended": ended})
+            let mut row = json!({"session": session, "task": d["to"], "previous": d["from"], "source": d["source"],
+                   "card": d["card"], "ts": ts, "ended": ended, "messages": n_msgs,
+                   "card_title": card_title, "card_status": card_status});
+            if let Some(h) = handoff.and_then(|h| serde_json::from_str::<Value>(&h).ok()) {
+                row["handoff"] = h;
+            }
+            if let Some(q) = q {
+                let ql = q.to_lowercase();
+                let mut hits = Vec::new();
+                if d["to"].as_str().unwrap_or("").to_lowercase().contains(&ql) { hits.push("task"); }
+                if d["card"].as_str().unwrap_or("").to_lowercase().contains(&ql) { hits.push("card"); }
+                if msg_id.is_some() { hits.push("message"); }
+                row["match"] = json!({"in": hits, "message_id": msg_id,
+                    "snippet": msg_text.map(|t| task_snippet(&t, q))});
+            }
+            row
         })
         .collect();
-    Ok((total, rows))
+    Ok((total, rows, locate))
 }
 
-/// GET /api/task-history?session=&q=&order=asc|desc&limit=&offset=: every
-/// worker's recorded tasks (the Tasks tab). Oldest first by default.
+/// GET /api/task-history?session=&q=&in=names|all&card=&since=&locate=&order=asc|desc&limit=&offset=:
+/// every worker's recorded tasks (the Tasks tab). Oldest first by default.
+/// These are the task names a worker's model gave its work, which is not the
+/// board: a row links to a card only when the worker named it from one.
 pub async fn task_list(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -903,17 +1007,35 @@ pub async fn task_list(
     let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(100).clamp(1, 1000);
     let offset = q.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
     let asc = q.get("order").map(String::as_str) != Some("desc");
+    let names_only = q.get("in").map(String::as_str) == Some("names");
+    let since = q.get("since").and_then(|v| v.parse::<f64>().ok());
+    let locate = q.get("locate").and_then(|v| v.parse::<f64>().ok());
+    let handoffs = q.get("handoffs").map(String::as_str) == Some("1");
     let st = state.store.clone();
     let _ = tokio::task::spawn_blocking(move || legacy_sessions_array(&st)).await;
-    let (session, text) = (q.get("session").cloned(), q.get("q").cloned());
+    let (session, text, card) = (q.get("session").cloned(), q.get("q").cloned(), q.get("card").cloned());
     let res = state
         .store
-        .read_async(move |c| Ok(task_rows(c, session.as_deref(), text.as_deref(), asc, limit, offset)?))
+        .read_async(move |c| {
+            let f = TaskQuery { session: session.as_deref(), q: text.as_deref(), names_only, card: card.as_deref(),
+                                since, locate, handoffs, asc, limit, offset };
+            let (total, mut rows, at) = task_rows(c, &f)?;
+            // A worker whose board is off has no cards to link: say so per row
+            // rather than leaving the card slot looking merely empty.
+            let mut off = std::collections::HashMap::new();
+            for r in rows.iter_mut() {
+                let s = r["session"].as_str().unwrap_or("").to_string();
+                let v = *off.entry(s.clone()).or_insert_with(|| crate::api::board_lifecycle::board_unused(&s));
+                r["board_off"] = json!(v);
+            }
+            Ok((total, rows, at))
+        })
         .await;
     match res {
-        Ok((total, tasks)) => Json(json!({"measured": true, "n_considered": total, "total": total, "offset": offset,
-            "limit": limit, "order": if asc { "asc" } else { "desc" }, "tasks": tasks,
-            "note": "one row per task a worker took on, recorded when its task name changed; ended is when it took the next one"}))
+        Ok((total, tasks, at)) => Json(json!({"measured": true, "n_considered": total, "total": total, "offset": offset,
+            "limit": limit, "order": if asc { "asc" } else { "desc" }, "search_in": if names_only { "names" } else { "all" },
+            "locate_index": at, "tasks": tasks,
+            "note": "one row per task a worker took on, recorded when its task name changed; ended is when it took the next one. Tasks are not board cards; card is set only when the worker named the task from one"}))
             .into_response(),
         Err(e) => {
             tracing::warn!(target: "amux::sessions", error = %e, verdict = "task_list_failed", "could not read the task history");
@@ -921,6 +1043,183 @@ pub async fn task_list(
                 .into_response()
         }
     }
+}
+
+/// The task a worker was on at `at` (unix seconds): its latest task named no
+/// later than TASK_LEAD_S after `at`, the same window the Tasks detail uses
+/// (a message just before its task was named belongs to that task).
+fn task_at(c: &rusqlite::Connection, session: &str, at: f64) -> rusqlite::Result<Option<Value>> {
+    let mut st = c.prepare_cached(
+        "SELECT ts, data FROM session_events WHERE type='task.renamed' AND session=?1 AND ts <= ?2 + 120 ORDER BY ts DESC, id DESC LIMIT 1",
+    )?;
+    let mut rows = st.query(rusqlite::params![session, at])?;
+    let Some(r) = rows.next()? else { return Ok(None) };
+    let (ts, d): (f64, String) = (r.get(0)?, r.get(1)?);
+    let d: Value = serde_json::from_str(&d).unwrap_or(json!({}));
+    Ok(Some(json!({"session": session, "ts": ts, "task": d["to"], "card": d["card"]})))
+}
+
+/// GET /api/task-history/at?at=<worker>@<unix s>,...: the task each worker was
+/// on at each time (null when it had none yet). The Messages tab's "during"
+/// chips and `amux requests` use it. At most 500 pairs.
+pub async fn task_at_batch(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let pairs: Vec<(String, f64, String)> = q.get("at").map(String::as_str).unwrap_or("").split(',')
+        .filter_map(|p| {
+            let (s, t) = p.trim().rsplit_once('@')?;
+            Some((s.to_string(), t.parse::<f64>().ok()?, p.trim().to_string()))
+        })
+        .take(500)
+        .collect();
+    let n = pairs.len();
+    let res = state.store.read_async(move |c| {
+        let mut out = serde_json::Map::new();
+        for (s, t, key) in &pairs {
+            out.insert(key.clone(), task_at(c, s, *t)?.unwrap_or(Value::Null));
+        }
+        Ok(out)
+    }).await;
+    match res {
+        Ok(m) => Json(json!({"measured": true, "n_considered": n, "tasks": m})).into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()}))).into_response(),
+    }
+}
+
+/// `git@github.com:o/r.git` or `https://github.com/o/r(.git)` -> `https://github.com/o/r`.
+fn web_repo_url(remote: &str) -> Option<String> {
+    let r = remote.trim().trim_end_matches(".git");
+    if let Some(rest) = r.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        return Some(format!("https://{host}/{path}"));
+    }
+    (r.starts_with("https://") || r.starts_with("http://")).then(|| r.to_string())
+}
+
+/// (sha, unix s, subject, MSG ids cited)
+type TaskCommit = (String, i64, String, Vec<String>);
+
+/// Commits on origin/main of `repo` that `session` made in [since, until):
+/// matched by its `Amux-Session:` trailer and committer time. (sha, unix s,
+/// subject, MSG ids cited). origin/main as last fetched; no fetch here.
+fn commits_during(repo: &std::path::Path, session: &str, since: f64, until: f64) -> Result<Vec<TaskCommit>, String> {
+    let out = std::process::Command::new("git").arg("-C").arg(repo)
+        .args(["log", "origin/main", "--max-count=200", "--fixed-strings"])
+        .arg(format!("--since=@{}", since as i64)).arg(format!("--until=@{}", until as i64))
+        .arg(format!("--grep=Amux-Session: {session}"))
+        .arg("--format=%H%x1f%ct%x1f%s%x1f%B%x1e")
+        .output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect());
+    }
+    let msg_id = regex::Regex::new(r"MSG-(\d+)").expect("static regex");
+    Ok(String::from_utf8_lossy(&out.stdout).split('\x1e').filter_map(|rec| {
+        let mut f = rec.trim_start_matches('\n').splitn(4, '\x1f');
+        let (sha, ct, subj, body) = (f.next()?, f.next()?, f.next()?, f.next().unwrap_or(""));
+        // The grep is a substring match; keep only this worker's exact trailer.
+        if !body.lines().any(|l| l.trim() == format!("Amux-Session: {session}")) { return None; }
+        let mut ids: Vec<String> = msg_id.captures_iter(body).map(|c| format!("MSG-{}", &c[1])).collect();
+        ids.dedup();
+        Some((sha.to_string(), ct.parse().ok()?, subj.to_string(), ids))
+    }).collect())
+}
+
+/// The worker's repository: its worktree or dir, at the repo's top level.
+fn worker_repo(session: &str) -> Option<std::path::PathBuf> {
+    let env = crate::api::session_verbs::parse_env(session);
+    let dir = ["CC_WORKTREE_PATH", "CC_DIR"].iter().filter_map(|k| env.get(k)).map(|v| v.trim_matches('\'').trim_matches('"').to_string())
+        .find(|d| !d.is_empty() && std::path::Path::new(d).is_dir())?;
+    let out = std::process::Command::new("git").args(["-C", &dir, "rev-parse", "--show-toplevel"]).output().ok()?;
+    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Some(std::path::PathBuf::from(if top.is_empty() { dir } else { top }))
+}
+
+/// GET /api/task-history/links?session=&ts=: what one task connects to beyond
+/// its messages and card. `commits`: the worker's commits on origin/main while
+/// the task ran (each with the MSG ids it cites). `requests`: owner requests
+/// to this worker that were closed or landed while it ran. `handoff`: the peer
+/// message that started it. Each part says whether it was measured.
+pub async fn task_links(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(session) = q.get("session").filter(|s| !s.is_empty()).cloned() else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "session is required", "measured": false, "n_considered": 0}))).into_response();
+    };
+    let Some(ts) = q.get("ts").and_then(|v| v.parse::<f64>().ok()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "ts is required", "measured": false, "n_considered": 0}))).into_response();
+    };
+    let who = session.clone();
+    let task = state.store.read_async(move |c| {
+        let mut st = c.prepare(
+            "SELECT t.ts, t.data, (SELECT MIN(n.ts) FROM session_events n WHERE n.type='task.renamed' AND n.session=t.session AND (n.ts > t.ts OR (n.ts = t.ts AND n.id > t.id))) \
+             FROM session_events t WHERE t.type='task.renamed' AND t.session=?1 AND ABS(t.ts - ?2) < 0.001 LIMIT 1",
+        )?;
+        let row = st.query_row(rusqlite::params![who, ts], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<f64>>(2)?))).ok();
+        let Some((start, d, ended)) = row else { return Ok(None) };
+        let handoff: Option<String> = c.query_row(&format!(
+            "SELECT json_object('from', m.origin, 'message_id', m.id, 'ts', m.ts / 1000.0) FROM cmd_history m \
+             WHERE m.session = ?1 AND m.type = 'session' AND m.origin != '' AND m.origin != ?1 \
+             AND m.ts >= CAST((?2 - {HANDOFF_BEFORE_S}) * 1000 AS INTEGER) AND m.ts <= CAST((?2 + 30) * 1000 AS INTEGER) ORDER BY m.ts DESC LIMIT 1"),
+            rusqlite::params![who, start], |r| r.get(0)).ok();
+        // Owner messages to this worker, to name the requests a close refers to.
+        let mut st = c.prepare("SELECT id, substr(text, 1, 200) FROM cmd_history WHERE session = ?1 AND ts >= ?2")?;
+        let owner: std::collections::HashMap<i64, String> = st
+            .query_map(rusqlite::params![who, ((start - 30.0 * 86400.0) * 1000.0) as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .flatten().collect();
+        Ok(Some((start, serde_json::from_str::<Value>(&d).unwrap_or(json!({})), ended, handoff, owner)))
+    }).await;
+    let (start, data, ended, handoff, owner) = match task {
+        Ok(Some(t)) => t,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "no such task", "session": session, "ts": ts, "measured": false, "n_considered": 0}))).into_response(),
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()}))).into_response(),
+    };
+    let until = ended.unwrap_or_else(|| chrono::Utc::now().timestamp() as f64 + 60.0);
+    let sess = session.clone();
+    let git = tokio::task::spawn_blocking(move || {
+        let repo = worker_repo(&sess).ok_or_else(|| "the worker has no git checkout".to_string())?;
+        let url = std::process::Command::new("git").arg("-C").arg(&repo).args(["remote", "get-url", "origin"]).output().ok()
+            .and_then(|o| web_repo_url(&String::from_utf8_lossy(&o.stdout)));
+        let commits = commits_during(&repo, &sess, start - 120.0, until)?;
+        Ok::<_, String>((repo, url, commits))
+    }).await.unwrap_or_else(|e| Err(e.to_string()));
+    // Requests closed by hand while the task ran (`amux requests close`).
+    let closed: Value = std::fs::read_to_string(crate::api::session_verbs::home().join("requests-closed.json")).ok()
+        .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
+    let mut requests: Vec<Value> = closed.as_object().into_iter().flatten().filter_map(|(id, c)| {
+        let mid: i64 = id.parse().ok()?;
+        let text = owner.get(&mid)?;
+        let at = c["at"].as_f64()?;
+        (at >= start - 120.0 && at < until).then(|| json!({"id": format!("MSG-{mid}"), "how": "closed", "reason": c["reason"], "sha": c["sha"], "at": at, "text": text}))
+    }).collect();
+    let mut commits_json = Vec::new();
+    let (commits_measured, why, repo_s) = match &git {
+        Ok((repo, url, commits)) => {
+            for (sha, ct, subj, ids) in commits {
+                for id in ids {
+                    if let Some(text) = id.strip_prefix("MSG-").and_then(|n| n.parse::<i64>().ok()).and_then(|n| owner.get(&n)) {
+                        if !requests.iter().any(|r| r["id"] == json!(id)) {
+                            requests.push(json!({"id": id, "how": "landed", "sha": sha, "at": ct, "text": text}));
+                        }
+                    }
+                }
+                commits_json.push(json!({"sha": sha, "ts": ct, "subject": subj, "requests": ids,
+                    "url": url.as_ref().map(|u| format!("{u}/commit/{sha}"))}));
+            }
+            (true, Value::Null, json!(repo.display().to_string()))
+        }
+        Err(e) => {
+            tracing::info!(target: "amux::sessions", session = %session, error = %e, measured = false, verdict = "task_links_commits_unmeasured", "task commits could not be read");
+            (false, json!(e), Value::Null)
+        }
+    };
+    requests.sort_by(|a, b| a["at"].as_f64().partial_cmp(&b["at"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+    Json(json!({"measured": true, "n_considered": commits_json.len() + requests.len(), "session": session,
+        "task": data["to"], "ts": start, "ended": ended, "repo": repo_s,
+        "commits": commits_json, "commits_measured": commits_measured, "commits_why_unmeasured": why,
+        "commits_note": "origin/main as last fetched, matched by this worker's Amux-Session trailer and committer time",
+        "requests": requests, "handoff": handoff.and_then(|h| serde_json::from_str::<Value>(&h).ok())})).into_response()
 }
 
 fn snapshot_fresh(now: f64, published: f64, build_s: f64, ttl: f64) -> bool {
@@ -9873,28 +10172,115 @@ Checked, nothing of mine was at risk, no action needed from you.
     #[test]
     fn task_rows_are_tasks_in_order_with_when_each_ended() {
         let c = rusqlite::Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT, source TEXT);").unwrap();
-        let add = |ts: f64, s: &str, to: &str, ty: &str| {
+        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT, source TEXT);
+                         CREATE TABLE cmd_history (id INTEGER PRIMARY KEY, text TEXT, type TEXT, session TEXT, ts INTEGER);
+                         CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, status TEXT);
+                         INSERT INTO issues VALUES ('AA-1', 'The card', 'doing');").unwrap();
+        let add = |ts: f64, s: &str, to: &str, ty: &str, card: &str| {
             c.execute("INSERT INTO session_events (ts, session, type, data) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![ts, s, ty, json!({"from": "", "to": to, "source": "board", "card": "AA-1"}).to_string()]).unwrap();
+                rusqlite::params![ts, s, ty, json!({"from": "", "to": to, "source": "board", "card": card}).to_string()]).unwrap();
         };
-        add(10.0, "w1", "Fix the build", "task.renamed");
-        add(20.0, "w2", "Ship 100% of maps", "task.renamed");
-        add(30.0, "w1", "Write the docs", "task.renamed");
-        add(35.0, "w1", "not a task", "session.started");
-        let (n, rows) = task_rows(&c, None, None, true, 100, 0).unwrap();
+        let msg = |ts_s: i64, s: &str, ty: &str, text: &str| {
+            c.execute("INSERT INTO cmd_history (text, type, session, ts) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![text, ty, s, ts_s * 1000]).unwrap();
+        };
+        add(1000.0, "w1", "Fix the build", "task.renamed", "AA-1");
+        add(2000.0, "w2", "Ship 100% of maps", "task.renamed", "");
+        add(3000.0, "w1", "Write the docs", "task.renamed", "");
+        add(3500.0, "w1", "not a task", "session.started", "");
+        msg(990, "w1", "user", "please fix the flaky linker");   // inside the 120s lead
+        msg(1500, "w1", "session", "peer note about zebra stripes");
+        msg(1600, "w1", "pickup", "machine pickup about zebra");     // amux-authored: not a task message
+        msg(3000, "w1", "user", "now write the docs");               // starts the NEXT task
+        msg(2500, "w2", "user", "zebra for w2");
+        msg(1500, "w2", "user", "zebra before w2 had a task");   // outside every w2 window
+        let all = |q: Option<&'static str>| TaskQuery { q, asc: true, limit: 100, ..Default::default() };
+        let (n, rows, _) = task_rows(&c, &all(None)).unwrap();
         assert_eq!(n, 3, "only task.renamed rows are tasks");
         let names: Vec<&str> = rows.iter().map(|r| r["task"].as_str().unwrap()).collect();
         assert_eq!(names, ["Fix the build", "Ship 100% of maps", "Write the docs"], "oldest first");
-        assert_eq!(rows[0]["ended"], json!(30.0), "a task ends when that worker takes its next one");
+        assert_eq!(rows[0]["ended"], json!(3000.0), "a task ends when that worker takes its next one");
         assert_eq!(rows[1]["ended"], Value::Null, "w2's only task is still current");
         assert_eq!(rows[0]["session"], json!("w1"));
-        let (n, rows) = task_rows(&c, Some("w1"), Some("docs"), true, 100, 0).unwrap();
+        // w1's first task window is [880s, 3000s): two task messages, the pickup excluded.
+        assert_eq!(rows[0]["messages"], json!(2), "messages counted per task window, amux-authored excluded");
+        assert_eq!(rows[2]["messages"], json!(1), "the message that names the next task belongs to it");
+        assert_eq!((rows[0]["card_title"].as_str(), rows[0]["card_status"].as_str()), (Some("The card"), Some("doing")));
+        let f = TaskQuery { session: Some("w1"), q: Some("docs"), names_only: true, asc: true, limit: 100, ..Default::default() };
+        let (n, rows, _) = task_rows(&c, &f).unwrap();
         assert_eq!((n, rows.len()), (1, 1), "worker and text filters both apply");
-        let (_, rows) = task_rows(&c, None, Some("100%"), true, 100, 0).unwrap();
+        let (_, rows, _) = task_rows(&c, &all(Some("100%"))).unwrap();
         assert_eq!(rows.len(), 1, "% in the search is literal");
-        let (n, rows) = task_rows(&c, None, None, false, 1, 1).unwrap();
+        // Search reaches the task's messages, and says where it matched.
+        let (n, rows, _) = task_rows(&c, &all(Some("zebra"))).unwrap();
+        assert_eq!(n, 2, "a message hit finds its task, per worker window");
+        assert_eq!(rows[0]["match"]["in"], json!(["message"]));
+        assert!(rows[0]["match"]["snippet"].as_str().unwrap().contains("zebra stripes"), "{}", rows[0]);
+        let f = TaskQuery { q: Some("zebra"), names_only: true, asc: true, limit: 100, ..Default::default() };
+        assert_eq!(task_rows(&c, &f).unwrap().0, 0, "in=names does not search messages");
+        let (n, _, _) = task_rows(&c, &all(Some("AA-1"))).unwrap();
+        assert_eq!(n, 1, "a card id finds its task");
+        let f = TaskQuery { card: Some("AA-1"), asc: true, limit: 100, ..Default::default() };
+        assert_eq!(task_rows(&c, &f).unwrap().0, 1, "card filter");
+        let f = TaskQuery { since: Some(2500.0), asc: true, limit: 100, ..Default::default() };
+        assert_eq!(task_rows(&c, &f).unwrap().0, 3, "since keeps tasks still running then");
+        let f = TaskQuery { since: Some(3200.0), asc: true, limit: 100, ..Default::default() };
+        assert_eq!(task_rows(&c, &f).unwrap().0, 2, "a task that ended before since is out");
+        let f = TaskQuery { locate: Some(3000.0), asc: true, limit: 100, ..Default::default() };
+        assert_eq!(task_rows(&c, &f).unwrap().2, Some(2), "locate gives the task's index");
+        let f = TaskQuery { asc: false, limit: 1, offset: 1, ..Default::default() };
+        let (n, rows, _) = task_rows(&c, &f).unwrap();
         assert_eq!((n, rows[0]["task"].as_str().unwrap()), (3, "Ship 100% of maps"), "newest-first paging");
+        assert_eq!(task_snippet("aaa ZEBRA bbb", "zebra"), "aaa ZEBRA bbb");
+    }
+
+    #[test]
+    fn task_at_handoffs_and_commits_link_a_task_to_what_it_touched() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT, source TEXT);
+                         CREATE TABLE cmd_history (id INTEGER PRIMARY KEY, text TEXT, type TEXT, session TEXT, ts INTEGER, origin TEXT NOT NULL DEFAULT '');
+                         CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, status TEXT);").unwrap();
+        for (ts, to) in [(1000.0, "First"), (2000.0, "Second")] {
+            c.execute("INSERT INTO session_events (ts, session, type, data) VALUES (?1, 'w1', 'task.renamed', ?2)",
+                rusqlite::params![ts, json!({"from": "", "to": to, "card": ""}).to_string()]).unwrap();
+        }
+        // The task in effect: a message just before a task was named belongs to it.
+        assert_eq!(task_at(&c, "w1", 500.0).unwrap(), None, "no task yet");
+        assert_eq!(task_at(&c, "w1", 1500.0).unwrap().unwrap()["task"], json!("First"));
+        assert_eq!(task_at(&c, "w1", 1950.0).unwrap().unwrap()["task"], json!("Second"), "inside the 120 s lead");
+        assert_eq!(task_at(&c, "w2", 1500.0).unwrap(), None, "per worker");
+        // A peer's message 100 s before "Second" is its handoff; an owner message is not.
+        c.execute("INSERT INTO cmd_history (text, type, session, ts, origin) VALUES ('do it', 'session', 'w1', 1900000, 'w9')", []).unwrap();
+        c.execute("INSERT INTO cmd_history (text, type, session, ts, origin) VALUES ('owner', 'user', 'w1', 990000, '')", []).unwrap();
+        let f = TaskQuery { handoffs: true, asc: true, limit: 10, ..Default::default() };
+        let (_, rows, _) = task_rows(&c, &f).unwrap();
+        assert_eq!(rows[0].get("handoff"), None, "no peer message before First");
+        assert_eq!(rows[1]["handoff"]["from"], json!("w9"));
+        let (_, plain, _) = task_rows(&c, &TaskQuery { asc: true, limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(plain[1].get("handoff"), None, "handoffs only when asked");
+
+        assert_eq!(web_repo_url("git@github.com:mixpeek/amux.git\n").as_deref(), Some("https://github.com/mixpeek/amux"));
+        assert_eq!(web_repo_url("https://github.com/mixpeek/amux.git").as_deref(), Some("https://github.com/mixpeek/amux"));
+        assert_eq!(web_repo_url("/srv/git/x"), None);
+
+        // Commits on origin/main by this worker's exact trailer, inside the window.
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str], date: &str| {
+            let st = std::process::Command::new("git").arg("-C").arg(dir.path()).args(args)
+                .env("GIT_COMMITTER_DATE", date).env("GIT_AUTHOR_DATE", date)
+                .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@x").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@x")
+                .output().unwrap();
+            assert!(st.status.success(), "{:?}", String::from_utf8_lossy(&st.stderr));
+        };
+        git(&["init", "-q", "-b", "main"], "1700000000 +0000");
+        git(&["commit", "-q", "--allow-empty", "-m", "mine\n\nAmux-Request: MSG-7, MSG-8\nAmux-Session: w1"], "1700000500 +0000");
+        git(&["commit", "-q", "--allow-empty", "-m", "a peer\n\nAmux-Session: w1-other"], "1700000600 +0000");
+        git(&["commit", "-q", "--allow-empty", "-m", "too late\n\nAmux-Session: w1"], "1700001500 +0000");
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"], "1700001500 +0000");
+        let got = commits_during(dir.path(), "w1", 1_700_000_000.0, 1_700_001_000.0).unwrap();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!((got[0].1, got[0].2.as_str()), (1_700_000_500, "mine"));
+        assert_eq!(got[0].3, vec!["MSG-7".to_string(), "MSG-8".to_string()], "the requests it cites");
     }
 
     #[test]

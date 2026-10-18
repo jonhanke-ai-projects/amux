@@ -1250,9 +1250,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 <div id="vault-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;"></div>
-<!-- Tasks: every request a worker received, oldest first and numbered, each
-     tagged with its worker; a row opens its delivery, board cards and the
-     other messages on them (app.js _tasksLoad). -->
+<!-- Tasks: every task name a worker's model gave its work, oldest first and
+     numbered, as a List or a per-worker Timeline. Not board issues; a row links
+     its messages and, when it came from one, its card (app.js _tasksLoad). -->
 <div id="tasks-view" class="tasks-scope" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <style>
     .tasks-scope .tasks-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--border); }
@@ -1283,14 +1283,77 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     .tasks-scope .tasks-empty { color:var(--dim); padding:24px 0; text-align:center; }
     .tasks-scope .tasks-pager { display:flex; gap:6px; align-items:center; justify-content:center; padding:8px 12px; border-top:1px solid var(--border); flex-wrap:wrap; }
     .tasks-scope .tasks-page { font-size:0.8rem; color:var(--dim); padding:0 6px; }
+    .tasks-scope .tasks-about { margin:0; padding:8px 12px; font-size:0.78rem; color:var(--dim); border-bottom:1px solid var(--border); }
+    .tasks-scope .tasks-about summary { cursor:pointer; min-height:28px; display:flex; align-items:center; gap:6px; }
+    .tasks-scope .tasks-about b { color:var(--text); font-weight:600; }
+    .tasks-scope .tasks-about p { margin:6px 0 2px; }
+    .tasks-scope .tasks-seg { display:inline-flex; border:1px solid var(--border); border-radius:var(--radius-control, 6px); overflow:hidden; }
+    .tasks-scope .tasks-seg button { background:none; border:none; color:var(--dim); padding:0 12px; min-height:44px; cursor:pointer; font-size:0.8rem; }
+    .tasks-scope .tasks-seg button + button { border-left:1px solid var(--border); }
+    .tasks-scope .tasks-seg button[aria-pressed="true"] { background:var(--accent); color:var(--on-accent); }
+    .tasks-scope .tasks-seg button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+    .tasks-scope .task-row.is-current { border-left-color:var(--green, var(--accent)); }
+    .tasks-scope .task-title mark, .tasks-scope .task-hit mark { background:rgba(255,200,0,0.35); color:inherit; border-radius:2px; }
+    .tasks-scope .task-link { display:inline-flex; align-items:center; gap:4px; background:rgba(128,128,128,0.10); border:1px solid transparent; border-radius:10px; padding:1px 8px; font-size:0.72rem; color:var(--text); cursor:pointer; min-height:24px; }
+    .tasks-scope .task-link:hover, .tasks-scope .task-link:focus-visible { border-color:var(--accent); }
+    .tasks-scope .task-link.none { color:var(--dim); cursor:default; }
+    .tasks-scope .task-link code { font-size:0.72rem; }
+    .tasks-scope .task-card-status { color:var(--dim); }
+    .tasks-scope .task-hit { display:block; width:100%; text-align:left; background:none; border:none; border-top:1px dashed var(--border); margin-top:2px; padding:4px 0 0; font-size:0.76rem; color:var(--dim); cursor:pointer; overflow-wrap:anywhere; }
+    .tasks-scope .task-flash { animation:task-flash 1.6s ease-out; }
+    @keyframes task-flash { 0% { box-shadow:0 0 0 3px var(--accent); } 100% { box-shadow:0 0 0 0 transparent; } }
+    .tasks-scope .task-track-wrap { display:grid; gap:4px; }
+    .tasks-scope .task-track { position:relative; height:28px; }
+    .tasks-scope .task-track-bar { position:absolute; left:0; right:0; top:13px; height:2px; background:var(--border); border-radius:1px; }
+    .tasks-scope .task-track-start { position:absolute; top:6px; width:3px; height:16px; margin-left:-1px; background:var(--accent); border-radius:2px; }
+    .tasks-scope .task-tick { position:absolute; top:7px; width:14px; height:14px; margin-left:-7px; border-radius:50%; border:2px solid var(--card); background:var(--accent); cursor:pointer; padding:0; }
+    .tasks-scope .task-tick:hover, .tasks-scope .task-tick:focus-visible { transform:scale(1.35); outline:none; }
+    .tasks-scope .task-track-card { position:absolute; right:0; top:2px; font-size:0.7rem; background:var(--card); border:1px solid var(--accent); color:var(--accent); border-radius:10px; padding:2px 8px; cursor:pointer; }
+    .tasks-scope .task-track-ends { display:flex; justify-content:space-between; font-size:0.7rem; color:var(--dim); }
+    .tasks-scope .task-msg { border-radius:6px; }
+    .tasks-scope .tl { display:grid; gap:4px; }
+    .tasks-scope .tl-axis, .tasks-scope .tl-row { display:grid; grid-template-columns:minmax(90px, 160px) 1fr; gap:8px; align-items:center; }
+    .tasks-scope .tl-name { text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.76rem; min-height:32px; }
+    .tasks-scope .tl-lane { position:relative; height:32px; background:rgba(128,128,128,0.06); border-radius:6px; }
+    .tasks-scope .tl-axis .tl-lane { background:none; height:18px; }
+    .tasks-scope .tl-tick { position:absolute; top:0; transform:translateX(-50%); font-size:0.66rem; color:var(--dim); white-space:nowrap; }
+    .tasks-scope .tl-tick:first-child { transform:none; }
+    .tasks-scope .tl-tick:last-child { transform:translateX(-100%); }
+    .tasks-scope .tl-bar { position:absolute; top:4px; height:24px; min-width:6px; border:none; border-radius:4px; background:var(--accent); opacity:0.55; color:var(--on-accent); font-size:0.68rem; text-align:left; padding:0 4px; overflow:hidden; white-space:nowrap; cursor:pointer; display:flex; align-items:center; gap:3px; }
+    .tasks-scope .tl-bar + .tl-bar { box-shadow:-1px 0 0 var(--card); }
+    .tasks-scope .tl-bar.is-current { opacity:0.9; }
+    .tasks-scope .tl-bar.is-hit { opacity:1; outline:2px solid rgba(255,200,0,0.8); outline-offset:-2px; }
+    .tasks-scope .tl-bar:hover, .tasks-scope .tl-bar:focus-visible { opacity:1; z-index:1; outline:2px solid var(--text); outline-offset:-2px; }
+    .tasks-scope .tl-label { overflow:hidden; text-overflow:ellipsis; }
+    .tasks-scope .tl { position:relative; }
+    .tasks-scope .tl-arrows { position:absolute; left:0; top:0; pointer-events:none; overflow:visible; z-index:2; }
+    .tasks-scope .tl-arrow { fill:none; stroke:var(--text); stroke-width:1.5; opacity:0.55; pointer-events:stroke; cursor:pointer; }
+    .tasks-scope .tl-arrow:hover { opacity:1; stroke-width:2.5; }
+    .tasks-scope .tl-arrows marker path { fill:var(--text); opacity:0.7; }
+    .tasks-scope .tl-from { font-weight:700; }
+    .tasks-scope .task-tick-commit { position:absolute; top:8px; width:11px; height:11px; margin-left:-5px; transform:rotate(45deg); background:var(--text); border:2px solid var(--card); cursor:pointer; }
+    .tasks-scope .task-tick-commit:hover, .tasks-scope .task-tick-commit:focus-visible { transform:rotate(45deg) scale(1.35); }
+    .tasks-scope .task-commits, .tasks-scope .task-reqs { border-top:1px solid var(--border); padding-top:8px; display:flex; flex-direction:column; gap:4px; }
+    .tasks-scope .task-commit, .tasks-scope .task-req { font-size:0.78rem; overflow-wrap:anywhere; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+    .tasks-scope .task-commit a { color:var(--accent); }
+    .tasks-scope .task-handoff { font-size:0.8rem; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
     @media (max-width: 600px) {
       .tasks-scope .task-num { min-width:36px; font-size:0.68rem; }
       .tasks-scope .tasks-bar .tasks-worker { flex:1 1 100%; }
+      .tasks-scope .task-link { min-height:32px; }
+      .tasks-scope .tl-axis, .tasks-scope .tl-row { grid-template-columns:72px 1fr; }
+      .tasks-scope .tl-tick:nth-child(2), .tasks-scope .tl-tick:nth-child(4) { display:none; }
     }
   </style>
+  <details class="tasks-about"><summary><b>These are tasks, not board issues.</b> <span>What to know</span></summary>
+      <p>A task is what each worker's model said it was working on, recorded each time its "Task:" line changed. The board is separate: a task links to a board card only when the worker took it from one, and workers with the board off have no cards at all.</p>
+      <p><span aria-hidden="true">&#x2709;</span> messages the worker received during the task · <span aria-hidden="true">&#x25A3;</span> its board card · open a task for its timeline of connections. Every link opens that thing on its own page.</p></details>
   <div class="tasks-bar">
     <select id="tasks-worker" class="input tasks-worker" onchange="_tasksFilter('main')" aria-label="Filter by worker"><option value="">All workers</option></select>
-    <input id="tasks-search" class="input tasks-search" type="search" placeholder="Search tasks" aria-label="Search tasks" oninput="_tasksSearchInput('main')">
+    <input id="tasks-search" class="input tasks-search" type="search" placeholder="Search tasks, cards and messages" aria-label="Search tasks" oninput="_tasksSearchInput('main')">
+    <span class="tasks-seg" id="tasks-in" role="group" aria-label="Search in"><button type="button" data-in="all" aria-pressed="true" onclick="_tasksSetSearchIn('main','all')" title="Task names, card ids and the messages each task received">Everything</button><button type="button" data-in="names" aria-pressed="false" onclick="_tasksSetSearchIn('main','names')" title="Task names only">Names</button></span>
+    <span class="tasks-seg" id="tasks-mode" role="group" aria-label="View"><button type="button" data-mode="list" aria-pressed="true" onclick="_tasksSetMode('main','list')">List</button><button type="button" data-mode="timeline" aria-pressed="false" onclick="_tasksSetMode('main','timeline')" title="A lane per worker, a bar per task">Timeline</button></span>
+    <select id="tasks-range" class="input" onchange="_tasksLoad('main')" aria-label="Timeline window" hidden><option value="6">Last 6h</option><option value="24" selected>Last 24h</option><option value="72">Last 3 days</option><option value="168">Last 7 days</option></select>
   </div>
   <div id="tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
   <div id="tasks-list" class="tasks-list"></div>
@@ -3194,11 +3257,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-scope-body" style="font-size:0.82rem;color:var(--dim);">Loading&hellip;</div>
   </div>
   
-  <!-- This worker's tasks, oldest first and numbered: the Tasks tab's list
+  <!-- This worker's tasks, newest first and numbered: the Tasks view's list
        fixed to peekSession (app.js _tasksScopes.peek). -->
   <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope" style="padding:0;gap:0;flex-direction:column;">
+    <details class="tasks-about"><summary><b>These are tasks, not board issues.</b> <span>What to know</span></summary>
+      <p>A task is what this worker's model said it was working on, recorded each time its "Task:" line changed. The board is separate: a task links to a board card only when the worker took it from one, and workers with the board off have no cards at all.</p>
+      <p><span aria-hidden="true">&#x2709;</span> messages the worker received during the task · <span aria-hidden="true">&#x25A3;</span> its board card · open a task for its timeline of connections. Every link opens that thing on its own page.</p></details>
     <div class="tasks-bar">
-      <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">
+      <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks, cards and messages" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">
+      <span class="tasks-seg" id="peek-tasks-in" role="group" aria-label="Search in"><button type="button" data-in="all" aria-pressed="true" onclick="_tasksSetSearchIn('peek','all')" title="Task names, card ids and the messages each task received">Everything</button><button type="button" data-in="names" aria-pressed="false" onclick="_tasksSetSearchIn('peek','names')" title="Task names only">Names</button></span>
+      <button type="button" class="btn" style="min-height:44px;" onclick="_tasksByWorker(peekSession)" title="This worker's tasks in the Tasks view, with its timeline">All tasks view</button>
     </div>
     <div id="peek-tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
     <div id="peek-tasks-list" class="tasks-list"></div>

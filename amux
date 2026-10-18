@@ -8365,6 +8365,9 @@ or cite MSG-<id> in the body. A commit that forgot to cite it: link it with
 `close --sha <commit>`; it still shows as on main or live, checked against git.
 Close one that needs no commit (answered, declined, done outside git) with a
 reason. Acks like "continue" or "ok" are not requests.
+
+A landed or closed request also names the task the worker was on when it
+landed or was closed (from the Tasks history; `task` in --json).
 HELP
         return 0 ;;
       -*) die "amux requests: unknown option $1" ;;
@@ -8374,7 +8377,7 @@ HELP
   [[ ${#workers[@]} -eq 0 && -z "$all" ]] && workers=("${AMUX_SESSION:-}")
   [[ -z "$all" && -z "${workers[0]:-}" ]] && die "amux requests: name a worker (or --all); \$AMUX_SESSION is empty"
   AMUX_API="$AMUX_API" python3 - "$days" "$only_open" "$raw" "$all" "${AMUX_HOME:-$HOME/.amux}/requests-closed.json" ${workers[@]+"${workers[@]}"} <<'PY'
-import json, os, re, subprocess, sys, time
+import json, os, re, subprocess, sys, time, urllib.parse
 days, only_open, raw, all_, closed_path = sys.argv[1:6]
 days = float(days)
 api = os.environ.get("AMUX_API", "https://localhost:8824")
@@ -8423,7 +8426,7 @@ def live(repo, sha):
         return None
     return subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, build], capture_output=True).returncode == 0
 now = time.time() * 1000
-rows, dropped, unmeasured = [], 0, []
+rows, dropped, unmeasured, lm_sha = [], 0, [], {}
 # Paged: the server clamps a page to 500 rows (x-amux-limit-clamped), which
 # covered 3.2 of 7 days on 2026-10-17 and silently halved the count.
 owner_hist, offset, cutoff = [], 0, time.time() * 1000 - days * 86400000
@@ -8474,11 +8477,38 @@ for w in workers:
             st, ev = ("live" if lv else "on-main") if lv is not None else "on-main", sha[:9]
         else:
             st, ev = "open", ""
+        if sha:
+            lm_sha["MSG-" + mid] = sha
         rows.append({"worker": w, "id": "MSG-" + mid, "age_h": round((now - h["ts"]) / 3600000, 1),
                      "status": st, "evidence": ev, "repo": repo, "isolated": bool(s.get("isolated")),
                      "text": re.sub(r"\s+", " ", text)[:200]})
+# WHICH TASK CLOSED IT (Ethan, 2026-10-18): the worker's task at the moment the
+# request landed (its commit's time) or was closed by hand, from the Tasks
+# history. One batched lookup; "" when the worker had no recorded task then.
+when = {}
+for r in rows:
+    mid = r["id"][4:]
+    if r["status"] == "closed" and (closed.get(mid) or {}).get("at"):
+        when[r["id"]] = "%s@%s" % (r["worker"], closed[mid]["at"])
+    elif r["status"] in ("on-main", "live") and r["repo"]:
+        ct = subprocess.run(["git", "-C", r["repo"], "show", "-s", "--format=%ct", lm_sha.get(r["id"], r["evidence"])],
+                            capture_output=True, text=True).stdout.strip()
+        if ct.isdigit():
+            when[r["id"]] = "%s@%s" % (r["worker"], ct)
+tasks_at, tasks_measured = {}, True
+pairs = sorted(set(when.values()))
+for i in range(0, len(pairs), 200):
+    got = get("/api/task-history/at?at=" + ",".join(urllib.parse.quote(p, safe="@") for p in pairs[i:i + 200]))
+    if not got or not got.get("measured"):
+        tasks_measured = False
+        continue
+    tasks_at.update(got.get("tasks") or {})
+for r in rows:
+    t = tasks_at.get(when.get(r["id"], "")) or {}
+    r["task"] = t.get("task") or ""
+    r["task_ts"] = t.get("ts")
 counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "closed")}
-summary = {"measured": not unmeasured, "n_considered": len(rows), "acks_dropped": dropped, "days": days,
+summary = {"measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
            "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
 if only_open:
     rows = [r for r in rows if r["status"] == "open"]
@@ -8488,6 +8518,8 @@ if raw:
 order = {"open": 0, "on-main": 1, "live": 2, "closed": 3}
 for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"])):
     print("%-8s %-18s %-10s %6sh  %-10s %s" % (r["status"], r["worker"][:18], r["id"], r["age_h"], r["evidence"][:10], r["text"][:90]))
+    if r.get("task"):
+        print("%59s closed during task: %s" % ("", r["task"][:80]))
 print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d closed%s" % (
     summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["closed"],
     ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))

@@ -2840,6 +2840,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/task-history",
         methods: &["GET"],
     },
+    // -- the task each worker was on at given times (sessions_legacy::task_at_batch)
+    RouteEntry { path: "/api/task-history/at", methods: &["GET"] },
+    // -- one task's commits, closed requests and handoff (sessions_legacy::task_links)
+    RouteEntry { path: "/api/task-history/links", methods: &["GET"] },
     // -- Converse tab: voice conversations with a worker (api/converse.rs)
     RouteEntry { path: "/api/converse/config", methods: &["GET"] },
     RouteEntry { path: "/api/converse/sweep", methods: &["POST"] },

@@ -212,6 +212,8 @@ pub fn router_with_connector_transport(
         .route("/api/peek/steps", axum::routing::get(session_verbs::peek_steps))
         .route("/api/sessions/{name}/task-history", axum::routing::get(sessions_legacy::task_history))
         .route("/api/task-history", axum::routing::get(sessions_legacy::task_list))
+        .route("/api/task-history/at", axum::routing::get(sessions_legacy::task_at_batch))
+        .route("/api/task-history/links", axum::routing::get(sessions_legacy::task_links))
         .route("/api/scratchpad/config", axum::routing::get(scratchpad::get_config).put(scratchpad::put_config))
         .nest("/api/memories", memories::routes())
         .nest("/api/traces", traces::routes())
