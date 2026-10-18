@@ -2466,7 +2466,10 @@ fn hhmm() -> String {
 /// fixes every already-installed CLI copy at once, and closes both effects
 /// together, whereas patching curl lines fixes only the machines that upgrade.
 fn actor_from_headers(headers: &HeaderMap) -> (Actor, String) {
-    match super::org::local_member_actor(headers)
+    // An automated policy names itself first: it is never the owner and never
+    // a worker, and `api-anonymous` is what an owner's dashboard click reads as.
+    match super::org::policy_actor(headers)
+        .or_else(|| super::org::local_member_actor(headers))
         .map(str::to_string)
         .or_else(|| Some(crate::api::groups::hdr_worker(headers)))
         .map(|s| s.trim().to_string())
@@ -7053,6 +7056,11 @@ pub async fn get_item(
             let mut body = detail_body(&row);
             body["children"] = json!(children);
             body["messages"] = json!(messages);
+            // Owner notes on the ask that is open now: what any answer to it
+            // must carry (gs12 review finding 2).
+            if bs::parse_status(&row.status) == Some(TaskStatus::NeedsYou) {
+                body["ask_owner_notes"] = json!(bs::owner_notes_since_ask(row.log.as_deref().unwrap_or("")));
+            }
             body["artifacts"] = json!(artifacts);
             body["asset_links"] = json!(asset_links);
             body["gate_requirements"] = json!(gate_requirements);
@@ -10915,11 +10923,23 @@ pub async fn patch_item(
     // Fixed at the guard site (AF-701), not here: `caller_lane` still needs
     // to read "" for every other caller (notify targets, log lines) that
     // legitimately treats an anonymous/local-member caller as unnamed.
-    let caller_lane = if actor_name == "api-anonymous" || is_local_member {
+    // An automated policy is not a lane either: it keeps the unnamed caller's
+    // treatment everywhere a lane name drives a decision, and its own name in
+    // every log line (gs12 review finding 2).
+    let policy_caller = super::org::policy_actor(&headers).is_some();
+    let caller_lane = if actor_name == "api-anonymous" || is_local_member || policy_caller {
         String::new()
     } else {
         actor_name.clone()
     };
+    // WHO COUNTS AS THE OWNER FOR A NOTE ON AN OPEN ASK. The owner writes from
+    // the dashboard (unnamed or a verified member), from a worker's Chat tab,
+    // or from an admin-group worker; a peer lane's note and the policy's own
+    // note are not his. Computed here because `speaks_for_owner` reads env
+    // files, which does not belong inside the write closure.
+    let owner_side_note = !policy_caller
+        && map.contains_key("desc_append")
+        && (caller_lane.is_empty() || crate::api::session_verbs::speaks_for_owner(&caller_lane));
 
     // AMUX-5270: the TRANSITION door into needsyou gets the same standing-
     // approval check as the create door (one predicate, both doors, the
@@ -11217,6 +11237,8 @@ pub async fn patch_item(
             //   {desc: "text", desc_append: true} -> old + "\n" + text
             //   {desc_append: false}              -> plain replace semantics
             let mut appended_note: Option<String> = None;
+            // The whole note, for an owner note on an open ask (below).
+            let mut appended_full: Option<String> = None;
             let desc_effective: Option<String> = match map.get("desc_append") {
                 None | Some(Value::Bool(false)) => body_str(&map, "desc"),
                 Some(v) => {
@@ -11229,6 +11251,7 @@ pub async fn patch_item(
                         Some(t) if !t.is_empty() => {
                             // Kept for the AVE-36 owner notice below.
                             appended_note = Some(t.trim().chars().take(400).collect());
+                            appended_full = Some(t.trim().to_string());
                             let old = next.desc.trim_end();
                             Some(if old.is_empty() {
                                 t.trim().to_string()
@@ -14151,7 +14174,18 @@ pub async fn patch_item(
                                     "force by {force_actor}: {from_raw}->{target_raw} reason={reason}"
                                 )
                             } else {
-                                format!("{actor_name}: {from_raw} -> {target_raw}")
+                                // WHO ANSWERED AN ASK goes on the line that
+                                // records the answer: an owner click and the
+                                // policy both arrive unnamed or server-side,
+                                // and `authorized_by` is what tells them apart.
+                                let authz = map
+                                    .get("authorized_by")
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|a| !a.is_empty() && from_raw == "needsyou")
+                                    .map(|a| format!(" (authorized_by: {})", chars_truncate_log(a, 80)))
+                                    .unwrap_or_default();
+                                format!("{actor_name}: {from_raw} -> {target_raw}{authz}")
                             };
                             next.log = Some(bs::append_log(next.log.as_deref(), &stamp, &line));
                             // AMUX-3607, Ethan's 2026-08-05 directive: every
@@ -14565,6 +14599,28 @@ pub async fn patch_item(
                         &hhmm(),
                         &format!("{actor_name}: {}", parts.join(", ")),
                     ));
+                }
+            }
+            // AN OWNER NOTE ON AN OPEN ASK IS PART OF ITS ANSWER (gs12 review
+            // finding 2, MG-2017). Recorded with its author on the card's log,
+            // because the desc cannot say whose a line is, and every approval
+            // of this ask then carries it (`owner_notes_since_ask`). Only while
+            // the card stays in needsyou: the note in the PATCH that answers
+            // and moves the card is the answer itself, delivered already.
+            if owner_side_note
+                && row.session.as_deref() != Some(actor_name.as_str())
+                && bs::parse_status(&row.status) == Some(TaskStatus::NeedsYou)
+                && bs::parse_status(&next.status) == Some(TaskStatus::NeedsYou)
+            {
+                if let Some(note) = appended_full.as_deref().filter(|n| !n.is_empty()) {
+                    next.log = Some(bs::append_log(
+                        next.log.as_deref(),
+                        &hhmm(),
+                        &bs::ask_note_log_line(&actor_name, note),
+                    ));
+                    tracing::info!(card = %next.id, author = %actor_name, chars = note.chars().count(),
+                        measured = true, n_considered = 1, verdict = "ask_owner_note_recorded",
+                        "an owner-side note on an open ask was recorded; every approval of this ask carries it");
                 }
             }
 

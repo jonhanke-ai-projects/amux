@@ -27714,6 +27714,95 @@ pub(crate) fn lifecycle_interaction_refusal(
     None
 }
 
+/// The card an owner answer names: "Approved (MG-2017): ..." or "Done (ID): ...",
+/// the two openings the triage sheet and the card modal send for an approval.
+pub(crate) fn approval_card_ref(text: &str) -> Option<String> {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^\s*(?:Approved|Done)\s*\(([A-Z][A-Z0-9]{0,9}-[0-9]{1,6})\)\s*:")
+            .expect("constant approval opening regex")
+    });
+    RE.captures(text).map(|c| c[1].to_string())
+}
+
+/// The approval text with every owner note on the ask that it does not already
+/// quote, or None when nothing is missing. Pure: the caller reads the card.
+///
+/// MG-2017, 2026-10-10: the approval reached mxp-gs12 as "Approved (MG-2017):
+/// May I land 3eed662 ... ? Proceed." while Ethan's condition, "it must never
+/// delete a TubeScience organization or namespace", sat on the card. The DSAR
+/// executor landed without the exclusion (274a2ec1e96). Attaching here, at the
+/// one owner send path, covers every client, including a cached dashboard.
+pub(crate) fn approval_with_owner_notes(text: &str, card: &str, notes: &[String]) -> Option<(String, usize)> {
+    let quoted = |note: &str| {
+        let body = note.split_once(": ").map(|(_, b)| b).unwrap_or(note);
+        let probe: String = body.chars().take(80).collect();
+        !probe.trim().is_empty() && text.contains(probe.trim())
+    };
+    let missing: Vec<&String> = notes.iter().filter(|n| !quoted(n)).collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let mut out = text.trim_end().to_string();
+    out.push_str(&format!(
+        "\n\nOwner notes on {card} added while this ask waited. They are part of this answer: \
+         follow every condition in them, and if one cannot be met, do not proceed and say so on {card}."
+    ));
+    for n in &missing {
+        out.push_str("\n- ");
+        out.push_str(n);
+    }
+    Some((out, missing.len()))
+}
+
+/// Read the card an approval names and attach its owner notes (see
+/// [`approval_with_owner_notes`]). Logs a WARN when it had to: that is a client
+/// that sent an approval without the owner's notes.
+async fn attach_ask_owner_notes(state: &AppState, worker: &str, text: &str) -> Option<String> {
+    let card = approval_card_ref(text)?;
+    let lookup = card.clone();
+    let row = state
+        .store
+        .read_async(move |conn| Ok(crate::db::board_store::get_issue(conn, &lookup)?))
+        .await
+        .ok()
+        .flatten()?;
+    if row.session.as_deref() != Some(worker) {
+        return None;
+    }
+    let notes = crate::db::board_store::owner_notes_since_ask(row.log.as_deref().unwrap_or(""));
+    let (out, n) = approval_with_owner_notes(text, &card, &notes)?;
+    tracing::warn!(session = worker, card = %card, n_notes = n, n_considered = notes.len(), measured = true,
+        verdict = "approval_owner_notes_attached",
+        "an approval of an ask was sent without the owner's notes on it; attached them before delivery");
+    Some(out)
+}
+
+#[cfg(test)]
+mod approval_owner_notes_tests {
+    use super::{approval_card_ref, approval_with_owner_notes};
+
+    /// MG-2017 verbatim: the bare approval gains the owner's condition, an
+    /// approval that already quotes it is left alone, and text that is not an
+    /// approval of a card is never touched.
+    #[test]
+    fn a_bare_approval_gains_the_owners_notes_and_a_quoting_one_does_not() {
+        let bare = "Approved (MG-2017): May I land 3eed662 (the DSAR executor on)?. Proceed.";
+        assert_eq!(approval_card_ref(bare).as_deref(), Some("MG-2017"));
+        assert_eq!(approval_card_ref("Done (MM-84): I have provided it.").as_deref(), Some("MM-84"));
+        assert_eq!(approval_card_ref("Declined (MG-2017): no."), None);
+        assert_eq!(approval_card_ref("please look at Approved (MG-2017): x"), None);
+        let notes = vec!["mxp-gs12@chat: approved only if 3eed662 can never delete TubeScience".to_string()];
+        let (out, n) = approval_with_owner_notes(bare, "MG-2017", &notes).expect("notes attached");
+        assert_eq!(n, 1);
+        assert!(out.starts_with(bare));
+        assert!(out.contains("Owner notes on MG-2017") && out.contains("- mxp-gs12@chat: approved only if 3eed662 can never delete TubeScience"), "{out}");
+        assert!(out.contains("do not proceed and say so"), "{out}");
+        // The dashboard already carried it: nothing to add.
+        assert!(approval_with_owner_notes(&out, "MG-2017", &notes).is_none());
+        assert!(approval_with_owner_notes(bare, "MG-2017", &[]).is_none());
+    }
+}
+
 /// The footer telling a recipient they cannot reply to this sender, or None.
 ///
 /// The isolation flag is a PARAMETER, not read here. `session_is_isolated` goes to
@@ -28587,6 +28676,12 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     // belongs beside the answer, not in a payload nobody opens).
     if let Some(stamp) = no_reply_path_stamp(&send_origin, session_is_isolated(&send_origin)) {
         text.push_str(&stamp);
+    }
+    // An approval of a card ask carries the owner's notes on that ask (gs12
+    // review finding 2). Before the dedupe gate and history, so what is
+    // recorded is what the worker reads.
+    if let Some(with_notes) = attach_ask_owner_notes(state, name, &text).await {
+        text = with_notes;
     }
     // Project owner input has only next-turn delivery. Reject before reserving
     // an identity or writing history: replaying queue text must not duplicate it.
@@ -36630,6 +36725,41 @@ mod tests {
             body.get("grant_id").is_none(),
             "no approval can make a paused lane a peer: {body}"
         );
+    }
+
+    /// gs12 review finding 2 through the real owner send path: an approval of a
+    /// card ask is recorded and queued WITH the owner's notes on that ask.
+    #[tokio::test]
+    async fn an_owner_approval_send_carries_the_owner_notes_on_the_ask() {
+        let (state, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions/notes-lane.env"), "CC_TAGS=alpha\n").unwrap();
+        let log = crate::db::board_store::append_log(
+            None,
+            "08:00",
+            &crate::db::board_store::ask_note_log_line("notes-lane@chat", "only if it never deletes TubeScience"),
+        );
+        state.store.write(move |conn| {
+            conn.execute(
+                "INSERT INTO issues (id,title,desc,status,session,created,updated,type,archived,log)
+                 VALUES ('NT-1','t','d','needsyou','notes-lane',1,1,'decision',0,?1)",
+                [log],
+            )?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let text = "Approved (NT-1): May I land the executor?. Proceed.";
+        let _ = send_post(&state, "notes-lane", &HeaderMap::new(),
+            &json!({"text": text, "record_history": true, "msg_id": "nt-1"})).await;
+        let conn = state.store.read().unwrap();
+        let mut seen = Vec::new();
+        for table in ["steering_queue", "cmd_history"] {
+            let mut st = conn.prepare(&format!("SELECT text FROM {table} WHERE session='notes-lane'")).unwrap();
+            seen.extend(st.query_map([], |r| r.get::<_, String>(0)).unwrap().flatten());
+        }
+        assert!(seen.iter().any(|t| t.contains("Approved (NT-1)")), "the send recorded nothing to check: {seen:?}");
+        assert!(seen.iter().all(|t| !t.contains("Approved (NT-1)") || t.contains("- notes-lane@chat: only if it never deletes TubeScience")),
+            "an approval was recorded without the owner's note: {seen:?}");
     }
 
     /// AMUX-4661: STOPPED is a third state AMUX-4566's own check cannot see —
