@@ -679,10 +679,25 @@ def stranded(sessions):
     return out, isolated
 
 
+# Newer Claude Code parks a limited worker on a timer instead of a menu:
+# "Usage limit reached · limit resets 1:40am / Continuing automatically at
+# 1:40am · esc to cancel". 2026-10-17 22:32: three workers sat on it after the
+# switch to hello@amux.io, logged not_on_prompt_or_recent, because only the
+# menu was recognised. Escape cancels the timer and the "continue" that follows
+# runs on the new login.
+AUTO_WAIT = re.compile(r"Continuing automatically at[^\n]{0,40}esc to cancel")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
 def resume_action(screen):
     """The keys that leave Claude's limit prompt, or None when it is not on screen
     (a worker in any other state must not get a stray keypress)."""
-    return "1" if LIMIT_PROMPT in (screen or "") else None
+    plain = ANSI.sub("", screen or "")
+    if LIMIT_PROMPT in plain:
+        return "1"
+    if AUTO_WAIT.search(plain):
+        return "Escape"
+    return None
 
 
 def _amux(path, body=None):

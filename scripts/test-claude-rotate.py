@@ -194,5 +194,13 @@ rot.record("f@x", 73, "2099-01-01T05:00:00-04:00", 20, "2099-01-05T00:00:00-04:0
 expect(rot.record("f@x", 86, "2099-01-01T05:00:00-04:00", 21, "2099-01-05T00:00:00-04:00") is True,
        "a fast-rising five-hour status line is accepted")
 
+
+# The timer screen newer Claude Code shows on a limit is resumed with Escape,
+# word-by-word colour codes included (studio-plg's pane, 2026-10-17).
+timer = "\x1b[38;5;231mContinuing\x1b[39m \x1b[38;5;231mautomatically\x1b[39m at 1:40am \x1b[38;5;231m·\x1b[39m esc to cancel"
+expect(rot.resume_action(timer) == "Escape", f"timer screen resumes with Escape, got {rot.resume_action(timer)!r}")
+expect(rot.resume_action("Stop and wait for limit to reset") == "1", "the menu still answers 1")
+expect(rot.resume_action("working on it") is None, "no keys for a worker that is not parked")
+
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
