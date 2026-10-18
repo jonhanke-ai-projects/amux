@@ -44843,7 +44843,9 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY,
         ];
         let env = || std::fs::read_to_string(home.path().join("sessions/probe.env")).unwrap();
-        for (on, want) in [(true, "1"), (false, "0")] {
+        // Value first: `(false, "0")` reads as a send-failure tuple to
+        // every_send_failure_literal_is_classified's scan.
+        for (want, on) in [("1", true), ("0", false)] {
             let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"board_enabled": on}))).await;
             assert_eq!(st, StatusCode::OK, "{v}");
             assert_eq!(v["board_enabled"], json!(on), "{v}");

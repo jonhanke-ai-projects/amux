@@ -11943,24 +11943,29 @@ function _boardOneSwitchHTML(name, s, cls) {
   return '<button type="button" class="btn board-one-switch' + (b.on ? ' primary' : '') + (cls ? ' ' + cls : '') + '" role="switch"'
     + ' aria-checked="' + (b.mode === 'partial' ? 'mixed' : String(b.on)) + '" data-board-mode="' + b.mode + '"' + dis
     + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',' + (!b.on) + ')"'
-    + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>';
+    + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>'
+    // The way back from a worker-level On or Off to whatever the group or
+    // fleet sets: the switch writes every board key, this removes them.
+    + '<button type="button" class="btn board-one-inherit"' + dis + ' title="Use the group or fleet board setting"'
+    + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',null)">Inherit</button>';
 }
 async function _boardOneSet(name, on) {
   if (!name) return;
-  _pbcPending.board_enabled = !!on;
+  const inherit = on === null;
+  if (!inherit) _pbcPending.board_enabled = !!on;
   if (peekSession === name) _peekBoardPolicySync();
   try {
     const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ board_enabled: !!on })
+      body: JSON.stringify({ board_enabled: inherit ? null : !!on })
     });
     if (r) {
       let d = {};
       try { d = await r.json(); } catch (e) {}
-      showToast(d.message || ('Board ' + (on ? 'on' : 'off')));
+      showToast(d.message || (inherit ? 'Board follows the group or fleet setting' : 'Board ' + (on ? 'on' : 'off')));
       const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
-      if (s) for (const c of _BOARD_SWITCHES) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
-      if (d.board_enabled !== undefined && d.board_enabled !== !!on) {
+      if (s && !inherit) for (const c of _BOARD_SWITCHES) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
+      if (!inherit && d.board_enabled !== undefined && d.board_enabled !== !!on) {
         try { window._clientDebug && window._clientDebug('board-one-switch-not-effective', { session: name, requested: !!on, effective: d.board_enabled, measured: true, n_considered: 1 }); } catch (e) {}
       }
     }
@@ -31116,6 +31121,10 @@ async function _mdaiPutDoc(req) {
   // response arrives, so the owner can already be typing the next change; a
   // draft that moved while the save was in flight is not the one it saved.
   const draft0 = _mdaiDraft, body0 = _mdaiBodyDraft;
+  // The same holds for form fields: one cleared or retyped while this save is
+  // in flight can look untouched against the value it was drawn with, and the
+  // save's own render would then put the saved value back over it.
+  const fields0 = _mdaiFieldValues();
   try {
     const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', req);
     if (_isLocallyQueued(r)) { showToast('Offline: not saved'); return false; }
@@ -31126,6 +31135,8 @@ async function _mdaiPutDoc(req) {
       return false;
     }
     _mdaiApplyDoc(d);
+    _mdaiInflightEdits = Object.entries(_mdaiFieldValues()).filter(([id, v]) => id in fields0 && fields0[id] !== v)
+      .map(([id, cur]) => ({ id, cur, sent: fields0[id] }));
     if (_mdaiDraft === draft0) _mdaiDraft = null; else _mdaiKeptEdits.push('raw-draft-in-flight');
     if (_mdaiBodyDraft === body0) _mdaiBodyDraft = null; else _mdaiKeptEdits.push('body-draft-in-flight');
     // The graph reload lands after the save's own render, possibly while the
@@ -31371,6 +31382,7 @@ function _mdaiRender() {
   const kept = _mdaiTypedFields(el);
   el.innerHTML = html;
   _mdaiRestoreTyped(el, kept);
+  _mdaiRestoreInflight(el);
   el.dataset.tab = _mdaiTab;
   if (_mdaiTab === 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiGutter(ta); }
   _mdaiRenderRunState();
@@ -31389,6 +31401,25 @@ function _mdaiFieldState(f) {
   return { cur: f.value, base: f.defaultValue };
 }
 let _mdaiKeptEdits = [];   // field ids a render kept; reported with the next save
+// Fields changed while a save was in flight, kept by the next render when the
+// value it draws is the one that save sent.
+let _mdaiInflightEdits = [];
+function _mdaiFieldValues() {
+  const out = {};
+  const root = document.getElementById('mdai-body');
+  if (root) root.querySelectorAll('input[id], textarea[id], select[id]').forEach(f => { out[f.id] = _mdaiFieldState(f).cur; });
+  return out;
+}
+function _mdaiRestoreInflight(root) {
+  const edits = _mdaiInflightEdits;
+  _mdaiInflightEdits = [];
+  edits.forEach(k => {
+    const f = document.getElementById(k.id);
+    if (!f || !root.contains(f) || _mdaiFieldState(f).cur !== k.sent) return;
+    if (f.type === 'checkbox' || f.type === 'radio') f.checked = k.cur === 'true'; else f.value = k.cur;
+    _mdaiKeptEdits.push(k.id + ':in-flight');
+  });
+}
 function _mdaiTypedFields(root) {
   const kept = [];
   root.querySelectorAll('input[id], textarea[id], select[id]').forEach(f => {

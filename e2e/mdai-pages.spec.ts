@@ -201,8 +201,27 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await page.locator('#mdai-fetch-url').fill(api.url + '/data');
     await page.locator('#mdai-fetch-headers').fill('Accept: application/json');
     await page.locator('#mdai-fetch-select').fill('data.items');
+    // Hold this save's response so the next edit always lands while it is in
+    // flight: the file on disk changes first, and CI on ios-safari cleared the
+    // URL in that window and saw the save's render put it back (be658a119).
+    let srcHeld = 0;
+    let releaseSrc: () => void = () => {};
+    const srcGate = new Promise<void>((r) => { releaseSrc = r; });
+    await page.route('**/api/files/mdai/doc', async (route) => {
+      if (route.request().method() !== 'PUT' || srcHeld++) return route.continue();
+      const res = await route.fetch();
+      await srcGate;
+      await route.fulfill({ response: res });
+    });
     await page.locator('#mdai-src-save').click();
     await expect.poll(() => fileText(file)).toContain('select: data.items');
+    // Clearing the URL while the save is in flight survives its render.
+    await page.locator('#mdai-fetch-url').fill('');
+    releaseSrc();
+    await expect(page.getByText('Sources saved')).toBeVisible();
+    await expect(page.locator('#mdai-fetch-url')).toHaveValue('');
+    await page.unroute('**/api/files/mdai/doc');
+    await page.locator('#mdai-fetch-url').fill(api.url + '/data');
     text = await fileText(file);
     expect(text).toContain('amux:messages?days=30&limit=150&offset=10&kb=200');
     expect(text).not.toContain('notes.md');
