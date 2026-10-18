@@ -1108,6 +1108,9 @@
     border-bottom: 1px dashed rgba(255,255,255,0.15);
   }
   .peek-earlier-bar:active { color: var(--accent); }
+  .peek-logat-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; cursor: default; flex-wrap: wrap; }
+  .peek-logat-block { opacity: 1; }
+  .peek-logat-hit { background: rgba(255, 213, 79, 0.16); box-shadow: inset 3px 0 0 var(--accent); }
   .peek-earlier-block {
     opacity: 0.75; white-space: pre-wrap;
     border-left: 2px solid rgba(255,255,255,0.12); padding-left: 6px;
@@ -2509,6 +2512,8 @@
   .peek-deep-head { padding: 8px 12px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
   .peek-deep-hit { padding: 8px 12px; border-bottom: 1px solid var(--border); }
   .peek-deep-hit:last-child { border-bottom: none; }
+  .peek-deep-hit[role="button"] { cursor: pointer; }
+  .peek-deep-hit[role="button"]:hover { background: rgba(127,127,127,0.08); }
   .peek-deep-meta { color: var(--dim); font-size: 0.7rem; margin-bottom: 2px; }
   .peek-deep-snip { white-space: pre-wrap; word-break: break-word; font-family: var(--mono, ui-monospace, monospace); }
   .peek-deep-snip mark { background: var(--accent); color: var(--bg, #000); border-radius: 2px; }

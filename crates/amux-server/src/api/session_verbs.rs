@@ -26435,6 +26435,46 @@ async fn get_dispatch(
     }
 }
 
+/// GET log?at_line=N: the lines around line N of the terminal log, so a search
+/// hit ("mixpeek-general.log:337458") opens where it was found. Search counts
+/// 1-based lines split on '\n' over the raw bytes (log_search.rs, the search
+/// index), so this splits the same bytes the same way and never collapses
+/// blank runs: line N here is line N there. `rotated=1` reads `<name>.log.1`.
+fn log_window(name: &str, at: &str, qs: &[(String, String)]) -> Response {
+    let Ok(at) = at.parse::<usize>() else {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "at_line must be a line number"}));
+    };
+    let rotated = qs_flag(qs, "rotated");
+    let path = if rotated { rotated_log_path(name) } else { log_path(name) };
+    let Ok(data) = std::fs::read(&path) else {
+        return jresp(StatusCode::NOT_FOUND, json!({"error": "no log", "rotated": rotated}));
+    };
+    let before: usize = qs_first(qs, "before", "120").parse().unwrap_or(120).min(2000);
+    let after: usize = qs_first(qs, "after", "120").parse().unwrap_or(120).min(2000);
+    let mut lines: Vec<&[u8]> = data.split(|b| *b == b'\n').collect();
+    if data.ends_with(b"\n") {
+        lines.pop();
+    }
+    let total = lines.len();
+    if at == 0 || at > total {
+        tracing::warn!(session = name, at_line = at, total, rotated, "verdict=log_window_out_of_range");
+        return jresp(
+            StatusCode::NOT_FOUND,
+            json!({"error": "line is past the end of the log (it may have rotated)", "at_line": at, "total": total, "rotated": rotated}),
+        );
+    }
+    let first = at.saturating_sub(before).max(1);
+    let last = (at + after).min(total);
+    let text: Vec<String> = lines[first - 1..last]
+        .iter()
+        .map(|l| strip_ansi(&String::from_utf8_lossy(l)).trim_end_matches('\r').to_string())
+        .collect();
+    j200(json!({
+        "session": name, "rotated": rotated, "at_line": at,
+        "first": first, "last": last, "total": total, "lines": text,
+    }))
+}
+
 /// GET log + log/info (py:75187-75250).
 #[path = "transcript_history.rs"]
 mod transcript_history;
@@ -26494,6 +26534,9 @@ fn log_get(name: &str, subid: &str, qs: &[(String, String)]) -> Response {
     }
     if !subid.is_empty() {
         return not_found();
+    }
+    if let Some(at) = qs_get(qs, "at_line") {
+        return log_window(name, at, qs);
     }
     let Ok(mut data) = std::fs::read(&lp) else {
         return jresp(StatusCode::NOT_FOUND, json!({"error": "no log"}));
