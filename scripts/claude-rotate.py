@@ -616,7 +616,38 @@ def probe():
     return windows
 
 
+REPO = os.environ.get("CLAUDE_ROTATE_REPO", os.path.join(HOME, "Dev", "amux"))
+
+
+def install_drift():
+    """Log when this installed copy is not origin/main's scripts/claude-rotate.py.
+    2026-10-17: a lane wrote a mailbox-recovery change straight into the
+    installed copy at 20:57 and never committed it, and the next install from
+    main would have deleted it with nothing saying so. Returns the verdict
+    fields, or None when they agree or the repo cannot be read."""
+    try:
+        main = subprocess.run(["git", "-C", REPO, "show", "origin/main:scripts/claude-rotate.py"],
+                              capture_output=True, text=True, timeout=20)
+        mine = open(os.path.abspath(__file__)).read()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if main.returncode != 0 or main.stdout == mine:
+        return None
+    a, b = main.stdout.splitlines(), mine.splitlines()
+    import difflib
+    changed = sum(1 for l in difflib.unified_diff(a, b, lineterm="", n=0)
+                  if l[:1] in "+-" and not l.startswith(("+++", "---")))
+    fields = {"installed": os.path.abspath(__file__), "lines_differing": changed,
+              "fix": "commit the installed change to scripts/claude-rotate.py, or reinstall from main"}
+    log("claude_rotate_install_drift", measured=True, n_considered=1, **fields)
+    return fields
+
+
 def cmd_tick():
+    try:
+        install_drift()
+    except Exception as e:
+        log("claude_rotate_install_drift", measured=False, why_unmeasured=str(e)[:200])
     if os.environ.get("CLAUDE_ROTATE_ENABLED", "1") == "0" or os.path.exists(os.path.join(DIR, "paused")):
         print(log("claude_rotate_paused", measured=False, why_unmeasured="paused"))
         return 0

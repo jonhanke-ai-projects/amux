@@ -202,5 +202,22 @@ expect(rot.resume_action(timer) == "Escape", f"timer screen resumes with Escape,
 expect(rot.resume_action("Stop and wait for limit to reset") == "1", "the menu still answers 1")
 expect(rot.resume_action("working on it") is None, "no keys for a worker that is not parked")
 
+
+# An installed copy that differs from origin/main says so; the shipped script
+# agrees with itself through a repo whose origin/main holds the same bytes.
+import subprocess as _sp
+_repo = tempfile.mkdtemp()
+_sp.run(["git", "init", "-q", "-b", "main", _repo]); os.makedirs(os.path.join(_repo, "scripts"))
+open(os.path.join(_repo, "scripts", "claude-rotate.py"), "w").write("different\n")
+_sp.run(["git", "-C", _repo, "add", "."]); _sp.run(["git", "-C", _repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"])
+_sp.run(["git", "-C", _repo, "update-ref", "refs/remotes/origin/main", "HEAD"])
+rot.REPO = _repo
+d = rot.install_drift()
+expect(d is not None and d["lines_differing"] > 0, f"drift from origin/main is reported, got {d}")
+open(os.path.join(_repo, "scripts", "claude-rotate.py"), "w").write(open(os.path.join(ROOT, "scripts", "claude-rotate.py")).read())
+_sp.run(["git", "-C", _repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "y"])
+_sp.run(["git", "-C", _repo, "update-ref", "refs/remotes/origin/main", "HEAD"])
+expect(rot.install_drift() is None, "an install equal to origin/main reports nothing")
+
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
