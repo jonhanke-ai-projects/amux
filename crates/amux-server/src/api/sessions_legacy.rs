@@ -948,11 +948,12 @@ fn task_rows(c: &rusqlite::Connection, f: &TaskQuery) -> rusqlite::Result<(i64, 
         _ => "NULL, NULL".to_string(),
     };
     // A handoff is a peer worker's message (type session, origin = the sender)
-    // that arrived up to HANDOFF_BEFORE_S before the task was named.
+    // that arrived up to HANDOFF_BEFORE_S before the task was named, and not
+    // after: a message that lands while a task runs started the NEXT one.
     let handoff = if f.handoffs {
         format!("(SELECT json_object('from', m.origin, 'message_id', m.id, 'ts', m.ts / 1000.0) FROM cmd_history m \
                  WHERE m.session = r.session AND m.type = 'session' AND m.origin != '' AND m.origin != r.session \
-                 AND m.ts >= CAST((r.ts - {HANDOFF_BEFORE_S}) * 1000 AS INTEGER) AND m.ts <= CAST((r.ts + 30) * 1000 AS INTEGER) \
+                 AND m.ts >= CAST((r.ts - {HANDOFF_BEFORE_S}) * 1000 AS INTEGER) AND m.ts <= CAST(r.ts * 1000 AS INTEGER) \
                  ORDER BY m.ts DESC LIMIT 1)")
     } else {
         "NULL".to_string()
@@ -1161,7 +1162,7 @@ pub async fn task_links(
         let handoff: Option<String> = c.query_row(&format!(
             "SELECT json_object('from', m.origin, 'message_id', m.id, 'ts', m.ts / 1000.0) FROM cmd_history m \
              WHERE m.session = ?1 AND m.type = 'session' AND m.origin != '' AND m.origin != ?1 \
-             AND m.ts >= CAST((?2 - {HANDOFF_BEFORE_S}) * 1000 AS INTEGER) AND m.ts <= CAST((?2 + 30) * 1000 AS INTEGER) ORDER BY m.ts DESC LIMIT 1"),
+             AND m.ts >= CAST((?2 - {HANDOFF_BEFORE_S}) * 1000 AS INTEGER) AND m.ts <= CAST(?2 * 1000 AS INTEGER) ORDER BY m.ts DESC LIMIT 1"),
             rusqlite::params![who, start], |r| r.get(0)).ok();
         // Owner messages to this worker, to name the requests a close refers to.
         let mut st = c.prepare("SELECT id, substr(text, 1, 200) FROM cmd_history WHERE session = ?1 AND ts >= ?2")?;
@@ -10252,6 +10253,9 @@ Checked, nothing of mine was at risk, no action needed from you.
         // A peer's message 100 s before "Second" is its handoff; an owner message is not.
         c.execute("INSERT INTO cmd_history (text, type, session, ts, origin) VALUES ('do it', 'session', 'w1', 1900000, 'w9')", []).unwrap();
         c.execute("INSERT INTO cmd_history (text, type, session, ts, origin) VALUES ('owner', 'user', 'w1', 990000, '')", []).unwrap();
+        // One that lands 10 s after "First" was named arrived while it ran: not
+        // First's handoff (CI, 2026-10-18: it drew a second arrow onto First).
+        c.execute("INSERT INTO cmd_history (text, type, session, ts, origin) VALUES ('late', 'session', 'w1', 1010000, 'w8')", []).unwrap();
         let f = TaskQuery { handoffs: true, asc: true, limit: 10, ..Default::default() };
         let (_, rows, _) = task_rows(&c, &f).unwrap();
         assert_eq!(rows[0].get("handoff"), None, "no peer message before First");
