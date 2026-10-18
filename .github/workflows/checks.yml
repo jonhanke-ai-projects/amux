@@ -579,7 +579,7 @@ jobs:
       - name: land precheck verdict and attributed cancel
         run: |
           set -uo pipefail
-          bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh && bash scripts/test-land-cancel-shared-checkout.sh && bash scripts/test-land-refusal-spares.sh && bash scripts/test-land-demote-sticks.sh && bash scripts/test-land-to-head.sh && bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh && bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh && bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh && bash scripts/test-pipeline-bottlenecks-throughput.sh && bash scripts/test-pipeline-bottlenecks-constraints.sh && python3 scripts/test-pipeline-bottlenecks-host.py
+          bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh && bash scripts/test-land-cancel-shared-checkout.sh && bash scripts/test-land-refusal-spares.sh && bash scripts/test-land-demote-sticks.sh && bash scripts/test-land-to-head.sh && bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh && bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh && bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-land-guards.sh && bash scripts/test-ci-wait.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh && bash scripts/test-pipeline-bottlenecks-throughput.sh && bash scripts/test-pipeline-bottlenecks-constraints.sh && python3 scripts/test-pipeline-bottlenecks-host.py
       - name: a lane resumes its own conversation, never whichever peer ran here last
         run: |
           set -uo pipefail
@@ -680,6 +680,7 @@ jobs:
           # file. Cheap (no cargo), so there is no reason it was not here.
           python3 ./scripts/git-hooks/test_remove_correction.py || exit $?
           python3 ./scripts/git-hooks/test_git_shared_guard.py || exit $?
+          python3 ./scripts/git-hooks/test_post_push_verify.py || exit $?
           python3 ./scripts/git-hooks/test_land_push_guard.py
       # CLI dispatch tests (AEAB-17). Language-agnostic like the two steps above,
       # and they belong HERE rather than in rust.yml because rust.yml is
