@@ -47,15 +47,17 @@ amux-cloud worker. Its brief and evidence are under `~/.amux/cloud/codex-e2e/`.
 | 2 | Pass | Codex round 1 |
 | 3 | Fixed, proven live | The Worker cron finishes any paid order without a server (c9f139760). Test order r2c1455 hit Hetzner capacity errors for about 4 minutes and was finished at 363 seconds. Readiness waits for the dashboard and first update. |
 | 4 | Pass | Codex round 1 |
-| 5 | Built, awaiting retest | CLI sign-in for Claude, Codex and Gemini (ccaf07ff4, 0ba7e87bf) |
-| 6 | Awaiting retest | Depends on 5 |
-| 7 | Partial | Mobile dashboard works; a real handset steering a worker is not yet shown |
-| 8 | Fixed, proven live | The paying customer is the server owner; teammates join from an invite at /_door/join and can be revoked (c9f139760). Invite links use the public host (292941df1). |
+| 5 | Pass (API key) | Codex round 3: an OpenAI key saved in Vault drives real Codex turns. A saved key now also signs Codex in before its login picker (2f2f148f6) |
+| 6 | Fixed, awaiting retest | Round 3 C6-3: Codex's bubblewrap sandbox cannot start in the container, so every command failed. Launch now falls back to the container as the sandbox (d52cec2ad) |
+| 7 | Pass at 390px | Round 3: a phone-width Send started a model turn and got its ACK. A physical handset is not yet shown |
+| 8 | Fixed, awaiting retest | Round 3: invite, join and lockout pass. Revoking had no button (C8-3); Settings > People now has Remove, e2e `settings_team_member_remove` (d52cec2ad, 9b1b3c21f) |
 | 9 | Update path proven live | r2c1455 moved its checkout and its image (live_commit 17d4bef36bde) with no manual step (bbca9bcf7, 17d4bef36). Reboot recovery passed in round 1. TLS renewal relies on Caddy and is not yet observed. |
 | 10 | Partial | Hetzner daily backups are enabled on every server; a restore is not yet shown |
-| 11 | Partial | Portal, invoices and cancel work; resubscribe not yet shown |
-| 12 | Proven live | 2026-10-18 on r2c1455: deletion email, wrong name refused, right name deleted it; server, DNS record and snapshots gone, Stripe subscription canceled, confirmation email received |
+| 11 | Pass | Round 3: deleted, then signed up again with the same email and name; the new server reached ready |
+| 12 | Proven live | 2026-10-18 on r2c1455 and twice in round 3. A name bought again was listed twice (C12-3), now once (d52cec2ad) |
 | 13 | Partial | Cancel keeps service to period end; 30-day snapshot expiry not yet observed |
 | 14 | Fixed | Email failures return 502 with a message; stuck orders email the operator once. Cloud mail uses a service account that never needs re-approval (097a9380c). |
-| 15 | Fixed | Duplicate checkouts are expired, webhook replays and DNS failures finish once (offline suite `node cloud/start/test-worker.mjs`) |
+| 15 | Fixed | Duplicate checkouts are expired, webhook replays and DNS failures finish once. Round 3 C15-3: a paid name could open a second checkout before its server existed; now refused (d52cec2ad, offline suite `node cloud/start/test-worker.mjs`) |
 | 16 | Pass in a real browser | FIRSTMONTH shows $0.00 in real Chrome; headless browsers are refused by Stripe |
+
+Also found in the 2026-10-18 journey and fixed (7fac35d90): schedules never fired on a server without `AMUX_RS_SCHEDULER=1`, every Cloud server included (now on by default); `amux import` refused a real 239 MB export with 413 (now sent gzipped, 1 GiB limit), and imported schedules now arrive paused so a move cannot fire them twice.
