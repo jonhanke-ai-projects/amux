@@ -452,12 +452,42 @@ def dead_mailboxes():
     hello@amux.io grant was ended by the amux.io Workspace session policy, the
     link search answered empty rather than failing, and the policy picked
     hello@amux.io (the only roomy account) on every tick for 4 minutes each
-    while ethan@trymixpeek.com climbed past 92%."""
+    while ethan@trymixpeek.com climbed past 92%.
+    None means the read failed: unknown, and never evidence that a mailbox recovered."""
     try:
         d = amux_get("/api/gmail/accounts") or {}
     except Exception:
-        return set()
+        return None
+    if "needs_reauth" not in d:
+        return None
     return {e.lower() for e in (d.get("needs_reauth") or []) if isinstance(e, str)}
+
+
+def forgive_recovered_mailboxes(state, dead, at_s=None):
+    """Drop the switch failures an account collected while its mailbox was dead,
+    once the mailbox reads healthy again. 2026-10-17: hello@amux.io was
+    reconnected at ~20:40, its token worked, and the rotator still held it in a
+    6-hour backoff for the two switches that failed at 18:07 and 18:12 while
+    nothing could read its sign-in link. Returns the accounts cleared.
+    `dead` must be a measured set; pass None and nothing is forgiven."""
+    at_s = at_s or time.time()
+    seen = state.setdefault("mailbox_dead_seen", {})
+    if dead is None:
+        return []
+    for e in dead:
+        seen[e] = at_s
+    fails = state.get("switch_failures") or {}
+    cleared = []
+    for e in sorted(set(seen) - set(dead)):
+        last_dead = float(seen.pop(e))
+        kept = [t for t in fails.get(e, []) if float(t) > last_dead]
+        if len(kept) != len(fails.get(e, [])):
+            cleared.append(e)
+            if kept:
+                fails[e] = kept
+            else:
+                fails.pop(e, None)
+    return cleared
 
 
 def decide(current, rows, state, at=None, unreachable=()):
@@ -663,7 +693,19 @@ def cmd_tick():
     current = current_email()
     rows = rank()
     state = load(STATE, {})
-    dead = dead_mailboxes() & {r["email"].lower() for r in rows}
+    health = dead_mailboxes()
+    if health is None:
+        log("claude_rotate_mailbox_health_unmeasured", measured=False, why_unmeasured="GET /api/gmail/accounts failed")
+    dead = (health or set()) & {r["email"].lower() for r in rows}
+    # Only this tick writes state while no switch runs; a running switch owns it.
+    if not os.path.exists(LOCK) or not _switch_running():
+        before = json.dumps(state.get("mailbox_dead_seen"), sort_keys=True)
+        recovered = forgive_recovered_mailboxes(state, None if health is None else dead)
+        if recovered:
+            log("claude_rotate_mailbox_recovered", measured=True, n_considered=len(rows), accounts=recovered,
+                why="the mailbox reads healthy again, so failures from while it was dead no longer count")
+        if recovered or json.dumps(state.get("mailbox_dead_seen"), sort_keys=True) != before:
+            save(STATE, state)
     if dead:
         log("claude_rotate_mailbox_dead", measured=True, n_considered=len(rows), accounts=sorted(dead),
             fix="GET /api/gmail/auth?account=<email>, open the url, approve")
