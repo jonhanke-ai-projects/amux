@@ -156,7 +156,7 @@ cp -p "$SRC_REPO/scripts/atomic-replace.sh" "$wt/scripts/"
 printf '#!/bin/bash\n# stale\n' > "$TMP/home/hook-report.sh"; chmod 0711 "$TMP/home/hook-report.sh"
 ino_before=$(ls -i "$TMP/home/hook-report.sh" | awk '{print $1}')
 cout="$(cd "$wt" && AMUX_REPORT_HOOK_DEST="$TMP/home/hook-report.sh" AMUX_SHARED_GUARD_DEST="$TMP/home/hooks/git-shared-guard.py" \
-  AMUX_READ_ROUTER_DEST="$TMP/home/hooks/large-read-guard.py" bash scripts/install-hooks.sh 2>&1)" || true   # its verdict is checked below, line by line
+  AMUX_READ_ROUTER_DEST="$TMP/home/hooks/large-read-guard.py" AMUX_POST_PUSH_VERIFY_DEST="$TMP/home/hooks/post-push-verify.py" bash scripts/install-hooks.sh 2>&1)" || true   # its verdict is checked below, line by line
 if cmp -s "$wt/scripts/hooks/hook-report.sh" "$TMP/home/hook-report.sh"; then
   ok "C: a stale report hook is replaced with the tracked one"
 else
