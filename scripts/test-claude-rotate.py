@@ -219,5 +219,18 @@ _sp.run(["git", "-C", _repo, "-c", "user.email=t@t", "-c", "user.name=t", "commi
 _sp.run(["git", "-C", _repo, "update-ref", "refs/remotes/origin/main", "HEAD"])
 expect(rot.install_drift() is None, "an install equal to origin/main reports nothing")
 
+# A mailbox that recovers forgives the switch failures it caused while dead
+# (2026-10-17: hello@amux.io sat in a 6h backoff after its mailbox came back).
+st = {"switch_failures": {"h@x": [100.0, 200.0], "o@x": [150.0]}}
+expect(rot.forgive_recovered_mailboxes(st, {"h@x"}, at_s=300.0) == [], "nothing is forgiven while the mailbox is dead")
+expect(st["switch_failures"]["h@x"] == [100.0, 200.0], "failures are kept while dead")
+expect(rot.forgive_recovered_mailboxes(st, None, at_s=400.0) == [], "an unmeasured health read forgives nothing")
+expect("h@x" in st["mailbox_dead_seen"], "an unmeasured read keeps the dead record")
+st["switch_failures"]["h@x"].append(350.0)  # failed after it was last seen dead: not the mailbox's fault
+expect(rot.forgive_recovered_mailboxes(st, set(), at_s=500.0) == ["h@x"], "recovery clears the account")
+expect(st["switch_failures"]["h@x"] == [350.0], f"only failures from while dead are dropped, got {st['switch_failures']}")
+expect(st["switch_failures"]["o@x"] == [150.0], "an account that was never dead keeps its failures")
+expect("h@x" not in st["mailbox_dead_seen"], "the dead record is consumed")
+
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
