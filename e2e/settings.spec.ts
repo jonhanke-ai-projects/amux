@@ -1050,10 +1050,12 @@ test('settings_team_member_remove', async ({ page, request, browser }, testInfo)
   await settle(page);
   const token = await appToken(page);
   const email = `remove-${Date.now()}@example.com`;
-  const inv = await (await request.post('/api/org/invites', {
+  const invRes = await request.post('/api/org/invites', {
     headers: authHeaders(token),
-    data: { email, scope_level: 'group', scope_name: 'remove-e2e' },
-  })).json();
+    data: { email, team_id: 'team_global', grant_host_access: true },
+  });
+  const inv = await invRes.json();
+  expect(invRes.status(), JSON.stringify(inv)).toBe(201);
   const mateCtx = await browser.newContext({ ignoreHTTPSErrors: true, serviceWorkers: 'block' });
   const mate = await mateCtx.newPage();
   try {

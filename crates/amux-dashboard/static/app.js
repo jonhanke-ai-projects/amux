@@ -48983,10 +48983,11 @@ function saveSettingsNewServer() {
   showToast('Server saved');
 }
 
-// Close settings on outside click
+// Close settings on outside click. A confirm dialog opened FROM Settings is
+// not outside: answering it used to close Settings under the user.
 document.addEventListener('click', function(e) {
   const wrap = document.querySelector('.settings-wrap');
-  if (wrap && !wrap.contains(e.target)) closeSettings();
+  if (wrap && !wrap.contains(e.target) && !e.target.closest?.('#modal-backdrop')) closeSettings();
 });
 
 // ── Default Model ────────────────────────────────────────────────────────────
