@@ -151,16 +151,16 @@ platform :ios do
     # only 1.1.27). One line per recent build with the states that decide
     # whether a tester can see it, then one line per beta group.
     Spaceship::ConnectAPI.get_builds(filter: { app: app.id }, sort: "-uploadedDate", limit: 12,
-                                     includes: "preReleaseVersion,buildBetaDetail,betaAppReviewSubmission,betaGroups").each do |b|
+                                     includes: "preReleaseVersion,buildBetaDetail,betaAppReviewSubmission").each do |b|
       v = b.pre_release_version ? b.pre_release_version.version : "?"
       d = b.build_beta_detail
       r = b.beta_app_review_submission
-      groups = (b.beta_groups || []).map(&:name).join("|")
       UI.message("TESTFLIGHT version=#{v} build=#{b.version} uploaded=#{b.uploaded_date} processing=#{b.processing_state} expired=#{b.expired} " \
-                 "internal=#{d && d.internal_build_state} external=#{d && d.external_build_state} beta_review=#{r ? r.beta_review_state : 'none'} groups=#{groups.empty? ? 'none' : groups}")
+                 "internal=#{d && d.internal_build_state} external=#{d && d.external_build_state} beta_review=#{r ? r.beta_review_state : 'none'}")
     end
     app.get_beta_groups.each do |g|
-      UI.message("TESTFLIGHT group=#{g.name} internal=#{g.is_internal_group} public_link=#{g.public_link_enabled}")
+      testers = (Spaceship::ConnectAPI.get_beta_testers(filter: { betaGroups: g.id }, limit: 50).to_a rescue [])
+      UI.message("TESTFLIGHT group=#{g.name} internal=#{g.is_internal_group} public_link=#{g.public_link_enabled} testers=#{testers.length}")
     end
   end
 
