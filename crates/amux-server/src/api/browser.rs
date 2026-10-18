@@ -2527,6 +2527,22 @@ pub(crate) fn site_choice(
     (choice, cands.len(), cards)
 }
 
+/// Registered profiles that match an explicit identity or role but hold no
+/// browser data on this machine, so `site_choice` cannot offer them. Without
+/// this the refusal said nothing matched while the registry named the exact
+/// identity (esteininger21@gmail.com -> ethan-personal, 2026-10-18).
+fn unsynced_matches(list: &[chrome::BrowserProfile], identity: Option<&str>, role: Option<&str>) -> Vec<String> {
+    if identity.is_none() && role.is_none() {
+        return Vec::new();
+    }
+    list.iter()
+        .filter(|p| !p.on_disk)
+        .filter(|p| identity.is_none_or(|id| p.identity.eq_ignore_ascii_case(id)))
+        .filter(|p| role.is_none_or(|r| p.role == r))
+        .map(|p| p.name.clone())
+        .collect()
+}
+
 /// `site_choice` for a URL, or None when the URL names no public site.
 pub(crate) fn profile_for_url(worker: &str, url: &str) -> Option<crate::integrations::browser_logins::Choice> {
     let host = reqwest::Url::parse(url).ok()?.host_str()?.to_string();
@@ -2556,12 +2572,28 @@ async fn profile_for(headers: HeaderMap, Query(q): Query<ProfileForQuery>) -> Re
     let _ = home;
     let out = tokio::task::spawn_blocking(move || {
         let (choice, n, cards) = site_choice(&w2, &site, identity.as_deref(), role.as_deref());
-        (choice, site, n, cards)
+        let unsynced = if choice.profile.is_empty() {
+            unsynced_matches(&chrome::list_profiles(&chrome::amux_home(), false), identity.as_deref(), role.as_deref())
+        } else {
+            Vec::new()
+        };
+        (choice, site, n, cards, unsynced)
     })
     .await;
     match out {
-        Ok((choice, site, n, cards)) => {
-            if choice.profile.is_empty(){return err(StatusCode::NOT_FOUND,json!({"error":"no allowed profile matches the requested identity and role","measured":true,"n_considered":n,"choices":cards}));}
+        Ok((choice, site, n, cards, unsynced)) => {
+            if choice.profile.is_empty() {
+                if unsynced.is_empty() {
+                    return err(StatusCode::NOT_FOUND, json!({"error":"no allowed profile matches the requested identity and role","measured":true,"n_considered":n,"choices":cards,"unsynced":unsynced}));
+                }
+                tracing::warn!(target: "amux::browser", site = %site, worker = %worker, unsynced = ?unsynced,
+                    verdict = "browser_profile_unsynced", "the profile for this identity has no browser data on this machine");
+                let names = unsynced.join(", ");
+                return err(StatusCode::NOT_FOUND, json!({
+                    "error": format!("{names} matches the requested identity and role but has no saved browser data on this machine, so it cannot be opened"),
+                    "hint": format!("Do not substitute another identity. Ask the owner to sync or sign in {names} (amux browser create {} <url>), then retry.", unsynced[0]),
+                    "measured": true, "n_considered": n, "choices": cards, "unsynced": unsynced}));
+            }
             tracing::info!(target: "amux::browser", site = %site, worker = %worker, profile = %choice.profile,
                 signed_in = choice.signed_in, measured = true, n_considered = n,
                 verdict = "browser_profile_resolved", "browser profile chosen for a site");
@@ -4661,6 +4693,32 @@ sends a real pointer click, and reports dispatched separately from observed_effe
 // gated e2e lives in integrations::browser's #[ignore]d test + AMUX-2598's
 // scripted run).
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod unsynced_tests {
+    use super::*;
+
+    fn profile(name: &str, identity: &str, role: &str, on_disk: bool) -> chrome::BrowserProfile {
+        chrome::BrowserProfile {
+            name: name.into(), path: String::new(), last_used: None, size_mb: None, domains: Vec::new(),
+            label: String::new(), role: role.into(), identity: identity.into(), registered: true, on_disk, owner: None,
+        }
+    }
+
+    #[test]
+    fn a_registered_identity_with_no_data_on_disk_is_named_rather_than_reported_missing() {
+        let list = vec![
+            profile("ethan", "ethan@mixpeek.com", "primary", true),
+            profile("ethan-personal", "esteininger21@gmail.com", "personal", false),
+            profile("ethan-money", "ethan@mixpeek.com", "restricted", false),
+        ];
+        assert_eq!(unsynced_matches(&list, Some("ESTEININGER21@gmail.com"), None), vec!["ethan-personal"]);
+        assert_eq!(unsynced_matches(&list, Some("ethan@mixpeek.com"), Some("restricted")), vec!["ethan-money"]);
+        assert!(unsynced_matches(&list, Some("nobody@example.com"), None).is_empty(), "an unknown identity is still a plain miss");
+        assert!(unsynced_matches(&list, Some("ethan@mixpeek.com"), Some("primary")).is_empty(), "a profile on disk is not unsynced");
+        assert!(unsynced_matches(&list, None, None).is_empty(), "no filter, nothing to explain");
+    }
+}
 
 #[cfg(test)]
 mod tests {
