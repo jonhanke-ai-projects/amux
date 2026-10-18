@@ -1570,7 +1570,7 @@ mod tests {
         for w in ["w-gap", "w-cooled"] {
             std::fs::write(
                 _dir.path().join(format!("sessions/{w}.env")),
-                "CC_DIR=/tmp\n",
+                "CC_DIR=/tmp\nCC_AUTO_PICKUP=1\n",
             )
             .unwrap();
         }

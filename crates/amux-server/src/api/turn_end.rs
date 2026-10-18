@@ -894,6 +894,11 @@ async fn file_ask_card_via(
     path: AskPath,
     isolated: bool,
 ) -> Result<(String, bool, AskPath), String> {
+    if !isolated && crate::api::board_lifecycle::board_unused(lane) {
+        tracing::info!(session = lane, origin, verdict = "board_unused_suppressed", measured = true, n_considered = 1,
+            "ask card not filed: every board switch is off for this worker");
+        return Err("every board switch is off for this worker; no card filed".into());
+    }
     use crate::db::board_store as bs;
     let tag = question_key(question);
     let owner = owner_name();
@@ -1752,7 +1757,7 @@ mod tests {
         let (_tmp, state) = hermetic_state();
         let q = "Needs one thing from you: a semantic-search sign-in so I can validate parity?";
         let (id, created, path) = file_ask_card_via(
-            &state, "tubescience-parity", Some(Boundary::OwnerOnly), q, "ctx", "test", AskPath::Decision, false,
+            &state, "ask-policy-test-lane", Some(Boundary::OwnerOnly), q, "ctx", "test", AskPath::Decision, false,
         )
         .await
         .unwrap();
@@ -1771,7 +1776,7 @@ mod tests {
         drop(conn);
         // Dedupe works across both shapes: the same question finds this card.
         let (id2, created2, _) = file_ask_card_via(
-            &state, "tubescience-parity", Some(Boundary::OwnerOnly), q, "ctx", "test", AskPath::NeedsYou, false,
+            &state, "ask-policy-test-lane", Some(Boundary::OwnerOnly), q, "ctx", "test", AskPath::NeedsYou, false,
         )
         .await
         .unwrap();

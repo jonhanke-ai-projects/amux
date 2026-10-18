@@ -13254,7 +13254,7 @@ mod tests {
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(
             sessions.join("lane.env"),
-            format!("CC_DIR=\"{}\"\nCC_ISOLATED=0\n", dir.path().display()),
+            format!("CC_DIR=\"{}\"\nCC_ISOLATED=0\nCC_AUTO_PICKUP=1\n", dir.path().display()),
         )
         .unwrap();
         drive_card(&store, "ATE-92", "doing", "agent", "code");

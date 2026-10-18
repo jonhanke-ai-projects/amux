@@ -47794,8 +47794,14 @@ async function _chatgptPublish(btn) {
 // No list response carries a value. Reveal is the one call that does: owner
 // only, audited server-side, and masked again here after `remask_after_s`.
 function _vaultScopeLabel(i) {
-  return i.scope === 'global' ? 'Global' : (i.scope === 'group' ? 'Group ' : 'Worker ') + i.target;
+  if (i.scope === 'global') return 'Global';
+  if (i.scope === 'worker') return 'Worker ' + i.target;
+  const gs = _vaultGroupsOf(i);
+  return (gs.length > 1 ? 'Groups ' : 'Group ') + gs.join(', ');
 }
+// A group secret's target is one group or a comma set ("mixpeek,amux"); a
+// worker in ANY listed group receives it.
+function _vaultGroupsOf(i) { return String(i.target || '').split(',').map(g => g.trim()).filter(Boolean); }
 const _vault = { items: [], workers: [], groups: [], keystore: '', tab: 'secrets', q: '', scope: '', group: '',
   worker: '', sort: 'name', prov: null, revealed: {}, timers: {}, loadErr: '' };
 const _VAULT_ICONS = {
@@ -47829,7 +47835,7 @@ function _vaultWorkerGroups() {
 }
 function _vaultProvisionedTo(i) {
   const n = i.effective_for ?? 0, o = i.overridden_for ?? 0;
-  const who = i.scope === 'global' ? 'All workers' : esc(i.target);
+  const who = i.scope === 'global' ? 'All workers' : esc(i.scope === 'group' ? _vaultGroupsOf(i).join(', ') : i.target);
   const count = '<span class="ui-help">' + n + ' worker' + (n === 1 ? '' : 's')
     + (o ? ' · overridden for ' + o : '') + '</span>';
   return '<div class="vault-prov"><span>' + who + '</span>' + count + '</div>';
@@ -47967,7 +47973,7 @@ async function _vaultSecretsLoad() {
 function _vaultFillFilters() {
   const g = document.getElementById('vault-f-group'), w = document.getElementById('vault-f-worker');
   if (!g || !w) return;
-  const groups = [...new Set([..._vault.groups, ..._vault.items.filter(i => i.scope === 'group').map(i => i.target)])].sort();
+  const groups = [...new Set([..._vault.groups, ..._vault.items.filter(i => i.scope === 'group').flatMap(_vaultGroupsOf)])].sort();
   const workers = [...new Set([..._vault.workers, ...Object.keys(_vaultWorkerGroups())])].sort();
   g.innerHTML = '<option value="">All Groups</option>' + groups.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
   w.innerHTML = '<option value="">All Workers</option>' + workers.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
@@ -48025,7 +48031,7 @@ function _vaultVisible() {
   let list = _vault.items.slice();
   if (q) list = list.filter(i => (i.key + ' ' + (i.note || '') + ' ' + (i.target || '')).toLowerCase().includes(q));
   if (_vault.scope) list = list.filter(i => i.scope === _vault.scope);
-  if (_vault.group) list = list.filter(i => i.scope === 'group' && i.target === _vault.group);
+  if (_vault.group) list = list.filter(i => i.scope === 'group' && _vaultGroupsOf(i).includes(_vault.group));
   if (_vault.worker && _vault.prov) {
     const ids = new Set();
     for (const x of _vault.prov.resolved || []) { ids.add(x.id); for (const s of x.shadows || []) ids.add(s.id); }
@@ -48154,6 +48160,8 @@ function _vaultEdit(id, mode) {
   const workers = Object.keys(wg).sort();
   const scope = it ? it.scope : 'global';
   const opt = (list, sel) => list.length ? list.map(n => '<option value="' + esc(n) + '"' + (n === sel ? ' selected' : '') + '>' + esc(n) + '</option>').join('') : '<option value="" disabled selected>None yet</option>';
+  const picked = new Set(scope === 'group' ? _vaultGroupsOf(it) : groups.slice(0, 1));
+  const checks = groups.length ? groups.map(n => '<label class="vault-check"><input type="checkbox" value="' + esc(n) + '"' + (picked.has(n) ? ' checked' : '') + ' onchange="_vaultEditScope()"><span>' + esc(n) + '</span></label>').join('') : '<span class="ui-help">No groups yet</span>';
   const radio = (v, label, help, extra) => '<label class="vault-radio"><input type="radio" name="vault-e-scope" value="' + v + '"' + (scope === v ? ' checked' : '') + ' onchange="_vaultEditScope()">'
     + '<span class="vault-radio-text">' + _vaultIcon(v) + '<span><b>' + label + '</b><span class="ui-help">' + help + '</span></span></span></label>' + (extra || '');
   const rotate = mode === 'rotate';
@@ -48167,7 +48175,7 @@ function _vaultEdit(id, mode) {
     + '<span class="ui-error" id="vault-e-value-err" role="alert"></span></label>'
     + (rotate ? '' : '<fieldset class="vault-scope"><legend>Scope</legend><p class="ui-help">Control which workers can access this secret.</p>'
       + radio('global', 'Global', 'Available to all workers')
-      + radio('group', 'Group', 'Available to workers in a specific group', '<select id="vault-e-group" class="input vault-target" aria-label="Group" onchange="_vaultEditScope()">' + opt(groups, scope === 'group' ? it.target : groups[0]) + '</select>')
+      + radio('group', 'Groups', 'Available to workers in any of the checked groups', '<div id="vault-e-group" class="vault-target vault-checks" role="group" aria-label="Groups">' + checks + '</div>')
       + radio('worker', 'Worker', 'Available to a single worker', '<select id="vault-e-worker" class="input vault-target" aria-label="Worker" onchange="_vaultEditScope()">' + opt(workers, scope === 'worker' ? it.target : workers[0]) + '</select>')
       + '<p class="ui-help" id="vault-e-reach" role="status"></p></fieldset>')
     + '<p class="ui-error" id="vault-e-err" role="alert"></p>'
@@ -48201,7 +48209,7 @@ function _vaultEye() {
 }
 function _vaultEditTarget() {
   const scope = document.querySelector('input[name="vault-e-scope"]:checked')?.value || 'global';
-  const target = scope === 'group' ? (document.getElementById('vault-e-group')?.value || '') : scope === 'worker' ? (document.getElementById('vault-e-worker')?.value || '') : '';
+  const target = scope === 'group' ? [...document.querySelectorAll('#vault-e-group input:checked')].map(c => c.value).join(',') : scope === 'worker' ? (document.getElementById('vault-e-worker')?.value || '') : '';
   return { scope, target };
 }
 // Live reach preview: who gets this, and whether a more specific secret with
@@ -48214,11 +48222,11 @@ function _vaultEditScope() {
     const el = document.getElementById(id); if (el) el.hidden = scope !== s;
   }
   const wg = _vaultWorkerGroups();
-  const names = Object.keys(wg).filter(w => scope === 'global' || (scope === 'group' && wg[w].includes(target)) || (scope === 'worker' && w === target)).sort();
+  const names = Object.keys(wg).filter(w => scope === 'global' || (scope === 'group' && target.split(',').some(g => wg[w].includes(g))) || (scope === 'worker' && w === target)).sort();
   const key = (document.getElementById('vault-e-key')?.value || '').trim();
   const rank = { global: 0, group: 1, worker: 2 };
   const over = key ? _vault.items.filter(i => i.key === key && rank[i.scope] > rank[scope]).map(_vaultScopeLabel) : [];
-  reach.textContent = (scope !== 'global' && !target) ? 'Pick a ' + scope + '.'
+  reach.textContent = (scope !== 'global' && !target) ? (scope === 'group' ? 'Check at least one group.' : 'Pick a worker.')
     : 'Reaches ' + names.length + ' worker' + (names.length === 1 ? '' : 's') + (names.length && names.length <= 6 ? ': ' + names.join(', ') : '')
       + '. Precedence is worker, then group, then global.' + (over.length ? ' Overridden by ' + over.join(', ') + ' where those apply.' : '');
 }
@@ -48237,7 +48245,7 @@ async function _vaultSecretSave(id, mode) {
       keyEl.setAttribute('aria-invalid', 'true'); keyEl.focus(); return;
     }
     const { scope, target } = _vaultEditTarget();
-    if (scope !== 'global' && !target) { err.textContent = 'Pick a ' + scope + ' for this secret.'; return; }
+    if (scope !== 'global' && !target) { err.textContent = (scope === 'group' ? 'Check at least one group for this secret.' : 'Pick a worker for this secret.'); return; }
     Object.assign(body, { key, scope, target, description: document.getElementById('vault-e-note').value });
   }
   if (mode !== 'edit' && !value) {
