@@ -28945,7 +28945,9 @@ async function _filesFtsRun() {
 }
 
 async function _filesNewFolder() {
-  const name = prompt('Folder name:');
+  // showPrompt, not prompt(): the iOS app's web view skipped native panels
+  // (prompt() returned null with no box), so New folder did nothing there.
+  const name = await showPrompt('Folder name:', 'new-folder');
   if (!name || !name.trim()) return;
   const fname = name.trim();
   if (/[\/\0]/.test(fname) || fname === '.' || fname === '..') { showToast('Invalid folder name'); return; }
@@ -28960,8 +28962,8 @@ async function _filesNewFolder() {
     else showToast(d.error || 'Could not create folder');
   } catch (e) { showToast('Could not create folder'); }
 }
-function _filesNewFile() {
-  const name = prompt('File name (e.g. notes.txt, script.py, data.json):');
+async function _filesNewFile() {
+  const name = await showPrompt('File name:', 'notes.txt, script.py, data.json');
   if (!name || !name.trim()) return;
   const fname = name.trim();
   const fpath = (_filesPath || '/').replace(/\/$/, '') + '/' + fname;
@@ -29535,7 +29537,7 @@ async function _spCleanArchive() {
 
 async function _scratchpadNewFolder() {
   await _spLoadRoot();
-  const name = prompt('Folder name:');
+  const name = await showPrompt('Folder name:', 'new-folder');
   if (!name || !name.trim()) return;
   const dirPath = _spPath.replace(/\/$/, '') + '/' + name.trim();
   try {
