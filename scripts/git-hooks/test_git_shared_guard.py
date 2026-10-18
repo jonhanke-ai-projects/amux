@@ -714,7 +714,68 @@ def main():
         failures.append("lock-note: an absent lsof did not report unmeasured: %r" % _err[:220])
     if "no process holds it open" in _err:
         failures.append("lock-note: an absent lsof reported the lock UNHELD: %r" % _err[:220])
-    os.unlink(_lock)
+
+    # 6. STALE-LOCK RECOVERY (mxp-gs12 review, 2026-10-18): past
+    #    AMUX_INDEX_LOCK_STALE_S with no holder, the guard removes the lock and
+    #    logs it. Four states, each with its twin: an UNMEASURED probe never
+    #    removes, a lock under the threshold is kept, removal off (0) keeps it,
+    #    and a lock a live process HOLDS open is kept however old it is.
+    _rec_home = os.path.join(tmp, "rechome")
+    os.makedirs(_rec_home, exist_ok=True)
+    _rec_log = os.path.join(_rec_home, ".amux", "logs", "git-guard-lock-recovery.log")
+    _very_old = time.time() - 4000
+
+    def _stale_lock():
+        open(_lock, "w").close()
+        os.utime(_lock, (_very_old, _very_old))
+
+    _stale_lock()
+    _lockcases += 1
+    _rc, _err = run_hook("git commit -m x", work, tmp,
+                         extra_env={"AMUX_LSOF": "/nonexistent/lsof", "HOME": _rec_home})
+    if not os.path.exists(_lock):
+        failures.append("lock-recovery: removed a lock whose holder probe did NOT run")
+    _lockcases += 1
+    _rc, _err = run_hook("git commit -m x", work, tmp,
+                         extra_env={"AMUX_INDEX_LOCK_STALE_S": "0", "HOME": _rec_home})
+    if not os.path.exists(_lock):
+        failures.append("lock-recovery: removed a lock with AMUX_INDEX_LOCK_STALE_S=0")
+    _lockcases += 1
+    _rc, _err = run_hook("git commit -m x", work, tmp,
+                         extra_env={"AMUX_INDEX_LOCK_STALE_S": "999999", "HOME": _rec_home})
+    if not os.path.exists(_lock):
+        failures.append("lock-recovery: removed a lock younger than the threshold")
+    # Held: a live process keeps the file open, so lsof names it.
+    _holder = subprocess.Popen([sys.executable, "-c",
+                                "import sys,time; f=open(sys.argv[1]); time.sleep(30)", _lock])
+    try:
+        time.sleep(0.5)
+        os.utime(_lock, (_very_old, _very_old))
+        _lockcases += 1
+        _rc, _err = run_hook("git commit -m x", work, tmp, extra_env={"HOME": _rec_home})
+        if not os.path.exists(_lock):
+            failures.append("lock-recovery: removed a lock a LIVE process holds open: %r" % _err[:200])
+        elif "held" not in _err:
+            failures.append("lock-recovery: a held lock did not read as held: %r" % _err[:200])
+    finally:
+        _holder.kill()
+        _holder.wait()
+    # Unheld, old, default threshold: removed, said so, and logged.
+    _stale_lock()
+    _lockcases += 1
+    _rc, _err = run_hook("git commit -m x", work, tmp, extra_env={"HOME": _rec_home})
+    if os.path.exists(_lock):
+        failures.append("lock-recovery: a stale unheld lock past the threshold was NOT removed: %r" % _err[:220])
+    if "removed a stale" not in _err or _rc != 0:
+        failures.append("lock-recovery: removal not announced, or the command was blocked: rc=%s %r" % (_rc, _err[:220]))
+    try:
+        _recs = [json.loads(l) for l in open(_rec_log)]
+    except Exception:
+        _recs = []
+    if not any(r.get("verdict") == "index_lock_stale_removed" and r.get("measured") is True for r in _recs):
+        failures.append("lock-recovery: no index_lock_stale_removed line in %s" % _rec_log)
+    if os.path.exists(_lock):
+        os.unlink(_lock)
 
     # ---- MC-1624: the amend LOCK REFUSAL, which shipped with no test ----------
     # The pin is checked at ADMISSION. mvs-research pinned correctly, their

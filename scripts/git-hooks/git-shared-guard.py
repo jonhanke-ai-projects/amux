@@ -575,6 +575,63 @@ def _lock_holder(lock):
         return ("unmeasured", f"holder probe failed: {e}")
 
 
+def _stale_lock_threshold():
+    try:
+        return int(os.environ.get("AMUX_INDEX_LOCK_STALE_S", "1800") or "1800")
+    except ValueError:
+        return 1800
+
+
+def _recover_stale_lock(lock, st, age):
+    """Remove an index.lock nobody holds once it is past the threshold.
+
+    Returns the one-line note to print when it removed the lock, else "".
+    Every removal (and every refusal to remove on a changed file) is a line in
+    ~/.amux/logs/git-guard-lock-recovery.log with the verdict, the age, the
+    size and the inode, so a sweep can count them.
+    """
+    threshold = _stale_lock_threshold()
+    if threshold <= 0 or age <= threshold:
+        return ""
+    rec = {"ts": round(time.time(), 3), "session": os.environ.get("AMUX_SESSION", ""),
+           "lock": lock, "age_s": age, "size": st.st_size, "inode": st.st_ino,
+           "threshold_s": threshold, "measured": True, "n_considered": 1}
+    try:
+        now = os.stat(lock)
+    except FileNotFoundError:
+        return ""  # someone else cleared it between the stat and here
+    except Exception:
+        return ""
+    if (now.st_ino, now.st_mtime, now.st_size) != (st.st_ino, st.st_mtime, st.st_size):
+        rec["verdict"] = "index_lock_changed_not_removed"
+        _lock_recovery_log(rec)
+        return ""
+    try:
+        os.unlink(lock)
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        rec["verdict"] = "index_lock_remove_failed"
+        rec["error"] = str(e)[:200]
+        _lock_recovery_log(rec)
+        return ""
+    rec["verdict"] = "index_lock_stale_removed"
+    _lock_recovery_log(rec)
+    return (f"amux guard: removed a stale {lock} (age {age}s, {st.st_size} bytes, no process "
+            f"held it; threshold {threshold}s, AMUX_INDEX_LOCK_STALE_S). Logged to "
+            "~/.amux/logs/git-guard-lock-recovery.log (verdict=index_lock_stale_removed).\n")
+
+
+def _lock_recovery_log(rec):
+    try:
+        d = os.path.join(os.path.expanduser("~"), ".amux", "logs")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "git-guard-lock-recovery.log"), "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
 def _index_lock_note(cmd, run_dir):
     """A verdict on .git/index.lock for a command that would take it."""
     if not re.search(r"\bgit\s+" + GIT_GLOBALS + r"(?:" + "|".join(_INDEX_WRITERS) + r")\b", cmd):
@@ -601,12 +658,31 @@ def _index_lock_note(cmd, run_dir):
              if st.st_size == 0 else f"{st.st_size} bytes, so a writer has been filling it")
     head = ("amux guard: NOTE — .git/index.lock exists and your command writes the index.\n")
     body = (f"  age {age}s · {shape} · holder: {verdict} ({detail})\n")
+    # STALE-LOCK RECOVERY (mxp-gs12 review, 2026-10-18). This note used to stop
+    # at "removing it is YOUR call", and on ~/Dev/mixpeek a lock 290 hours old
+    # was reported 3,482 times (1.7 MB of context across one worker and its
+    # subagents) and never removed: every reader was told it was somebody
+    # else's decision. A lock that no process holds open, past
+    # AMUX_INDEX_LOCK_STALE_S (default 1800; 0 turns removal off), is now
+    # removed here and the removal is logged. A held or UNMEASURED lock is never
+    # touched: `unheld` comes only from an lsof that passed its positive
+    # control. While the stale file exists git's O_EXCL create fails for every
+    # writer, so no live git can own a lock with the same inode we stat'd; the
+    # inode and mtime are re-checked right before the unlink.
+    if verdict == "unheld":
+        removed = _recover_stale_lock(lock, st, age)
+        if removed:
+            return removed
     if verdict == "held":
         tail = "  A live writer holds it. Wait; it will clear when their command finishes.\n"
     elif verdict == "unheld" and age > 900:
-        tail = ("  Older than 15m with no holder: this looks STALE, not contention. Removing it\n"
-                "  is destructive on a shared checkout and is YOUR call, not this guard's:\n"
-                f"    ls -l {lock}   # confirm the mtime is still not advancing\n"
+        _thr = _stale_lock_threshold()
+        tail = ("  Older than 15m with no holder: this looks STALE, not contention. "
+                + (f"The guard removes it\n  itself once it is {_thr}s old and still unheld "
+                   "(AMUX_INDEX_LOCK_STALE_S). Removing it sooner is YOUR call:\n"
+                   if _thr > 0 else
+                   "Automatic removal is off\n  (AMUX_INDEX_LOCK_STALE_S=0), so removing it is YOUR call:\n")
+                + f"    ls -l {lock}   # confirm the mtime is still not advancing\n"
                 f"    rm {lock}\n")
     elif verdict == "unmeasured":
         tail = ("  The holder probe did NOT run, so this is unknown rather than unheld.\n"
@@ -2149,9 +2225,11 @@ def main():
     # anyone understood the cause. Routing around a blockage is rational and it is
     # also how a 15-minute fleet stall produces no report.
     #
-    # This REPORTS and never blocks or removes. Removing a lock is destructive on
-    # a shared checkout and is the human's call (ethos rule 8); what the guard can
-    # do is turn a generic message into a verdict, which costs one stat.
+    # This REPORTS and never blocks. It removes a lock only when lsof (with its
+    # positive control) says no process holds it and it is past
+    # AMUX_INDEX_LOCK_STALE_S (see _recover_stale_lock): leaving that to "the
+    # human" left a 290-hour lock in place while 3,482 notices said so
+    # (mxp-gs12 review, 2026-10-18). A held or unmeasured lock is never touched.
     try:
         sys.stderr.write(_index_lock_note(cmd, run_dir))
     except Exception:
