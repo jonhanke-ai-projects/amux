@@ -28941,9 +28941,27 @@ function _filesNewFile() {
 
 // ═══════ SCRATCHPAD ═══════
 // Ethan, 2026-10-08: the scratchpad's default home is the Vault, beside his
-// other notes. Created on first open.
-const _SP_ROOT = '~/Vault/Scratchpad';
+// other notes. Created on first open. The folder is the `dir` of
+// GET /api/scratchpad/config, read before the first listing; this constant
+// is only the fallback. Hardcoding it meant a configured folder was ignored,
+// and every e2e server wrote its test notes into the owner's real
+// ~/Vault/Scratchpad (150 of them, cleaned by hand 2026-10-18).
+let _SP_ROOT = '~/Vault/Scratchpad';
 let _spPath = _SP_ROOT;
+let _spRootRead = false;
+async function _spLoadRoot() {
+  if (_spRootRead) return;
+  try {
+    const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
+    const dir = String((d && d.dir) || '').trim().replace(/\/+$/, '');
+    if (dir && dir !== _SP_ROOT) {
+      if (_spPath === _SP_ROOT) _spPath = dir;
+      else if (_spPath.startsWith(_SP_ROOT + '/')) _spPath = dir + _spPath.slice(_SP_ROOT.length);
+      _SP_ROOT = dir;
+    }
+    _spRootRead = true;
+  } catch (e) {}
+}
 let _spLastData = null;
 let _spLoadGen = 0;
 let _spSort = { col: 'modified', dir: -1 };
@@ -28967,6 +28985,8 @@ function _spUpdateSortHeaders() {
 async function _scratchpadLoad() {
   _spWireCapture();
   const gen = ++_spLoadGen;
+  await _spLoadRoot();
+  if (gen !== _spLoadGen) return;
   const body = document.getElementById('scratchpad-body');
   body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
   const bc = document.getElementById('sp-breadcrumb');
