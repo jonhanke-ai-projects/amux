@@ -2619,6 +2619,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/files/mdai/chat",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
         path: "/api/files/mdai/connect",
         methods: &["POST"],
     },
@@ -2633,6 +2637,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/files/mdai/doc",
         methods: &["GET", "PUT"],
+    },
+    RouteEntry {
+        path: "/api/files/mdai/chat",
+        methods: &["GET", "POST"],
     },
     RouteEntry {
         path: "/api/fs/mkdir",

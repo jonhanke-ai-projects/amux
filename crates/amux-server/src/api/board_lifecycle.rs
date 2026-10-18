@@ -90,7 +90,16 @@ pub(crate) fn board_unused_in(home: &std::path::Path, session: &str, drain_proce
     let on = |k: &str| auto_continue_on(scoped_setting_in(home, session, k).or_else(|| std::env::var(k).ok()).as_deref());
     let cont = scoped_setting_in(home, session, BOARD_CONTINUE_KEY)
         .or_else(|| scoped_setting_in(home, session, "CC_AUTO_CONTINUE"));
-    !on(FORCE_ADHERENCE_KEY)
+    // Someone has to have turned the board off. A worker nobody configured
+    // (a fresh install, an API-created lane) keeps its board: unset is the
+    // default, and the default must not silently take the board away.
+    let switched_off = [FORCE_ADHERENCE_KEY, "CC_AUTO_PICKUP", BOARD_CONTINUE_KEY, "CC_AUTO_CONTINUE",
+        crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY]
+        .iter()
+        .any(|k| scoped_setting_in(home, session, k).is_some_and(|v| !auto_continue_on(Some(&v))))
+        || drain_process_value.is_some_and(|v| !auto_continue_on(Some(v)));
+    switched_off
+        && !on(FORCE_ADHERENCE_KEY)
         && !on("CC_AUTO_PICKUP")
         && !auto_continue_on(cont.as_deref())
         && !crate::runtime_jobs::board_drive::dispatch_backlog_when_idle_in(home, session, drain_process_value)
@@ -2167,14 +2176,15 @@ mod tests {
         let s = dir.path().join("sessions");
         std::fs::create_dir_all(&s).unwrap();
         for (name, env, unused) in [
-            ("off", "CC_DIR=/tmp\n", true),
+            ("off", "CC_DIR=/tmp\nCC_AUTO_PICKUP=0\nAMUX_BOARD_FORCE_ADHERENCE=0\n", true),
+            ("unset", "CC_DIR=/tmp\n", false),
             ("steer", "AMUX_BOARD_FORCE_ADHERENCE=1\n", false),
             ("pickup", "CC_AUTO_PICKUP=1\n", false),
             ("cont", "CC_BOARD_CONTINUE=1\n", false),
             ("legacy", "CC_AUTO_CONTINUE=1\n", false),
             ("drain", "AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1\n", false),
             ("project", "CC_PROJECT=p1\n", false),
-            ("iso", "CC_ISOLATED=1\n", true),
+            ("iso", "CC_ISOLATED=1\nCC_AUTO_PICKUP=0\n", true),
         ] {
             std::fs::write(s.join(format!("{name}.env")), env).unwrap();
             assert_eq!(board_unused_in(dir.path(), name, None), unused, "{name}");
