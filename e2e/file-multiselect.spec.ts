@@ -111,6 +111,10 @@ test('the scratchpad note list shares the selection component', async ({ page, r
   await expect(page.locator('#sp-col-headers .fe-check-all')).toHaveCount(1);
   // Create a uniquely named note via the fs API (deterministic), then reload.
   const marker = `fselsp-${Date.now()}`;
+  // Await the configured folder first, as every app-side writer does
+  // (_spLoadRoot): read too early, _spPath is still the ~/Vault/Scratchpad
+  // fallback and the note lands in a folder the list never shows (CI, 8582c5714).
+  await page.evaluate(() => (globalThis as any).eval('_spLoadRoot()'));
   const spDir = (await page.evaluate(() => (globalThis as any).eval('_spPath')) as string).replace(/\/$/, '');
   const vpath = spDir + '/' + marker + '.md';
   const put = await request.put('/api/file', { headers: { ...auth, 'Content-Type': 'application/json' },
