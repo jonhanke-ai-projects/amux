@@ -384,6 +384,10 @@ jobs:
         run: |
           ./scripts/test-orch-pace-proof.sh
           python3 scripts/test-orch-pace-scope.py
+      - name: amux cdp runs the chrome-cdp helper's committed bytes, never a stale working tree (Google sign-out 2026-10-18)
+        run: |
+          set -uo pipefail
+          ./scripts/test-amux-cdp-committed.sh
       - name: the idle cargo-target reaper keeps anything it cannot prove idle and unopened (DESKT-51)
         run: |
           set -uo pipefail
