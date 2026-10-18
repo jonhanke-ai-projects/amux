@@ -1258,8 +1258,10 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | + New proxy | `_proxyOpenForm` | onclick |
 | app.js | Delete | `_raDelete` | onclick |
 | app.js | Replay | `_raReplay` | onclick |
+| app.js | Copy script | `_reclaimCopyScript` | onclick |
 | app.js | Clear | `_reclaimRender` | onclick |
 | app.js | select all regenerable | `_reclaimSelectCategory` | onclick |
+| app.js | Select safe | `_reclaimSelectSafe` | onclick |
 | app.js | ${esc(meta.hint)} | `_reclaimSetCat` | onclick |
 | app.js | clear filter | `_reclaimSetCat` | onclick |
 | app.js | Delete from this device | `_recorderDeleteLocal` | onclick |
