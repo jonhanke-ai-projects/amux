@@ -104,6 +104,9 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   // Each row says it links one message and its card; the explainer says these
   // are not board issues (Ethan, 2026-10-18).
   await expect(page.locator('#tasks-view .tasks-about summary')).toContainText('not board issues');
+  // The server's count, so a wrong chip says whether the API or the render is wrong.
+  const api = await page.evaluate(async ({ w, n }) => (await (await fetch('/api/task-history?order=asc&session=' + encodeURIComponent(w) + '&q=' + encodeURIComponent(n))).json()).tasks.map((t: any) => t.messages), { w: seed.worker, n: nonce });
+  expect(api, JSON.stringify(api)).toEqual([expect.any(Number), 2]);
   await expect(items.nth(1).locator('.task-link-msgs')).toContainText('2');
   await expect(items.nth(1).locator('.task-row .task-link-card')).toContainText(String(seed.cards[1]));
   // The connection track has one tick for that message, and it focuses the row.
@@ -163,6 +166,10 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
 
   // In Messages, the message names the task its worker was on, and opens it.
   await page.locator('#tab-messages').click();
+  // The Messages tab opens on a channel; the message log is "All messages".
+  const allMsgs = page.locator('#cv-all-item');
+  if (await allMsgs.isVisible()) await allMsgs.click();
+  else await page.evaluate(() => (window as any)._cvSelect?.('@all'));
   await page.locator('#msgs-search').fill('during the second task ' + nonce);
   await page.locator('#msgs-search').press('Enter');
   const row = page.locator('#msgs-list [data-msg-key]', { hasText: 'a message during the second task ' + nonce }).first();
