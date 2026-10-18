@@ -740,6 +740,9 @@ async function route(req, env) {
     }
     return json({ received: true });
   }
+  // A person who types cloud.amux.io lands on the concierge page; API callers still get JSON.
+  if ((req.method === 'GET' || req.method === 'HEAD') && !p.startsWith('/api/'))
+    return Response.redirect(SITE + '/concierge', 302);
   return json({ error: 'not found' }, 404, cors(req));
 }
 

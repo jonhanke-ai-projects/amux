@@ -335,5 +335,15 @@ await test('ops audit: books against servers, with the one safe fix made and the
   eq(w.logs.some(l => l.event === 'ops.audit'), true, 'audit logged');
 });
 
+await test('a browser visit to cloud.amux.io goes to the concierge page; unknown API paths stay JSON 404', async () => {
+  const w = world();
+  for (const path of ['/', '/pricing']) {
+    const r = await api(w, path);
+    eq([r.status, r.headers.get('location')], [302, 'https://amux.io/concierge'], path);
+  }
+  eq((await api(w, '/api/nope')).status, 404, 'unknown api path');
+  eq((await api(w, '/health')).status, 200, 'health');
+});
+
 process.exitCode = failures;
 console.log(failures ? `${failures} FAILED` : 'all passed');
