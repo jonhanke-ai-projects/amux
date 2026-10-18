@@ -30,7 +30,7 @@ def expect(cond, label):
 
 def row(email, five, week, resets="2026-10-20T00:00:00-04:00"):
     head = min(rot.SWITCH_AT - five, rot.SWITCH_AT - week)
-    return {"email": email, "known": True, "usable": head >= rot.MIN_HEADROOM, "headroom": head,
+    return {"email": email, "known": True, "usable": head > rot.MIN_HEADROOM, "headroom": head,
             "five_hour": five, "weekly": week, "weekly_resets": resets}
 
 
@@ -54,10 +54,10 @@ expect(t is None, f"no account with more headroom: hold, got {(t, why)}")
 
 # Past HOT_AT with nothing cool(): take the roomiest usable account now, even
 # inside the switch gap (2026-10-17: 97% five-hour held as "current_is_fine").
-rows = [row("a", 97, 49, "2026-10-24T00:00:00-04:00"), row("b", 0, 94, "2026-10-21T00:00:00-04:00"),
+rows = [row("a", 95, 49, "2026-10-24T00:00:00-04:00"), row("b", 0, 94, "2026-10-21T00:00:00-04:00"),
         row("c", 38, 85, "2026-10-23T00:00:00-04:00")]
 t, why = rot.decide("a", rows, {"switched_at": __import__("time").time() - 60})
-expect((t, why) == ("c", "preempt_hot"), f"97% five-hour takes the roomiest account, got {(t, why)}")
+expect((t, why) == ("c", "preempt_hot"), f"95% five-hour takes the roomiest account, got {(t, why)}")
 t, why = rot.decide("c", [row("c", 40, 86), row("a", 97, 49)], old)
 expect(t is None, f"the hot account just left is not a target, got {(t, why)}")
 
@@ -172,6 +172,27 @@ expect(t2 == "c", f"spent current takes the roomiest target, got {(t2, why)}")
 st = {"switch_failures": {"h@x": [1, 2, 3], "m@x": [4, 4, 4], "t@x": [5]}, "account_failures": ["m@x"]}
 cleared = rot.forgive_browser_failures(st, "t@x")
 expect(cleared == ["h@x"] and list(st["switch_failures"]) == ["m@x"], f"browser failures forgiven, got {st}")
+
+
+# 4% remaining is the latest switch point: 96% used is spent, 95% is not.
+expect(not row("a", 96, 10)["usable"] and row("a", 95, 10)["usable"], "96% used is spent, 95% is usable")
+t3, why = rot.decide("a", [row("a", 10, 96), row("b", 0, 20)], {"switched_at": __import__("time").time()})
+expect((t3, why) == ("b", "current_exhausted"), f"96% weekly switches even inside the switch gap, got {(t3, why)}")
+# A backed-off account is the last resort, never no account at all; a dead
+# mailbox is still skipped.
+now_s = __import__("time").time()
+st = {"switch_failures": {"h": [now_s, now_s, now_s]}}
+t4, why = rot.decide("t", [row("t", 98, 74), row("h", 0, 23)], st)
+expect(t4 == "h", f"backed-off h is used when it is the only room, got {(t4, why)}")
+t5, why = rot.decide("t", [row("t", 98, 74), row("h", 0, 23)], st, unreachable=["h"])
+expect(t5 is None, f"a dead mailbox stays skipped, got {(t5, why)}")
+
+
+# A five-hour status line well above the last probe is kept: that window can
+# climb 15 points between probes (2026-10-17 22:17, 86% rejected against 73%).
+rot.record("f@x", 73, "2099-01-01T05:00:00-04:00", 20, "2099-01-05T00:00:00-04:00", source="usage-probe")
+expect(rot.record("f@x", 86, "2099-01-01T05:00:00-04:00", 21, "2099-01-05T00:00:00-04:00") is True,
+       "a fast-rising five-hour status line is accepted")
 
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
