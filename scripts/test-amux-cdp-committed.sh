@@ -2,7 +2,7 @@
 # `amux cdp` runs the chrome-cdp helper's COMMITTED bytes (origin/main), never a
 # stale working-tree copy. The shared checkout's copy lacked the never-copy-
 # Google guard (3baba214f) and signed Ethan's Chrome out of Google, 2026-10-18.
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 AMUX="$HERE/amux"
 T=$(mktemp -d); trap 'rm -rf -- "${T:?}"' EXIT
