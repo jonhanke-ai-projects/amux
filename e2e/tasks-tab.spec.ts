@@ -52,6 +52,8 @@ async function seedTwoTasks(page: Page, nonce: string) {
 }
 
 test('Tasks lists the tasks a worker took on, in order, and a task opens its card and messages', async ({ page }) => {
+  // The seed waits up to 40 s for the server to record two tasks and a peer's.
+  test.setTimeout(120_000);
   const nonce = Date.now().toString(36);
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).switchView === 'function', { timeout: 20000 });
