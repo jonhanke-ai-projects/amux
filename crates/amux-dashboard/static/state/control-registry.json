@@ -1152,6 +1152,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_drawDeletePath": {
+      "kind": "command._drawDeletePath",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawDeleteSelection": {
+      "kind": "command._drawDeleteSelection",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_drawEnter": {
       "kind": "command._drawEnter",
       "feedback_required": true,
@@ -1202,6 +1214,12 @@
     },
     "_drawInsertMermaid": {
       "kind": "command._drawInsertMermaid",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawItemAction": {
+      "kind": "command._drawItemAction",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1260,6 +1278,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_drawOnHide": {
+      "kind": "command._drawOnHide",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_drawOnLibraryChange": {
       "kind": "command._drawOnLibraryChange",
       "feedback_required": true,
@@ -1274,6 +1298,12 @@
     },
     "_drawOpen": {
       "kind": "command._drawOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawOpenDirInFiles": {
+      "kind": "command._drawOpenDirInFiles",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1326,8 +1356,26 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_drawPruneDrafts": {
+      "kind": "command._drawPruneDrafts",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawRecoverDraft": {
+      "kind": "command._drawRecoverDraft",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_drawRename": {
       "kind": "command._drawRename",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawRenamePath": {
+      "kind": "command._drawRenamePath",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1340,6 +1388,12 @@
     },
     "_drawResolveConflict": {
       "kind": "command._drawResolveConflict",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawRetryNow": {
+      "kind": "command._drawRetryNow",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1364,6 +1418,12 @@
     },
     "_drawSave": {
       "kind": "command._drawSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawSaveFailed": {
+      "kind": "command._drawSaveFailed",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1400,6 +1460,12 @@
     },
     "_drawSendToWorker": {
       "kind": "command._drawSendToWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawSetDefaultDir": {
+      "kind": "command._drawSetDefaultDir",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1442,6 +1508,12 @@
     },
     "_drawUpload": {
       "kind": "command._drawUpload",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_drawWriteDraft": {
+      "kind": "command._drawWriteDraft",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

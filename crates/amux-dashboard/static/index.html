@@ -2380,6 +2380,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <span class="draw-selbar-lbl" id="draw-selbar-lbl">Selection</span>
         <button class="btn" onclick="_drawSaveSelectionToLib()">Save to library</button>
         <button class="btn" id="draw-lock-btn" onclick="_drawToggleLock()">Lock</button>
+        <button class="btn danger" id="draw-delete-sel-btn" onclick="_drawDeleteSelection()" title="Delete the selection (Delete key)" aria-label="Delete selection">&#x1F5D1; Delete</button>
       </div>
       <div class="draw-snapbar" id="draw-snapbar" role="toolbar" aria-label="Snapping">
         <button class="draw-snap" data-repeatable id="draw-snap-grid" aria-pressed="false" onclick="_drawToggleSnap('grid')" title="Snap to grid (hold Ctrl/Cmd to bypass)"><span class="draw-snap-ico">#</span><span class="draw-snap-lbl">Grid</span><span class="draw-snap-state"></span></button>
