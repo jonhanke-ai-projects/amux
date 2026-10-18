@@ -51610,7 +51610,7 @@ const _RECLAIM_TOOLS = [
   { re: /\/\.claude\/projects(\/|$)/, key: 'claude', label: 'Claude Code transcripts', cmd: null, safe: false },
 ];
 // Rebuildable output that lives in many projects: one row for all of them.
-const _RECLAIM_BUILD_DIRS = new Set(['node_modules', '.next', 'target', '.venv', 'venv', '__pycache__', '.turbo', '.gradle', 'dist', '.parcel-cache']);
+const _RECLAIM_BUILD_DIRS = new Set(['node_modules', '.next', 'target', '.venv', 'venv', '__pycache__', '.turbo', '.gradle', 'dist', '.parcel-cache', '.terraform']);
 
 function _reclaimShq(p) { return "'" + String(p).replace(/'/g, "'\\''") + "'"; }
 
@@ -52245,10 +52245,14 @@ function _reclaimRender() {
     const sum = arr => arr.reduce((a, r) => a + r.bytes, 0);
     const used = scan.df_total && scan.df_free != null ? scan.df_total - scan.df_free : null;
     const unmapped = used != null && scan.bytes_seen != null ? Math.max(0, used - scan.bytes_seen) : null;
+    // Every number here is as of the scan, which can be days old: say when, so a
+    // stale free figure is not read as today's (a 10-13 scan showed 4.67 GB free
+    // on 10-18 with ~250 GB actually free).
+    const scanAt = scan.finished_at || scan.started_at || null;
     html += `<div class="metrics-cards reclaim-summary">
-      <div class="metrics-card"><div class="metrics-card-title">Free right now</div>
+      <div class="metrics-card"><div class="metrics-card-title">Free at last scan</div>
         <div class="metrics-card-value">${scan.df_free != null ? _fmtBytes(scan.df_free) : '—'}</div>
-        <div class="metrics-card-sub">${scan.df_total ? 'of ' + _fmtBytes(scan.df_total) : 'volume size unknown'}</div></div>
+        <div class="metrics-card-sub">${scan.df_total ? 'of ' + _fmtBytes(scan.df_total) : 'volume size unknown'}${scanAt ? ' · scanned ' + _metricsRelTime(new Date(scanAt * 1000).toISOString()) : ''}</div></div>
       <div class="metrics-card"><div class="metrics-card-title"><i class="reclaim-dot safe"></i>Safe to remove</div>
         <div class="metrics-card-value">${_fmtBytes(sum(recs.safe))}</div>
         <div class="metrics-card-sub">${recs.safe.length} item${recs.safe.length === 1 ? '' : 's'} · regenerable</div></div>

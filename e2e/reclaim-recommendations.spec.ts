@@ -13,6 +13,8 @@ const findings = [
   { id: 4, category: 'build', bytes: 1 * GB, file_count: 9, path: "/Users/x/it's b/node_modules", detail: 'node_modules', regenerable: true },
   { id: 5, category: 'build', bytes: 1 * GB, file_count: 9, path: '/Users/x/c/node_modules', detail: 'node_modules', regenerable: true },
   { id: 6, category: 'large', bytes: 4.4 * GB, file_count: 1, path: '/Users/x/.cache/huggingface/hub/blobs/aa', detail: 'model', regenerable: false },
+  { id: 8, category: 'build', bytes: 0.2 * GB, file_count: 9, path: '/Users/x/infra/a/.terraform', detail: '.terraform', regenerable: true },
+  { id: 9, category: 'build', bytes: 0.2 * GB, file_count: 9, path: '/Users/x/infra/b/.terraform', detail: '.terraform', regenerable: true },
   { id: 7, category: 'stale', bytes: 3 * GB, file_count: 1, path: '/Users/x/Documents/master.mp4', detail: 'media', regenerable: false },
 ];
 
@@ -26,7 +28,8 @@ async function openDisk(page: any, mutations: string[]) {
     const path = new URL(req.url()).pathname;
     if (path.endsWith('/scan/latest')) {
       return route.fulfill({ json: {
-        scan: { id: 'recs', status: 'done', snapshot_count: 0, df_free: 27 * GB, df_total: 926 * GB, bytes_seen: 600 * GB },
+        scan: { id: 'recs', status: 'done', snapshot_count: 0, df_free: 27 * GB, df_total: 926 * GB, bytes_seen: 600 * GB,
+          finished_at: Math.floor(Date.now() / 1000) - 5 * 86400 },
         findings, totals: [], skipped: [] } });
     }
     if (path.endsWith('/quarantine')) return route.fulfill({ json: { batches: [] } });
@@ -48,8 +51,12 @@ test('the Disk tab splits findings into safe and review, and builds a script wit
   const cards = c.locator('.reclaim-summary .metrics-card');
   await expect(cards).toHaveCount(4);
   await expect(cards.nth(0)).toContainText('27');
+  // The free figure is the scan's, so the card says when the scan ran.
+  await expect(cards.nth(0)).toContainText('Free at last scan');
+  await expect(cards.nth(0)).toContainText('scanned');
+  await expect(cards.nth(0)).not.toContainText('right now');
   await expect(cards.nth(1)).toContainText('Safe to remove');
-  await expect(cards.nth(1)).toContainText('3 items');
+  await expect(cards.nth(1)).toContainText('4 items');
   await expect(cards.nth(2)).toContainText('2 items');
   await expect(cards.nth(3)).toContainText('Not mapped');
 
@@ -57,6 +64,7 @@ test('the Disk tab splits findings into safe and review, and builds a script wit
   await expect(recs).toContainText('pnpm store prune');
   await expect(recs).toContainText('npm cache clean --force');
   await expect(recs).toContainText('node_modules in 3 projects');
+  await expect(recs).toContainText('.terraform in 2 projects');
   await expect(recs).toContainText('huggingface-cli delete-cache');
   const copy = recs.getByRole('button', { name: 'Copy script' });
   await expect(copy).toBeDisabled();
