@@ -1345,6 +1345,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/proxy/{port}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/proxy/{port}/{*rest}",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/_clear_sw",
         methods: &["GET"],
     },
