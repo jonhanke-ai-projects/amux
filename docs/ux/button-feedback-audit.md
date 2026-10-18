@@ -596,11 +596,13 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Upgrade | `_upgradeCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${_vaultIcon(audit)}View Audit Log | `_vaultAudit` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Remove | `_vaultRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Remove | `_vaultRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Restart … to apply | `_vaultRestart` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Restart … to apply | `_vaultRestart` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | … | `_vaultReveal` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Activate | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js | Save limit | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Activate | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Save limits | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Try again | `_vaultSecretsLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ${_vaultIcon(card)}Payment Methods | `_vaultTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ${_vaultIcon(key)}API Keys | `_vaultTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1336,12 +1338,15 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Secondary action | `_uiGuideAction` | onclick |
 | app.js | Try confirmation dialog | `_uiGuideDialog` | onclick |
 | app.js | Preview other theme | `_uiGuideTheme` | onclick |
+| app.js | ${_vaultIcon(plus)}Add Payment Method | `_vaultCardAdd` | onclick |
+| app.js | ${_vaultIcon(plus)}Add API Key | `_vaultEdit` | onclick |
 | app.js | ${_vaultIcon(plus)}Add Secret | `_vaultEdit` | onclick |
 | app.js | …Add Secret | `_vaultEdit` | onclick |
 | app.js | Show value | `_vaultEye` | onclick |
 | app.js | Remove  | `_vaultGroupUnpick` | onclick |
 | app.js | Actions for  | `_vaultMenu` | onclick |
 | app.js | … | `_vaultMenuClose` | onclick |
+| app.js | Cancel | `_vaultSubClose` | onclick |
 | app.js | Cancel | `_vaultSubClose` | onclick |
 | app.js | Close | `_vaultSubClose` | onclick |
 | app.js | Close | `_vaultSubClose` | onclick |

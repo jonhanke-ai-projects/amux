@@ -7933,6 +7933,16 @@ select.input { height:var(--control-height); }
 body:not(.light) .vault-chip-global { color: #7fb0ff; }
 body:not(.light) .vault-chip-group { color: #c4a2ff; }
 body:not(.light) .vault-chip-worker { color: #6fdc9b; }
+.vault-chip-apikey { color: #b7791f; background: color-mix(in srgb, #b7791f 14%, transparent); margin-left: 6px; }
+body:not(.light) .vault-chip-apikey { color: #f6c26b; }
+/* Payment method limits (vault_spend.rs): three optional windows side by side,
+   stacked on a phone. */
+.vault-limits { border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--space-2) var(--space-3) var(--space-3); margin: var(--space-2) 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); min-width: 0; }
+.vault-limits legend { font-weight: 600; font-size: 0.82rem; padding: 0 4px; }
+.vault-limit-field { display: grid; gap: 4px; font-size: 0.8rem; font-weight: 600; min-width: 0; }
+.vault-limit-field .input { min-height: 40px; width: 100%; box-sizing: border-box; }
+.vault-spent { font-weight: 400; }
+.vault-form-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); }
 .vault-prov { display: flex; flex-direction: column; gap: 2px; }
 .vault-state { display: inline-block; margin-top: 2px; padding: 1px 7px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; border: 1px solid var(--border); }
 .vault-state-ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
@@ -8004,6 +8014,8 @@ body:not(.light) .vault-chip-worker { color: #6fdc9b; }
   .vault-tab { flex: 1 0 auto; justify-content: center; }
   .vault-actions-row .btn, .vault-foot .btn { min-height: 44px; flex: 1 1 auto; }
   .vault-icon-btn { min-width: 44px; min-height: 44px; }
+  .vault-limits { grid-template-columns: minmax(0, 1fr); }
+  .vault-limit-field .input { min-height: 44px; }
   .vault-table, .vault-table tbody, .vault-table tr, .vault-table td { display: block; width: 100%; box-sizing: border-box; }
   .vault-table { border: none; }
   .vault-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }

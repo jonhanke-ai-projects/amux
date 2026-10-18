@@ -471,7 +471,15 @@ async fn list() -> Response {
     Json(json!({
         "measured": true,
         "n_considered": items.len(),
-        "items": items.iter().map(public_view).collect::<Vec<_>>(),
+        "items": items.iter().map(|i| {
+            let mut v = public_view(i);
+            if i["kind"].as_str() != Some("login") {
+                // What each window has spent so far, beside the limits it is
+                // checked against (vault_spend.rs), so the owner sees headroom.
+                v["spent_usd"] = super::vault_spend::spent_summary(&home, i["id"].as_str().unwrap_or(""));
+            }
+            v
+        }).collect::<Vec<_>>(),
     }))
     .into_response()
 }
@@ -512,6 +520,16 @@ async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     fields.insert("number".into(), json!(number));
     // Every card gets a rule; the default is the owner's stated one.
     let limit = body["rules"]["max_usd_without_approval"].as_f64().unwrap_or(100.0);
+    if !limit.is_finite() || limit < 0.0 {
+        return err(StatusCode::BAD_REQUEST, json!({"error": "max_usd_without_approval must be >= 0"}));
+    }
+    let spend_limits = match body["rules"].get("spend_limits_usd") {
+        None | Some(Value::Null) => json!({}),
+        Some(p) => match super::vault_spend::merge_limits(&json!({}), p) {
+            Ok(m) => m,
+            Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "spend_limits_usd"})),
+        },
+    };
     let from_worker = is_worker_origin(&headers);
     let by = origin_name(&headers);
     let item = json!({
@@ -519,7 +537,7 @@ async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
         "name": name,
         "kind": "card",
         "fields": fields,
-        "rules": {"max_usd_without_approval": limit},
+        "rules": {"max_usd_without_approval": limit, "spend_limits_usd": spend_limits},
         "status": if from_worker { "pending_owner_activation" } else { "active" },
         "created": now_f64(),
         "created_by": by,
@@ -556,6 +574,12 @@ async fn update(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json
             return err(StatusCode::BAD_REQUEST, json!({"error": "max_usd_without_approval must be >= 0"}));
         }
         item["rules"]["max_usd_without_approval"] = json!(limit);
+    }
+    if let Some(p) = body["rules"].get("spend_limits_usd") {
+        match super::vault_spend::merge_limits(&item["rules"]["spend_limits_usd"], p) {
+            Ok(m) => item["rules"]["spend_limits_usd"] = m,
+            Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "spend_limits_usd"})),
+        }
     }
     let view = public_view(item);
     if let Err(e) = save_items(&home, &items) {
@@ -623,6 +647,83 @@ pub(crate) fn fill_outcome(r: &Value) -> FillOutcome {
     FillOutcome { filled, not_found, mismatched, complete: why.is_empty(), why }
 }
 
+/// The money gate, shared by `fill` and `complete_order`: the item's rules,
+/// then its spending limits, then the approval threshold, then the atomic
+/// check-and-record in the spend ledger (vault_spend.rs). `Ok` carries the
+/// ledger id of the recorded charge; `Err` is the response to return, already
+/// audited and logged.
+#[allow(clippy::too_many_arguments)]
+fn gate_charge(home: &Path, id: &str, item: &Value, session: &str, amount: f64, currency: &str,
+    merchant: &str, purpose: &str, path: &str, base_audit: &Value) -> Result<String, Box<Response>> {
+    let refuse_limit = |b: &super::vault_spend::Breach| {
+        let mut a = base_audit.clone();
+        a["decision"] = json!("refused_spend_limit");
+        a["window"] = json!(b.window);
+        a["limit_usd"] = json!(b.limit_usd);
+        a["spent_usd"] = json!(b.spent_usd);
+        audit(home, a);
+        tracing::warn!(item = %id, session = %session, amount, merchant = %merchant, window = b.window,
+            limit_usd = b.limit_usd, spent_usd = b.spent_usd, path, measured = true, n_considered = 1,
+            verdict = "vault_spend_limit_exceeded",
+            "vault charge refused: it would exceed the card's spending limit (values not logged)");
+        err(StatusCode::FORBIDDEN, b.body(id))
+    };
+    let decision = decide(item, amount, currency);
+    if let SpendDecision::Refused(why) = &decision {
+        let mut a = base_audit.clone();
+        a["decision"] = json!("refused");
+        a["why"] = json!(why);
+        audit(home, a);
+        return Err(Box::new(err(StatusCode::FORBIDDEN, json!({"ok": false, "error": why}))));
+    }
+    // A spending limit is a hard cap: check it before an approval is spent or
+    // requested, so the owner is never asked to approve what a limit refuses.
+    if let Some(b) = super::vault_spend::check(home, item, amount) {
+        return Err(Box::new(refuse_limit(&b)));
+    }
+    if let SpendDecision::NeedsApproval { limit } = decision {
+        let target = spend_target(id, amount, merchant);
+        if super::grants::take_allowance(home, session, &target).is_none() {
+            let view = public_view(item);
+            let summary = format!(
+                "{session} wants to charge {currency} {amount:.2} to {} ending {} at {merchant}: {purpose} (rule: approval above ${limit:.0})",
+                view["brand"].as_str().unwrap_or("card"), view["last4"].as_str().unwrap_or("????"));
+            let grant = super::grants::create_grant(home, "vault_spend", session, &summary, json!({
+                "origin": session, "target": target, "item": id, "amount_usd": amount,
+                "currency": currency, "merchant": merchant, "purpose": purpose,
+            }));
+            let mut a = base_audit.clone();
+            a["decision"] = json!("needs_approval");
+            a["grant"] = json!(grant);
+            audit(home, a);
+            tracing::warn!(item = %id, session = %session, amount, merchant = %merchant, path,
+                measured = true, n_considered = 1, verdict = "vault_spend_needs_approval",
+                "vault charge above the item's limit; owner approval requested");
+            return Err(Box::new(err(StatusCode::FORBIDDEN, json!({
+                "ok": false, "requires_approval": true, "grant_id": grant, "limit_usd": limit,
+                "error": format!("a charge of {amount:.2} {currency} is above this card's ${limit:.0} limit and needs the owner's explicit approval"),
+                "next": "the owner approves it in the dashboard (Grants). Then retry this exact request (same amount and merchant) once; the approval is single-use and expires in 1h.",
+            }))));
+        }
+    }
+    let charge = super::vault_spend::Charge { amount_usd: amount, merchant, purpose, session, path };
+    match super::vault_spend::reserve(home, item, &charge) {
+        Ok(spend) => Ok(spend),
+        Err(super::vault_spend::ReserveError::Limit(b)) => Err(Box::new(refuse_limit(&b))),
+        Err(super::vault_spend::ReserveError::Io(e)) => {
+            let mut a = base_audit.clone();
+            a["decision"] = json!("refused_ledger_unwritable");
+            a["why"] = json!(e);
+            audit(home, a);
+            tracing::warn!(item = %id, session = %session, error = %e, measured = true, n_considered = 1,
+                verdict = "vault_spend_ledger_unwritable",
+                "vault charge refused: the spend ledger could not be written, so the limits cannot be enforced");
+            Err(Box::new(err(StatusCode::SERVICE_UNAVAILABLE, json!({"ok": false,
+                "error": format!("the spend ledger could not be written ({e}); no charge goes through unrecorded")}))))
+        }
+    }
+}
+
 /// A worker asks amux to put a vault card into its amux browser page for a
 /// stated charge. The rules decide; the number never comes back.
 async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<Value>) -> Response {
@@ -647,42 +748,10 @@ async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<V
     };
     let base_audit = json!({"ts": now_f64(), "event": "fill", "item": id, "session": session,
         "amount_usd": amount, "currency": currency, "merchant": merchant, "purpose": purpose});
-    let target = spend_target(&id, amount, &merchant);
-    match decide(&item, amount, &currency) {
-        SpendDecision::Refused(why) => {
-            let mut a = base_audit.clone();
-            a["decision"] = json!("refused");
-            a["why"] = json!(why);
-            audit(&home, a);
-            return err(StatusCode::FORBIDDEN, json!({"ok": false, "error": why}));
-        }
-        SpendDecision::NeedsApproval { limit } => {
-            // A matching approval already granted for exactly this charge?
-            if super::grants::take_allowance(&home, &session, &target).is_none() {
-                let view = public_view(&item);
-                let summary = format!(
-                    "{session} wants to charge {currency} {amount:.2} to {} ending {} at {merchant}: {purpose} (rule: approval above ${limit:.0})",
-                    view["brand"].as_str().unwrap_or("card"), view["last4"].as_str().unwrap_or("????"));
-                let grant = super::grants::create_grant(&home, "vault_spend", &session, &summary, json!({
-                    "origin": session, "target": target, "item": id, "amount_usd": amount,
-                    "currency": currency, "merchant": merchant, "purpose": purpose,
-                }));
-                let mut a = base_audit.clone();
-                a["decision"] = json!("needs_approval");
-                a["grant"] = json!(grant);
-                audit(&home, a);
-                tracing::warn!(item = %id, session = %session, amount, merchant = %merchant,
-                    measured = true, n_considered = 1, verdict = "vault_spend_needs_approval",
-                    "vault charge above the item's limit; owner approval requested");
-                return err(StatusCode::FORBIDDEN, json!({
-                    "ok": false, "requires_approval": true, "grant_id": grant, "limit_usd": limit,
-                    "error": format!("a charge of {amount:.2} {currency} is above this card's ${limit:.0} limit and needs the owner's explicit approval"),
-                    "next": "the owner approves it in the dashboard (Grants). Then retry this exact request (same amount and merchant) once; the approval is single-use and expires in 1h.",
-                }));
-            }
-        }
-        SpendDecision::Allowed => {}
-    }
+    let spend = match gate_charge(&home, &id, &item, &session, amount, &currency, &merchant, &purpose, "fill", &base_audit) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
     // Fill the worker's own amux browser page.
     let f = &item["fields"];
     let yy: String = f["exp_year"].as_str().unwrap_or("").chars().rev().take(2).collect::<Vec<_>>().into_iter().rev().collect();
@@ -692,14 +761,20 @@ async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<V
         "address": f["address"], "city": f["city"], "state": f["state"], "zip": f["zip"],
         "country": f["country"], "email": f["email"],
     });
+    let mut reached_page = true;
     let result = match super::browser::connect_session(&session, None).await {
         Ok((_page, mut cdp)) => cdp.eval(&fill_script(&values), 15).await.map_err(|e| e.to_string()),
-        Err(_) => Err(format!("no amux browser page for session '{session}': open the checkout with /api/browser/start first")),
+        Err(_) => {
+            reached_page = false;
+            Err(format!("no amux browser page for session '{session}': open the checkout with /api/browser/start first"))
+        }
     };
     let mut a = base_audit;
+    a["spend"] = json!(spend);
     match result {
         Ok(r) => {
             let o = fill_outcome(&r);
+            release_if_nothing_typed(&home, &spend, &o, &mut a);
             a["decision"] = json!(if o.complete { "filled" } else { "fill_incomplete" });
             a["filled"] = o.filled.clone();
             a["not_found"] = o.not_found.clone();
@@ -726,9 +801,23 @@ async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<V
         Err(e) => {
             a["decision"] = json!("fill_failed");
             a["why"] = json!(e);
+            if !reached_page {
+                super::vault_spend::release(&home, &spend, "no browser page: the card never reached a page");
+                a["spend_released"] = json!(true);
+            }
             audit(&home, a);
             err(StatusCode::BAD_GATEWAY, json!({"ok": false, "error": e}))
         }
+    }
+}
+
+/// A fill that typed no field cannot have moved money, so its reservation is
+/// released. Any field typed keeps the charge counted: amux cannot see whether
+/// the checkout was submitted afterwards, and over-counting is the safe side.
+fn release_if_nothing_typed(home: &Path, spend: &str, o: &FillOutcome, a: &mut Value) {
+    if o.filled.as_array().is_none_or(Vec::is_empty) {
+        super::vault_spend::release(home, spend, "the fill typed no field");
+        a["spend_released"] = json!(true);
     }
 }
 
@@ -891,10 +980,11 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
     let item = if item_name.is_empty() {
         items
             .iter()
-            .find(|i| i["status"].as_str() == Some("active"))
+            .find(|i| i["status"].as_str() == Some("active") && i["kind"].as_str() != Some("login"))
     } else {
         items.iter().find(|i| {
             i["status"].as_str() == Some("active")
+                && i["kind"].as_str() != Some("login")
                 && i["name"]
                     .as_str()
                     .is_some_and(|n| n.to_lowercase().contains(&item_name))
@@ -911,48 +1001,10 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
     let base_audit = json!({"ts": now_f64(), "event": "complete_order", "item": id,
         "session": session, "amount_usd": amount, "currency": currency,
         "merchant": merchant, "purpose": purpose, "url": url});
-    let target = spend_target(&id, amount, &merchant);
-    match decide(&item, amount, &currency) {
-        SpendDecision::Refused(why) => {
-            let mut a = base_audit.clone();
-            a["decision"] = json!("refused");
-            a["why"] = json!(why);
-            audit(&home, a);
-            return err(StatusCode::FORBIDDEN, json!({"ok": false, "error": why}));
-        }
-        SpendDecision::NeedsApproval { limit } => {
-            if super::grants::take_allowance(&home, &session, &target).is_none() {
-                let summary = format!(
-                    "{session} wants to complete a {currency} {amount:.2} order at {merchant}: \
-                     {purpose} (rule: approval above ${limit:.0})",
-                );
-                let grant = super::grants::create_grant(
-                    &home,
-                    "vault_spend",
-                    &session,
-                    &summary,
-                    json!({
-                        "origin": session, "target": target, "item": id,
-                        "amount_usd": amount, "currency": currency,
-                        "merchant": merchant, "purpose": purpose,
-                    }),
-                );
-                let mut a = base_audit.clone();
-                a["decision"] = json!("needs_approval");
-                a["grant"] = json!(grant);
-                audit(&home, a);
-                return err(
-                    StatusCode::FORBIDDEN,
-                    json!({
-                        "ok": false, "requires_approval": true, "grant_id": grant,
-                        "error": format!("this order (${amount:.2}) needs the owner's approval"),
-                        "next": "the owner approves it in the dashboard, then retry",
-                    }),
-                );
-            }
-        }
-        SpendDecision::Allowed => {}
-    }
+    let spend = match gate_charge(&home, &id, &item, &session, amount, &currency, &merchant, &purpose, "complete_order", &base_audit) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
 
     // If a URL is provided, drive the full checkout flow server-side
     let cdp_result = if !url.is_empty() {
@@ -974,6 +1026,9 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
             let mut a = base_audit;
             a["decision"] = json!("browser_failed");
             a["why"] = json!(e);
+            a["spend"] = json!(spend);
+            a["spend_released"] = json!(true);
+            super::vault_spend::release(&home, &spend, "no browser page: the card never reached a page");
             audit(&home, a);
             return err(StatusCode::BAD_GATEWAY, json!({"ok": false, "error": e}));
         }
@@ -1031,9 +1086,11 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
     };
 
     let mut a = base_audit;
+    a["spend"] = json!(spend);
     match fill_result {
         Ok(r) => {
             let o = fill_outcome(&r);
+            release_if_nothing_typed(&home, &spend, &o, &mut a);
             a["decision"] = json!(if o.complete { "filled" } else { "fill_incomplete" });
             a["filled"] = o.filled.clone();
             a["not_found"] = o.not_found.clone();

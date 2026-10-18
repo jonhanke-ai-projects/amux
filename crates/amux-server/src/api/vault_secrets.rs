@@ -394,7 +394,25 @@ fn public_view(item: &Value) -> Value {
         "created": item["created"], "updated": item["updated"],
         "rotated": item.get("rotated").cloned().unwrap_or(Value::Null),
         "version": item_version(item), "by": item["by"], "note": item["note"], "source": item["source"],
+        "kind": item_kind(item),
     })
+}
+
+/// What the owner filed this under: a plain `secret`, or an `api_key` (the
+/// Vault's API Keys tab lists those). The kind is presentation only: storage,
+/// scope, precedence, delivery and every access rule are the same for both,
+/// because both are the same item in the same store. Items written before
+/// kinds existed are secrets.
+pub(crate) const SECRET_KINDS: [&str; 2] = ["secret", "api_key"];
+
+fn item_kind(item: &Value) -> &str {
+    item["kind"].as_str().filter(|k| SECRET_KINDS.contains(k)).unwrap_or("secret")
+}
+
+fn body_kind(body: &Value) -> Option<Result<&'static str, String>> {
+    let k = body.get("kind")?.as_str().unwrap_or("").trim();
+    Some(SECRET_KINDS.iter().find(|x| **x == k).copied()
+        .ok_or_else(|| format!("kind must be one of {SECRET_KINDS:?}")))
 }
 
 /// One writer at a time for the store and the delivery ledger. The temp file
@@ -913,6 +931,11 @@ fn key_unavailable(e: &str) -> (StatusCode, Value) {
 }
 
 fn create_item(home: &Path, key: &str, scope: &Scope, value: &str, by: &str, note: &str, source: Option<&str>) -> Result<Value, (StatusCode, Value)> {
+    create_item_of_kind(home, key, scope, value, by, note, source, "secret")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_item_of_kind(home: &Path, key: &str, scope: &Scope, value: &str, by: &str, note: &str, source: Option<&str>, kind: &str) -> Result<Value, (StatusCode, Value)> {
     let _g = store_lock().lock().unwrap_or_else(|p| p.into_inner());
     let mut items = load(home).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e})))?;
     if let Some(dup) = items.iter().find(|i| i["key"] == key && item_scope(i).as_ref() == Some(scope)) {
@@ -927,7 +950,7 @@ fn create_item(home: &Path, key: &str, scope: &Scope, value: &str, by: &str, not
     let now = now_f64();
     let item = json!({"id": id, "key": key, "scope": scope.kind(), "target": scope.target(),
         "nonce": nonce, "ct": ct, "key_fp": fingerprint(&master), "created": now, "updated": now,
-        "version": 1, "by": by, "note": note, "source": source});
+        "version": 1, "by": by, "note": note, "source": source, "kind": kind});
     items.push(item.clone());
     save(home, &items).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e})))?;
     Ok(item)
@@ -968,11 +991,15 @@ async fn create(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         Ok(n) => n,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "description"})),
     };
-    match create_item(&home, &key, &scope, &value, "owner", &note, None) {
+    let kind = match body_kind(&body).unwrap_or(Ok("secret")) {
+        Ok(k) => k,
+        Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "kind"})),
+    };
+    match create_item_of_kind(&home, &key, &scope, &value, "owner", &note, None, kind) {
         Ok(item) => {
             audit(&home, json!({"ts": now_f64(), "event": "secret_added", "item": item["id"], "key": key,
-                "scope": scope.kind(), "target": scope.target(), "version": 1, "by": "owner"}));
-            tracing::info!(key = %key, scope = scope.kind(), measured = true, n_considered = 1,
+                "scope": scope.kind(), "target": scope.target(), "version": 1, "by": "owner", "kind": kind}));
+            tracing::info!(key = %key, scope = scope.kind(), kind, measured = true, n_considered = 1,
                 verdict = "vault_secret_added", "vault: a secret was added (no value logged)");
             (StatusCode::CREATED, Json(json!({"ok": true, "item": public_view(&item),
                 "applies": "workers receive it at their next start or restart"}))).into_response()
@@ -1068,6 +1095,10 @@ async fn update(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         Ok(n) => n,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "description"})),
     };
+    let new_kind = match body_kind(&body).transpose() {
+        Ok(k) => k,
+        Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "kind"})),
+    };
     let new_key = body.get("key").and_then(Value::as_str).map(|k| k.trim().to_string());
     if let Some(k) = &new_key {
         if let Err(e) = valid_key(k) {
@@ -1118,6 +1149,12 @@ async fn update(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
                     changes.push("description");
                 }
             }
+            if let Some(k) = new_kind {
+                if item_kind(&items[pos]) != k {
+                    items[pos]["kind"] = json!(k);
+                    changes.push("kind");
+                }
+            }
             if changes.is_empty() {
                 return Ok((public_view(&items[pos]), changes, Value::Null));
             }
@@ -1136,7 +1173,7 @@ async fn update(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         return Json(json!({"ok": true, "item": view, "changes": []})).into_response();
     }
     let running = super::session_verbs::running_workers().await;
-    let affects_process = changes.iter().any(|c| *c != "description");
+    let affects_process = changes.iter().any(|c| *c != "description" && *c != "kind");
     let stale = if affects_process { holders(&load_ledger(&home), &running, &id, None) } else { Vec::new() };
     audit(&home, json!({"ts": now_f64(), "event": "secret_updated", "item": id, "key": view["key"],
         "scope": view["scope"], "target": view["target"], "version": view["version"], "changes": changes,
@@ -1270,9 +1307,9 @@ async fn access(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
 
 /// Fields an audit line may carry out of this endpoint. The writer never puts
 /// a value in the file; this is the second wall.
-const AUDIT_FIELDS: [&str; 16] = [
+const AUDIT_FIELDS: [&str; 17] = [
     "ts", "event", "item", "key", "scope", "target", "by", "version", "path", "session", "action",
-    "changes", "from", "running_stale", "still_held_by", "error",
+    "changes", "from", "running_stale", "still_held_by", "error", "kind",
 ];
 
 fn audit_view(line: &Value) -> Value {
