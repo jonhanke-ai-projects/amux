@@ -6906,6 +6906,23 @@ pub(crate) async fn emit_event_store(
     let session = session.to_string();
     let etype = etype.to_string();
     let source = source.to_string();
+    // SCRUB AT INTAKE (gs12 review, finding 9). Every event written through
+    // here, `chat.message` included, carries copied text; a credential the
+    // owner pasted into a Chat tab was stored verbatim and so reached the
+    // restic backup of ~/.amux. The delivered message is untouched: only the
+    // stored copy is masked, and the row says how many values were.
+    let data = data.map(|mut d| {
+        let n = redact_json_secrets(&mut d);
+        if n > 0 {
+            if let Some(o) = d.as_object_mut() {
+                o.insert("secrets_redacted".into(), json!(n));
+            }
+            tracing::warn!(session = %session, etype = %etype, redacted = n, measured = true, n_considered = 1,
+                verdict = "secret_redacted_at_intake",
+                "credential-shaped value(s) masked before this event was stored; keep secrets in the vault");
+        }
+        d
+    });
     let _ = store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
@@ -7008,6 +7025,90 @@ async fn record_rejected_cardless_receipt(state: &AppState, session: &str, messa
 /// output itself is intentionally preserved; this helper protects copied text
 /// that is about to enter a shared record.
 pub(crate) fn redact_secrets(text: &str) -> String {
+    redact_secrets_counted(text).0
+}
+
+/// [`redact_secrets`] plus how many values it masked.
+///
+/// The env-name and known-prefix families below missed both credentials the
+/// owner pasted into a Chat tab in the gs12 review (MSG-89154, MSG-91073):
+/// a Postgres DSN with its password in the URL plus a base64 password labelled
+/// `pw`, and a turbopuffer key labelled `turbopuffer api key:`. Both reached
+/// `cmd_history.text` and `session_events` verbatim. The INTAKE families add:
+/// a password in URL userinfo, a lowercase or spaced label (`api key:`,
+/// `password =`, `pw:`), and the `tpuf_`, `glpat-`, `xox?-`, `AKIA`, Stripe
+/// and JWT prefixes.
+pub(crate) fn redact_secrets_counted(text: &str) -> (String, usize) {
+    let (out, n) = redact_secrets_base(text);
+    let (out, m) = redact_intake_shapes(&out);
+    (out, n + m)
+}
+
+fn redact_intake_shapes(text: &str) -> (String, usize) {
+    let mut hits = 0usize;
+    // scheme://user:PASSWORD@host keeps the scheme, user and host.
+    let url = cached_re!(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+:)([^\s@/]{3,})@");
+    let out = url.replace_all(text, |c: &regex::Captures| {
+        if &c[2] == "REDACTED" {
+            return c[0].to_string();
+        }
+        hits += 1;
+        format!("{}REDACTED@", &c[1])
+    });
+    // A label a person types, then the value. The label may be spaced or
+    // lowercase; the value must look like a token (6+ non-space chars) so
+    // "the password is in the vault" stays readable.
+    let label = cached_re!(
+        r"(?i)\b((?:api[ _-]?key|access[ _-]?key|secret[ _-]?key|private[ _-]?key|client[ _-]?secret|password|passwd|passphrase|pwd|pw|secret|token|bearer)(?:\s*(?::=|[:=]|\bis\b)\s*|\s+))([^\s,;]{6,})"
+    );
+    let out = label.replace_all(&out, |c: &regex::Captures| {
+        let v = &c[2];
+        // Prose after a label ("token budget", "password reset", a secret's
+        // NAME such as `turbopuffer-api-key`) is prose and stays readable:
+        // the value needs a digit, base64 punctuation, or 16+ mixed-case chars.
+        let b = v.as_bytes();
+        let tokenish = b.iter().any(|x| x.is_ascii_digit() || matches!(x, b'+' | b'/' | b'='))
+            || (b.len() >= 16 && b.iter().any(u8::is_ascii_uppercase) && b.iter().any(u8::is_ascii_lowercase));
+        // A path (`pwd /tmp/x`, `token: ./out/file`) is not a credential.
+        let path = v.starts_with(['/', '~', '.', '$']);
+        if !tokenish || path || v.contains("REDACTED") {
+            return c[0].to_string();
+        }
+        hits += 1;
+        format!("{}REDACTED", &c[1])
+    });
+    let pref = cached_re!(
+        r"\b(?:tpuf_[A-Za-z0-9]{16,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|A[KS]IA[0-9A-Z]{16}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"
+    );
+    let out = pref.replace_all(&out, |_: &regex::Captures| {
+        hits += 1;
+        "SECRET_REDACTED".to_string()
+    });
+    let pem = cached_re!(r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----");
+    let out = pem.replace_all(&out, |_: &regex::Captures| {
+        hits += 1;
+        "SECRET_REDACTED".to_string()
+    });
+    (out.into_owned(), hits)
+}
+
+/// Every string inside a JSON payload through [`redact_secrets_counted`].
+pub(crate) fn redact_json_secrets(v: &mut Value) -> usize {
+    match v {
+        Value::String(s) => {
+            let (out, n) = redact_secrets_counted(s);
+            if n > 0 {
+                *s = out;
+            }
+            n
+        }
+        Value::Array(a) => a.iter_mut().map(redact_json_secrets).sum(),
+        Value::Object(o) => o.values_mut().map(redact_json_secrets).sum(),
+        _ => 0,
+    }
+}
+
+fn redact_secrets_base(text: &str) -> (String, usize) {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -7016,16 +7117,24 @@ pub(crate) fn redact_secrets(text: &str) -> String {
         )
         .expect("redact regex")
     });
-    re.replace_all(text, |caps: &regex::Captures| {
-        if let Some(p) = caps.get(1) {
-            format!("{}_REDACTED", p.as_str())
-        } else if let Some(p) = caps.get(2) {
-            format!("{}REDACTED", p.as_str())
-        } else {
-            "SECRET_REDACTED".to_string()
-        }
-    })
-    .into_owned()
+    let mut hits = 0usize;
+    let out = re
+        .replace_all(text, |caps: &regex::Captures| {
+            let masked = if let Some(p) = caps.get(1) {
+                format!("{}_REDACTED", p.as_str())
+            } else if let Some(p) = caps.get(2) {
+                format!("{}REDACTED", p.as_str())
+            } else {
+                "SECRET_REDACTED".to_string()
+            };
+            // Re-redacting an already-masked value is not a new hit.
+            if masked != caps[0] {
+                hits += 1;
+            }
+            masked
+        })
+        .into_owned();
+    (out, hits)
 }
 
 // NO PER-SESSION ROW CAP on the Messages ledger (gs12 review, 2026-10-18).
@@ -7743,7 +7852,7 @@ fn prior_delivered(
         "SELECT id, ts FROM cmd_history WHERE session=?1 AND text=?2 \
          AND ts > ?3 AND COALESCE(submit_verdict,'') != 'stuck' \
          ORDER BY ts DESC LIMIT 1",
-        rusqlite::params![session, text, since_ms],
+        rusqlite::params![session, redact_secrets(text), since_ms],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .ok()
@@ -7924,7 +8033,14 @@ pub(crate) async fn cmd_hist_record_with_id(
         spawn_task_title(session, text);
     }
     let session = session.to_string();
-    let text = redact_secrets(text);
+    let (text, redacted) = redact_secrets_counted(text);
+    if redacted > 0 {
+        // The worker received the message as sent; only the stored copy
+        // (cmd_history, and through it the backups) is masked.
+        tracing::warn!(session = %session, ctype, origin, redacted, measured = true, n_considered = 1,
+            verdict = "secret_redacted_at_intake",
+            "credential-shaped value(s) masked in the stored message; keep secrets in the vault (/api/vault/secrets)");
+    }
     let ctype = ctype.to_string();
     let origin: String = origin.chars().take(80).collect();
     let delivery = meta.delivery.map(|d| d.as_str().to_string());
@@ -14259,7 +14375,30 @@ pub(crate) fn relay_quote_from(companion_of: &str, meta: &Map<String, Value>, ta
         return None;
     }
     let text = meta.get("chat_inflight_text").and_then(Value::as_str).unwrap_or("").trim();
-    Some(text.chars().take(300).collect())
+    Some(provenance_quote(text))
+}
+
+/// Characters of the owner's words an origin stamp may quote.
+const PROVENANCE_QUOTE_CHARS: usize = 80;
+
+/// The owner's words as an origin stamp may carry them: redacted, then cut to
+/// a short prefix. The stamp is injected into the worker's transcript, so in
+/// the gs12 review it copied a turbopuffer key the owner pasted into the Chat
+/// tab into a 166 MB transcript (and its backup), while the relayed body
+/// itself had correctly said only where the key was stored. A stamp
+/// identifies which owner message started the turn; a prefix does that.
+pub(crate) fn provenance_quote(text: &str) -> String {
+    let (safe, n) = redact_secrets_counted(text.trim());
+    if n > 0 {
+        tracing::warn!(redacted = n, measured = true, n_considered = 1, verdict = "provenance_quote_redacted",
+            "the owner's quoted words carried credential-shaped value(s); the origin stamp quotes them masked");
+    }
+    let total = safe.chars().count();
+    let mut out: String = safe.chars().take(PROVENANCE_QUOTE_CHARS).collect();
+    if total > PROVENANCE_QUOTE_CHARS {
+        out.push_str("...");
+    }
+    out
 }
 
 pub(crate) fn origin_stamped(origin: &str, name: &str, text: &str) -> Option<String> {
@@ -22086,7 +22225,8 @@ pub(crate) fn stamp_queued_delivery(
                      WHERE session=?2 AND text=?3 \
                        AND delivery='queued' AND delivered_at IS NULL \
                      ORDER BY ts LIMIT 1)",
-        rusqlite::params![at_ms, session, text],
+        // The row holds the redacted form; the queue holds the raw text.
+        rusqlite::params![at_ms, session, redact_secrets(text)],
     )
 }
 
@@ -22168,6 +22308,10 @@ async fn capture_delivered_steering(
         && !amux_core::board::is_informational_query(&text)
     {
         let (sess3, text3) = (session.clone(), text.clone());
+        // cmd_history holds the redacted form (cmd_hist_record_with_id), so a
+        // lookup by text must use it too, or a prompt carrying a credential
+        // never finds its own row.
+        let stored3 = redact_secrets(&text);
         let now_ms = (now_f64() * 1000.0) as i64;
         let associated: std::sync::Arc<std::sync::Mutex<Option<CaptureAssociation>>> =
             std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -22200,7 +22344,7 @@ async fn capture_delivered_steering(
                     .query_row(
                         "SELECT COUNT(*) FROM cmd_history \
                          WHERE session = ?1 AND text = ?2 AND card_id IS NOT NULL AND ts>?3",
-                        rusqlite::params![sess3, text3, retry_cutoff_ms],
+                        rusqlite::params![sess3, stored3, retry_cutoff_ms],
                         |r| r.get(0),
                     )
                     .unwrap_or(0);
@@ -22221,7 +22365,7 @@ async fn capture_delivered_steering(
                             "UPDATE cmd_history SET card_id = ?1, capture_pending=0 WHERE id = \
                              (SELECT id FROM cmd_history WHERE session = ?2 AND text = ?3 \
                               AND card_id IS NULL ORDER BY id DESC LIMIT 1)",
-                            rusqlite::params![association.row.id, sess3, text3],
+                            rusqlite::params![association.row.id, sess3, stored3],
                         )?;
                         let events = vec![crate::db::PendingEvent {
                             entity_type: amux_core::revision::EntityType::Task,
@@ -30550,7 +30694,7 @@ pub fn worker_rules_file(name: &str) -> PathBuf {
 ///   "Isolated workers"); providers without a channel are logged when rules
 ///   exist, so a rule that cannot reach its worker says so.
 ///
-/// Every launch logs verdict=rules_delivered|rules_not_delivered.
+/// Every launch logs verdict=rules_delivered|rules_not_delivered|rules_withheld_isolated.
 pub fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> Vec<String> {
     let block = compose_worker_context(name, isolated);
     let file = worker_rules_file(name);
@@ -30565,8 +30709,13 @@ pub fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> Vec<Stri
         Vec::new()
     };
     if isolated {
+        // Withholding is the isolation contract working, so it is recorded
+        // rather than warned: the gs12 review counted 36 rules_not_delivered
+        // WARNs for one isolated lane, none of them actionable.
         let _ = std::fs::remove_file(&file);
-        return refuse("isolated workers receive no injected prompts");
+        tracing::info!(session = name, provider, layers, measured = true, n_considered = layers,
+            verdict = "rules_withheld_isolated", "binding rules exist for this worker; isolated workers receive no injected prompts");
+        return Vec::new();
     }
     if !matches!(provider, "claude" | "" | "codex" | "opencode") {
         return refuse("this provider has no rules channel");
@@ -43430,6 +43579,112 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             table.contains('\u{250c}') && table.contains('\u{2502}'),
             "{table}"
         );
+    }
+
+    /// gs12 review finding 9. Every fixture is a synthetic fake, assembled at
+    /// runtime so the repo's secret scanner never matches this source.
+    fn fake(prefix: &str, n: usize) -> String {
+        let body: String = "Zq7Xw3Kp9Lm2Nv5Rt8Yb4Hc6Jd1Fg0Ss".chars().cycle().take(n).collect();
+        format!("{prefix}{body}")
+    }
+
+    #[test]
+    fn intake_masks_the_shapes_the_owner_actually_pasted() {
+        let dsn_pw = fake("Pw9", 14);
+        let dsn = format!("postgresql://postgres.abcd:{dsn_pw}@aws-0-us-east-1.pooler.example.com:6543/postgres");
+        let (out, n) = redact_secrets_counted(&format!("connection string: {dsn} thanks"));
+        assert_eq!(n, 1, "{out}");
+        assert!(!out.contains(&dsn_pw));
+        assert!(out.contains("postgresql://postgres.abcd:REDACTED@aws-0-us-east-1.pooler.example.com"), "host kept: {out}");
+
+        let b64 = format!("{}==", fake("cGFz", 20));
+        let (out, n) = redact_secrets_counted(&format!("user postgres pw: {b64}"));
+        assert_eq!(n, 1, "{out}");
+        assert!(!out.contains(&b64) && out.contains("pw: REDACTED"), "{out}");
+
+        let key = fake(&format!("{}_", "tpuf"), 32);
+        let (out, n) = redact_secrets_counted(&format!("turbopuffer api key: {key}"));
+        assert!(n >= 1, "{out}");
+        assert!(!out.contains(&key), "{out}");
+
+        for prose in [
+            "the password is in the vault",
+            "watch the token budget today",
+            "token_ledger writer for /api/stats",
+            "run pwd /tmp/scratch first",
+            "the API key is turbopuffer-api-key in Secret Manager",
+            "see https://github.com/mixpeek/amux/pull/362 and commit 036ec1016",
+        ] {
+            let (out, n) = redact_secrets_counted(prose);
+            assert_eq!((out.as_str(), n), (prose, 0), "prose must survive intake");
+        }
+        let (once, _) = redact_secrets_counted(&format!("pw: {b64}"));
+        assert_eq!(redact_secrets_counted(&once), (once.clone(), 0), "masking is idempotent");
+    }
+
+    #[test]
+    fn json_payloads_are_masked_at_every_depth_and_counted() {
+        let key = fake(&format!("{}_", "tpuf"), 32);
+        let mut v = json!({"role":"user","text": format!("key {key}"),"nested":{"list":[format!("pw: {}9x", fake("a", 10)), 5]}});
+        assert_eq!(redact_json_secrets(&mut v), 2);
+        assert!(!v.to_string().contains(&key));
+        assert_eq!(v["nested"]["list"][1], 5);
+    }
+
+    #[test]
+    fn an_origin_stamp_quotes_the_owner_masked_and_short() {
+        let key = fake(&format!("{}_", "tpuf"), 40);
+        let q = provenance_quote(&format!("turbopuffer api key: {key}"));
+        assert!(!q.contains(&key), "{q}");
+        let m = owner_relay_tests_meta("T1", "owner", &format!("turbopuffer api key: {key}"));
+        let relayed = relay_quote_from("w", &m, "w").unwrap();
+        assert!(!relayed.contains(&key), "{relayed}");
+        let long = "a".repeat(500);
+        let q = provenance_quote(&long);
+        assert_eq!(q.chars().count(), PROVENANCE_QUOTE_CHARS + 3);
+        assert!(q.ends_with("..."));
+        assert_eq!(provenance_quote("unblock it"), "unblock it");
+    }
+
+    fn owner_relay_tests_meta(turn: &str, origin: &str, text: &str) -> Map<String, Value> {
+        json!({"chat_inflight_turn": turn, "chat_inflight_origin": origin, "chat_inflight_text": text})
+            .as_object().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_stored_event_holds_the_masked_text_and_says_so() {
+        let (state, _dir) = state();
+        let key = fake(&format!("{}_", "tpuf"), 32);
+        emit_event(&state, "w", "chat.message", Some(json!({"role":"user","text": format!("api key: {key}")})),
+            Some("t1".into()), "test").await;
+        emit_event(&state, "w", "chat.message", Some(json!({"role":"user","text":"no secret here"})),
+            Some("t2".into()), "test").await;
+        let rows: Vec<String> = {
+            let c = state.store.read().unwrap();
+            let mut st = c.prepare("SELECT data FROM session_events WHERE session='w' ORDER BY id").unwrap();
+            st.query_map([], |r| r.get(0)).unwrap().flatten().collect()
+        };
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[0].contains(&key), "{}", rows[0]);
+        let first: Value = serde_json::from_str(&rows[0]).unwrap();
+        assert_eq!(first["secrets_redacted"], 1);
+        let second: Value = serde_json::from_str(&rows[1]).unwrap();
+        assert!(second.get("secrets_redacted").is_none());
+    }
+
+    #[test]
+    fn a_queued_message_with_a_credential_still_stamps_its_redacted_row() {
+        let (state, _dir) = state();
+        let raw = format!("deploy with pw: {}9x", fake("Q", 12));
+        let stored = redact_secrets(&raw);
+        assert_ne!(stored, raw);
+        let n = state.store.write(move |c| {
+            ensure_fleet_tables(c)?;
+            c.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES(?1,'user','w',1,'queued')", [&stored])?;
+            let n = stamp_queued_delivery(c, "w", &raw, 5000)?;
+            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        }).unwrap();
+        assert!(n.applied, "the raw queue text must find the row that stores its redacted form");
     }
 
     #[test]

@@ -828,7 +828,9 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
             // Who started this turn, and with what words: a companion's send
             // during an owner turn is delivered as the owner's (owner_relay_quote).
             ("chat_inflight_origin", json!(q.origin)),
-            ("chat_inflight_text", json!(q.text.chars().take(300).collect::<String>())),
+            // Stored masked: this meta file sits in ~/.amux (and its backups)
+            // and is the source of the owner-relay origin stamp.
+            ("chat_inflight_text", json!(super::session_verbs::redact_secrets(&q.text.chars().take(300).collect::<String>()))),
             ("chat_inflight_started", json!(crate::config::now_f64())),
         ],
     );

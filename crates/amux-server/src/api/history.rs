@@ -56,6 +56,8 @@ pub fn routes() -> Router<AppState> {
             get(list_history).post(append_history).delete(clear_history),
         )
         .route("/import", axum::routing::post(import_history))
+        // Opt-in, dry run by default: mask credentials already stored.
+        .route("/redact-stored", axum::routing::post(redact_stored))
         // AMUX-4664: ask a question of these messages. A literal POST, like
         // `/import`, so the `/{id}` capture below does not take it.
         .route("/ask", axum::routing::post(super::history_ask::ask))
@@ -582,7 +584,10 @@ pub(crate) fn redact_secrets(text: &str) -> (String, usize) {
             hits += n;
         }
     }
-    (out, hits)
+    // The shared intake families (URL passwords, spaced labels, tpuf_ and
+    // other prefixes) so this path and the send path mask the same shapes.
+    let (out, more) = crate::api::session_verbs::redact_secrets_counted(&out);
+    (out, hits + more)
 }
 
 // ---- group membership (Python list_sessions()'s tags, filesystem source) ---
@@ -1411,6 +1416,151 @@ async fn clear_history(State(state): State<AppState>) -> Response {
     }
 }
 
+// ---- stored-secret redaction (opt-in, dry run by default) -----------------
+
+/// One stored value that would change, by table and row id.
+type StoredFix = (&'static str, i64, String);
+
+/// Rows per call, so one request never holds the writer for the whole table.
+const REDACT_STORED_MAX: i64 = 20_000;
+
+/// Scan rows past each table's cursor in `since` in the three tables that keep copied message
+/// text, and return the masked form of every value the current intake
+/// detector would have masked. Pure over a connection so a test can pin it.
+/// Never returns the original values.
+pub(crate) fn scan_stored_secrets(
+    conn: &rusqlite::Connection,
+    since: &Value,
+    limit: i64,
+) -> rusqlite::Result<(Value, Vec<StoredFix>)> {
+    let mut fixes: Vec<StoredFix> = Vec::new();
+    let mut report = Map::new();
+    for (table, col, json_col) in [
+        ("cmd_history", "text", false),
+        ("steering_history", "text", false),
+        ("session_events", "data", true),
+    ] {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            report.insert(table.into(), json!({"measured": false, "why_unmeasured": "table absent"}));
+            continue;
+        }
+        let id_col = if table == "steering_history" { "rowid" } else { "id" };
+        let since = since.get(table).and_then(Value::as_i64).unwrap_or(0).max(0);
+        let mut st = conn.prepare(&format!(
+            "SELECT {id_col}, {col} FROM {table} WHERE {id_col} > ?1 AND {col} IS NOT NULL ORDER BY {id_col} LIMIT ?2"
+        ))?;
+        let rows = st.query_map(rusqlite::params![since, limit], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        let (mut scanned, mut hit_rows, mut masked, mut last) = (0u64, 0u64, 0u64, since);
+        let mut sample: Vec<String> = Vec::new();
+        for row in rows {
+            let (id, value) = row?;
+            scanned += 1;
+            last = id;
+            let (fixed, n) = if json_col {
+                match serde_json::from_str::<Value>(&value) {
+                    Ok(mut v) => {
+                        let n = crate::api::session_verbs::redact_json_secrets(&mut v);
+                        (v.to_string(), n)
+                    }
+                    Err(_) => crate::api::session_verbs::redact_secrets_counted(&value),
+                }
+            } else {
+                crate::api::session_verbs::redact_secrets_counted(&value)
+            };
+            if n > 0 && fixed != value {
+                hit_rows += 1;
+                masked += n as u64;
+                if sample.len() < 20 {
+                    sample.push(if table == "cmd_history" { format!("MSG-{id}") } else { id.to_string() });
+                }
+                fixes.push((table, id, fixed));
+            }
+        }
+        report.insert(table.into(), json!({
+            "measured": true, "n_considered": scanned, "rows_with_secrets": hit_rows,
+            "values_masked": masked, "sample_ids": sample, "last_id": last,
+            // A full page means rows remain: pass `since: {table: last_id}`.
+            "more": scanned as i64 >= limit,
+        }));
+    }
+    Ok((Value::Object(report), fixes))
+}
+
+/// POST /api/history/redact-stored: mask credential-shaped values already
+/// stored in message history (gs12 review, finding 9: two owner-pasted
+/// credentials sat verbatim in cmd_history and session_events).
+///
+/// DRY RUN BY DEFAULT: it reports counts and row ids, never values, and
+/// changes nothing. `{"apply": true}` rewrites the matched rows, and only for
+/// the owner (`standing_approvals::is_owner_request`: no worker identity, not
+/// a scoped member), because this is a mutation of stored history. Page with
+/// `since: {"<table>": <last_id>}` and `limit` (max 20,000 per table per call).
+async fn redact_stored(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: Option<Json<Value>>,
+) -> Response {
+    let body = body.map(|b| b.0).unwrap_or(Value::Null);
+    let apply = body.get("apply").and_then(Value::as_bool).unwrap_or(false);
+    let since = body.get("since").cloned().unwrap_or(Value::Null);
+    let limit = body.get("limit").and_then(Value::as_i64).unwrap_or(REDACT_STORED_MAX).clamp(1, REDACT_STORED_MAX);
+    let caller = crate::api::session_verbs::hdr_worker(&headers);
+    if apply && !crate::api::standing_approvals::is_owner_request(&headers) {
+        tracing::warn!(caller = %caller, measured = true, n_considered = 0, verdict = "stored_secret_redaction_refused",
+            "a worker asked to rewrite stored history; only the owner may apply this");
+        return err(StatusCode::FORBIDDEN, json!({
+            "error": "only the owner may apply a stored-history redaction",
+            "code": "owner_only",
+            "how": "Run it without apply to see the counts; the owner applies it from a shell with no X-Amux-Session header.",
+        }));
+    }
+    let scanned = state.store.read_async(move |conn| Ok(scan_stored_secrets(conn, &since, limit)?)).await;
+    let (mut report, fixes) = match scanned {
+        Ok(v) => v,
+        Err(e) => return internal(e),
+    };
+    let found = fixes.len();
+    if !apply {
+        tracing::info!(measured = true, n_considered = found, verdict = "stored_secret_redaction_dry_run",
+            summary = %report, "counted stored history rows holding credential-shaped values; nothing changed");
+        report["applied"] = json!(false);
+        report["rows_to_change"] = json!(found);
+        return Json(report).into_response();
+    }
+    let changed = Arc::new(Mutex::new(0usize));
+    let sink = changed.clone();
+    let write = state
+        .store
+        .write_async(move |conn| {
+            let mut n = 0usize;
+            for (table, id, fixed) in &fixes {
+                let (id_col, col) = match *table {
+                    "session_events" => ("id", "data"),
+                    "steering_history" => ("rowid", "text"),
+                    _ => ("id", "text"),
+                };
+                n += conn.execute(&format!("UPDATE {table} SET {col}=?1 WHERE {id_col}=?2"), rusqlite::params![fixed, id])?;
+            }
+            *sink.lock().unwrap_or_else(|e| e.into_inner()) = n;
+            Ok(WriteOutcome { applied: n > 0, events: vec![] })
+        })
+        .await;
+    if let Err(e) = write {
+        return internal(e);
+    }
+    let n = *changed.lock().unwrap_or_else(|e| e.into_inner());
+    tracing::warn!(measured = true, n_considered = found, changed = n, verdict = "stored_secret_redaction_applied",
+        "owner applied a stored-history redaction; credential-shaped values were masked in place");
+    report["applied"] = json!(true);
+    report["rows_changed"] = json!(n);
+    Json(report).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Tests — temp-DB stores; the group test pins AMUX_HOME to a temp dir under
 // the shared env lock (settings::test_env), never the live ~/.amux.
@@ -2111,6 +2261,37 @@ mod tests {
             src4.contains("cmd_history"),
             "and it must say which instrument: {src4}"
         );
+    }
+
+    /// gs12 review finding 9: the opt-in historical pass counts without
+    /// changing anything, never echoes a value, and its fixes are exactly the
+    /// rows the intake detector would have masked. Synthetic fake values only.
+    #[test]
+    fn stored_secret_scan_reports_counts_never_values() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE cmd_history(id INTEGER PRIMARY KEY, text TEXT);
+             CREATE TABLE session_events(id INTEGER PRIMARY KEY, data TEXT);",
+        ).unwrap();
+        let key = format!("{}_{}", "tpuf", "Zq7Xw3Kp9Lm2Nv5Rt8Yb4Hc6Jd1Fg0Ss");
+        c.execute("INSERT INTO cmd_history(text) VALUES (?1), ('plain words'), (?2)",
+            rusqlite::params![format!("turbopuffer api key: {key}"), format!("again {key}")]).unwrap();
+        c.execute("INSERT INTO session_events(data) VALUES (?1), ('{\"text\":\"fine\"}')",
+            [json!({"role":"user","text": format!("api key: {key}")}).to_string()]).unwrap();
+        let (report, fixes) = scan_stored_secrets(&c, &Value::Null, 100).unwrap();
+        assert!(!report.to_string().contains(&key), "a report must never carry a value: {report}");
+        assert_eq!(report["cmd_history"]["rows_with_secrets"], 2);
+        assert_eq!(report["cmd_history"]["n_considered"], 3);
+        assert_eq!(report["cmd_history"]["sample_ids"], json!(["MSG-1", "MSG-3"]));
+        assert_eq!(report["session_events"]["rows_with_secrets"], 1);
+        assert_eq!(report["steering_history"]["measured"], false, "an absent table reads as unmeasured");
+        assert_eq!(fixes.len(), 3);
+        assert!(fixes.iter().all(|(_, _, v)| !v.contains(&key)));
+        let unchanged: String = c.query_row("SELECT text FROM cmd_history WHERE id=1", [], |r| r.get(0)).unwrap();
+        assert!(unchanged.contains(&key), "a scan changes nothing");
+        let (page, _) = scan_stored_secrets(&c, &json!({"cmd_history": 1}), 1).unwrap();
+        assert_eq!(page["cmd_history"]["sample_ids"], json!([]), "row 2 holds no secret");
+        assert_eq!(page["cmd_history"]["more"], true);
     }
 
     #[test]

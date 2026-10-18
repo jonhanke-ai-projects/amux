@@ -3428,6 +3428,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/history/import",
         methods: &["POST"],
     },
+    // gs12 review finding 9: dry-run count, owner-only apply.
+    RouteEntry {
+        path: "/api/history/redact-stored",
+        methods: &["POST"],
+    },
     // AMUX-4664: ask a question of the messages.
     RouteEntry {
         path: "/api/history/ask",
