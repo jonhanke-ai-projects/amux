@@ -217,10 +217,16 @@ large images, models, datasets and videos, and move bulk data on cloud hardware
 instead of through this Mac. When the
 machine is critical, heavy commands are refused until it recovers; if the work
 truly cannot wait, rerun with AMUX_RESOURCES_ACK="<why>" in front of the
-command, and that reason is recorded.
+command, and that reason is recorded. Disk is budgeted per worker: your scratch
+(~/.amux/tmp/<you>, plus AMUX_WORKER_DISK_PATHS) is measured against
+AMUX_WORKER_DISK_GB (default below). Past 80% heavy commands warn; past the
+budget they are refused until you delete what you no longer need (finished
+build targets first; give your subagents one shared CARGO_TARGET_DIR). An
+override is AMUX_DISK_ACK="<why>" in front of the command, recorded the same way.
 """
 enforced_by = [
   "hook: boundary-guard (heavy commands refused at critical pressure)",
+  "hook: boundary-guard (heavy commands refused past the worker's disk budget, AMUX_WORKER_DISK_GB)",
   "server: host_guard holds automated dispatch at critical (runtime_jobs/host_guard.rs)",
   "server: worker admission refuses new starts under memory pressure (api/health.rs)",
 ]
@@ -252,6 +258,12 @@ swap_used_critical = 0.97
 mem_level_strained = 2
 mem_level_critical = 4
 ack_env = "AMUX_RESOURCES_ACK"
+# Per-worker disk budget (mxp-gs12 review, 2026-10-18: the data volume filled
+# twice from one worker's subagent cargo targets). AMUX_WORKER_DISK_GB in the
+# worker's scope wins; 0 turns the check off for that worker.
+disk_budget_gb_default = 100
+disk_warn_fraction = 0.8
+disk_ttl_s = 600
 
 [[boundary]]
 id = "fleet-tmux"

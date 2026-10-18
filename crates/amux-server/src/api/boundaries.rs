@@ -266,6 +266,45 @@ pub fn profile(worker: &str) -> Value {
     })
 }
 
+/// The worker's scratch-disk reading against its budget (mxp-gs12 review,
+/// 2026-10-18). The boundary guard measures ~/.amux/tmp/<worker> (plus
+/// AMUX_WORKER_DISK_PATHS) with `du` in a detached process and caches it in
+/// ~/.amux/state/disk-usage/<worker>.json; this reads the same file, so the
+/// number here is the number a refusal quotes. The budget is the scoped
+/// AMUX_WORKER_DISK_GB, else the registry's `disk_budget_gb_default`.
+pub fn disk_reading(home: &std::path::Path, worker: &str, profile: &Value) -> Value {
+    let budget_gb = profile["disk_gb"].as_f64().or_else(|| {
+        let t: toml::Table = toml::from_str(DEFAULT_REGISTRY).ok()?;
+        let v = t.get("boundary")?.as_array()?.iter()
+            .find(|b| b.get("id").and_then(|v| v.as_str()) == Some("resources"))?
+            .get("resources")?.get("disk_budget_gb_default")?.clone();
+        v.as_float().or_else(|| v.as_integer().map(|i| i as f64))
+    }).filter(|g| *g > 0.0);
+    let path = home.join("state").join("disk-usage").join(format!("{worker}.json"));
+    let rec: Option<Value> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let Some(rec) = rec else {
+        return json!({
+            "measured": false, "n_considered": 0, "budget_gb": budget_gb,
+            "why_unmeasured": "no reading yet: the boundary guard measures on this worker's next heavy command",
+        });
+    };
+    let measured = rec["measured"].as_bool().unwrap_or(false);
+    let used = rec["bytes"].as_f64();
+    let used_gb = used.map(|b| (b / 1024f64.powi(3) * 100.0).round() / 100.0);
+    let fraction = match (used, budget_gb) {
+        (Some(u), Some(b)) if b > 0.0 => Some((u / (b * 1024f64.powi(3)) * 1000.0).round() / 1000.0),
+        _ => None,
+    };
+    let age = rec["ts"].as_f64().map(|t| (chrono::Utc::now().timestamp() as f64 - t).round());
+    json!({
+        "measured": measured, "n_considered": rec["n_considered"].clone(),
+        "why_unmeasured": rec["why_unmeasured"].clone(),
+        "used_gb": used_gb, "budget_gb": budget_gb, "fraction_of_budget": fraction,
+        "paths": rec["paths"].clone(), "age_s": age,
+        "over_budget": fraction.map(|f| f >= 1.0),
+    })
+}
+
 /// Usage against the profile: which declared limits the worker is over.
 pub fn over_profile(cpu_percent: f64, rss_mb: f64, profile: &Value) -> Vec<String> {
     let mut over = Vec::new();
@@ -317,10 +356,12 @@ async fn resources(headers: HeaderMap, Query(q): Query<ResQuery>) -> impl IntoRe
                 "share_of_machine_cpu": if capacity > 0.0 { x.cpu_percent / capacity } else { 0.0 },
                 "profile": prof.clone(),
                 "over_profile": over_profile(x.cpu_percent, x.rss_mb, &prof),
+                "disk": disk_reading(&home(), &w, &prof),
             }),
             None => json!({
                 "name": w, "measured": false,
                 "why_unmeasured": if util.is_some() { "no live tmux pane for that worker in this sample" } else { "ps did not run, so no worker was measured" },
+                "disk": disk_reading(&home(), &w, &prof),
                 "profile": prof,
             }),
         }
@@ -391,6 +432,28 @@ mod tests {
         assert_eq!(over_profile(350.0, 2048.0, &p).len(), 2);
         assert!(over_profile(150.0, 512.0, &p).is_empty());
         assert!(over_profile(900.0, 9000.0, &json!({"cpus": null, "mem_gb": null})).is_empty());
+    }
+
+    #[test]
+    fn disk_reading_reports_the_guard_cache_against_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let none = disk_reading(dir.path(), "w", &json!({"disk_gb": 10.0}));
+        assert_eq!(none["measured"], false);
+        assert_eq!(none["budget_gb"], 10.0);
+        let d = dir.path().join("state").join("disk-usage");
+        std::fs::create_dir_all(&d).unwrap();
+        let gb = 1024f64.powi(3);
+        std::fs::write(d.join("w.json"), json!({"measured": true, "bytes": 15.0 * gb, "n_considered": 1,
+            "paths": {"/x": 15.0 * gb}, "ts": chrono::Utc::now().timestamp()}).to_string()).unwrap();
+        let r = disk_reading(dir.path(), "w", &json!({"disk_gb": 10.0}));
+        assert_eq!(r["measured"], true);
+        assert_eq!(r["over_budget"], true);
+        assert_eq!(r["fraction_of_budget"], 1.5);
+        let ok = disk_reading(dir.path(), "w", &json!({"disk_gb": 100.0}));
+        assert_eq!(ok["over_budget"], false);
+        // No scoped budget: the registry default applies.
+        let dflt = disk_reading(dir.path(), "w", &json!({"disk_gb": null}));
+        assert!(dflt["budget_gb"].as_f64().unwrap_or(0.0) > 0.0, "{dflt}");
     }
 
     #[test]

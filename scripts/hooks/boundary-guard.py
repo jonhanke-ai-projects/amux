@@ -256,6 +256,163 @@ def my_usage(session: str) -> str:
 
 
 ACK_RE = re.compile(r"""(?:^|[;&|]\s*|\benv\s+)(AMUX_RESOURCES_ACK)=(?:"([^"]*)"|'([^']*)'|(\S+))""")
+DISK_ACK_RE = re.compile(r"""(?:^|[;&|]\s*|\benv\s+)(AMUX_DISK_ACK)=(?:"([^"]*)"|'([^']*)'|(\S+))""")
+
+
+# ---- per-worker disk budget (mxp-gs12 review, 2026-10-18) -----------------------
+#
+# The Mac's data volume filled on 2026-10-09 and 2026-10-14 from one worker's
+# subagent Rust targets (34 GB and 41 GB), and its scratch reached 266 GB. A
+# worker declared AMUX_WORKER_DISK_GB in its resource profile, but nothing
+# measured it. Now the worker's scratch (~/.amux/tmp/<worker>, plus any paths
+# in AMUX_WORKER_DISK_PATHS, colon-separated) is measured with `du` in a
+# DETACHED process (a 69 GB tree takes tens of seconds, and this hook runs
+# before every Bash call), cached in ~/.amux/state/disk-usage/<worker>.json for
+# AMUX_WORKER_DISK_TTL_S (default 600), and checked against the budget before
+# heavy work: past disk_warn_fraction of it the command runs with a warning,
+# past the budget heavy work is refused until the worker frees space, raises
+# its budget in the Scope tab, or reruns with AMUX_DISK_ACK="<why>" (recorded).
+# The budget is the scoped AMUX_WORKER_DISK_GB, else the registry's
+# disk_budget_gb_default; 0 turns the check off. /api/resources reads the same
+# cache file, so the number a refusal quotes is the number the worker sees.
+
+def disk_paths(session: str) -> list[str]:
+    paths = [os.path.join(amux_home(), "tmp", session)]
+    for p in (os.environ.get("AMUX_WORKER_DISK_PATHS") or "").split(":"):
+        p = os.path.expanduser(p.strip())
+        if p and p not in paths:
+            paths.append(p)
+    return [p for p in paths if os.path.exists(p)]
+
+
+def disk_cache_path(session: str) -> str:
+    return os.path.join(amux_home(), "state", "disk-usage", session + ".json")
+
+
+def measure_disk(session: str, timeout_s: float) -> dict:
+    """du -sk every path, bounded. Writes and returns the cache record."""
+    import subprocess
+
+    paths = disk_paths(session)
+    rec: dict = {"worker": session, "ts": round(time.time(), 3), "paths": {}, "n_considered": len(paths)}
+    total, measured, why = 0, True, None
+    deadline = time.time() + timeout_s
+    for p in paths:
+        left = deadline - time.time()
+        if left <= 0:
+            measured, why = False, f"du budget {timeout_s:.0f}s spent before {p}"
+            break
+        try:
+            out = subprocess.run(["du", "-sk", p], capture_output=True, text=True, timeout=left)
+            kb = int((out.stdout.split() or ["0"])[0])
+        except subprocess.TimeoutExpired:
+            measured, why = False, f"du timed out on {p} after {timeout_s:.0f}s"
+            break
+        except (OSError, ValueError) as e:
+            measured, why = False, f"du failed on {p}: {e}"
+            break
+        rec["paths"][p] = kb * 1024
+        total += kb * 1024
+    rec.update({"bytes": total if measured else None, "measured": measured, "why_unmeasured": why})
+    try:
+        cp = disk_cache_path(session)
+        os.makedirs(os.path.dirname(cp), exist_ok=True)
+        tmp = cp + f".{os.getpid()}"
+        with open(tmp, "w") as fh:
+            json.dump(rec, fh)
+        os.replace(tmp, cp)
+    except OSError:
+        pass
+    return rec
+
+
+def disk_usage(session: str, ttl_s: float) -> dict:
+    """The cached reading, refreshed in the background when stale."""
+    fixed = os.environ.get("AMUX_DISK_USAGE_SAMPLE")  # tests: a fixed reading
+    if fixed:
+        return json.loads(fixed)
+    cp = disk_cache_path(session)
+    rec: dict = {}
+    try:
+        with open(cp) as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        rec = {}
+    age = time.time() - float(rec.get("ts") or 0)
+    if age > ttl_s and not disk_paths(session):
+        # Nothing to measure (no scratch yet): a zero reading costs nothing.
+        return {"measured": True, "bytes": 0, "paths": {}, "n_considered": 0}
+    if age > ttl_s:
+        lock = cp + ".measuring"
+        try:
+            fresh_lock = os.path.exists(lock) and time.time() - os.stat(lock).st_mtime < 300
+        except OSError:
+            fresh_lock = False
+        if not fresh_lock:
+            import subprocess
+
+            try:
+                os.makedirs(os.path.dirname(cp), exist_ok=True)
+                open(lock, "w").close()
+                subprocess.Popen([sys.executable, os.path.abspath(__file__), "--measure-disk", session],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True, env=dict(os.environ))
+            except OSError:
+                pass
+        if not rec:
+            return {"measured": False, "why_unmeasured": "first measurement started in the background", "n_considered": 0}
+        rec = dict(rec, stale_s=round(age))
+    return rec
+
+
+def disk_budget_bytes(cfg: dict) -> float | None:
+    raw = os.environ.get("AMUX_WORKER_DISK_GB")
+    try:
+        gb = float(raw) if raw not in (None, "") else float(cfg.get("disk_budget_gb_default", 0) or 0)
+    except ValueError:
+        return None
+    return gb * 1024 ** 3 if gb > 0 else None
+
+
+def check_disk(b: dict, command: str, session: str) -> tuple[int, str]:
+    cfg = b.get("resources") or {}
+    budget = disk_budget_bytes(cfg)
+    if budget is None or not session:
+        return 0, ""
+    ttl = float(os.environ.get("AMUX_WORKER_DISK_TTL_S") or cfg.get("disk_ttl_s", 600))
+    rec = disk_usage(session, ttl)
+    base = {"boundary": b.get("id"), "tool": "Bash", "command": redact(command), "budget_gb": round(budget / 1024 ** 3, 2),
+            "measured": bool(rec.get("measured")), "n_considered": rec.get("n_considered", 0)}
+    if not rec.get("measured"):
+        log({**base, "verdict": "disk_budget_unmeasured", "why_unmeasured": rec.get("why_unmeasured")})
+        return 0, ""
+    used = float(rec.get("bytes") or 0)
+    gb = used / 1024 ** 3
+    frac = used / budget
+    base.update({"used_gb": round(gb, 2), "used_bytes": int(used), "budget_bytes": int(budget), "fraction": round(frac, 3), "stale_s": rec.get("stale_s", 0)})
+    paths = ", ".join(f"{p} {v / 1024 ** 3:.1f} GB" for p, v in sorted((rec.get("paths") or {}).items(), key=lambda x: -x[1])[:4])
+    if frac >= 1.0:
+        ack = DISK_ACK_RE.search(command)
+        if ack:
+            why = next(g for g in ack.groups()[1:] if g is not None)
+            log({**base, "verdict": "disk_budget_acknowledged", "ack": redact(why)})
+            return 0, ""
+        log({**base, "verdict": "disk_budget_refused"})
+        return 2, (
+            f"BLOCKED by amux boundary '{b.get('id')}': your scratch uses {gb:.1f} GB, over your disk budget of "
+            f"{budget / 1024 ** 3:.0f} GB (AMUX_WORKER_DISK_GB), so new heavy work waits until you free space.\n"
+            f"Measured: {paths or 'no paths'} ({rec.get('stale_s', 0)}s ago).\n"
+            "Delete build targets and scratch you no longer need (finished subagents' cargo targets are the usual cause; "
+            "share one CARGO_TARGET_DIR across your subagents), or raise AMUX_WORKER_DISK_GB in the Scope tab. "
+            "If the work truly cannot wait, rerun as\n"
+            f"  AMUX_DISK_ACK=\"<why>\" {command[:120]}\n"
+            "and the reason is recorded.\n(boundary-guard)\n"
+        )
+    if frac >= float(cfg.get("disk_warn_fraction", 0.8)):
+        log({**base, "verdict": "disk_budget_warn"})
+        return 0, (f"amux boundary '{b.get('id')}': WARNING your scratch uses {gb:.1f} GB, {frac:.0%} of your "
+                   f"{budget / 1024 ** 3:.0f} GB disk budget ({paths}). Heavy work is refused past 100%; free space now.\n")
+    return 0, ""
 
 
 def check_resources(b: dict, command: str, session: str) -> tuple[int, str]:
@@ -270,7 +427,7 @@ def check_resources(b: dict, command: str, session: str) -> tuple[int, str]:
     if level == "critical" and ack:
         why = next(g for g in ack.groups()[1:] if g is not None)
         log({**base, "verdict": "resources_acknowledged", "ack": redact(why)})
-        return 0, ""
+        return _disk_after(b, command, session)
     if level == "critical":
         log({**base, "verdict": "resources_refused"})
         usage = my_usage(session)
@@ -287,10 +444,31 @@ def check_resources(b: dict, command: str, session: str) -> tuple[int, str]:
         log({**base, "verdict": "resources_strained_allowed"})
     if level == "unmeasured":
         log({**base, "verdict": "resources_unmeasured", "why_unmeasured": "no load, swap or memory reading"})
+    return _disk_after(b, command, session)
+
+
+def _disk_after(b: dict, command: str, session: str) -> tuple[int, str]:
+    """The disk budget, checked for every heavy command the host check let through."""
+    code, msg = check_disk(b, command, session)
+    if code:
+        return code, msg
+    if msg:
+        sys.stderr.write(msg)
     return 0, ""
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--measure-disk":
+        # The detached measurement disk_usage() starts. Bounded so a wedged
+        # filesystem cannot leave it running; the lock is removed either way.
+        try:
+            measure_disk(sys.argv[2], float(os.environ.get("AMUX_DISK_DU_TIMEOUT_S") or 240))
+        finally:
+            try:
+                os.unlink(disk_cache_path(sys.argv[2]) + ".measuring")
+            except OSError:
+                pass
+        sys.exit(0)
     try:
         payload = json.load(sys.stdin)
     except Exception:

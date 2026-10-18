@@ -75,6 +75,16 @@ What a worker can see now:
   and `AMUX_WORKER_DISK_GB`, set in the Scope tab and resolved worker, then
   group, then global. `amux resources` reports usage against it and names any
   limit the worker is over.
+- **Disk is enforced** (2026-10-18, after one worker's subagent cargo targets
+  filled the data volume twice). The boundary guard measures the worker's
+  scratch (`~/.amux/tmp/<worker>` plus `AMUX_WORKER_DISK_PATHS`) with `du` in a
+  detached process, caches it in `~/.amux/state/disk-usage/<worker>.json`, and
+  checks heavy commands against `AMUX_WORKER_DISK_GB` (registry default
+  `disk_budget_gb_default`, 100): a warning past 80%, a refusal past 100%,
+  `AMUX_DISK_ACK="<why>"` to override (recorded). `amux resources` shows the
+  same reading under `worker.disk`. Verdicts in `boundaries.jsonl`:
+  `disk_budget_warn`, `disk_budget_refused`, `disk_budget_acknowledged`,
+  `disk_budget_unmeasured`.
 - The `resources` rule text tells every worker to check before heavy work,
   lower parallelism when the machine is strained, prefer remote hardware for
   big builds, and shut down what it started.

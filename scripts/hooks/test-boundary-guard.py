@@ -103,6 +103,40 @@ def main() -> int:
                     expect(f"{b['id']} allows at critical: {ex[:60]}", code == 0, f"exit {code}")
                 code, ev = run("AMUX_RESOURCES_ACK=\"hotfix\" cargo build", home, {"AMUX_BOUNDARIES_HOST_SAMPLE": CRITICAL})
                 expect(f"{b['id']} records an acknowledged heavy command", code == 0 and any(e.get("verdict") == "resources_acknowledged" and e.get("ack") == "hotfix" for e in ev), f"exit {code} {ev}")
+                # Disk budget (mxp-gs12 review, 2026-10-18), each verdict with its twin.
+                GB = 1024 ** 3
+                def sample(used, measured=True):
+                    return json.dumps({"measured": measured, "bytes": used if measured else None,
+                                       "paths": {"/scratch": used} if measured else {}, "n_considered": 1,
+                                       "why_unmeasured": None if measured else "test"})
+                over = {"AMUX_WORKER_DISK_GB": "1", "AMUX_DISK_USAGE_SAMPLE": sample(2 * GB)}
+                code, ev = run("cargo build", home, over)
+                expect(f"{b['id']} refuses heavy work past the disk budget", code == 2 and any(e.get("verdict") == "disk_budget_refused" and e.get("measured") is True for e in ev), f"exit {code} {ev}")
+                code, ev = run("git status", home, over)
+                expect(f"{b['id']} lets light work through past the disk budget", code == 0, f"exit {code} {ev}")
+                code, ev = run("AMUX_DISK_ACK=\"release build\" cargo build", home, over)
+                expect(f"{b['id']} records an acknowledged over-budget heavy command", code == 0 and any(e.get("verdict") == "disk_budget_acknowledged" and e.get("ack") == "release build" for e in ev), f"exit {code} {ev}")
+                code, ev = run("cargo build", home, {"AMUX_WORKER_DISK_GB": "1", "AMUX_DISK_USAGE_SAMPLE": sample(int(0.85 * GB))})
+                expect(f"{b['id']} warns at 85% of the disk budget and runs the command", code == 0 and any(e.get("verdict") == "disk_budget_warn" for e in ev), f"exit {code} {ev}")
+                code, ev = run("cargo build", home, {"AMUX_WORKER_DISK_GB": "1", "AMUX_DISK_USAGE_SAMPLE": sample(int(0.10 * GB))})
+                expect(f"{b['id']} is silent well under the disk budget", code == 0 and not any(str(e.get("verdict", "")).startswith("disk_budget") for e in ev), f"exit {code} {ev}")
+                code, ev = run("cargo build", home, {"AMUX_WORKER_DISK_GB": "0", "AMUX_DISK_USAGE_SAMPLE": sample(2 * GB)})
+                expect(f"{b['id']} AMUX_WORKER_DISK_GB=0 turns the disk check off", code == 0 and not any(str(e.get("verdict", "")).startswith("disk_budget") for e in ev), f"exit {code} {ev}")
+                code, ev = run("cargo build", home, {"AMUX_WORKER_DISK_GB": "1", "AMUX_DISK_USAGE_SAMPLE": sample(0, measured=False)})
+                expect(f"{b['id']} an unmeasured disk reading lets work through and says so", code == 0 and any(e.get("verdict") == "disk_budget_unmeasured" and e.get("measured") is False for e in ev), f"exit {code} {ev}")
+                # The real measurement path: du on a scratch dir, then the refusal quotes it.
+                scratch = os.path.join(home, "tmp", "boundary-test")
+                os.makedirs(scratch, exist_ok=True)
+                with open(os.path.join(scratch, "target.bin"), "wb") as fh:
+                    fh.write(os.urandom(3 * 1024 * 1024))
+                menv = {k: v for k, v in os.environ.items() if not k.startswith("AMUX_")}
+                menv["AMUX_HOME"] = home
+                subprocess.run([sys.executable, GUARD, "--measure-disk", "boundary-test"], env=menv, timeout=60)
+                code, ev = run("cargo build", home, {"AMUX_WORKER_DISK_GB": "0.001"})
+                hit = [e for e in ev if e.get("verdict") == "disk_budget_refused"]
+                expect(f"{b['id']} measures real scratch with du and refuses past a 1 MB budget", code == 2 and hit and hit[0].get("used_bytes", 0) >= 3 * 1024 * 1024, f"exit {code} {ev}")
+                code, ev = run("cargo build", home, {"AMUX_WORKER_DISK_GB": "1"})
+                expect(f"{b['id']} the same real scratch passes a 1 GB budget", code == 0 and not any(e.get("verdict") == "disk_budget_refused" for e in ev), f"exit {code} {ev}")
 
         sample = boundaries[0]["deny"][0]["block_examples"][0]
         code, _ = run(sample, home, {"AMUX_SESSION": ""})
