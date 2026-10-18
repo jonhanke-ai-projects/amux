@@ -691,6 +691,20 @@ test('MDAI chat: a reply slower than the 15s write bound still lands, once, with
   }
 });
 
+// A chat queued before the fix stays in the outbox, and its replay is refused
+// 409 forever (Ethan's screenshot: "POST /api/files/mdai/chat 409: This node
+// changed on disk"). The page drops such entries at load and keeps the rest.
+test('MDAI chat: a stuck chat in the offline outbox is dropped at load, other pending work is kept', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => localStorage.setItem('amux_offline_queue', JSON.stringify([
+    { id: 'stuck-chat', url: '/api/files/mdai/chat', options: { method: 'POST', body: '{"path":"/x.mdai","message":"m"}' }, timestamp: Date.now() - 660_000,
+      state: 'pending', error: '409: This node changed on disk since you opened it. Reload, then send your message again.' },
+    { id: 'keep-closeout', url: '/api/projects/p1/closeout', options: { method: 'POST', body: '{}' }, timestamp: Date.now(), state: 'pending' },
+  ])));
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]').map((q: any) => q.id).join(','))).toBe('keep-closeout');
+});
+
 // A loopback stand-in for the Messages API. A chat-edit prompt gets a tagged
 // edit; a node run gets a report that echoes what it was asked, so the test can
 // see the run used the edited file.

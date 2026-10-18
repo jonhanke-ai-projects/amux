@@ -2646,6 +2646,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxDropAnswerNow": {
+      "kind": "command._outboxDropAnswerNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxFetch": {
       "kind": "command._outboxFetch",
       "feedback_required": true,

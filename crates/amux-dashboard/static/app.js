@@ -4676,6 +4676,26 @@ function _outboxAccepted() {
                       { status: 202, headers: { 'Content-Type': 'application/json',
                                                 'X-Amux-Outbox': 'queued' } });
 }
+// An mdai run or chat queued before it joined the skip list above stays in the
+// outbox, and the replay can never succeed: a chat comes back 409 (the first
+// copy already changed the node) and sits under Pending operations for good
+// (Ethan's screenshot, 2026-10-18). Its change either landed or is one press
+// away, so the entries are dropped once at load, and the count is reported.
+const _OUTBOX_ANSWER_NOW = /\/api\/files\/mdai\/(?:run|chat)(?:[?#]|$)/;
+function _outboxDropAnswerNow() {
+  let dropped = 0, considered = 0;
+  return _mutateQueue(current => {
+    considered = current.length;
+    for (let i = current.length - 1; i >= 0; i--) {
+      if (_OUTBOX_ANSWER_NOW.test(String(current[i].url || '').split('?')[0])) { current.splice(i, 1); dropped++; }
+    }
+  }).then(() => {
+    if (!dropped) return;
+    _outboxDiagnostic('answer_now_dropped', {dropped, n_considered:considered});
+    try { updateConnectionStatus(); } catch (_) {}
+  }).catch(() => {});
+}
+try { if (_readQueue().some(q => _OUTBOX_ANSWER_NOW.test(String(q.url || '').split('?')[0]))) _outboxDropAnswerNow(); } catch (_) {}
 /** True for a Response this client synthesised for the outbox — i.e. one that
  *  is NOT evidence of anything about the network. */
 function _isLocallyQueued(r) {
