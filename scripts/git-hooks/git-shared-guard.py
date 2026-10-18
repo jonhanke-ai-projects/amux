@@ -1861,7 +1861,8 @@ def _scan_remove_operands(command):
         if removing:
             operand = _expanding_remove_word(raw)
             match = _REMOVE_PREFIX.match(operand)
-            if match and not re.match(r'^[A-Za-z_][A-Za-z_0-9]*:\?', match.group(1) or ""):
+            # ${1:?} guards a positional the same way ${NAME:?} guards a name.
+            if match and not re.match(r'^(?:[A-Za-z_][A-Za-z_0-9]*|[0-9]):\?', match.group(1) or ""):
                 matched.append(raw)
             elif (changed_dir and re.search(r"(?:^|/)\*+$", operand)
                   and not operand.startswith(("/", "~", "$", "\0"))):
@@ -1924,6 +1925,31 @@ _REMOVE_GLOB_REASON = (
 )
 
 
+_LEADING_VAR = re.compile(r'^(["\']?)\$(?:\{([A-Za-z_][A-Za-z_0-9]*|[0-9])[^}]*\}|([A-Za-z_][A-Za-z_0-9]*|[0-9]))')
+
+
+def _guarded_operand(raw):
+    """The same operand with its leading variable guarded as ${NAME:?}.
+
+    The refusal used to explain the rule and leave the model to find the
+    operand: 306 whole Bash calls were rejected in one lane (gs12 review), and
+    each retry had to re-derive which word tripped it. Naming the operand and
+    its accepted form makes the retry a one-word edit. Only the leading
+    variable decides (`"${WT:?}/$f"` already passes), so only it is rewritten.
+    """
+    return _LEADING_VAR.sub(lambda m: m.group(1) + "${" + (m.group(2) or m.group(3)) + ":?}", raw, count=1)
+
+
+def _operand_fixes(operands, limit=5):
+    shown = []
+    for raw in operands[:limit]:
+        raw = raw if len(raw) <= 160 else raw[:157] + "..."
+        shown.append("%s -> %s" % (raw, _guarded_operand(raw)))
+    more = len(operands) - len(shown)
+    return "Rejected operand%s: %s%s. " % ("" if len(operands) == 1 else "s", "; ".join(shown),
+                                          " (and %d more)" % more if more > 0 else "")
+
+
 def _remove_correction(command):
     """Return a deny decision to the model before native interactive approval."""
     operands, cd_globs = _scan_remove_operands(command)
@@ -1947,7 +1973,10 @@ def _remove_correction(command):
                                     "command_sha256": hashlib.sha256(command.encode()).hexdigest()}) + "\n")
     except OSError:
         pass  # unavailable telemetry must not defeat the correction
-    reason = (_REMOVE_VAR_REASON if operands else "") + (" " if operands and cd_globs else "") + (_REMOVE_GLOB_REASON if cd_globs else "")
+    var_part = (_operand_fixes(operands) + _REMOVE_VAR_REASON) if operands else ""
+    glob_part = ("Rejected glob%s: %s. " % ("" if len(cd_globs) == 1 else "s", "; ".join(cd_globs[:5]))
+                 + _REMOVE_GLOB_REASON) if cd_globs else ""
+    reason = var_part + (" " if var_part and glob_part else "") + glob_part
     return {"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
         "permissionDecisionReason": reason}}

@@ -77,6 +77,17 @@ pub(crate) fn board_unused(session: &str) -> bool {
     board_unused_in(&session_verbs::home(), session, drain.as_deref())
 }
 
+/// Does this worker have a board at all? The same predicate the board API's
+/// refusal uses (`isolated_no_board` unless admin, `board_off`). A board
+/// WARNING about a worker with no board is one nobody can act on from that
+/// worker: the gs12 review counted 54 `isolated_cards_unrouted` and 35
+/// `board_census_slow` WARNs for one isolated lane. Warnings scoped by this
+/// demote to debug for a boardless worker and say so in their fields.
+pub(crate) fn lane_has_board(session: &str) -> bool {
+    let isolated = session_verbs::session_is_isolated(session) && !session_verbs::is_admin_worker(session);
+    !isolated && !board_unused(session)
+}
+
 /// `drain_process_value` is the process env's backlog-drain value, which wins
 /// over every scope (the same precedence `dispatch_backlog_when_idle` uses).
 pub(crate) fn board_unused_in(home: &std::path::Path, session: &str, drain_process_value: Option<&str>) -> bool {
