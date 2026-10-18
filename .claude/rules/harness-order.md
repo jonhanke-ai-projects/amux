@@ -17,6 +17,10 @@ Required: `--amount` (USD), `--merchant` (who), `--purpose` (what for).
 
 The harness checks the owner's rules. Within the approved limit: fills
 immediately. Above: requests owner approval (retry after dashboard approval).
+A card can also carry daily, monthly and yearly spending limits. A charge that
+would take the card past one is refused with `limit_exceeded` and the window
+it hit; an approval does not lift it. Report it to the owner rather than
+retrying, splitting the charge, or trying another card.
 
 ### What this is
 

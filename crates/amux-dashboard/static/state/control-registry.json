@@ -4392,6 +4392,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_vaultCardSave": {
+      "kind": "command._vaultCardSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_vaultDelete": {
       "kind": "command._vaultDelete",
       "feedback_required": true,

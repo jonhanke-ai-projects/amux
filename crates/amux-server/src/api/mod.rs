@@ -60,6 +60,7 @@ pub mod google_sa;
 pub mod grants;
 pub mod vault;
 pub mod vault_secrets;
+pub mod vault_spend;
 pub mod chatgpt_app;
 pub mod graph;
 pub mod groups;

@@ -47770,6 +47770,37 @@ function _offlineSettingsHTML() {
 function _vaultIdBadge(id) {
   return '<button type="button" class="vault-id" title="Id: click to copy" aria-label="Copy id ' + esc(id) + '" onclick="event.stopPropagation();_copyTextWithToast(\'' + escJs(id) + '\',\'' + escJs(id) + ' copied\')">' + esc(id) + '</button>';
 }
+// Payment methods (vault.rs + vault_spend.rs). Each card carries an approval
+// threshold and optional daily / monthly / yearly spending limits, which the
+// server enforces at the fill itself: a charge that would take a window over
+// its limit is refused there, and no approval lifts it.
+const _VAULT_WINDOWS = [['daily', 'Daily', 'today'], ['monthly', 'Monthly', 'this month'], ['yearly', 'Yearly', 'this year']];
+function _vaultMoney(n) { return '$' + Number(n || 0).toFixed(2).replace(/\.00$/, ''); }
+function _vaultLimitInputs(i, idp) {
+  const lim = i?.rules?.spend_limits_usd || {}, spent = i?.spent_usd || {};
+  return '<fieldset class="vault-limits"><legend>Spending limits <span class="ui-help">(USD, optional)</span></legend>'
+    + _VAULT_WINDOWS.map(([w, label, when]) => {
+      const has = lim[w] !== undefined && lim[w] !== null;
+      const used = i ? '<span class="ui-help vault-spent" data-window="' + w + '">' + _vaultMoney(spent[w]) + ' spent ' + when + (has ? ' of ' + _vaultMoney(lim[w]) : '') + '</span>' : '';
+      return '<label class="ui-field vault-limit-field">' + label
+        + '<input type="number" inputmode="decimal" min="0" step="0.01" class="input vault-spend-limit" data-window="' + w + '" id="' + idp + '-' + w + '" placeholder="No limit" value="' + (has ? esc(String(lim[w])) : '') + '">'
+        + used + '</label>';
+    }).join('') + '</fieldset>';
+}
+// Read the three limit inputs under `root`: a number sets the window, blank
+// clears it (null). Returns null and marks the field when one is invalid.
+function _vaultReadLimits(root) {
+  const out = {};
+  for (const el of root.querySelectorAll('.vault-spend-limit')) {
+    const raw = el.value.trim();
+    if (!raw) { out[el.dataset.window] = null; el.removeAttribute('aria-invalid'); continue; }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) { el.setAttribute('aria-invalid', 'true'); el.focus(); return null; }
+    el.removeAttribute('aria-invalid');
+    out[el.dataset.window] = n;
+  }
+  return out;
+}
 async function _vaultLoad() {
   const el = document.getElementById('vault-items');
   if (!el) return;
@@ -47777,31 +47808,97 @@ async function _vaultLoad() {
     const r = await fetch(API + '/api/vault', { headers: _authHeaders() });
     const d = await r.json();
     const items = d.items || [];
-    if (!items.length) { el.innerHTML = '<p class="connection-help">No items yet.</p>'; return; }
+    if (!items.length) { el.innerHTML = '<div class="vault-empty"><b>No payment methods yet</b><p>Add a card and set what workers may spend with it.</p></div>'; return; }
     el.innerHTML = items.map(i => {
       const pending = i.status !== 'active';
+      if (i.kind === 'login') {
+        return '<div class="vault-item" data-id="' + esc(i.id) + '">'
+          + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> ' + _vaultIdBadge(i.id) + ' · sign-in ' + esc(i.username_hint || '') + ' · ' + esc((i.origins || []).join(', '))
+          + (pending ? ' · <span class="vault-pending">added by ' + esc(i.created_by || 'a worker') + ', not active</span>' : '') + '</div>'
+          + '<div class="vault-actions">' + (pending ? '<button class="btn primary" onclick="_vaultSave(\'' + escJs(i.id) + '\', true)">Activate</button>' : '')
+          + '<button class="btn danger" onclick="_vaultRemove(\'' + escJs(i.id) + '\')">Remove</button></div></div>';
+      }
       return '<div class="vault-item" data-id="' + esc(i.id) + '">'
         + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> ' + _vaultIdBadge(i.id) + ' · ' + esc(i.brand) + ' ending ' + esc(i.last4) + ' · exp ' + esc(i.exp)
         + (pending ? ' · <span class="vault-pending">added by ' + esc(i.created_by || 'a worker') + ', not active</span>' : '') + '</div>'
-        + '<label class="connection-control">Approval needed above $'
-        + '<input type="number" min="0" step="1" class="search-input vault-limit" value="' + esc(String(i.rules?.max_usd_without_approval ?? 100)) + '"></label>'
+        + '<label class="ui-field vault-limit-field">Approval needed above $'
+        + '<input type="number" min="0" step="1" class="input vault-limit" value="' + esc(String(i.rules?.max_usd_without_approval ?? 100)) + '"></label>'
+        + _vaultLimitInputs(i, 'vault-l-' + i.id)
         + '<div class="vault-actions">'
         + (pending ? '<button class="btn primary" onclick="_vaultSave(\'' + escJs(i.id) + '\', true)">Activate</button>' : '')
-        + '<button class="btn" onclick="_vaultSave(\'' + escJs(i.id) + '\', false)">Save limit</button>'
+        + '<button class="btn vault-save-limits" onclick="_vaultSave(\'' + escJs(i.id) + '\', false)">Save limits</button>'
         + '<button class="btn danger" onclick="_vaultRemove(\'' + escJs(i.id) + '\')">Remove</button></div></div>';
     }).join('');
   } catch (e) { el.textContent = 'Vault unavailable: ' + (e.message || e); }
 }
 async function _vaultSave(id, activate) {
   const row = document.querySelector('.vault-item[data-id="' + CSS.escape(id) + '"]');
-  const limit = Number(row?.querySelector('.vault-limit')?.value);
-  if (!Number.isFinite(limit) || limit < 0) { showToast('Enter a limit of 0 or more'); return; }
-  const body = { rules: { max_usd_without_approval: limit } };
+  const body = {};
+  const limitEl = row?.querySelector('.vault-limit');
+  if (limitEl) {
+    const limit = Number(limitEl.value);
+    if (!Number.isFinite(limit) || limit < 0) { showToast('Enter an approval threshold of 0 or more'); return; }
+    const spend = _vaultReadLimits(row);
+    if (!spend) { showToast('A spending limit must be a number of 0 or more, or blank for no limit'); return; }
+    body.rules = { max_usd_without_approval: limit, spend_limits_usd: spend };
+  }
   if (activate) body.activate = true;
   const r = await fetch(API + '/api/vault/' + encodeURIComponent(id), { method: 'PATCH',
     headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
   const d = await r.json().catch(() => ({}));
-  showToast(r.ok ? (activate ? 'Activated' : 'Limit saved') : ('Vault: ' + (d.error || r.status)));
+  showToast(r.ok ? (activate ? 'Activated' : 'Limits saved') : ('Vault: ' + (d.error || r.status)));
+  _vaultLoad();
+}
+// Add a card. The values go to the server once, are cleared from the form on
+// save or close, and never come back: the list shows brand, last 4 and expiry.
+function _vaultCardAdd() {
+  const f = (id, label, attrs, help) => '<label class="ui-field">' + label + '<input id="' + id + '" class="input" ' + attrs + '>' + (help ? '<span class="ui-help">' + help + '</span>' : '') + '</label>';
+  const body = '<form id="vault-card-form" class="vault-form" novalidate onsubmit="event.preventDefault();_vaultCardSave()">'
+    + f('vault-c-name', 'Label', 'autocomplete="off" maxlength="80" placeholder="Company Visa"', 'How you and workers refer to it (amux order --item)')
+    + f('vault-c-number', 'Card number', 'data-secret="1" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="23" placeholder="1234 5678 9012 3456"')
+    + '<div class="vault-form-row">'
+    + f('vault-c-exp', 'Expiry', 'autocomplete="off" maxlength="7" placeholder="MM/YY"')
+    + f('vault-c-cvc', 'CVC', 'type="password" data-secret="1" inputmode="numeric" autocomplete="off" maxlength="4"')
+    + '</div>'
+    + f('vault-c-holder', 'Name on card', 'data-secret="1" autocomplete="off" maxlength="120"')
+    + f('vault-c-zip', 'Billing ZIP / postcode', 'data-secret="1" autocomplete="off" maxlength="16"')
+    + f('vault-c-approval', 'Approval needed above $', 'type="number" min="0" step="1" value="100"', 'A charge above this waits for your approval')
+    + _vaultLimitInputs(null, 'vault-c')
+    + '<p class="ui-help">A charge that would take a card past a limit is refused at the fill, whatever was approved. Leave a limit blank for none.</p>'
+    + '<p class="ui-error" id="vault-c-err" role="alert"></p><button type="submit" hidden></button></form>';
+  const foot = '<button class="btn" type="button" onclick="_vaultSubClose(\'vault-card\')">Cancel</button>'
+    + '<button class="btn primary" type="submit" form="vault-card-form" id="vault-c-save">Add payment method</button>';
+  _vaultSub('vault-card', 'Add Payment Method', body, foot);
+  document.getElementById('vault-c-name').focus();
+}
+async function _vaultCardSave() {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const err = document.getElementById('vault-c-err'), save = document.getElementById('vault-c-save');
+  err.textContent = '';
+  const number = v('vault-c-number').replace(/\D/g, '');
+  if (!v('vault-c-name')) { err.textContent = 'A label is required.'; document.getElementById('vault-c-name').focus(); return; }
+  if (number.length < 12 || number.length > 19) { err.textContent = 'Enter the full card number (12 to 19 digits).'; document.getElementById('vault-c-number').focus(); return; }
+  if (!v('vault-c-exp')) { err.textContent = 'Enter the expiry as MM/YY.'; document.getElementById('vault-c-exp').focus(); return; }
+  const approval = Number(v('vault-c-approval') || '100');
+  if (!Number.isFinite(approval) || approval < 0) { err.textContent = 'The approval threshold must be 0 or more.'; return; }
+  const spend = _vaultReadLimits(document.getElementById('vault-card-form'));
+  if (!spend) { err.textContent = 'A spending limit must be a number of 0 or more, or blank for no limit.'; return; }
+  for (const k of Object.keys(spend)) if (spend[k] === null) delete spend[k];
+  const fields = { number, exp: v('vault-c-exp') };
+  if (v('vault-c-cvc')) fields.cvc = v('vault-c-cvc');
+  if (v('vault-c-holder')) fields.name = v('vault-c-holder');
+  if (v('vault-c-zip')) fields.zip = v('vault-c-zip');
+  save.disabled = true; save.setAttribute('aria-busy', 'true');
+  let r, d;
+  try {
+    r = await fetch(API + '/api/vault', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ name: v('vault-c-name'), kind: 'card', fields, rules: { max_usd_without_approval: approval, spend_limits_usd: spend } }) });
+    d = await r.json().catch(() => ({}));
+  } catch (e) { d = { error: e.message || String(e) }; }
+  finally { save.disabled = false; save.removeAttribute('aria-busy'); }
+  if (!r || !r.ok) { err.textContent = d.error || ('Not saved (' + (r ? r.status : 'network') + ')'); return; }
+  _vaultSubClose('vault-card');
+  showToast('Added ' + (d.item?.brand || 'card') + ' ending ' + (d.item?.last4 || ''));
   _vaultLoad();
 }
 async function _vaultRemove(id) {
@@ -47946,10 +48043,17 @@ function _vaultEnsurePage() {
           <p id="vault-count" class="ui-help" role="status"></p>
         </div>
         <div id="vault-panel-payments" role="tabpanel" aria-labelledby="vault-tab-payments" hidden>
-          <p class="ui-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above an item's limit waits for your approval in the approvals banner. Workers stage new cards with <code>amux order</code>; you activate them here.</p>
+          <p class="ui-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above a card's approval threshold waits for your approval in the approvals banner. A charge that would pass a daily, monthly or yearly spending limit is refused outright.</p>
+          <div class="vault-actions-row"><button class="btn primary" id="vault-card-add-btn" onclick="_vaultCardAdd()">${_vaultIcon('plus')}Add Payment Method</button></div>
           <div id="vault-items">Loading…</div>
         </div>
-        <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden></div>
+        <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden>
+          <div id="vault-apikeys-custom">
+            <p class="ui-help">API keys are key/value secrets: encrypted, scoped to everyone, chosen groups or one worker, and injected as environment variables when a worker starts. They follow the same scope, reveal, rotation and audit rules as every other secret.</p>
+            <div class="vault-actions-row"><button class="btn primary" id="vault-apikey-add-btn" onclick="_vaultEdit(null,'add',{kind:'api_key'})">${_vaultIcon('plus')}Add API Key</button></div>
+            <div id="vault-apikeys-table" aria-live="polite"></div>
+          </div>
+        </div>
       </div>
     </section>`;
     view.onkeydown = event => {
@@ -48016,6 +48120,7 @@ function _vaultTab(name) {
     const panel = document.getElementById('vault-panel-apikeys');
     if (sec && panel && sec.parentElement !== panel) panel.appendChild(sec);
     loadApiKeys();
+    _vaultApiKeysRender();
   }
 }
 // Return the borrowed API Keys section before the overlay is removed, or the
@@ -48120,6 +48225,7 @@ function _vaultVisible() {
 }
 function _vaultRender() {
   _vaultWorkerPanel();
+  _vaultApiKeysRender();
   const table = document.getElementById('vault-secrets-table');
   if (!table) return;
   if (_vault.loadErr) {
@@ -48134,14 +48240,19 @@ function _vaultRender() {
     return;
   }
   if (!list.length) { table.innerHTML = '<div class="vault-empty"><b>No secrets match</b><p>Change the search or filters.</p></div>'; return; }
+  table.innerHTML = _vaultTableHtml(list, 'vault-val-');
+}
+// One table markup for every list of secrets (the Secrets tab and the API
+// Keys tab), so a row action works the same wherever the row is shown.
+function _vaultTableHtml(list, idPrefix) {
   const effective = new Map((_vault.prov?.resolved || []).map(x => [x.id, x]));
-  table.innerHTML = '<table class="vault-table"><thead><tr><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Scope</th><th scope="col">Provisioned to</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span><span aria-hidden="true">Actions</span></th></tr></thead><tbody>'
+  return '<table class="vault-table"><thead><tr><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Scope</th><th scope="col">Provisioned to</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span><span aria-hidden="true">Actions</span></th></tr></thead><tbody>'
     + list.map(i => {
       const shown = Object.prototype.hasOwnProperty.call(_vault.revealed, i.id);
       const forWorker = _vault.worker && _vault.prov ? (effective.has(i.id) ? _vaultStateBadge(effective.get(i.id).state) : _vaultStateBadge('overridden')) : '';
       return '<tr class="vault-row" data-id="' + esc(i.id) + '">'
-        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
-        + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="vault-val-' + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
+        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.kind === 'api_key' ? '<span class="vault-chip vault-chip-apikey">API key</span>' : '') + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
+        + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="' + idPrefix + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
         + '<button class="vault-icon-btn" aria-label="' + (shown ? 'Hide ' : 'Reveal ') + esc(i.key) + '" aria-pressed="' + shown + '" title="' + (shown ? 'Hide' : 'Reveal (recorded in the audit log)') + '" onclick="_vaultReveal(\'' + escJs(i.id) + '\')">' + _vaultIcon(shown ? 'eyeOff' : 'eye') + '</button></div></td>'
         + '<td data-label="Scope">' + _vaultChip(i.scope) + '</td>'
         + '<td data-label="Provisioned to">' + _vaultProvisionedTo(i) + forWorker + '</td>'
@@ -48149,6 +48260,16 @@ function _vaultRender() {
         + '<td data-label="Actions" class="vault-actions-cell"><button class="vault-icon-btn vault-more" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ' + esc(i.key) + '" onclick="_vaultMenu(event,\'' + escJs(i.id) + '\')">' + _vaultIcon('more') + '</button></td>'
         + '</tr>';
     }).join('') + '</tbody></table>';
+}
+// API Keys tab: the secrets filed as kind api_key. Same store, same scope,
+// same reveal, rotate, access and audit actions as any secret.
+function _vaultApiKeysRender() {
+  const el = document.getElementById('vault-apikeys-table');
+  if (!el) return;
+  if (_vault.loadErr) { el.innerHTML = '<div class="vault-empty" role="alert"><b>API keys unavailable</b><p>' + esc(_vault.loadErr) + '</p></div>'; return; }
+  const list = _vault.items.filter(i => i.kind === 'api_key').sort((a, b) => a.key.localeCompare(b.key));
+  el.innerHTML = list.length ? _vaultTableHtml(list, 'vault-akval-')
+    : '<div class="vault-empty"><b>No API keys yet</b><p>Add a key name and value, then choose which workers receive it.</p></div>';
 }
 function _vaultMenuClose() {
   document.querySelectorAll('.vault-menu').forEach(m => m.remove());
@@ -48224,9 +48345,11 @@ function _vaultSubClose(id) {
 }
 // Add, Edit and Rotate share one dialog. Edit never shows the stored value:
 // leaving Value blank keeps it, typing one rotates (version + 1).
-function _vaultEdit(id, mode) {
+function _vaultEdit(id, mode, opts) {
   const it = id ? _vault.items.find(x => x.id === id) : null;
   mode = it ? (mode || 'edit') : 'add';
+  const kind = it ? (it.kind || 'secret') : (opts?.kind === 'api_key' ? 'api_key' : 'secret');
+  const noun = kind === 'api_key' ? 'API Key' : 'Secret';
   const wg = _vaultWorkerGroups();
   const groups = [...new Set([..._vault.groups, ...Object.values(wg).flat()])].sort();
   const workers = Object.keys(wg).sort();
@@ -48242,8 +48365,8 @@ function _vaultEdit(id, mode) {
   const radio = (v, label, help, extra) => '<label class="vault-radio"><input type="radio" name="vault-e-scope" value="' + v + '"' + (scope === v ? ' checked' : '') + ' onchange="_vaultEditScope()">'
     + '<span class="vault-radio-text">' + _vaultIcon(v) + '<span><b>' + label + '</b><span class="ui-help">' + help + '</span></span></span></label>' + (extra || '');
   const rotate = mode === 'rotate';
-  const title = mode === 'add' ? 'Add Secret' : rotate ? 'Rotate ' + it.key : 'Edit Secret';
-  const body = '<form id="vault-edit-form" class="vault-form" novalidate onsubmit="event.preventDefault();_vaultSecretSave(' + (it ? '\'' + escJs(it.id) + '\'' : 'null') + ',\'' + mode + '\')">'
+  const title = mode === 'add' ? 'Add ' + noun : rotate ? 'Rotate ' + it.key : 'Edit ' + noun;
+  const body = '<form id="vault-edit-form" class="vault-form" data-kind="' + kind + '" novalidate onsubmit="event.preventDefault();_vaultSecretSave(' + (it ? '\'' + escJs(it.id) + '\'' : 'null') + ',\'' + mode + '\')">'
     + (rotate ? '<p class="ui-help">Workers that start or restart after this get the new value. Running workers keep the previous one until they restart; you will be offered a restart.</p>' : (
       '<label class="ui-field">Name<input id="vault-e-key" class="input" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="128" placeholder="OPENAI_API_KEY" value="' + esc(it ? it.key : '') + '" aria-describedby="vault-e-key-help vault-e-key-err" oninput="_vaultKeyInput(this)"><span class="ui-help" id="vault-e-key-help">Use uppercase letters, numbers, and underscores</span><span class="ui-error" id="vault-e-key-err" role="alert"></span></label>'
       + '<label class="ui-field"><span>Description <span class="ui-help">(optional)</span></span><textarea id="vault-e-note" class="input" rows="2" maxlength="200" aria-describedby="vault-e-note-count" oninput="_vaultNoteCount()">' + esc(it ? it.note || '' : '') + '</textarea><span class="ui-help vault-counter" id="vault-e-note-count" aria-live="polite"></span></label>'))
@@ -48258,7 +48381,7 @@ function _vaultEdit(id, mode) {
     + '<p class="ui-error" id="vault-e-err" role="alert"></p>'
     + '<button type="submit" hidden></button></form>';
   const foot = '<button class="btn" type="button" onclick="_vaultSubClose(\'vault-edit\')">Cancel</button>'
-    + '<button class="btn primary" type="submit" form="vault-edit-form" id="vault-e-save">' + (mode === 'add' ? 'Add Secret' : rotate ? 'Rotate' : 'Save Changes') + '</button>';
+    + '<button class="btn primary" type="submit" form="vault-edit-form" id="vault-e-save">' + (mode === 'add' ? 'Add ' + noun : rotate ? 'Rotate' : 'Save Changes') + '</button>';
   const o = _vaultSub('vault-edit', title, body, foot);
   if (!rotate) { _vaultNoteCount(); _vaultEditScope(); }
   (o.querySelector(rotate ? '#vault-e-value' : '#vault-e-key')).focus();
@@ -48351,6 +48474,7 @@ async function _vaultSecretSave(id, mode) {
     const { scope, target } = _vaultEditTarget();
     if (scope !== 'global' && !target) { err.textContent = (scope === 'group' ? 'Check at least one group for this secret.' : 'Pick a worker for this secret.'); return; }
     Object.assign(body, { key, scope, target, description: document.getElementById('vault-e-note').value });
+    if (mode === 'add') body.kind = document.getElementById('vault-edit-form')?.dataset.kind || 'secret';
   }
   if (mode !== 'edit' && !value) {
     document.getElementById('vault-e-value-err').textContent = 'A value is required.';
