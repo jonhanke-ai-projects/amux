@@ -9681,12 +9681,6 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .card-preview.card-task-full { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
 .task-history-list li { overflow-wrap:anywhere; }
 
-/* Worker Tasks tab: the model's task names (AMUX-6169). */
-.task-name-item .task-row { display:flex; flex-direction:column; gap:2px; padding:10px 12px; min-height:44px; }
-.task-name-title { color:var(--text); font-size:14px; overflow-wrap:anywhere; }
-.task-name-current { font-size:11px; color:var(--accent); border:1px solid var(--accent); border-radius:8px; padding:0 6px; margin-left:6px; }
-.task-name-meta { color:var(--text-dim, var(--muted)); font-size:12px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-
 /* Worker Board tab: one board switch (Ethan, 2026-10-17). */
 .pbc-one { display:flex; align-items:center; gap:12px; justify-content:space-between; }
 .pbc-one .pbc-text { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1 1 auto; }
@@ -9725,3 +9719,11 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 @media (max-height: 520px) {
   .mdai-chatbar:not([data-tab="chat"]) { display: none; }
 }
+
+/* Messages: the task the receiving worker was on when a message arrived
+   (app.js _msgTaskChipsFill). */
+.msg-task-chip { display:block; margin:0 0 4px; }
+.msg-task-chip[hidden] { display:none; }
+.msg-task-link { background:rgba(128,128,128,0.10); border:1px solid transparent; border-radius:10px; padding:1px 8px; font-size:0.72rem; color:var(--dim); cursor:pointer; min-height:24px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.msg-task-link:hover, .msg-task-link:focus-visible { border-color:var(--accent); color:var(--text); }
+@media (max-width: 600px) { .msg-task-link { min-height:32px; } }

@@ -31,11 +31,23 @@ async function seedTwoTasks(page: Page, nonce: string) {
     const mk = await post('/api/sessions', { name: worker, dir: '/tmp', provider: 'codex' });
     const a = await post('/api/board', { title: 'First task ' + nonce, status: 'doing', session: worker });
     const first = await recorded(1);
+    // A peer worker with its own task hands off to the worker: its message
+    // arrives just before the worker's second task is named.
+    const peer = worker + '-peer';
+    await post('/api/sessions', { name: peer, dir: '/tmp', provider: 'codex' });
+    await post('/api/board', { title: 'Peer task ' + nonce, status: 'doing', session: peer });
+    for (let i = 0; i < 40; i++) {
+      await fetch('/api/sessions');
+      const d = await (await fetch('/api/task-history?session=' + encodeURIComponent(peer))).json();
+      if ((d.total || 0) >= 1) break;
+      await new Promise(res => setTimeout(res, 500));
+    }
+    await post('/api/history', { text: 'handoff from the peer ' + nonce, type: 'session', session: worker, origin: peer });
     await patch('/api/board/' + a.body.id, { status: 'done', evidence: 'none: e2e seed' });
     const b = await post('/api/board', { title: 'Second task ' + nonce, status: 'doing', session: worker });
     const second = await recorded(2);
     const msg = await post('/api/history', { text: 'a message during the second task ' + nonce, type: 'user', session: worker });
-    return { worker, cards: [a.body.id, b.body.id], statuses: [mk.status, a.status, b.status], first, second, msg: msg.status };
+    return { worker, peer, cards: [a.body.id, b.body.id], statuses: [mk.status, a.status, b.status], first, second, msg: msg.status };
   }, { worker, nonce });
 }
 
@@ -82,24 +94,102 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   await items.nth(0).locator('.task-row').click();
   await expect(first).toBeHidden();
 
-  // The card opens on the board.
-  await detail.locator('.task-card-open').first().click();
+  // Each row says it links one message and its card; the explainer says these
+  // are not board issues (Ethan, 2026-10-18).
+  await expect(page.locator('#tasks-view .tasks-about summary')).toContainText('not board issues');
+  await expect(items.nth(1).locator('.task-link-msgs')).toContainText('2');
+  await expect(items.nth(1).locator('.task-row .task-link-card')).toContainText(String(seed.cards[1]));
+  // The connection track has one tick for that message, and it focuses the row.
+  await expect(detail.locator('.task-tick')).toHaveCount(2);
+  // The peer's message is the handoff that started it; a worker with no git
+  // checkout says its commits were not read rather than showing none.
+  await expect(detail.locator('.task-handoff')).toContainText(seed.peer);
+  await expect(detail.locator('.task-commits')).toContainText('Commits not read');
+  await detail.locator('.task-tick').click();
+  await expect(detail.locator('.task-msg').first()).toBeVisible();
+
+  // Search reaches the message text and shows where it hit; Names does not.
+  const hit = page.waitForResponse(r => r.url().includes('/api/task-history?') && r.url().includes('in=all'));
+  await page.locator('#tasks-search').fill('during the second task ' + nonce);
+  await hit;
+  await expect(items).toHaveCount(1, { timeout: 15000 });
+  await expect(items.nth(0).locator('.task-title')).toHaveText('Second task ' + nonce);
+  await expect(items.nth(0).locator('.task-hit mark')).toHaveText('during the second task ' + nonce);
+  await page.locator('#tasks-in button[data-in="names"]').click();
+  await expect(page.locator('#tasks-count')).toHaveText('No tasks match', { timeout: 15000 });
+  await page.locator('#tasks-in button[data-in="all"]').click();
+  await expect(items).toHaveCount(1, { timeout: 15000 });
+  // The snippet opens that message in Messages.
+  await items.nth(0).locator('.task-hit').click();
+  await expect(page.locator('#tab-messages')).toHaveClass(/active/);
+  await expect(page.locator('#msgs-search')).toHaveValue(/^MSG-\d+$/);
+
+  // Timeline: the worker's lane holds both tasks; a bar opens its task in the list.
+  await page.locator('#tab-tasks').click();
+  await page.locator('#tasks-search').fill(nonce);
+  await page.locator('#tasks-mode button[data-mode="timeline"]').click();
+  const lane = page.locator('#tasks-list .tl-row[data-lane="' + seed.worker + '"]');
+  await expect(lane.locator('.tl-bar')).toHaveCount(2, { timeout: 15000 });
+  // The handoff draws one arrow from the peer's lane to the second task.
+  await expect(page.locator('#tasks-list .tl-row[data-lane="' + seed.peer + '"] .tl-bar')).toHaveCount(1);
+  await expect(page.locator('#tasks-list .tl-arrows')).toHaveAttribute('data-arrows', '1');
+  await expect(lane.locator('.tl-bar[data-from="' + seed.peer + '"]')).toHaveCount(1);
+  await lane.locator('.tl-bar').first().click();
+  await expect(page.locator('#tasks-mode button[data-mode="list"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#tasks-list .task-item.open .task-detail')).toBeVisible({ timeout: 15000 });
+
+  // The card opens on the board, and its detail lists the task that came from
+  // it, which opens back here.
+  await items.nth(1).locator('.task-row .task-link-card').click();
   await expect(page.locator('#tab-board')).toHaveClass(/active/);
   await expect(page.locator('body')).toContainText('Second task ' + nonce, { timeout: 10000 });
+  const back = page.locator('#bd-worker-tasks');
+  await expect(back).toBeVisible({ timeout: 15000 });
+  await expect(back).toContainText('Second task ' + nonce);
+  await back.locator('button', { hasText: 'Second task ' + nonce }).click();
+  await expect(page.locator('#tab-tasks')).toHaveClass(/active/);
+  await expect(page.locator('#tasks-list .task-item.open .task-title')).toHaveText('Second task ' + nonce, { timeout: 15000 });
+
+  // In Messages, the message names the task its worker was on, and opens it.
+  await page.locator('#tab-messages').click();
+  await page.locator('#msgs-search').fill('during the second task ' + nonce);
+  await page.locator('#msgs-search').press('Enter');
+  const row = page.locator('#msgs-list [data-msg-key]', { hasText: 'a message during the second task ' + nonce }).first();
+  await expect(row.locator('.msg-task-link')).toContainText('during: Second task ' + nonce, { timeout: 15000 });
+  await row.locator('.msg-task-link').click();
+  await expect(page.locator('#tab-tasks')).toHaveClass(/active/);
+  await expect(page.locator('#tasks-list .task-item.open .task-title')).toHaveText('Second task ' + nonce, { timeout: 15000 });
+
+  // A task's link opens that task on a fresh load.
+  const link = await page.evaluate(async (w) => {
+    const d = await (await fetch('/api/task-history?order=asc&session=' + encodeURIComponent(w))).json();
+    return (window as any)._tasksLink(w, d.tasks[0].ts);
+  }, seed.worker);
+  expect(link).toContain('#task=');
+  await page.goto(link);
+  await expect(page.locator('#tasks-list .task-item.open .task-title')).toHaveText('First task ' + nonce, { timeout: 20000 });
 });
 
-test("a worker's Tasks tab lists the model's task names, newest first, never its messages", async ({ page }) => {
+test("a worker's Tasks tab lists its tasks newest first, with links, never its messages", async ({ page }) => {
   // Ethan, 2026-10-17: "the tasks tab is still wrong in the worker details
-  // page. it shows messages it should be task names from the model."
+  // page. it shows messages it should be task names from the model." and
+  // 2026-10-18: the same rich list as the Tasks view, linked to its messages
+  // and cards, and saying these are not board issues.
   const nonce = Date.now().toString(36);
   const worker = 'e2e-probe';
   const message = 'an owner message that is not a task name ' + nonce;
   const names = ['Fix the tasks tab ' + nonce, 'Investigate the reminder ' + nonce];
-  await page.route(`**/api/sessions/${worker}/task-history**`, route => route.fulfill({ json: {
-    session: worker, measured: true, n_considered: 2, changes: [
-      { to: names[0], from: names[1], card: 'AMUX-1', source: 'generated_title', ts: Date.now() / 1000 - 60 },
-      { to: names[1], from: '', card: '', source: 'generated_title', ts: Date.now() / 1000 - 3600 },
-    ] } }));
+  const now = Date.now() / 1000;
+  const urls: string[] = [];
+  await page.route('**/api/task-history?**', route => {
+    const u = new URL(route.request().url());
+    if (u.searchParams.get('session') !== worker) return route.continue();
+    urls.push(u.search);
+    return route.fulfill({ json: { measured: true, n_considered: 2, total: 2, offset: 0, limit: 100, order: 'desc', tasks: [
+      { session: worker, task: names[0], previous: names[1], card: 'AMUX-1', card_title: 'A card', card_status: 'doing', source: 'board', ts: now - 60, ended: null, messages: 3, board_off: false },
+      { session: worker, task: names[1], previous: '', card: '', source: 'generated_title', ts: now - 3600, ended: now - 60, messages: 0, board_off: true },
+    ] } });
+  });
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).openPeek === 'function', { timeout: 20000 });
   const status = await page.evaluate(async ({ worker, message }) => (await fetch('/api/history', { method: 'POST',
@@ -112,14 +202,23 @@ test("a worker's Tasks tab lists the model's task names, newest first, never its
   await page.locator('#peek-tab-tasks').click();
   await expect(page.locator('#peek-tab-tasks')).toHaveClass(/active/);
   const panel = page.locator('#peek-tasks-panel');
-  const items = panel.locator('.task-name-item');
+  await expect(panel.locator('.tasks-about summary')).toContainText('not board issues');
+  const items = panel.locator('.task-item');
   await expect(items).toHaveCount(2, { timeout: 15000 });
-  await expect(items.nth(0)).toContainText(names[0]);
+  expect(urls[0], 'the worker tab asks for newest first').toContain('order=desc');
+  await expect(items.nth(0).locator('.task-title')).toHaveText(names[0]);
+  await expect(items.nth(0).locator('.task-num')).toHaveText('#2');
   await expect(items.nth(0)).toContainText('current');
-  await expect(items.nth(0).locator('.msg-card-chip')).toHaveText('AMUX-1');
-  await expect(items.nth(1)).toContainText(names[1]);
+  await expect(items.nth(0).locator('.task-link-msgs')).toContainText('3');
+  await expect(items.nth(0).locator('.task-link-card')).toContainText('AMUX-1');
+  await expect(items.nth(0).locator('.task-link-card')).toContainText('doing');
+  await expect(items.nth(1).locator('.task-title')).toHaveText(names[1]);
+  await expect(items.nth(1)).toContainText('board off');
   await expect(panel).not.toContainText(message);
-  await expect(page.locator('#peek-tasks-count')).toContainText('2 task names');
+  await expect(page.locator('#peek-tasks-count')).toContainText('2 tasks, newest first');
   const box = await items.nth(0).locator('.task-row').boundingBox();
   expect(box!.height, 'a 44px touch row').toBeGreaterThanOrEqual(44);
+  // Search here covers messages too.
+  await panel.locator('#peek-tasks-search').fill('reminder');
+  await expect.poll(() => urls.some(u => u.includes('q=reminder') && u.includes('in=all'))).toBe(true);
 });

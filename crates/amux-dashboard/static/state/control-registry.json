@@ -3012,12 +3012,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_peekTaskNamesLoad": {
-      "kind": "command._peekTaskNamesLoad",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_peekToggleSchedule": {
       "kind": "command._peekToggleSchedule",
       "feedback_required": true,
@@ -4158,8 +4152,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_tasksOpenMessage": {
+      "kind": "command._tasksOpenMessage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_tasksResend": {
       "kind": "command._tasksResend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_tasksReveal": {
+      "kind": "command._tasksReveal",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

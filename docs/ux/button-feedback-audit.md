@@ -357,8 +357,9 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | System | `_metricsSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Find in ${esc(locSess)} | `_msgLocate` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Open task  | `_msgOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | … | `_msgOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Resend … | `_msgResend` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Select all … | `_msgSelAll` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Clear | `_msgSelNone` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Ask | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Messages | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Trends | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -557,10 +558,29 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Send | `_tapTraceEv` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_tasksByWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_tasksByWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | … | `_tasksByWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | All tasks view | `_tasksByWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_tasksGoPage` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js | Retry | `_tasksLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Retry | `_tasksLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Retry | `_tasksLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | + | `_tasksOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | Open this card on the board | `_tasksOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | + | `_tasksOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | … | `_tasksOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | + | `_tasksOpenMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | MSG-… | `_tasksOpenMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | path | `_tasksOpenMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | … | `_tasksOpenMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | … | `_tasksOpenMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | + | `_tasksReveal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | + (h ? | `_tasksReveal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | … | `_tasksReveal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | List | `_tasksSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Timeline | `_tasksSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Everything | `_tasksSetSearchIn` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Everything | `_tasksSetSearchIn` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Names | `_tasksSetSearchIn` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Names | `_tasksSetSearchIn` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | + | `_tasksShowMsgs` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | + | `_tasksToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Connect | `_termConnect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Disconnect | `_termDisconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -750,6 +770,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -969,12 +990,14 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Close | `` | onclick |
 | app.js | Close | `` | onclick |
 | app.js | Close connection history | `` | onclick |
+| app.js | Commit  | `` | onclick |
 | app.js | Drag to move | `` | onclick |
 | app.js | Open | `` | onclick |
 | app.js | Resend to ${esc(_target \|\| session)} | `` | onclick |
 | app.js | Select  | `` | onclick |
 | app.js | Select row | `` | onclick |
 | app.js | View on Google Maps ↗ | `` | onclick |
+| app.js | a | `` | onclick |
 | app.js | button | `` | onclick |
 | app.js | button | `` | onclick |
 | app.js | button | `` | onclick |
@@ -1192,8 +1215,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ${esc(label)} | `_msgContextOpen` | onclick |
 | app.js | Copy text | `_msgCopyBtn` | onclick |
 | app.js | Actions | `_msgMenu` | onclick |
-| app.js | Select all … | `_msgSelAll` | onclick |
-| app.js | Clear | `_msgSelNone` | onclick |
 | app.js | ${_collapsed ?  : } | `_msgToggleCollapse` | onclick |
 | app.js | ni-approve-all | `_niApproveAllArm` | onclick |
 | app.js | Cancel | `_niApproveAllCancel` | onclick |
@@ -1297,6 +1318,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Weekdays | `_sxSetPreset` | onclick |
 | index.html | Weekly | `_sxSetPreset` | onclick |
 | app.js | ${t.kind === shell ? | `_sxUseTemplate` | onclick |
+| app.js | Copy link | `_tasksCopyLink` | onclick |
+| app.js | Message at  | `_tasksFocusMsg` | onclick |
 | index.html | Clear | `_termClear` | onclick |
 | index.html | + Add | `_toggleAddConnectionForm` | onclick |
 | index.html | Cancel | `_toggleAddConnectionForm` | onclick |
