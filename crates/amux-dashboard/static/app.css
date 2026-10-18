@@ -8415,6 +8415,11 @@ body.light .bd-answer-head { color: #bc4c00; }
 }
 /* A worker's active Claude Code /goal (AMUX-5746). */
 .badge.goal { color:var(--accent); border-color:var(--accent); }
+/* Goal tile states (goal_keeper::resolve): the checker decides met. */
+.badge.goal.met { color:var(--green); border-color:var(--green); }
+.badge.goal.unknown { color:var(--yellow); border-color:var(--yellow); }
+.badge.goal.stalled { color:var(--red); border-color:var(--red); }
+.badge.goal.cleared, .badge.goal.none { color:var(--dim); border-color:var(--border); }
 
 /* Scratchpad files and expiry (Ethan, 2026-10-09). */
 .sp-retain-wrap { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--dim); }

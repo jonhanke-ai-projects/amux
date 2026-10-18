@@ -68,6 +68,7 @@ pub mod needs_input_auto;
 pub(crate) mod executor;
 pub mod gemini_ledger;
 pub mod heartbeat;
+pub mod goal_check;
 pub mod goal_keeper;
 pub mod task_titles;
 pub mod host_guard;
@@ -82,10 +83,12 @@ pub mod worktree_hygiene;
 mod poll_watch;
 /// The live registry of the jobs below — see [`registry`] for why it is
 /// derived from the spawn sites rather than declared alongside them.
+pub mod receipts;
 pub mod recordings_transcribe;
 pub mod registry;
 pub mod scheduler;
 pub mod schedule_failure;
+pub mod schedule_wake;
 pub mod episodes;
 pub mod status_history;
 pub mod storage;

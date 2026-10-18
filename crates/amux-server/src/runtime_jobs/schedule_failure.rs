@@ -129,6 +129,11 @@ pub fn classify(outcome: &RunOutcome) -> Verdict {
             Verdict::Pass
         }
         RunOutcome::Refused { reason } if reason.starts_with(RESERVE_PREFIX) => Verdict::Neutral,
+        // A goal-continuation fire skipped because the goal is met, the worker
+        // is busy or was just continued: working as designed, not a failure.
+        RunOutcome::Refused { reason } if reason.starts_with(super::schedule_wake::GATE_PREFIX) => {
+            Verdict::Neutral
+        }
         RunOutcome::Refused { reason } => Verdict::Fail(Failure {
             kind: "refused",
             exit_code: None,

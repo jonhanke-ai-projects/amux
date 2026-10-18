@@ -1579,6 +1579,48 @@ cmd_post() {
   esac
 }
 
+# amux receipts [--keep] [<worker>]: outcomes held so they would not wake you.
+# A clean detached `amux land` writes one here instead of sending a message;
+# the server attaches pending receipts to the next wake it sends anyway (a
+# schedule fire, a goal-keeper continue) and consumes them. Reading them here
+# consumes them too, unless --keep.
+cmd_receipts() {
+  local keep="" who=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --keep) keep=1 ;;
+      -h|--help) echo "usage: amux receipts [--keep] [<worker>]   (default worker: \$AMUX_WORKER/\$AMUX_SESSION)"; return 0 ;;
+      *) who="$1" ;;
+    esac
+    shift
+  done
+  who="${who:-${AMUX_WORKER:-${AMUX_SESSION:-}}}"
+  [[ -n "$who" ]] || die "amux receipts: name a worker (no AMUX_SESSION in this shell)"
+  local home="${AMUX_HOME:-$HOME/.amux}"
+  RF="$home/receipts/$who.jsonl" KEEP="$keep" python3 - <<'PYEOF'
+import json, os, time
+p = os.environ["RF"]
+if not os.path.exists(p):
+    print("no receipts held")
+    raise SystemExit(0)
+src = p
+if not os.environ.get("KEEP"):
+    src = p + ".reading.%d" % os.getpid()
+    os.rename(p, src)
+lines = [l for l in open(src, errors="replace").read().splitlines() if l.strip()]
+for l in lines:
+    try:
+        d = json.loads(l)
+        when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(d.get("ts", 0)))
+        print("%s %s:\n%s\n" % (when, d.get("from", ""), d.get("text", "").strip()))
+    except Exception:
+        print(l)
+if src != p:
+    os.remove(src)
+print("%d receipt(s)%s" % (len(lines), " (kept)" if os.environ.get("KEEP") else ", now consumed"))
+PYEOF
+}
+
 cmd_send() {
   # --help must not be parsed as a session name (it used to error with
   # "session '--help' not found", so the safe form was undiscoverable).
@@ -8639,9 +8681,11 @@ cmd_land() {
   #
   # --detach queues and returns at once: land runs in its own session (macOS
   # has no setsid(1); python's os.setsid does it), output goes to a log under
-  # ~/.amux/logs/land/, and the lane gets a message when it lands or stops
-  # (AMUX_LAND_NOTIFY=0 skips the message, for a scheduled caller that checks
-  # the result itself on its next run). `amux land --cancel` stops every
+  # ~/.amux/logs/land/, and the lane gets a message when it stops without
+  # landing. A clean land is held as a receipt (~/.amux/receipts/<lane>.jsonl,
+  # `amux receipts`) that rides on the lane's next wake instead of waking it
+  # (AMUX_LAND_NOTIFY=all messages every outcome; =0 skips the message, for a
+  # scheduled caller that checks the result itself on its next run). `amux land --cancel` stops every
   # detached land of this lane, whole process group, and drops its ticket.
   # Claude Code kills a background command after 2 hours, and with the queue
   # 15 deep a lane lost its ticket that way at position 9 (gs12-templates,
@@ -8801,8 +8845,28 @@ try:
     os.remove(os.path.expanduser(f"~/.amux/locks/detached/{os.getpid()}"))
 except OSError:
     pass
-if os.environ.get("AMUX_LAND_NOTIFY") == "0":
+notify = (os.environ.get("AMUX_LAND_NOTIFY") or "failures").strip().lower()
+if notify == "0":
     sys.exit(0)
+# A clean land is a RECEIPT, not a message: 1,115 "finished with rc 0" sends
+# were 28% of all lane input in GS-12 (2026-10-01..08), each one a full turn.
+# It is written to ~/.amux/receipts/<lane>.jsonl and rides along on the next
+# wake amux sends anyway (a schedule fire, a goal-keeper continue), or is read
+# with `amux receipts`. A failure still wakes. AMUX_LAND_NOTIFY=all restores
+# a message for every outcome.
+if rc == 0 and notify not in ("all", "1", "always"):
+    import json, time
+    home = os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux")
+    rdir = os.path.join(home, "receipts")
+    try:
+        os.makedirs(rdir, exist_ok=True)
+        with open(os.path.join(rdir, me + ".jsonl"), "a") as f:
+            f.write(json.dumps({"ts": time.time(), "from": "land", "text": msg}) + "\n")
+        with open(os.path.expanduser("~/.amux/logs/land.log"), "a") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + " " + me + " land_receipt_held rc=0 (no wake; amux receipts)\n")
+        sys.exit(0)
+    except OSError:
+        pass  # could not hold it: fall back to the message
 p = subprocess.Popen(["bash", amux, "send", me, "--stdin"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 p.communicate(msg.encode())
 ' ${fwd_args[@]+"${fwd_args[@]}"} > /dev/null 2>&1 < /dev/null &
@@ -8814,7 +8878,7 @@ p.communicate(msg.encode())
     mkdir -p "$HOME/.amux/locks/detached"
     printf '%s\n%s\n%s\n' "$me" "$dlog" "$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)" > "$HOME/.amux/locks/detached/$dpid"
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "detached land started (pid $dpid, log $dlog)" >> "$log"
-    echo "amux land: detached (pid $dpid). Output: $dlog. You get a message when it lands or stops; nothing to poll. Stop it with: amux land --cancel"
+    echo "amux land: detached (pid $dpid). Output: $dlog. You get a message if it stops without landing; a clean land is a receipt that rides on your next wake (read it now with: amux receipts). Stop it with: amux land --cancel"
     return 0
   fi
   # Each line ends with the repository's lock key, so per-repository readings
@@ -9966,6 +10030,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     peek|p)           shift; cmd_peek "$@" ;;
     send)             shift; cmd_send "$@" ;;
     post)             shift; cmd_post "$@" ;;
+    receipts)         shift; cmd_receipts "$@" ;;
     stop|kill)        shift; cmd_stop "$@" ;;
     pause)            shift; cmd_pause "$@" ;;
     resume|unpause)   shift; cmd_resume "$@" ;;

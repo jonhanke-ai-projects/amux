@@ -258,14 +258,21 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::SCHEDULER,
         name: "Schedule firing",
-        purpose: "Fires every due user schedule and delivers its command to the worker; in shadow mode it only journals what it would have fired.",
+        purpose: "Fires every due user schedule and delivers its command to the worker; in shadow mode it only journals what it would have fired. A goal-continuation tmux schedule (names /goal and keep going) is skipped while the goal is met, the worker is mid-turn, or another continuation woke it within AMUX_GOAL_CONTINUE_INTERVAL_S. A long brief is sent in full once per version and as a pointer to its saved file while unchanged. Held receipts ride along on each delivered fire.",
         // NOT an off switch: shadow mode still runs the loop. Claiming `off`
         // here would grey out a loop that is very much ticking.
-        env: &[EnvControl {
-            var: "AMUX_RS_SCHEDULER",
-            effect: "unset or 1 = fire for real (default); 0/false/off/no = shadow mode (journals what it would fire)",
-            off: None,
-        }],
+        env: &[
+            EnvControl {
+                var: "AMUX_RS_SCHEDULER",
+                effect: "unset or 1 = fire for real (default); 0/false/off/no = shadow mode (journals what it would fire)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_SCHEDULE_BRIEF_MIN_CHARS",
+                effect: "a tmux command at least this long is versioned under ~/.amux/schedules/briefs and sent as a pointer while unchanged; default 800, 0 always sends the full text",
+                off: None,
+            },
+        ],
         pref: None,
         detail: None,
     },
@@ -753,12 +760,16 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::GOAL_KEEPER,
         name: "Goal keeper",
-        purpose: "Continues a Claude worker whose owner-set /goal is not met (latest transcript goal_status met:false and the footer shows /goal active) once it has been idle 2 minutes, because Claude Code's own goal loop does not survive a resume. At most one continue per 10 minutes; two continues with no tool call stop it for that goal until the goal changes or the owner writes. Reaches isolated workers as owner configuration (goal: guard). Each tick also runs the goal-loop guard's restore (AMUX-5277): a lane parked on a needsyou card gets `/goal <condition>` back once when the card leaves needsyou, and is never continued while parked.",
+        purpose: "Continues a Claude worker whose owner-set /goal is not met (latest transcript goal_status met:false and the footer shows /goal active, or the goal was cleared by an error, or the worker's AMUX_GOAL_CHECK checker says not met) once it has been idle 2 minutes, because Claude Code's own goal loop does not survive a resume. At most one continue per 10 minutes; two continues with no tool call stop it for that goal until the goal changes or the owner writes. Reaches isolated workers as owner configuration (goal: guard). Each tick also runs the goal-loop guard's restore (AMUX-5277): a lane parked on a needsyou card gets `/goal <condition>` back once when the card leaves needsyou, and is never continued while parked.",
         env: &[
             EnvControl { var: "AMUX_GOAL_KEEPER_SECS", effect: "0 disables the keeper", off: Some("0") },
             EnvControl { var: "AMUX_GOAL_CONTINUE", effect: "0 opts a worker, group or the fleet out (scoped)", off: None },
             EnvControl { var: "AMUX_GOAL_CONTINUE_IDLE_S", effect: "idle seconds before a continue, default 120", off: None },
-            EnvControl { var: "AMUX_GOAL_CONTINUE_INTERVAL_S", effect: "minimum seconds between continues, default 600", off: None },
+            EnvControl { var: "AMUX_GOAL_CONTINUE_INTERVAL_S", effect: "minimum seconds between continues by the keeper or a goal-continuation schedule, default 600", off: None },
+            EnvControl { var: "AMUX_GOAL_CHECK", effect: "the worker's goal checker, a shell command (exit 0 met, 1 not met, else unknown; prints N/M or {\"done\",\"total\",\"summary\"}); it decides met (scoped)", off: None },
+            EnvControl { var: "AMUX_GOAL_CHECK_INTERVAL_S", effect: "seconds between checker runs, default 600 (scoped)", off: None },
+            EnvControl { var: "AMUX_GOAL_CHECK_TIMEOUT_S", effect: "checker time limit, default 120 (scoped)", off: None },
+            EnvControl { var: "AMUX_GOAL_STALL_H", effect: "hours without checker movement before one owner alert, default 6 (scoped)", off: Some("0") },
             EnvControl { var: "AMUX_GOAL_LOOP_GUARD", effect: "0 turns off goal-loop detection, park and restore (scoped)", off: None },
         ],
         pref: None,

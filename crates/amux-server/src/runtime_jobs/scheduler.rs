@@ -2226,8 +2226,24 @@ impl Deliverer for LiveDeliverer {
             };
         }
 
+        // Wake economics (schedule_wake.rs): a goal-continuation fire obeys the
+        // goal keeper's rules, a long brief becomes a pointer while unchanged,
+        // and held receipts ride along instead of waking the worker themselves.
+        if let Some(reason) = super::schedule_wake::goal_gate(&self.state, sched, source).await {
+            return RunOutcome::Refused { reason };
+        }
         let session = sched.str_field("session").to_string();
-        let text = delivered_text(&command, source);
+        let brief = super::schedule_wake::brief(
+            &super::schedule_wake::briefs_dir(),
+            sched.id(),
+            &session,
+            &command,
+            source,
+            super::schedule_wake::brief_min_chars(),
+        );
+        let home = crate::api::session_verbs::home();
+        let (text, carried) =
+            super::receipts::attach(&home, &session, &delivered_text(&brief.text, source));
         let d = crate::api::session_verbs::deliver_automated(
             &self.state,
             &session,
@@ -2237,6 +2253,17 @@ impl Deliverer for LiveDeliverer {
         .await;
         if d.refused {
             return RunOutcome::Refused { reason: d.message };
+        }
+        if d.submitted != Some(false) {
+            super::schedule_wake::brief_delivered(&brief);
+            super::receipts::consume(&home, &session, carried);
+            if super::schedule_wake::is_goal_continuation(sched.str_field("title"), &command) {
+                super::goal_keeper::note_wake(
+                    &session,
+                    crate::config::now_f64(),
+                    &format!("sched:{}", sched.id()),
+                );
+            }
         }
         if let Some(queue_id) = d.queue_id {
             return RunOutcome::Queued {

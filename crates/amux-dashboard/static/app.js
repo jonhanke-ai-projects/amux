@@ -7625,6 +7625,33 @@ function _cardsRenderDefer() {
   }
 }
 
+// The worker's goal, as the server resolved it (goal_keeper::resolve): its own
+// checker decides "met", an error clear reads unknown, never met (mxp-gs12,
+// 2026-10-17). Shown while a goal is pursued, or whenever a checker is set,
+// so progress is legible without asking the worker.
+function _goalTileShown(g) {
+  if (!g) return false;
+  return !!(g.active || g.checker?.configured || g.state === 'unknown');
+}
+function _goalTile(g) {
+  if (!_goalTileShown(g)) return '';
+  const ck = g.checker || {};
+  const state = g.state || (g.active ? 'unmet' : 'none');
+  const progress = (ck.done != null && ck.total != null) ? ` ${ck.done}/${ck.total}` : '';
+  const label = state === 'met' ? 'goal met' : state === 'unknown' ? 'goal ?' : 'goal';
+  const cls = ck.stalled ? 'stalled' : state;
+  const when = (t) => t ? new Date(t * 1000).toLocaleString() : '';
+  const lines = [
+    `Goal: ${state}${g.state_why ? ' (' + g.state_why + ')' : ''}`,
+    g.condition ? `/goal: ${g.condition}` : '',
+    ck.configured ? `Checker: ${ck.measured ? (ck.met ? 'met' : 'not met') : 'no verdict'}${progress}${ck.summary ? ' · ' + ck.summary : ''}` : '',
+    ck.why_unmeasured ? `Checker problem: ${ck.why_unmeasured}` : '',
+    ck.checked_at ? `Checked ${when(ck.checked_at)}; last movement ${when(ck.progress_changed_at)}` : '',
+    ck.stalled ? `STALLED: no movement for over ${Math.round((ck.stall_after_s || 0) / 3600)}h; the owner is alerted once per stall` : '',
+  ].filter(Boolean);
+  return `<span class="badge goal ${esc(cls)}" data-goal-state="${esc(state)}" title="${esc(lines.join('\n'))}">&#9678; ${esc(label)}${esc(progress)}</span>`;
+}
+
 function render() {
   // The Send/Queue label reads the target's status, so it follows each render.
   try { _syncComposerPending(); } catch (_) {}
@@ -7933,8 +7960,8 @@ function render() {
           `<div class="card-log-hit" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}',hitIdx:${hi}})"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
-      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || s.goal?.active) ? `<div class="badges">
-        ${s.goal?.active ? `<span class="badge goal" title="${esc('/goal active' + (s.goal.since ? ' since ' + new Date(s.goal.since * 1000).toLocaleString() : '') + ': ' + (s.goal.condition || ''))}">&#9678; goal</span>` : ''}
+      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || _goalTileShown(s.goal)) ? `<div class="badges">
+        ${_goalTile(s.goal)}
         ${s.worker_type && s.worker_type !== 'coding' ? `<span class="badge worker-type ${esc(s.worker_type)}" title="${esc(_workerTypeInfo(s.worker_type).label)} worker: ${esc(_workerTypeInfo(s.worker_type).description || '')}">${esc(_workerTypeInfo(s.worker_type).label.toLowerCase())}</span>` : ''}
         ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
         ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
