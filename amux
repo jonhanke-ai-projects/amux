@@ -5513,6 +5513,8 @@ USAGE
   # Sent gzipped: a board with years of history is hundreds of MB of JSON.
   local gz; gz=$(mktemp -t amuxmove) || die "amux import: no temp file"
   # shellcheck disable=SC2064  # expanded now on purpose: the paths are locals
+  # Expanded now on purpose: both paths are locals, gone by the time EXIT fires.
+  # shellcheck disable=SC2064
   trap "rm -f '$resp' '$gz'" EXIT
   gzip -c "$file" > "$gz" || die "amux import: could not compress $file"
   _move_post() {  # $1 = dry_run value
