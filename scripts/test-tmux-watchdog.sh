@@ -7,7 +7,7 @@
 #   - an isolated Claude worker with a bare shell: left alone
 #   - a worker that keeps dying: restarted WORKER_RESTART_MAX times, then held
 #     with one HOLD line, not restarted every scan
-set -uo pipefail
+set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/watchdog-test.XXXXXX")"
