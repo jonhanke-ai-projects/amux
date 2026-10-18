@@ -655,6 +655,58 @@ test('MDAI chat: the page shows the exchange and the changed lines, runs again, 
   }
 });
 
+// A chat edit is a model call, measured at 17-18s on the live server. The
+// dashboard bounds an ordinary write at 15s and queues it offline when the
+// bound trips, so a slow chat used to read "The server could not be reached"
+// while the server applied the edit, and the outbox then sent the same message
+// a second time (Ethan's screenshot, 2026-10-18).
+test('MDAI chat: a reply slower than the 15s write bound still lands, once, with no offline queue', async ({ page, request }, info) => {
+  test.setTimeout(90_000);
+  const s = await setup(page, request, 'amux-mdai-chat-slow-');
+  let posts = 0;
+  try {
+    await page.route('**/api/files/mdai/chat?**', r => r.fulfill({ json: { path: 'Workstream Resumption.mdai', turns: [], unreadable: 0, measured: true, n_considered: 0 } }));
+    await page.route('**/api/files/mdai/chat', async r => {
+      posts++;
+      const body = r.request().postDataJSON();
+      await new Promise(res => setTimeout(res, 17_000));
+      const doc = await (await request.get('/api/files/mdai/doc?path=' + encodeURIComponent(s.file), { headers: s.headers })).json();
+      return r.fulfill({ json: { ok: true, changed: false, doc,
+        turn: { ts: Date.now() - 7_200_000, message: body.message, reply: 'The table already covers lifecycle work.', changed: false, model: 'sonnet', dur_ms: 17000, error: null } } }).catch(() => {});
+    });
+    await openNode(page, s.file);
+    await page.locator('#mdai-chat-input').fill(ASK);
+    await page.locator('#mdai-chat-send').click();
+    await expect(page.locator('#mdai-chat-send')).toHaveText('Working…');
+    await expect(page.locator('#mdai-chat-log .mdai-msg.ai .mdai-bubble').first()).toContainText('already covers lifecycle work', { timeout: 30_000 });
+    await expect(page.locator('#mdai-overlay')).not.toContainText('could not be reached');
+    // Turn times are milliseconds; read as seconds every turn said "just now".
+    await expect(page.locator('#mdai-chat-log .mdai-msg.me .mdai-msg-meta').first()).toHaveText('2h ago');
+    const queued = await page.evaluate(() => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]')
+      .filter((q: any) => String(q.url || '').includes('/api/files/mdai/chat')).length);
+    expect(queued, 'no chat left in the offline outbox').toBe(0);
+    expect(posts, 'the message went to the server once').toBe(1);
+    await page.screenshot({ path: info.outputPath('mdai-chat-slow.png') });
+  } finally {
+    await cleanup('restore MDAI prefs', () => Promise.all([s.pref('mdai_root', s.prior[0]), s.pref('mdai_api_base', s.prior[1])]), info);
+    await cleanup('remove temp folder', () => rm(s.dir, { recursive: true, force: true }), info);
+  }
+});
+
+// A chat queued before the fix stays in the outbox, and its replay is refused
+// 409 forever (Ethan's screenshot: "POST /api/files/mdai/chat 409: This node
+// changed on disk"). The page drops such entries at load and keeps the rest.
+test('MDAI chat: a stuck chat in the offline outbox is dropped at load, other pending work is kept', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => localStorage.setItem('amux_offline_queue', JSON.stringify([
+    { id: 'stuck-chat', url: '/api/files/mdai/chat', options: { method: 'POST', body: '{"path":"/x.mdai","message":"m"}' }, timestamp: Date.now() - 660_000,
+      state: 'pending', error: '409: This node changed on disk since you opened it. Reload, then send your message again.' },
+    { id: 'keep-closeout', url: '/api/projects/p1/closeout', options: { method: 'POST', body: '{}' }, timestamp: Date.now(), state: 'pending' },
+  ])));
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]').map((q: any) => q.id).join(','))).toBe('keep-closeout');
+});
+
 // A loopback stand-in for the Messages API. A chat-edit prompt gets a tagged
 // edit; a node run gets a report that echoes what it was asked, so the test can
 // see the run used the edited file.

@@ -4642,12 +4642,18 @@ const _origFetch = window.fetch.bind(window);
 // halves separately — "mdai files are stuck at running", and a banner reading
 // `Syncing 0/1 · POST /api/files/mdai/run` that never cleared.
 //
+// `files/mdai/chat` joined for both reasons too (2026-10-18). A chat edit is a
+// model call measured at 17-18s, past the 15s mutation bound, so the page
+// aborted it, said "The server could not be reached" while the server went on
+// to APPLY the edit, and the outbox then replayed the same message, which the
+// server refused as stale. One message, two model calls, and an error for the
+// one that worked (Workstream Resumption.mdai, Ethan's screenshot).
 // `connectors/<id>/(auth|token|test)` joined for the same ANSWER-NEEDED-NOW
 // reason (2026-10-10): a Google reconnect pressed while the server restarted
 // got the synthetic 202, which has no authorize_url, so the button said
 // "Could not start the grant: unknown", and the queued POST would later
 // start a sign-in nobody was there to open.
-const _OUTBOX_SKIP = /\/api\/(connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
+const _OUTBOX_SKIP = /\/api\/(connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
 const _outboxManualAction = url => /\/api\/projects\/(?:draft|[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))(?:[?#]|$)/.test(url || '');
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
@@ -4670,6 +4676,26 @@ function _outboxAccepted() {
                       { status: 202, headers: { 'Content-Type': 'application/json',
                                                 'X-Amux-Outbox': 'queued' } });
 }
+// An mdai run or chat queued before it joined the skip list above stays in the
+// outbox, and the replay can never succeed: a chat comes back 409 (the first
+// copy already changed the node) and sits under Pending operations for good
+// (Ethan's screenshot, 2026-10-18). Its change either landed or is one press
+// away, so the entries are dropped once at load, and the count is reported.
+const _OUTBOX_ANSWER_NOW = /\/api\/files\/mdai\/(?:run|chat)(?:[?#]|$)/;
+function _outboxDropAnswerNow() {
+  let dropped = 0, considered = 0;
+  return _mutateQueue(current => {
+    considered = current.length;
+    for (let i = current.length - 1; i >= 0; i--) {
+      if (_OUTBOX_ANSWER_NOW.test(String(current[i].url || '').split('?')[0])) { current.splice(i, 1); dropped++; }
+    }
+  }).then(() => {
+    if (!dropped) return;
+    _outboxDiagnostic('answer_now_dropped', {dropped, n_considered:considered});
+    try { updateConnectionStatus(); } catch (_) {}
+  }).catch(() => {});
+}
+try { if (_readQueue().some(q => _OUTBOX_ANSWER_NOW.test(String(q.url || '').split('?')[0]))) _outboxDropAnswerNow(); } catch (_) {}
 /** True for a Response this client synthesised for the outbox — i.e. one that
  *  is NOT evidence of anything about the network. */
 function _isLocallyQueued(r) {
@@ -31642,7 +31668,7 @@ function _mdaiChatHtml() {
   }
   const lastApplied = (() => { for (let k = _mdaiChat.length - 1; k >= 0; k--) if (_mdaiChat[k].changed) return k; return -1; })();
   _mdaiChat.forEach((t, i) => {
-    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(t.message || '') + '</div><div class="mdai-msg-meta">' + (t.ts ? timeAgo(t.ts) : '') + '</div></div>';
+    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(t.message || '') + '</div><div class="mdai-msg-meta">' + (t.ts ? timeAgo(Math.floor(t.ts / 1000)) : '') + '</div></div>';
     if (t.error) {
       h += '<div class="mdai-msg ai"><div class="mdai-bubble bad" role="alert"><b>Not changed.</b> ' + esc(t.error) + '</div></div>';
       return;
