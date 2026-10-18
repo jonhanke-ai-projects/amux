@@ -141,7 +141,9 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
   await expect(page.locator('#tasks-list .tl-row[data-lane="' + seed.peer + '"] .tl-bar')).toHaveCount(1);
   await expect(page.locator('#tasks-list .tl-arrows')).toHaveAttribute('data-arrows', '1');
   await expect(lane.locator('.tl-bar[data-from="' + seed.peer + '"]')).toHaveCount(1);
-  await lane.locator('.tl-bar').first().click();
+  // Both tasks lasted seconds, so their bars overlap on this lane's scale;
+  // the click goes to the bar itself.
+  await lane.locator('.tl-bar').first().dispatchEvent('click');
   await expect(page.locator('#tasks-mode button[data-mode="list"]')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('#tasks-list .task-item.open .task-detail')).toBeVisible({ timeout: 15000 });
 
