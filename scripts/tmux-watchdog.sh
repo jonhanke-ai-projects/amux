@@ -16,19 +16,29 @@
 #    and exited one by one over ~1 hour. tmux server stayed alive. No recovery
 #    fired. 30+ workers stayed stopped until manual intervention.)
 #
+# Mode 2 only judges Claude workers: a codex or gemini pane never has a claude
+# process, so it read as dead and was killed and restarted on every scan.
+# Isolated workers are left alone (an owner who exits Claude in that pane meant
+# it), and a worker restarted WORKER_RESTART_MAX times inside
+# WORKER_RESTART_WINDOW is held for a human instead of being killed every minute.
+#
 # This script is called by com.amux.tmux-watchdog.plist on a 30s interval.
-# It is idempotent.
+# It is idempotent. Test: scripts/test-tmux-watchdog.sh.
 
 set -uo pipefail
 
-LOG="${HOME}/.amux/logs/tmux-watchdog.log"
-AMUX_BIN="${AMUX_BIN:-/Users/ethan/Dev/amux/amux}"
+AMUX_DIR="${AMUX_WATCHDOG_HOME:-${HOME}/.amux}"
+LOG="${AMUX_DIR}/logs/tmux-watchdog.log"
+AMUX_BIN="${AMUX_BIN:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 STAGGER="${AMUX_START_ALL_STAGGER:-2}"
-COOLDOWN_FILE="${HOME}/.amux/tmux-watchdog-last-recovery"
+COOLDOWN_FILE="${AMUX_DIR}/tmux-watchdog-last-recovery"
 COOLDOWN_SECONDS=120
-WORKER_CHECK_COOLDOWN_FILE="${HOME}/.amux/tmux-watchdog-last-worker-check"
-WORKER_CHECK_COOLDOWN_SECONDS=60
-CC_SESSIONS="${HOME}/.amux/sessions"
+WORKER_CHECK_COOLDOWN_FILE="${AMUX_DIR}/tmux-watchdog-last-worker-check"
+WORKER_CHECK_COOLDOWN_SECONDS="${AMUX_WATCHDOG_WORKER_COOLDOWN:-60}"
+CC_SESSIONS="${AMUX_DIR}/sessions"
+RESTARTS_DIR="${AMUX_DIR}/tmux-watchdog-restarts"
+WORKER_RESTART_MAX="${AMUX_WATCHDOG_RESTART_MAX:-3}"
+WORKER_RESTART_WINDOW="${AMUX_WATCHDOG_RESTART_WINDOW:-1800}"
 
 mkdir -p "$(dirname "$LOG")"
 
@@ -104,6 +114,8 @@ date +%s > "$WORKER_CHECK_COOLDOWN_FILE"
 # session exists AND has a live Claude process. If the session exists but
 # Claude is dead (pane is just a shell), kill the session and restart the worker.
 dead_workers=()
+skipped_provider=0
+skipped_isolated=0
 shopt -s nullglob
 env_files=("$CC_SESSIONS"/*.env)
 shopt -u nullglob
@@ -115,6 +127,14 @@ for f in ${env_files[@]+"${env_files[@]}"}; do
     # Skip archived/paused workers
     if grep -q '^CC_ARCHIVED="\?1' "$f" 2>/dev/null; then continue; fi
     if grep -q '^CC_PAUSED="\?1' "$f" 2>/dev/null; then continue; fi
+    # Only a Claude pane has a claude process to look for.
+    provider=$(sed -n 's/^CC_PROVIDER="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$f" | tail -1)
+    if [[ -n "$provider" && "$provider" != "claude" ]]; then
+        skipped_provider=$((skipped_provider + 1)); continue
+    fi
+    if grep -q '^CC_ISOLATED="\?1' "$f" 2>/dev/null; then
+        skipped_isolated=$((skipped_isolated + 1)); continue
+    fi
 
     tmux_name="amux-${name}"
 
@@ -160,7 +180,7 @@ if (( ${#dead_workers[@]} == 0 )); then
     exit 0
 fi
 
-log "=== dead worker processes detected: ${dead_workers[*]} ==="
+log "=== dead worker processes detected: ${dead_workers[*]} (not judged: ${skipped_provider} non-claude, ${skipped_isolated} isolated) ==="
 log "memory_pressure: $(memory_pressure 2>/dev/null | grep 'free percentage' || echo 'unavailable')"
 
 base="$("$AMUX_BIN" url 2>/dev/null || echo "https://localhost:8824")"
@@ -170,8 +190,30 @@ curl -sk --max-time 5 -X POST -H 'Content-Type: application/json' \
 
 restarted=0
 failed=0
+held=0
+mkdir -p "$RESTARTS_DIR"
+now=$(date +%s)
 for name in "${dead_workers[@]}"; do
     tmux_name="amux-${name}"
+    # Backoff: a worker that dies again right after each restart (usage limit,
+    # bad auth) is held for a human rather than restarted every minute.
+    rfile="${RESTARTS_DIR}/${name}"
+    recent=$(awk -v now="$now" -v w="$WORKER_RESTART_WINDOW" 'now - $1 < w' "$rfile" 2>/dev/null | wc -l | tr -d ' ')
+    if (( recent >= WORKER_RESTART_MAX )); then
+        held=$((held + 1))
+        if [[ ! -f "${rfile}.held" ]]; then
+            touch "${rfile}.held"
+            log "HOLD $name: ${recent} restarts in ${WORKER_RESTART_WINDOW}s, not restarting again (verdict=worker_restart_held)"
+            curl -sk --max-time 5 -X POST -H 'Content-Type: application/json' \
+                -d "{\"level\":\"warn\",\"message\":\"tmux-watchdog: $name died after each of ${recent} restarts; held for a human\",\"source\":\"tmux-watchdog\"}" \
+                "$("$AMUX_BIN" url 2>/dev/null || echo "https://localhost:8824")/api/log" >/dev/null 2>&1 || true
+        fi
+        continue
+    fi
+    rm -f "${rfile}.held"
+    awk -v now="$now" -v w="$WORKER_RESTART_WINDOW" 'now - $1 < w' "$rfile" 2>/dev/null > "${rfile}.tmp"
+    echo "$now" >> "${rfile}.tmp"
+    mv "${rfile}.tmp" "$rfile"
     # Kill the dead tmux session so start can create a fresh one
     tmux kill-session -t "=${tmux_name}" 2>/dev/null || true
     sleep 1
@@ -189,5 +231,5 @@ for name in "${dead_workers[@]}"; do
     [[ "$local_stagger" != "0" ]] && sleep "$local_stagger"
 done
 
-log "=== worker recovery complete: ${restarted} restarted, ${failed} failed ==="
+log "=== worker recovery complete: ${restarted} restarted, ${failed} failed, ${held} held ==="
 exit 0
