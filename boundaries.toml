@@ -208,7 +208,13 @@ prefer remote hardware for big builds, and shut down what you started
 (simulators, browsers, containers, dev servers) when you are done. A process
 you started is still yours after your shell exits: `amux resources` lists such
 detached trees by root pid, and the cleanup tick lowers their priority when the
-machine is busy, so stop the ones you no longer need. When the
+machine is busy, so stop the ones you no longer need. The network is shared
+the same way: one Wi-Fi link (measured 69 Mbps down, 24 Mbps up on 2026-10-17)
+carries every worker, the nightly backup and the owner's calls, and uploads
+saturate first. Cap big transfers (`curl --limit-rate`, `rclone --bwlimit`,
+`gsutil -o GSUtil:parallel_thread_count=1`), avoid parallel pulls and pushes of
+large images, models, datasets and videos, and move bulk data on cloud hardware
+instead of through this Mac. When the
 machine is critical, heavy commands are refused until it recovers; if the work
 truly cannot wait, rerun with AMUX_RESOURCES_ACK="<why>" in front of the
 command, and that reason is recorded.
