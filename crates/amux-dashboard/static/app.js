@@ -17076,7 +17076,10 @@ function _detectTextLinks(plain) {
   while ((m = url.exec(plain))) {
     const v = trim(m[0]);
     if (/[:${]/.test(plain[m.index + m[0].length] || '')) continue;   // a template like 127.0.0.1:$PORT
-    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.slice(8))) add(m.index, m.index + v.length, 'url', v);
+    // The host after the scheme. `slice(8)` assumed `https://` and cut the
+    // first letter off an http host, so http://localhost:3077 was never a
+    // link (owner, 2026-10-17: the port proxy links in the peek were dead).
+    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) add(m.index, m.index + v.length, 'url', v);
   }
   // `@` before a path is Claude Code's file-mention marker, not part of the path.
   const abs = new RegExp(String.raw`(^|[\s(\x60'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w` + fileEnd + String.raw`(?::\d+(?::\d+)?)?)(?![\w\/])`, 'g');

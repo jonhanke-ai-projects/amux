@@ -14,13 +14,18 @@
 //! the worker saw locally.
 //!
 //! So the route first proves the port answers at the address the browser
-//! used. A server bound to 127.0.0.1 only cannot be reached that way, and the
-//! page says so with the fix, instead of a redirect into a dead connection.
+//! used. A server bound to 127.0.0.1 only cannot be reached that way, so amux
+//! relays it instead (`relay`): bodies stream, `Range` passes through so video
+//! seeks, and HTML has its root-relative `src`/`href` routed back under the
+//! prefix. That covers static pages and media; a page that builds URLs in
+//! script still needs the dev server on `--host 0.0.0.0`, which the WARN says.
 use super::{has_owner_session, peer_ip, tailnet_auth, AppState, Peer};
+use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use std::net::IpAddr;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -87,14 +92,19 @@ async fn answers(host: &str, port: u16) -> bool {
 
 pub(crate) async fn proxy(
     State(state): State<AppState>,
+    method: Method,
     headers: HeaderMap,
     uri: Uri,
     peer: Peer,
+    body: Body,
 ) -> Response {
     let peer = peer_ip(peer);
+    // The same loopback switch as the rest of the server, so a test that turns
+    // the bypass off sees the refusal a remote device gets.
+    let loopback_bypass = !std::env::var("AMUX_RS_NO_LOOPBACK_BYPASS").is_ok_and(|v| v == "1");
     let owner = state.auth_token.is_none()
         || has_owner_session(&state, &headers)
-        || peer.is_some_and(|ip| ip.is_loopback())
+        || (loopback_bypass && peer.is_some_and(|ip| ip.is_loopback()))
         || match peer {
             Some(ip) => tailnet_auth::verified(ip).await,
             None => false,
@@ -123,26 +133,181 @@ pub(crate) async fn proxy(
         return page(StatusCode::BAD_REQUEST, "That is amux's own port",
             &format!("<p>Port {port} is the amux server itself. Use the port the dev server printed.</p>"));
     }
-    let local = answers("127.0.0.1", port).await || answers("::1", port).await;
-    if !local {
+    let local = if answers("127.0.0.1", port).await {
+        Some("127.0.0.1")
+    } else if answers("::1", port).await {
+        Some("[::1]")
+    } else {
+        None
+    };
+    let Some(local) = local else {
         tracing::warn!(port, host = %host, measured = true, n_considered = 1,
             verdict = "port_proxy_nothing_listening", "proxy link to a port nothing on this machine listens on");
         return page(StatusCode::BAD_GATEWAY, "Nothing is running on that port",
             &format!("<p>No server is listening on port {port} on this machine. It may have stopped; ask the worker that sent the link to start it again.</p>"));
-    }
+    };
     if !answers(&host, port).await {
         tracing::warn!(port, host = %host, measured = true, n_considered = 1,
-            verdict = "port_proxy_loopback_only", "dev server listens on loopback only; unreachable at the host the browser used");
-        return page(StatusCode::BAD_GATEWAY, "This server only accepts connections from its own machine",
-            &format!("<p>Port {port} is running, but it listens on 127.0.0.1 only, so <code>{h}</code> cannot reach it.</p>\
-                      <p>Restart it listening on every interface, for example <code>--host 0.0.0.0</code> for Vite or Next, \
-                      or <code>HOST=0.0.0.0</code>, and open this link again.</p>", h = html_escape(&host)));
+            verdict = "port_proxy_loopback_only",
+            "dev server listens on loopback only; relaying through amux (script-built URLs and HMR need --host 0.0.0.0)");
+        return relay(local, port, &tail, method, &headers, body).await;
     }
     let target = format!("http://{host}:{port}{tail}");
     let from_loopback = peer.is_some_and(|ip: IpAddr| ip.is_loopback());
     tracing::info!(port, host = %host, from_loopback, measured = true, n_considered = 1,
         verdict = "port_proxy_redirect", "proxy link sent to the dev server's own port");
     Redirect::temporary(&target).into_response()
+}
+
+/// HTML larger than this is passed through unrewritten rather than buffered.
+const HTML_REWRITE_MAX: usize = 16 * 1024 * 1024;
+
+fn client() -> &'static reqwest::Client {
+    static C: OnceLock<reqwest::Client> = OnceLock::new();
+    C.get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .expect("proxy http client")
+    })
+}
+
+/// Forward one request to `local:port` and answer with its response, for a
+/// dev server the browser cannot reach directly. `tail` is the page and query.
+async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &HeaderMap, body: Body) -> Response {
+    let body = match axum::body::to_bytes(body, 64 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return page(StatusCode::PAYLOAD_TOO_LARGE, "Request too large", "<p>The request body is over 64 MB.</p>"),
+    };
+    let method = reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
+    let mut req = client()
+        .request(method, format!("http://{local}:{port}{tail}"))
+        .header("Host", format!("localhost:{port}"));
+    for (k, v) in headers {
+        if forward_request_header(k) {
+            req = req.header(k.as_str(), v.as_bytes());
+        }
+    }
+    if let Some(c) = strip_amux_cookies(headers) {
+        req = req.header("Cookie", c);
+    }
+    if !body.is_empty() {
+        req = req.body(body);
+    }
+    let upstream = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(port, error = %e, measured = true, n_considered = 1,
+                verdict = "port_proxy_relay_failed", "relay to a loopback-only dev server failed");
+            return page(StatusCode::BAD_GATEWAY, "The dev server did not answer",
+                &format!("<p>Port {port} accepted a connection but the request failed.</p>"));
+        }
+    };
+    let prefix = format!("/proxy/{port}");
+    let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let is_html = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("text/html"));
+    let rewrite = is_html && upstream.content_length().is_none_or(|n| n <= HTML_REWRITE_MAX as u64);
+    let mut out = HeaderMap::new();
+    for (k, v) in upstream.headers() {
+        let name = k.as_str();
+        if matches!(name, "connection" | "keep-alive" | "transfer-encoding" | "upgrade")
+            || (rewrite && name == "content-length")
+        {
+            continue;
+        }
+        let Ok(hn) = HeaderName::from_bytes(name.as_bytes()) else { continue };
+        let value = if name == "location" {
+            v.to_str().ok().map(|l| rewrite_location(l, port, &prefix)).and_then(|l| HeaderValue::from_str(&l).ok())
+        } else {
+            HeaderValue::from_bytes(v.as_bytes()).ok()
+        };
+        if let Some(value) = value {
+            out.append(hn, value);
+        }
+    }
+    let body = if rewrite {
+        match upstream.bytes().await {
+            Ok(b) => Body::from(rewrite_html(&String::from_utf8_lossy(&b), &prefix)),
+            Err(e) => {
+                tracing::warn!(port, error = %e, measured = true, n_considered = 1,
+                    verdict = "port_proxy_relay_failed", "the relayed page stopped mid-response");
+                return page(StatusCode::BAD_GATEWAY, "The page stopped mid-response", "<p>Try again.</p>");
+            }
+        }
+    } else {
+        Body::from_stream(futures::stream::unfold(Some(upstream), |r| async move {
+            let mut r = r?;
+            match r.chunk().await {
+                Ok(Some(b)) => Some((Ok::<_, std::io::Error>(b), Some(r))),
+                Ok(None) => None,
+                Err(e) => Some((Err(std::io::Error::other(e)), None)),
+            }
+        }))
+    };
+    let mut resp = Response::new(body);
+    *resp.status_mut() = status;
+    *resp.headers_mut() = out;
+    resp
+}
+
+/// Hop-by-hop and identity headers stay here: amux cookies and the owner's
+/// bearer never reach a local app, and an encoded HTML body could not be
+/// rewritten.
+fn forward_request_header(k: &HeaderName) -> bool {
+    !matches!(
+        k.as_str(),
+        "host" | "content-length" | "connection" | "keep-alive" | "transfer-encoding" | "upgrade"
+            | "authorization" | "cookie" | "accept-encoding"
+    )
+}
+
+fn strip_amux_cookies(headers: &HeaderMap) -> Option<String> {
+    // Every `cookie` field: HTTP/2 browsers send one field per cookie.
+    let kept: Vec<&str> = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|all| all.split(';'))
+        .map(str::trim)
+        .filter(|c| {
+            let name = c.split('=').next().unwrap_or("");
+            !name.is_empty() && !name.starts_with("__Host-amux") && !name.starts_with("amux_")
+        })
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("; "))
+}
+
+fn rewrite_location(loc: &str, port: u16, prefix: &str) -> String {
+    for host in ["localhost", "127.0.0.1", "0.0.0.0", "[::1]"] {
+        for scheme in ["http", "https"] {
+            if let Some(rest) = loc.strip_prefix(&format!("{scheme}://{host}:{port}")) {
+                return format!("{prefix}{}", if rest.is_empty() { "/" } else { rest });
+            }
+        }
+    }
+    if loc.starts_with('/') && !loc.starts_with("//") && !loc.starts_with(&format!("{prefix}/")) {
+        return format!("{prefix}{loc}");
+    }
+    loc.to_string()
+}
+
+fn rewrite_html(html: &str, prefix: &str) -> String {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r#"(\s(?:src|href|action|poster)=)(["'])/([^/"'][^"']*|)(["'])"#).expect("proxy html regex")
+    });
+    re.replace_all(html, |c: &regex::Captures| {
+        if format!("/{}", &c[3]).starts_with(&format!("{prefix}/")) {
+            return c[0].to_string();
+        }
+        format!("{}{}{prefix}/{}{}", &c[1], &c[2], &c[3], &c[4])
+    })
+    .into_owned()
 }
 
 #[cfg(test)]
@@ -167,6 +332,48 @@ mod tests {
         assert_eq!(host_only("desktop.tail5ce8f5.ts.net:8824"), "desktop.tail5ce8f5.ts.net");
         assert_eq!(host_only("localhost"), "localhost");
         assert_eq!(host_only("[fd7a:115c:a1e0::1]:8824"), "[fd7a:115c:a1e0::1]");
+    }
+
+    #[test]
+    fn relayed_html_routes_absolute_paths_back_through_the_proxy() {
+        let p = "/proxy/3077";
+        let out = rewrite_html(
+            r#"<link href="/a.css"><script src='/b.js'></script><a href="//cdn.x/y">c</a><video poster="/p.jpg" src="rel.webm"><a href="/proxy/3077/z">"#,
+            p,
+        );
+        assert!(out.contains(r#"href="/proxy/3077/a.css""#), "{out}");
+        assert!(out.contains("src='/proxy/3077/b.js'"), "{out}");
+        assert!(out.contains(r#"href="//cdn.x/y""#), "protocol-relative stays: {out}");
+        assert!(out.contains(r#"poster="/proxy/3077/p.jpg""#), "{out}");
+        assert!(out.contains(r#"src="rel.webm""#), "relative stays: {out}");
+        assert!(out.contains(r#"href="/proxy/3077/z""#), "already proxied stays: {out}");
+        assert!(rewrite_html(r#"<a href="/">home</a>"#, p).contains(r#"href="/proxy/3077/""#));
+    }
+
+    #[test]
+    fn relayed_redirects_stay_inside_the_proxy() {
+        let p = "/proxy/3077";
+        assert_eq!(rewrite_location("/login", 3077, p), "/proxy/3077/login");
+        assert_eq!(rewrite_location("http://localhost:3077/x?y=1", 3077, p), "/proxy/3077/x?y=1");
+        assert_eq!(rewrite_location("http://127.0.0.1:3077", 3077, p), "/proxy/3077/");
+        assert_eq!(rewrite_location("https://example.com/a", 3077, p), "https://example.com/a");
+        assert_eq!(rewrite_location("/proxy/3077/a", 3077, p), "/proxy/3077/a");
+    }
+
+    #[test]
+    fn amux_credentials_never_reach_the_relayed_app() {
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, HeaderValue::from_static("__Host-amux_owner=abc; theme=dark; amux_member=m; sid=1"));
+        assert_eq!(strip_amux_cookies(&h).as_deref(), Some("theme=dark; sid=1"));
+        // HTTP/2 crumbs: one field per cookie, the amux one first.
+        let mut h2 = HeaderMap::new();
+        h2.append(header::COOKIE, HeaderValue::from_static("__Host-amux_owner=abc"));
+        h2.append(header::COOKIE, HeaderValue::from_static("appsid=1"));
+        assert_eq!(strip_amux_cookies(&h2).as_deref(), Some("appsid=1"));
+        for k in ["authorization", "cookie", "accept-encoding", "host"] {
+            assert!(!forward_request_header(&HeaderName::from_static(k)), "{k} must not be forwarded");
+        }
+        assert!(forward_request_header(&HeaderName::from_static("range")), "Range passes through for video");
     }
 
     #[tokio::test]

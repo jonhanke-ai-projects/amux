@@ -74,3 +74,34 @@ async fn a_proxy_link_to_a_stopped_server_says_so_and_never_serves_the_dashboard
     let (st, _, body) = get("/proxy/8824/").await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
 }
+
+#[tokio::test]
+async fn a_loopback_only_server_the_browser_cannot_reach_is_relayed_through_amux() {
+    // Bound to ::1 only, so the browser's host (127.0.0.1 here) cannot reach it.
+    let Ok(dev) = tokio::net::TcpListener::bind("[::1]:0").await else {
+        eprintln!("no IPv6 loopback on this host; relay path not exercised");
+        return;
+    };
+    let port = dev.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut s, _)) = dev.accept().await {
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).await.unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = if req.starts_with("GET /page?x=1 ") {
+                r#"<h1>relayed</h1><img src="/pixel.png">"#
+            } else {
+                "unexpected"
+            };
+            let _ = s
+                .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+                .await;
+        }
+    });
+    let (st, loc, body) = get(&format!("/proxy/{port}/page?x=1")).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert!(loc.is_empty(), "a loopback-only server must not be redirected to: {loc}");
+    assert!(body.contains("<h1>relayed</h1>"), "{body}");
+    assert!(body.contains(&format!(r#"src="/proxy/{port}/pixel.png""#)), "absolute asset not routed back: {body}");
+}

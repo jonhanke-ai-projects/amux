@@ -80,8 +80,8 @@ pub fn routes() -> Router<AppState> {
         // `serve_path` still refuses to hand the SPA shell to a non-GET.
         // A dev server on this machine, opened from any device (port_proxy.rs).
         // Before the catch-all, which answered these with the dashboard.
-        .route("/proxy/{port}", axum::routing::get(port_proxy::proxy))
-        .route("/proxy/{port}/{*rest}", axum::routing::get(port_proxy::proxy))
+        .route("/proxy/{port}", axum::routing::any(port_proxy::proxy))
+        .route("/proxy/{port}/{*rest}", axum::routing::any(port_proxy::proxy))
         .route("/{*path}", axum::routing::any(serve_path))
 }
 
@@ -187,15 +187,18 @@ async fn serve_path(
     }
 }
 
+// Every `cookie` field, not the first: over HTTP/2 a browser may send each
+// cookie as its own field (RFC 7540 8.1.2.5), and reading only the first
+// missed the owner cookie whenever another cookie came ahead of it.
 fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|part| {
-                let (cookie_name, value) = part.trim().split_once('=')?;
-                (cookie_name == name && !value.is_empty()).then_some(value)
-            })
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|cookies| cookies.split(';'))
+        .find_map(|part| {
+            let (cookie_name, value) = part.trim().split_once('=')?;
+            (cookie_name == name && !value.is_empty()).then_some(value)
         })
 }
 
@@ -666,6 +669,16 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::time::Instant;
+
+    #[test]
+    fn the_owner_cookie_is_found_in_any_http2_cookie_field() {
+        let mut h = HeaderMap::new();
+        h.append(header::COOKIE, HeaderValue::from_static("appsid=1"));
+        h.append(header::COOKIE, HeaderValue::from_static("__Host-amux_owner=abc; theme=dark"));
+        assert_eq!(cookie_value(&h, OWNER_COOKIE), Some("abc"), "a later field still carries the owner cookie");
+        assert_eq!(cookie_value(&h, "appsid"), Some("1"));
+        assert_eq!(cookie_value(&h, "missing"), None);
+    }
 
     fn state(token: Option<&str>) -> AppState {
         let dir = tempfile::tempdir().unwrap();
