@@ -35,21 +35,26 @@ test('Scratchpad keeps typed text: a note closed before Save is saved, and captu
   };
   await expect.poll(found, { timeout: 15_000, message: 'the closed note was saved' }).toBe(1);
 
-  // An empty new note closed straight away adds no file. This is client logic
-  // identical on every project, and a new note's path is always the shared
-  // `untitled.md` \u2014 which collides across the three projects writing to the one
-  // real Scratchpad (another project's pre-rename note sits at that same path).
-  // Prove it once on desktop so the check is deterministic rather than racing
-  // a co-tenant's untitled.md.
+  // An empty new note closed straight away adds no file. A new note's path is
+  // the shared `untitled.md`, which a co-tenant project (or another CI shard on
+  // the same Scratchpad) can hold at the same moment, so reading the disk races
+  // them (e1ffba833 went red on exactly that). The property is client logic:
+  // closing an empty note sends no write for its path. Watch the requests.
   if (info.project.name === 'desktop') {
     await page.evaluate(() => (window as any)._scratchpadNewNote());
     await expect(page.locator('#file-edit-ta')).toBeVisible();
     const emptyPath = await page.evaluate(() => (0, eval)('_fileData').path as string);
+    const writes: string[] = [];
+    const onReq = (r: any) => {
+      if (r.method() !== 'GET' && new URL(r.url()).pathname === '/api/file'
+          && String(r.postData() || '').includes(JSON.stringify(emptyPath).slice(1, -1))) writes.push(r.method() + ' ' + r.url());
+    };
+    page.on('request', onReq);
     await page.locator('#file-overlay .btn', { hasText: '\u2715' }).first().click();
     await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
     await page.waitForTimeout(1000);
-    expect((await request.get('/api/file?path=' + encodeURIComponent(emptyPath), { headers: auth })).ok(),
-      'an empty note is not saved to disk').toBe(false);
+    page.off('request', onReq);
+    expect(writes, 'an empty note is not saved to disk').toEqual([]);
   }
 
   // Quick capture: typed (not yet saved) text survives a reload.
