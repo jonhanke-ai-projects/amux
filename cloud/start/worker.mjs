@@ -241,6 +241,14 @@ async function provision(env, { sub, meta, email }) {
     log('provision.resume', { sub, server: srv.id });   // a redelivery, or a retry after a partial failure
     return finish(env, sub, srv.labels['amux-slug'], srv);
   }
+  // Stripe redelivers a checkout event for up to 3 days, and the event still carries the signup
+  // data after the account is gone, so only a live subscription gets a server. Without this a
+  // retried delivery rebuilt an erased account an hour after its deletion (fin-fbb1, 2026-10-19).
+  const current = await stripe(env, 'GET', `/subscriptions/${sub}`);
+  if (!LIVE.includes(current.status) || current.metadata?.erase === '1') {
+    log('provision.skipped_ended', { sub, slug: meta.slug, status: current.status, erase: current.metadata?.erase === '1' });
+    return null;
+  }
   let slug = meta.slug;
   if (await slugTaken(env, slug)) slug = `${slug}-${sub.slice(-4).toLowerCase()}`;   // lost a race since checkout
   const plan = plans(env).find(p => p.id === meta.plan) || plans(env)[0];
@@ -538,6 +546,11 @@ async function audit(env) {
     const monthly = Number(price?.price_monthly?.gross || 0);
     cost += monthly;
     if (!sub) { problems.push(`${slug}: server ${s.id} has no subscription Stripe knows (${s.labels['amux-sub']})`); continue; }
+    if (['canceled', 'incomplete_expired'].includes(sub.status) && sub.metadata?.erase === '1') {
+      await erase(env, sub.id, slug);   // the customer deleted the account: no snapshot is kept
+      fixed.push(`${slug}: account was deleted, server ${s.id} erased`);
+      continue;
+    }
     if (['canceled', 'incomplete_expired'].includes(sub.status)) {   // the cancellation webhook was missed
       await deprovision(env, sub.id, false);
       fixed.push(`${slug}: subscription ${sub.status}, server snapshotted for deletion`);

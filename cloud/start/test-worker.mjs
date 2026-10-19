@@ -173,6 +173,29 @@ await test('replayed webhook after success: no second server', async () => {
   eq([w.servers.length, w.dns.length], [1, 1], 'servers, records');
 });
 
+await test('a checkout event redelivered after the account was deleted builds nothing (fin-fbb1)', async () => {
+  const w = world(); const sub = paid(w, 'erased');
+  await webhook(w, sub);
+  w.subs[sub].metadata.erase = '1'; w.subs[sub].status = 'canceled';
+  w.subs[sub].metadata.pw_hash = 'scrypt$x$y';   // the checkout event keeps the signup data
+  w.servers.length = 0; w.dns.length = 0;   // what the deletion left
+  eq((await webhook(w, sub)).status, 200, 'redelivery is acknowledged');
+  eq([w.servers.length, w.dns.length], [0, 0], 'servers, records');
+  eq(w.logs.some(l => l.event === 'provision.skipped_ended' && l.erase === true), true, 'skip logged');
+  const ended = paid(w, 'ended'); w.subs[ended].status = 'canceled';
+  await webhook(w, ended);
+  eq(w.servers.length, 0, 'a canceled subscription gets no server either');
+});
+
+await test('ops audit: a server left behind by a deleted account is erased with no snapshot', async () => {
+  const w = world(); w.env.OPS_KEY = 'ops';
+  const sub = paid(w, 'leftover'); await webhook(w, sub);
+  w.subs[sub].status = 'canceled'; w.subs[sub].metadata.erase = '1';
+  const rep = await (await call(w, () => worker.fetch(new Request('https://w.test/api/ops', { headers: { 'x-ops-key': 'ops' } }), w.env))).json();
+  eq(rep.fixed, [`leftover: account was deleted, server ${w.logs.find(l => l.event === 'provision.created').server} erased`], 'fixed');
+  eq([w.servers.length, w.dns.length, w.images.length], [0, 0, 0], 'servers, records, snapshots');
+});
+
 await test('forged webhook refused', async () => {
   const w = world();
   const r = await call(w, () => worker.fetch(new Request('https://w.test/webhooks/stripe', { method: 'POST', body: '{}',
