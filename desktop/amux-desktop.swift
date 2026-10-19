@@ -1008,9 +1008,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     @objc func reload(_ sender: Any?) { keyController?.webView.reload() }
-    @objc func zoomIn(_ sender: Any?) { keyController.map { $0.webView.pageZoom = min(3, $0.webView.pageZoom + 0.1) } }
-    @objc func zoomOut(_ sender: Any?) { keyController.map { $0.webView.pageZoom = max(0.5, $0.webView.pageZoom - 0.1) } }
-    @objc func zoomReset(_ sender: Any?) { keyController?.webView.pageZoom = 1 }
+    // Zoom goes through the dashboard's own zoom (root font size on WebKit).
+    // WKWebView.pageZoom shrank the page's CSS viewport without the dashboard
+    // re-measuring it, so the file viewer kept its old height and its bottom
+    // ran off the window at 130% (Ethan, 2026-10-19: "cant scroll to the
+    // bottom without zooming out"). pageZoom is only the fallback for a page
+    // without the dashboard's zoom, such as the connect page.
+    func zoom(_ fn: String, fallback: @escaping (WKWebView) -> Void) {
+        guard let wv = keyController?.webView else { return }
+        wv.evaluateJavaScript("typeof \(fn) === 'function' ? (\(fn)(), 'dashboard') : 'none'") { r, _ in
+            if (r as? String) != "dashboard" { fallback(wv) }
+        }
+    }
+    @objc func zoomIn(_ sender: Any?) { zoom("zoomIn") { $0.pageZoom = min(3, $0.pageZoom + 0.1) } }
+    @objc func zoomOut(_ sender: Any?) { zoom("zoomOut") { $0.pageZoom = max(0.5, $0.pageZoom - 0.1) } }
+    @objc func zoomReset(_ sender: Any?) { zoom("resetZoom") { $0.pageZoom = 1 } }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(toggleMenuBarItem(_:)) { item.state = (config.menuBar ?? true) ? .on : .off }
