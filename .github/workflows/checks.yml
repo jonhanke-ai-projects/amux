@@ -496,6 +496,10 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-cli-reviewer-shepherd-guard.sh
+      - name: amux memory add appends to the worker's own memory
+        run: |
+          set -uo pipefail
+          bash scripts/test-cli-memory.sh
       - name: the commit-intent manifest round-trips
         run: |
           set -uo pipefail
