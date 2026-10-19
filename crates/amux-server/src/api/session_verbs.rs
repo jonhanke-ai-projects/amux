@@ -15365,6 +15365,82 @@ fn seed_dir_trust(work_dir: &str) {
     }
 }
 
+/// Seed Claude Code's own first-run answers before a Claude worker launches, so a
+/// fresh pane starts at the composer. Two screens stop it otherwise: the
+/// onboarding theme picker (`hasCompletedOnboarding`) and, for an API-key worker,
+/// "use this API key?", whose approval Claude stores as the key's last 20
+/// characters in `customApiKeyResponses.approved`.
+///
+/// cloud/desktop/bootstrap.sh seeds both, but only for a key present at install.
+/// A Cloud customer who saves the key in the Vault afterwards (the normal path)
+/// got a worker parked on the theme picker forever; first Claude task never ran
+/// (amux Cloud e2e, 2026-10-19). Saving the key in amux is the customer's answer
+/// to the second prompt. A key they REJECTED in Claude itself stays rejected.
+/// Same fail-open, merge-preserving discipline as [`seed_dir_trust`].
+fn seed_claude_first_run(api_key: Option<&str>) {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let path = std::path::Path::new(&home).join(".claude.json");
+    let doc: Value = match std::fs::read_to_string(&path) {
+        Ok(s) => match serde_json::from_str(&s) {
+            Ok(v) => v,
+            Err(_) => return,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(_) => return,
+    };
+    let Some(updated) = claude_first_run_merge(doc, api_key) else {
+        return;
+    };
+    let Ok(body) = serde_json::to_string(&updated) else {
+        return;
+    };
+    let tmp = path.with_extension("json.amux-firstrun-tmp");
+    match std::fs::write(&tmp, body.as_bytes()).and_then(|_| std::fs::rename(&tmp, &path)) {
+        Ok(()) => tracing::info!(
+            verdict = "claude_first_run_seeded",
+            api_key_approved = api_key.is_some(),
+            "Claude Code first-run answers seeded so the worker starts at its composer"
+        ),
+        Err(error) => tracing::warn!(verdict = "claude_first_run_seed_failed", %error,
+            "could not persist Claude Code first-run answers; the worker may stop at onboarding"),
+    }
+}
+
+/// Pure merge for [`seed_claude_first_run`]. `None` when nothing changes or the
+/// document is not an object.
+fn claude_first_run_merge(mut doc: Value, api_key: Option<&str>) -> Option<Value> {
+    let root = doc.as_object_mut()?;
+    let mut changed = false;
+    if root.get("hasCompletedOnboarding") != Some(&Value::Bool(true)) {
+        root.insert("hasCompletedOnboarding".into(), Value::Bool(true));
+        changed = true;
+    }
+    if let Some(key) = api_key.map(str::trim).filter(|k| k.len() >= 20) {
+        let suffix = &key[key.len() - 20..];
+        let responses = root
+            .entry("customApiKeyResponses")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()?;
+        let listed = |field: &str, r: &serde_json::Map<String, Value>| {
+            r.get(field)
+                .and_then(Value::as_array)
+                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(suffix)))
+        };
+        if !listed("approved", responses) && !listed("rejected", responses) {
+            let approved = responses
+                .entry("approved")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()?;
+            approved.push(Value::String(suffix.to_string()));
+            responses.entry("rejected").or_insert_with(|| json!([]));
+            changed = true;
+        }
+    }
+    changed.then_some(doc)
+}
+
 /// Pure merge for [`seed_dir_trust`], split out so the shape handling is tested
 /// without touching `$HOME`. Returns `Some(doc)` with
 /// `projects[dir].hasTrustDialogAccepted=true` folded in, or `None` when it is
@@ -16612,6 +16688,15 @@ pub(crate) async fn start_session(
         env_args.push("ANTHROPIC_API_KEY=".into());
     } else if let Some(v) = provider_value("ANTHROPIC_API_KEY") {
         deferred_secrets.push(("ANTHROPIC_API_KEY".into(), v));
+    }
+    if !matches!(
+        provider.as_str(),
+        "codex" | "gemini" | "ollama" | "grok" | "muse" | "opencode"
+    ) {
+        let key = (!has_oauth)
+            .then(|| provider_value("ANTHROPIC_API_KEY"))
+            .flatten();
+        seed_claude_first_run(key.as_deref());
     }
     for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"] {
         if let Some(v) = provider_value(k) {
@@ -36826,6 +36911,33 @@ mod tests {
 
         // Unmergeable shape (root is not an object) -> None, leave it alone.
         assert!(trust_seed_merge(json!("not an object"), "/work/dir").is_none());
+    }
+
+    /// amux Cloud e2e 2026-10-19: a key saved in the Vault after install left the
+    /// Claude worker on the onboarding theme picker. The launch seed answers both
+    /// first-run screens, keeps everything else, and honours a rejection.
+    #[test]
+    fn a_claude_worker_with_a_vault_key_skips_first_run_screens() {
+        let key = "fake-key-0123456789abcdefghijKLMNOPQRSTUV";
+        let suffix = &key[key.len() - 20..];
+        let got = claude_first_run_merge(json!({"theme": "dark", "projects": {"/w": {}}}), Some(key))
+            .expect("a fresh config must be seeded");
+        assert_eq!(got["hasCompletedOnboarding"], true);
+        assert_eq!(got["customApiKeyResponses"]["approved"], json!([suffix]));
+        assert_eq!(got["customApiKeyResponses"]["rejected"], json!([]));
+        assert_eq!(got["theme"], "dark");
+        assert_eq!(got["projects"]["/w"], json!({}));
+        assert!(claude_first_run_merge(got, Some(key)).is_none(), "idempotent");
+
+        let rejected = json!({"hasCompletedOnboarding": true,
+            "customApiKeyResponses": {"approved": [], "rejected": [suffix]}});
+        assert!(claude_first_run_merge(rejected, Some(key)).is_none(),
+            "a key the user rejected in Claude is never approved for them");
+
+        let oauth = claude_first_run_merge(json!({}), None).expect("onboarding still seeded");
+        assert_eq!(oauth["hasCompletedOnboarding"], true);
+        assert!(oauth.get("customApiKeyResponses").is_none());
+        assert!(claude_first_run_merge(json!([]), Some(key)).is_none());
     }
 
     #[test]
