@@ -1189,10 +1189,21 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     let isolated = super::session_verbs::env_flag_on(wenv.get("CC_ISOLATED"));
     tracing::info!(worker, isolated, fresh, measured = true, n_considered = 1,
         verdict = "chat_companion_context", "Chat context includes the worker directory and isolation state");
-    out.push_str(if isolated {
-        "- isolated terminal: yes; direct owner-to-CLI transport. Chat is a separate conversation; do not inject harness instructions or automate the terminal.\n"
+    // Ethan, 2026-10-19: "even if a worker is isolated, its chat should be able
+    // to interact/access it". The old line ("do not ... automate the terminal")
+    // read as "do not send", and a Chat tab sat 45 minutes on an approved owner
+    // decision. Isolation keeps amux automation out of the terminal; the chat
+    // speaks for the owner, and the server accepts its send as owner input
+    // (`chat_speaks_for_owner`, verdict `isolated_send_from_own_chat_tab`).
+    out.push_str(&if isolated {
+        format!(
+            "- isolated terminal: yes; direct owner-to-CLI transport, so amux adds no automation of its own. \
+             You speak for the owner: read it and send it the owner's instructions with `amux send {worker} --stdin` \
+             as usual (amux accepts your send as owner input). Relay an owner decision right away; do not hold it \
+             or ask the owner to paste it.\n"
+        )
     } else {
-        "- isolated terminal: no\n"
+        "- isolated terminal: no\n".to_string()
     });
     out.push_str(&format!(
         "- process: {}\n",
@@ -2558,7 +2569,10 @@ mod tests {
         let first = companion_prompt(&state, "companion-context-probe", fresh, "owner question").await;
         assert!(first.starts_with("You are the chat companion for the amux worker `companion-context-probe`"));
         assert!(first.contains(&format!("- worker directory: {}", dir.display())));
-        assert!(first.contains("- isolated terminal: yes; direct owner-to-CLI transport."));
+        assert!(first.contains("- isolated terminal: yes; direct owner-to-CLI transport"));
+        // The chat must read the line as permission to send, never as a ban.
+        assert!(first.contains("amux send companion-context-probe --stdin"), "{first}");
+        assert!(!first.contains("do not inject harness instructions or automate the terminal"));
         assert!(first.ends_with("[owner]\nowner question"));
         let (_, fresh) = codex_conversation("thread-existing".into(), false);
         let resumed = companion_prompt(&state, "companion-context-probe", fresh, "follow-up").await;
