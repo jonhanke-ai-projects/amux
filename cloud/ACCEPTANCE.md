@@ -77,6 +77,8 @@ Round 5 (Codex, 2026-10-19, image 322cec9c9, adopted on first boot with no manua
 
 Still open, each needing the owner: a physical iPhone run (TestFlight build on a real handset), and the Claude sign-in and first Claude task (a Claude account or an Anthropic key).
 
+Claude sign-in attempt, 2026-10-19 on test server cl-4c67 (ready 132s after payment): the dashboard's Claude login produced a claude.com authorize link and showed the paste box, so the server half works. The authorize page stopped at a Cloudflare "Verify you are human" check in the automation browser, and Ethan's own Chrome did not answer CDP (likely a pending Allow prompt). A human has to click through that check once, so this row stays with the owner. The test account was deleted through the billing flow afterwards; Hetzner holds only amux-sandbox and the golden image, and there are 0 active subscriptions and 0 open checkouts.
+
 Live through the pipeline: main went green at 61b7bfe41, the image deploy built, and a fresh signup's first boot reported live_commit 61b7bfe41 with tls_days_left and the error page in place (fin-fbb1, deleted). A logged signup (tl-9330) shows the webhook creating the server 2 s after payment and ready in 132 s.
 
 Seen in the same run: two orders waited about 5 to 6.5 minutes for Hetzner capacity (fsn1 and nbg1 full, created in hel1) and was ready 9 minutes after payment, with the cron retrying as designed.
