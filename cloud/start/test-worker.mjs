@@ -187,6 +187,16 @@ await test('a checkout event redelivered after the account was deleted builds no
   eq(w.servers.length, 0, 'a canceled subscription gets no server either');
 });
 
+await test('C12-6 a redelivery while a deleted account\'s server is still going does not republish its address', async () => {
+  const w = world(); const sub = paid(w, 'midway');
+  await webhook(w, sub);
+  w.subs[sub].status = 'canceled'; w.subs[sub].metadata.erase = '1'; w.subs[sub].metadata.pw_hash = 'scrypt$x$y';
+  w.dns.length = 0;   // the address is gone, the server not yet
+  await webhook(w, sub);
+  eq(w.dns.length, 0, 'records');
+  eq(w.logs.some(l => l.event === 'provision.resume' && l.sub === sub), false, 'no resume for an erased account');
+});
+
 await test('ops audit: a server left behind by a deleted account is erased with no snapshot', async () => {
   const w = world(); w.env.OPS_KEY = 'ops';
   const sub = paid(w, 'leftover'); await webhook(w, sub);

@@ -235,19 +235,20 @@ async function finalSnapshotFor(env, email) {
 // cleared only after the server, its backups and its DNS record all exist.
 async function provision(env, { sub, meta, email }) {
   if (!sub || !meta?.slug || !meta?.pw_hash) throw new Error(`subscription ${sub} lacks signup data`);
+  // Stripe redelivers a checkout event for up to 3 days, and the event still carries the signup
+  // data after the account is gone, so only a live subscription gets a server. Without this a
+  // retried delivery rebuilt an erased account an hour after its deletion (fin-fbb1, 2026-10-19). It comes before the
+  // resume branch too: a server still being erased must not get its address published again (C12-6).
+  const current = await stripe(env, 'GET', `/subscriptions/${sub}`);
+  if (!LIVE.includes(current.status) || current.metadata?.erase === '1') {
+    log('provision.skipped_ended', { sub, slug: meta.slug, status: current.status, erase: current.metadata?.erase === '1' });
+    return null;
+  }
   const existing = await hetzner(env, 'GET', `/servers?label_selector=amux-sub=${sub}`);
   if (existing.servers.length) {
     const srv = existing.servers[0];
     log('provision.resume', { sub, server: srv.id });   // a redelivery, or a retry after a partial failure
     return finish(env, sub, srv.labels['amux-slug'], srv);
-  }
-  // Stripe redelivers a checkout event for up to 3 days, and the event still carries the signup
-  // data after the account is gone, so only a live subscription gets a server. Without this a
-  // retried delivery rebuilt an erased account an hour after its deletion (fin-fbb1, 2026-10-19).
-  const current = await stripe(env, 'GET', `/subscriptions/${sub}`);
-  if (!LIVE.includes(current.status) || current.metadata?.erase === '1') {
-    log('provision.skipped_ended', { sub, slug: meta.slug, status: current.status, erase: current.metadata?.erase === '1' });
-    return null;
   }
   let slug = meta.slug;
   if (await slugTaken(env, slug)) slug = `${slug}-${sub.slice(-4).toLowerCase()}`;   // lost a race since checkout
