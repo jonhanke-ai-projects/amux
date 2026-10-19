@@ -99,8 +99,14 @@ if [[ "$MODE" == live ]]; then
   for rid in $(cfapi "https://api.cloudflare.com/client/v4/zones/$ZID/dns_records?name=cloud.amux.io" | python3 -c 'import json,sys;print(" ".join(r["id"] for r in json.load(sys.stdin)["result"] if r["type"] in ("A","AAAA","CNAME")))'); do
     cfapi -X DELETE "https://api.cloudflare.com/client/v4/zones/$ZID/dns_records/$rid" >/dev/null; log "removed DNS record $rid for cloud.amux.io"
   done
-  cfapi -X PUT -H 'Content-Type: application/json' "https://api.cloudflare.com/client/v4/accounts/$ACCT/workers/domains" \
-    -d "{\"hostname\":\"cloud.amux.io\",\"service\":\"$NAME\",\"zone_id\":\"$ZID\",\"environment\":\"production\"}" >/dev/null
+  # Cloudflare answers this PUT with a transient 400 now and then, right after the upload
+  # (2026-10-18). Retry before failing the whole deploy.
+  for try in 1 2 3 4 5; do
+    cfapi -X PUT -H 'Content-Type: application/json' "https://api.cloudflare.com/client/v4/accounts/$ACCT/workers/domains" \
+      -d "{\"hostname\":\"cloud.amux.io\",\"service\":\"$NAME\",\"zone_id\":\"$ZID\",\"environment\":\"production\"}" >/dev/null && break
+    [[ $try == 5 ]] && { log "FATAL: custom domain cloud.amux.io not attached after 5 tries"; exit 1; }
+    log "custom domain PUT failed (try $try), retrying"; sleep $((try * 5))
+  done
 fi
 for _ in $(seq 1 30); do curl -fsS "$URL/health" >/dev/null 2>&1 && break; sleep 3; done
 log "health: $(curl -fsS "$URL/health" || echo UNREACHABLE)"

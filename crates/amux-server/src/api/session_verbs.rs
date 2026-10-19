@@ -4113,6 +4113,27 @@ fn warn_foreign_transcript_once(name: &str, provider: &str) {
     }
 }
 
+/// The model of the newest Codex turn in a rollout file: the last `turn_context` names it.
+/// Reads the tail only, like the Claude reader below.
+pub(crate) fn codex_rollout_last_model(path: &std::path::Path) -> Option<String> {
+    use std::io::{Read, Seek};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    const TAIL: u64 = 512_000;
+    if len > TAIL {
+        f.seek(std::io::SeekFrom::Start(len - TAIL)).ok()?;
+    }
+    let mut buf = String::new();
+    f.read_to_string(&mut buf).ok()?;
+    buf.lines().rev().find_map(|line| {
+        let v: Value = serde_json::from_str(line).ok()?;
+        if v["type"] != "turn_context" {
+            return None;
+        }
+        v.pointer("/payload/model").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty()).map(str::to_string)
+    })
+}
+
 pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
     // BEFORE the cache and before any IO, because this function parses one
     // vendor's file format and a worker that does not write it has no evidence
@@ -4123,7 +4144,11 @@ pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
     // the project dir AND every sibling's meta — real work, done per poll, to
     // produce a value that could only ever be wrong for these providers.
     let provider = provider_of(&parse_env(name));
-    if !writes_claude_transcript(&provider) {
+    // Codex names its model in its own rollout file. Without this a Codex worker with no explicit
+    // --model showed the dashboard's guessed default (gpt-6-luna) while Codex ran GPT-5.5
+    // (amux Cloud e2e, 2026-10-18).
+    let codex = launch_base_binary(&provider) == "codex";
+    if !codex && !writes_claude_transcript(&provider) {
         warn_foreign_transcript_once(name, &provider);
         return (None, None);
     }
@@ -4138,7 +4163,9 @@ pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
         }
     }
     let (mut model, mut tokens) = (None, None);
-    if let Some(path) = session_jsonl_path(name) {
+    if codex {
+        model = codex_rollout_path(name).and_then(|p| codex_rollout_last_model(&p));
+    } else if let Some(path) = session_jsonl_path(name) {
         if let Ok(f) = std::fs::File::open(&path) {
             let len = f.metadata().map(|m| m.len()).unwrap_or(0);
             // Tail only. A long-running lane's transcript reaches hundreds of
@@ -50089,6 +50116,21 @@ mod composer_state_tests {
             None,
             "a picker is a question, not stuck input"
         );
+    }
+
+    #[test]
+    fn codex_rollout_names_the_model_codex_really_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout.jsonl");
+        std::fs::write(&p, concat!(
+            r#"{"type":"session_meta","payload":{"id":"x"}}"#, "\n",
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.4"}}"#, "\n",
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.5"}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"token_count"}}"#, "\n",
+        )).unwrap();
+        assert_eq!(codex_rollout_last_model(&p).as_deref(), Some("gpt-5.5"), "the newest turn wins");
+        std::fs::write(&p, r#"{"type":"session_meta","payload":{"id":"x"}}"#).unwrap();
+        assert_eq!(codex_rollout_last_model(&p), None, "no turn yet, no model");
     }
 
     #[test]

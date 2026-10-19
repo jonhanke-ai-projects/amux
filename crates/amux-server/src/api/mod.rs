@@ -1179,6 +1179,9 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         "has_api_key": has_key_in_env || has_oauth || has_proxy
             || model_auth["claude"]["subscription_token"].as_bool().unwrap_or(false),
         "has_oauth": has_oauth,
+        // Any provider at all: an OpenAI key or a Codex sign-in runs Codex workers, so a server
+        // with one must not be told "no key" (amux Cloud e2e, 2026-10-18).
+        "has_any_model": has_key_in_env || has_oauth || has_proxy || any_model_auth(&model_auth),
         "model_auth": model_auth,
         "managed_upstream": has_proxy,
         "key_valid": serde_json::Value::Null,
@@ -1228,9 +1231,24 @@ pub(crate) fn model_auth_status(env_text: &str, user_home: &std::path::Path) -> 
     })
 }
 
+/// True when any provider in a [`model_auth_status`] answer has a credential.
+pub(crate) fn any_model_auth(v: &serde_json::Value) -> bool {
+    v.as_object().is_some_and(|providers| {
+        providers.values().any(|p| p.as_object().is_some_and(|f| f.values().any(|b| b.as_bool() == Some(true))))
+    })
+}
+
 #[cfg(test)]
 mod model_auth_tests {
-    use super::model_auth_status;
+    use super::{any_model_auth, model_auth_status};
+
+    #[test]
+    fn an_openai_key_alone_is_a_connected_model() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(!any_model_auth(&model_auth_status("", home.path())), "nothing set");
+        assert!(any_model_auth(&model_auth_status("OPENAI_API_KEY=sk-proj-abc123\n", home.path())));
+        assert!(!any_model_auth(&model_auth_status("OPENAI_API_KEY=changeme\n", home.path())), "placeholder");
+    }
 
     #[test]
     fn reports_presence_per_provider_and_ignores_placeholders() {

@@ -1589,7 +1589,9 @@ async function _initIdentity() {
     _localMemberEmail = d.is_local_member ? (d.email || '') : '';
     _localMemberScope = d.is_local_member ? (d.access_scope || {level:'global', name:''}) : null;
     _localMemberTeam = d.is_local_member ? (d.team || null) : null;
-    if (!d.has_api_key) {
+    // has_any_model: any provider (Anthropic, OpenAI/Codex, Gemini key or sign-in). An
+    // OpenAI-only server was told "No Anthropic API key" (amux Cloud e2e, 2026-10-18).
+    if (!(d.has_any_model ?? d.has_api_key)) {
       if (d.is_cloud) {
         // Blocking modal for cloud users — must set key before using the app
         const m = document.getElementById('apikey-setup-modal');

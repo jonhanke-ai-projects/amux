@@ -124,7 +124,7 @@
 setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style.display!=='none'){document.getElementById('js-fallback-retry').style.display='';}},8000);
 </script>
 <div id="no-apikey-banner" style="display:none;background:#7c2d12;color:#fed7aa;padding:8px 16px;text-align:center;font-size:0.82rem;z-index:90;position:relative;">
-  No Anthropic API key set — Claude workers won't work. <a href="#" onclick="event.preventDefault();document.getElementById('no-apikey-banner').style.display='none';toggleSettings()" style="color:#fde68a;font-weight:600;text-decoration:underline;">Add key in Settings</a>
+  No model connected yet, so workers cannot run. <a href="#" onclick="event.preventDefault();document.getElementById('no-apikey-banner').style.display='none';openVault('apikeys')" style="color:#fde68a;font-weight:600;text-decoration:underline;">Add an API key in Vault</a>
 </div>
 <!-- API key setup modal — shown on cloud when no user key is configured (dismissible) -->
 <div id="apikey-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;align-items:center;justify-content:center;">

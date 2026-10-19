@@ -1307,6 +1307,9 @@ pub async fn create(
                     );
                 }
             }
+            // Same absolute instants the list publishes, so a client can show "Next run" from
+            // the create answer without parsing the server's zone-less wall clock.
+            expose_instants(&mut body);
             (StatusCode::CREATED, Json(body)).into_response()
         }
         Err(e) => internal(e),
@@ -1666,6 +1669,7 @@ pub async fn patch(
                     }
                     attach_isolated_note(o, "patch");
                 }
+                expose_instants(&mut v);
                 Json(v).into_response()
             }
             Some(Outcome::NotFound) => not_found(),
@@ -2554,6 +2558,7 @@ mod tests {
         assert_eq!(created["sched_type"], json!("recurring"));
         assert_eq!(created["enabled"], json!(1));
         assert!(created["next_run"].as_str().unwrap().contains("T09:00"));
+        assert!(created["next_run_ms"].as_i64().is_some(), "create answers with the absolute instant: {created}");
 
         let (st, list) = send(&app, "GET", "/api/schedules", None, &[]).await;
         assert_eq!(st, StatusCode::OK);
