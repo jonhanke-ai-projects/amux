@@ -671,6 +671,36 @@ fn decide_with(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now
     ))
 }
 
+/// The dedupe key for "this goal was reported met": one notice per goal
+/// condition, so a worker re-evaluated as met every tick is told once, and a
+/// new /goal on the same worker is told again.
+pub fn met_notice_key(condition: &str) -> String {
+    use sha2::Digest;
+    hex::encode(&sha2::Sha256::digest(condition.trim().as_bytes())[..8])
+}
+
+/// Tell the owner a worker's goal is met, once per goal. "Describe what you
+/// want" starts a worker on a /goal and promises to say when it finishes
+/// (Ethan, 2026-10-18); the dashboard says so live, this reaches a closed one
+/// by web push. Recorded in lane meta (`goal_met_notified`) so a restart does
+/// not repeat it. Log: verdict=goal_met_notified with the delivery count, so
+/// "no subscriptions" reads as 0 delivered, not as silence.
+async fn notify_met_once(app: &crate::api::AppState, name: &str, condition: &str) {
+    let key = met_notice_key(condition);
+    let meta = crate::api::session_verbs::load_meta(name);
+    if crate::api::session_verbs::meta_str(&meta, "goal_met_notified") == key {
+        return;
+    }
+    crate::api::session_verbs::update_meta(name, &[("goal_met_notified", Value::String(key))]);
+    let body: String = condition.chars().take(180).collect();
+    let results = crate::push::send_all(app, &format!("{name} finished its goal"), &body, name,
+        &format!("goal-met:{name}"), &format!("/#peek={name}")).await;
+    let delivered = results.iter().filter(|r| r["status"].as_u64().is_some_and(|c| (200..300).contains(&c))).count();
+    tracing::info!(target: "amux::goal_keeper", session = %name, verdict = "goal_met_notified",
+        delivered, measured = true, n_considered = results.len(),
+        "the /goal is met; told the owner by web push ({delivered} of {} subscription(s) delivered)", results.len());
+}
+
 async fn tick(app: crate::api::AppState) {
     let Ok(sessions) = crate::api::sessions_legacy::legacy_sessions_values(app.store.clone()).await else {
         return;
@@ -740,6 +770,9 @@ async fn tick(app: crate::api::AppState) {
         considered += 1;
         let checker = super::goal_check::view(&crate::api::session_verbs::home(), &name, now);
         let res = resolve(Some(&goal), || Some(footer), &checker);
+        if res.state == "met" {
+            notify_met_once(&app, &name, &goal.condition).await;
+        }
         // A goal-continuation schedule already woke this worker recently.
         if let Some((at, by)) = last_wake(&name) {
             if by != "goal keeper" && now - at < interval_s() {
@@ -866,6 +899,14 @@ pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_met_goal_is_noticed_once_per_condition() {
+        let a = super::met_notice_key("ship dark mode");
+        assert_eq!(a, super::met_notice_key("  ship dark mode \n"), "whitespace is not a new goal");
+        assert_ne!(a, super::met_notice_key("ship light mode"), "a new goal is noticed again");
+        assert_eq!(a.len(), 16);
+    }
+
     /// Only a continue that landed now is written to Messages.
     #[test]
     fn only_a_landed_continue_is_recorded_in_messages() {

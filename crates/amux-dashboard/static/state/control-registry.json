@@ -2748,6 +2748,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outcomeStart": {
+      "kind": "command._outcomeStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_paintCachedPeek": {
       "kind": "command._paintCachedPeek",
       "feedback_required": true,
@@ -5396,6 +5402,12 @@
     },
     "openMemberScope": {
       "kind": "command.openMemberScope",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "openOutcome": {
+      "kind": "command.openOutcome",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

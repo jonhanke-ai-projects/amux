@@ -259,6 +259,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="header-add-wrap">
       <button class="header-add-btn" id="add-btn" onclick="event.stopPropagation();toggleAddMenu()" aria-label="Create or connect" title="Create or connect">+</button>
       <div class="header-add-menu" id="add-menu">
+        <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openOutcome()"><span class="mi">&#x2728;</span> Describe what you want</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openCreate()"><span class="mi">&#x2795;</span> New worker</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnect()"><span class="mi">&#x1F517;</span> Connect tmux</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnectIterm2()"><span class="mi">&#x1F5A5;</span> Connect iTerm2 pane</div>

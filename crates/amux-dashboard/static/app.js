@@ -5573,7 +5573,11 @@ function _checkSessionTransitions(newData) {
   if (_initialLoad) return;
   for (const s of newData) {
     const prev = _prevSessionState[s.name];
-    if (!prev) { _prevSessionState[s.name] = { status: s.status, running: s.running }; continue; }
+    if (!prev) { _prevSessionState[s.name] = { status: s.status, running: s.running, goal: s.goal?.state }; continue; }
+    // A /goal reaching met is the finish line a described outcome runs to.
+    if (s.goal?.state === 'met' && prev.goal && prev.goal !== 'met') {
+      _fireSessionNotif(s.name, s.name + ' finished its goal', s.goal.condition || s.task_name || '');
+    }
     const statusChanged = s.status !== prev.status;
     const stoppedNow = prev.running && !s.running;
     if (statusChanged) {
@@ -5593,7 +5597,7 @@ function _checkSessionTransitions(newData) {
       _fireSessionNotif(s.name, s.name + ' stopped', '');
       amuxTrack('session_stopped', { session: s.name, prev_status: prev.status });
     }
-    _prevSessionState[s.name] = { status: s.status, running: s.running };
+    _prevSessionState[s.name] = { status: s.status, running: s.running, goal: s.goal?.state };
   }
 }
 
@@ -10197,6 +10201,129 @@ function closeAddMenu() {
   if (!addMenuOpen) return;
   document.getElementById('add-menu').classList.remove('open');
   addMenuOpen = false;
+}
+
+// ── Describe what you want (Ethan, 2026-10-18) ──
+// One box: describe the outcome. Everything else is a default under a closed
+// "Defaults and constraints" section, remembered in prefs (outcome_defaults)
+// so the next one needs only the description. The worker starts on
+// `/goal <outcome + constraints>`: Claude Code's own evaluator decides when it
+// is done, the goal keeper keeps it going until then, and the dashboard (and
+// the goal keeper's push) say when it is met. Nothing here calls a model: the
+// name and description are computed from the text, and the worker does the
+// judging.
+const _OUTCOME_DEFAULT_CONSTRAINTS = 'Do not spend money or contact anyone outside the company. '
+  + 'Ask before deleting or overwriting data you did not create. Commit finished work. '
+  + 'When only steps that need the owner remain, stop and list them.';
+const _OUTCOME_STOP = new Set(['a','an','the','and','or','to','of','for','in','on','with','my','our','me','i','we',
+  'it','is','be','that','this','so','can','please','want','would','like','make','some','new','into','from','at','by']);
+
+function _outcomeName(text, taken) {
+  const words = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => !_OUTCOME_STOP.has(w));
+  let base = words.slice(0, 4).join('-').slice(0, 32).replace(/-+$/, '') || 'outcome';
+  let name = base, n = 2;
+  while (taken.has(name)) name = base + '-' + n++;
+  return name;
+}
+function _outcomeDesc(text) {
+  const first = text.trim().split(/(?<=[.!?])\s|\n/)[0] || text.trim();
+  return first.length > 140 ? first.slice(0, 137) + '...' : first;
+}
+// The first prompt. A Claude worker gets it as a /goal, so it keeps going
+// until the condition is met; other providers get the same text as a task.
+function _outcomePrompt(text, constraints, goal) {
+  const flat = (t) => t.replace(/\s*\n+\s*/g, ' ').trim();
+  const body = flat(text) + (constraints.trim() ? ' Constraints: ' + flat(constraints) : '')
+    + ' Done when this outcome is achieved and verified.';
+  return (goal ? '/goal ' : '') + body.slice(0, 4000);
+}
+async function _outcomeDefaults() {
+  let d = {};
+  try { d = JSON.parse(localStorage.getItem('amux_outcome_defaults') || '{}'); } catch (_) {}
+  try {
+    const r = await fetch(API + '/api/prefs?key=outcome_defaults', { headers: _authHeaders() });
+    if (r.ok) { const v = (await r.json()).value; if (v) d = JSON.parse(v); }
+  } catch (_) { /* offline: the cached copy stands */ }
+  return {
+    group: d.group ?? ((typeof activeTag === 'string' && activeTag) ? activeTag : ''),
+    dir: d.dir || ((_filesCwd && _filesCwd !== '/') ? _filesCwd : ''),
+    provider: d.provider || 'claude',
+    model: d.model || '',
+    goal: d.goal !== false,
+    isolated: d.isolated !== false,
+    constraints: d.constraints ?? _OUTCOME_DEFAULT_CONSTRAINTS,
+  };
+}
+async function openOutcome() {
+  const d = await _outcomeDefaults();
+  const draft = localStorage.getItem('amux_outcome_draft') || '';
+  const groups = [...new Set((sessions || []).flatMap(s => s.tags || []))].sort();
+  const chk = (id, on, label) => `<label class="outcome-check"><input type="checkbox" id="${id}"${on ? ' checked' : ''}> ${label}</label>`;
+  const html = `<div class="outcome-form">
+    <textarea id="outcome-text" class="input outcome-text" rows="4"
+      placeholder="e.g. Add a dark mode toggle to settings and ship it"
+      onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">${esc(draft)}</textarea>
+    <details class="outcome-settings">
+      <summary>Defaults and constraints</summary>
+      <label class="outcome-field">Group<input id="outcome-group" class="input" list="outcome-group-list" value="${esc(d.group)}" placeholder="none"></label>
+      <datalist id="outcome-group-list">${groups.map(g => '<option value="' + esc(g) + '"></option>').join('')}</datalist>
+      <label class="outcome-field">Working directory<input id="outcome-dir" class="input" value="${esc(d.dir)}" placeholder="~/Dev/project"></label>
+      <label class="outcome-field">Provider<select id="outcome-provider" class="input">
+        ${['claude', 'codex', 'gemini'].map(p => `<option value="${p}"${p === d.provider ? ' selected' : ''}>${p}</option>`).join('')}
+      </select></label>
+      <label class="outcome-field">Model<input id="outcome-model" class="input" value="${esc(d.model)}" placeholder="${esc(window._AMUX_DEFAULT_MODEL || 'default')}"></label>
+      <label class="outcome-field">Constraints<textarea id="outcome-constraints" class="input" rows="3">${esc(d.constraints)}</textarea></label>
+      ${chk('outcome-goal', d.goal, 'Keep going until done (/goal, Claude)')}
+      ${chk('outcome-isolated', d.isolated, 'Isolated (no board or harness prompts)')}
+      ${chk('outcome-remember', true, 'Remember these as my defaults')}
+    </details>
+  </div>`;
+  const shown = showFormModal('Describe what you want', html, 'Start');
+  setTimeout(() => document.getElementById('outcome-text')?.focus(), 30);
+  const ok = await shown;
+  const v = (id) => (document.getElementById(id)?.value || '').trim();
+  const on = (id) => !!document.getElementById(id)?.checked;
+  const text = v('outcome-text');
+  if (text) localStorage.setItem('amux_outcome_draft', text);   // kept until a worker exists
+  if (!ok || !text) return;
+  const cfg = { group: v('outcome-group'), dir: v('outcome-dir'), provider: v('outcome-provider') || 'claude',
+    model: v('outcome-model'), goal: on('outcome-goal'), isolated: on('outcome-isolated'),
+    constraints: document.getElementById('outcome-constraints')?.value ?? d.constraints };
+  if (on('outcome-remember')) {
+    const val = JSON.stringify(cfg);
+    localStorage.setItem('amux_outcome_defaults', val);
+    fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({ key: 'outcome_defaults', value: val }) }).catch(() => {});
+  }
+  await _outcomeStart(text, cfg);
+}
+async function _outcomeStart(text, cfg) {
+  const name = _outcomeName(text, new Set((sessions || []).map(s => s.name)));
+  const goal = cfg.goal && cfg.provider === 'claude';
+  const body = { name, dir: cfg.dir || (window._cloudEmail ? '/root' : ''), creator: _getDeviceName(),
+    desc: _outcomeDesc(text), prompt: _outcomePrompt(text, cfg.constraints || '', goal) };
+  if (cfg.provider !== 'claude') body.provider = cfg.provider;
+  if (cfg.model) body.model = cfg.model;
+  const groups = _createGroupsFrom(cfg.group);
+  if (groups.length) body.tags = groups;
+  if (cfg.isolated) body.isolated = true;
+  if (_yoloDefault) body.yolo = true;
+  let r;
+  try {
+    r = await fetch(API + '/api/sessions', { method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body) });
+  } catch (_) { showToast('Not started: server unreachable. Your description is kept.'); return; }
+  if (_isLocallyQueued(r)) { showToast('Not started yet: queued in this browser until the server is reachable. Your description is kept.'); return; }
+  if (!r.ok) {
+    let e = ''; try { e = (await r.json()).error || ''; } catch (_) {}
+    showToast('Not started: ' + (e || 'error ' + r.status) + '. Your description is kept.');
+    return;
+  }
+  localStorage.removeItem('amux_outcome_draft');
+  showToast(goal ? 'Started ' + name + ': it keeps going until done and tells you when it is'
+                 : 'Started ' + name);
+  await fetchSessions();
+  document.querySelector('[data-session="' + CSS.escape(name) + '"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // ── Set default model label from server config ──

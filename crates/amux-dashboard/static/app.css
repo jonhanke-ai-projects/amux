@@ -9806,3 +9806,20 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .msg-task-link { background:rgba(128,128,128,0.10); border:1px solid transparent; border-radius:10px; padding:1px 8px; font-size:0.72rem; color:var(--dim); cursor:pointer; min-height:24px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .msg-task-link:hover, .msg-task-link:focus-visible { border-color:var(--accent); color:var(--text); }
 @media (max-width: 600px) { .msg-task-link { min-height:32px; } }
+
+/* Describe what you want (openOutcome) */
+.outcome-form { display: flex; flex-direction: column; gap: 10px; text-align: left; }
+.outcome-text { width: 100%; min-height: 96px; resize: vertical; font-size: 0.95rem; box-sizing: border-box; }
+.outcome-settings { border: 1px solid var(--border); border-radius: 8px; padding: 0 10px; }
+.outcome-settings > summary { cursor: pointer; padding: 10px 0; min-height: 24px; font-size: 0.85rem; color: var(--dim); list-style: none; }
+.outcome-settings > summary::-webkit-details-marker { display: none; }
+.outcome-settings > summary::before { content: '\25B8'; display: inline-block; width: 1.1em; }
+.outcome-settings[open] > summary::before { content: '\25BE'; }
+.outcome-settings[open] { padding-bottom: 10px; }
+.outcome-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--dim); margin-top: 8px; }
+.outcome-field .input { width: 100%; box-sizing: border-box; }
+.outcome-check { display: flex; align-items: center; gap: 8px; min-height: 36px; font-size: 0.82rem; margin-top: 4px; }
+@media (max-width: 600px) {
+  .outcome-settings > summary { min-height: 44px; display: flex; align-items: center; }
+  .outcome-check { min-height: 44px; }
+}
