@@ -127,6 +127,11 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
         super.init()
 
         contentWindow.delegate = self
+        #if AMUX_APP
+        contentWindow.isReleasedWhenClosed = false
+        toolbarWindow.isReleasedWhenClosed = false
+        resizeWindow.isReleasedWhenClosed = false
+        #endif
         contentWindow.level = .floating
         contentWindow.isOpaque = false
         contentWindow.backgroundColor = .clear
@@ -300,7 +305,11 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
     }
 
     @objc func closeOverlay() {
+        #if AMUX_APP
+        contentWindow.close()   // windowWillClose tears down the rest
+        #else
         NSApplication.shared.terminate(nil)
+        #endif
     }
 
     @objc func zoomOutAction() {
@@ -410,7 +419,17 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        #if AMUX_APP
+        // Inside the desktop app a pin is one of many windows: close its own
+        // toolbar and grip, stop watching its files, and let the app drop it.
+        toolbarWindow.orderOut(nil)
+        resizeWindow.orderOut(nil)
+        for w in fileWatchers { w.cancel() }
+        fileWatchers = []
+        NotificationCenter.default.post(name: .amuxOverlayClosed, object: self)
+        #else
         NSApplication.shared.terminate(nil)
+        #endif
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -1021,6 +1040,11 @@ class ZoomHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+#if AMUX_APP
+extension Notification.Name {
+    static let amuxOverlayClosed = Notification.Name("amuxOverlayClosed")
+}
+#else
 @main
 struct PinnedOverlayApp {
     static func main() {
@@ -1061,3 +1085,4 @@ struct PinnedOverlayApp {
         app.run()
     }
 }
+#endif

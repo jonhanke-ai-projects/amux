@@ -1,5 +1,14 @@
 import Cocoa
 import WebKit
+import Carbon.HIToolbox
+import UserNotifications
+
+// The native macOS app: dashboard windows and tabs on the system WebKit (no
+// bundled browser), pinned notes as floating panels, the menu bar readout, a
+// Dock badge and notifications for "needs you", a global hotkey and amux://
+// links, all in ONE process. The pinned overlay (scripts/pinned-overlay.swift)
+// and the menu bar item (scripts/amux-menubar.swift) are compiled into this
+// binary with -D AMUX_APP; their standalone builds are unchanged.
 
 // ── Persistent config ──
 let configURL: URL = {
@@ -14,9 +23,20 @@ struct Connection: Codable {
     var url: String
 }
 
+struct SavedWindow: Codable {
+    var url: String
+    var frame: String
+    var tabGroup: Int?
+}
+
 struct Config: Codable {
     var connections: [Connection]
     var lastUrl: String
+    // Added 2026-10-19; optional so older desktop-config.json files still decode.
+    var windows: [SavedWindow]?
+    var menuBar: Bool?
+    var notifications: Bool?
+    var dockBadge: Bool?
 }
 
 func loadConfig() -> Config {
@@ -30,10 +50,25 @@ func loadConfig() -> Config {
 }
 
 func saveConfig(_ config: Config) {
-    if let data = try? JSONEncoder().encode(config) {
-        try? data.write(to: configURL)
+    let enc = JSONEncoder()
+    enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+    if let data = try? enc.encode(config) {
+        try? data.write(to: configURL, options: .atomic)
     }
 }
+
+func normalized(_ url: String) -> String {
+    url.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+}
+
+/// Self-signed certificates are trusted for local and private-network hosts,
+/// which is where an amux server lives.
+func isLocalHost(_ host: String) -> Bool {
+    host == "localhost" || host == "127.0.0.1" || host.hasSuffix(".local")
+        || host.hasPrefix("10.") || host.hasPrefix("192.168.")
+        || (host.hasPrefix("172.") && (Int(host.split(separator: ".").dropFirst().first ?? "") ?? 0) / 16 == 1)
+}
+
 
 // ── Connect page HTML ──
 func connectPageHTML(_ config: Config) -> String {
@@ -59,37 +94,28 @@ func connectPageHTML(_ config: Config) -> String {
       input[type="text"] {
         flex: 1; padding: 10px 14px; border-radius: 8px;
         border: 1px solid #30363d; background: #161b22; color: #e6edf3;
-        font-size: 0.9rem; outline: none; font-family: inherit;
+        font-size: 0.9rem; outline: none;
       }
-      input:focus { border-color: #58a6ff; }
-      input::placeholder { color: #484f58; }
+      input[type="text"]:focus { border-color: #58a6ff; }
       .btn {
         padding: 10px 20px; border-radius: 8px; border: none;
-        background: #238636; color: #fff; font-size: 0.85rem;
-        font-weight: 600; cursor: pointer; font-family: inherit;
+        background: #238636; color: #fff; font-size: 0.9rem; font-weight: 600; cursor: pointer;
       }
       .btn:hover { background: #2ea043; }
-      .divider { border-top: 1px solid #21262d; margin: 4px 0 16px; }
-      .label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase;
-        letter-spacing: 0.05em; margin-bottom: 8px; }
+      .divider { height: 1px; background: #21262d; margin: 4px 0 16px; }
+      .label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
       .conn-item {
         display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-        background: #161b22; border: 1px solid #21262d; border-radius: 8px;
-        cursor: pointer; margin-bottom: 4px; transition: border-color 0.15s;
+        border-radius: 8px; cursor: pointer; border: 1px solid transparent;
       }
-      .conn-item:hover { border-color: #58a6ff; }
-      .conn-name { font-size: 0.88rem; font-weight: 600; }
-      .conn-url { font-size: 0.72rem; color: #8b949e; overflow: hidden;
-        text-overflow: ellipsis; white-space: nowrap; }
+      .conn-item:hover { background: #161b22; border-color: #30363d; }
       .conn-info { flex: 1; min-width: 0; }
-      .conn-remove {
-        background: none; border: none; color: #484f58; cursor: pointer;
-        font-size: 1rem; padding: 4px; opacity: 0; transition: opacity 0.15s;
-      }
-      .conn-item:hover .conn-remove { opacity: 1; }
+      .conn-name { font-size: 0.9rem; font-weight: 600; }
+      .conn-url { font-size: 0.78rem; color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .conn-last { font-size: 0.7rem; color: #3fb950; }
+      .conn-remove { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 0.85rem; padding: 4px; }
       .conn-remove:hover { color: #f85149; }
-      .conn-last { font-size: 0.65rem; color: #58a6ff; flex-shrink: 0; }
-      .empty { color: #484f58; font-size: 0.82rem; text-align: center; padding: 20px 0; }
+      .empty { color: #8b949e; font-size: 0.85rem; }
     </style>
     </head>
     <body>
@@ -141,91 +167,175 @@ func connectPageHTML(_ config: Config) -> String {
     """
 }
 
-// ── App delegate ──
-class AppDelegate: NSObject, NSApplicationDelegate {
-    var window: NSWindow!
-    var webView: WKWebView!
-    var config: Config!
+// What the dashboard is showing, as a deep link another window can open:
+// the open worker (#peek=) or the current tab (#view=).
+let currentViewJS = """
+(() => {
+  try {
+    const peek = document.getElementById('peek-overlay');
+    if (peek && peek.classList.contains('active') && typeof peekSession !== 'undefined' && peekSession)
+      return '#peek=' + encodeURIComponent(peekSession);
+    if (typeof activeView !== 'undefined' && activeView) return '#view=' + encodeURIComponent(activeView);
+  } catch (e) {}
+  return '';
+})()
+"""
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        config = loadConfig()
+// Names the window after what it is showing, so the Window menu and the
+// Dock's right-click list read "mixpeek-general" or "Board" rather than a
+// column of identical "amux" entries. Posts only when the label changes.
+let windowLabelJS = """
+(() => {
+  let last = null;
+  const label = () => {
+    try {
+      const peek = document.getElementById('peek-overlay');
+      if (peek && peek.classList.contains('active') && typeof peekSession !== 'undefined' && peekSession) return peekSession;
+      if (typeof activeView !== 'undefined' && activeView) {
+        const tab = document.getElementById('tab-' + activeView);
+        const t = tab ? tab.textContent.replace(/[^\\p{L}\\p{N} &'-]/gu, ' ').replace(/\\s+/g, ' ').trim() : '';
+        return t || activeView;
+      }
+    } catch (e) {}
+    return '';
+  };
+  const tick = () => {
+    const l = label();
+    if (l !== last) { last = l; window.webkit.messageHandlers.amuxWindowLabel.postMessage(l); }
+  };
+  setInterval(tick, 1000);
+  document.addEventListener('click', () => setTimeout(tick, 50), true);
+  window.addEventListener('hashchange', tick);
+})();
+"""
 
-        let wkConfig = WKWebViewConfiguration()
-        wkConfig.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        wkConfig.mediaTypesRequiringUserActionForPlayback = []
+/// A script message handler holds its target strongly; this breaks the cycle
+/// between the web view's content controller and its window controller.
+class WeakScriptHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ target: WKScriptMessageHandler) { self.target = target }
+    func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(c, didReceive: message)
+    }
+}
 
-        webView = WKWebView(frame: .zero, configuration: wkConfig)
-        webView.customUserAgent = "Amux-Desktop/1.0"
-        webView.navigationDelegate = self
+// ── A dashboard window ──
+class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
+    var pageLabel = ""
+    let webView: WKWebView
+    var titleObservation: NSKeyValueObservation?
+    var themeObservation: NSKeyValueObservation?
+    weak var app: AppDelegate?
 
-        let screen = NSScreen.main!.frame
-        let width: CGFloat = min(1440, screen.width * 0.85)
-        let height: CGFloat = min(900, screen.height * 0.85)
-        let x = (screen.width - width) / 2
-        let y = (screen.height - height) / 2
+    init(app: AppDelegate, frame: NSRect?, configuration: WKWebViewConfiguration? = nil) {
+        self.app = app
+        let cfg: WKWebViewConfiguration
+        if let configuration = configuration {
+            cfg = configuration
+        } else {
+            cfg = WKWebViewConfiguration()
+            // Every window shares the default data store (and, since macOS 12,
+            // one web content process pool), so you sign in once.
+            cfg.websiteDataStore = .default()
+            cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")
+            cfg.mediaTypesRequiringUserActionForPlayback = []
+        }
+        // A configuration handed over by window.open already carries the
+        // script from the window that opened it.
+        if !cfg.userContentController.userScripts.contains(where: { $0.source == windowLabelJS }) {
+            cfg.userContentController.addUserScript(WKUserScript(source: windowLabelJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
+        webView = WKWebView(frame: .zero, configuration: cfg)
+        webView.customUserAgent = "Amux-Desktop/2.0"
+        webView.allowsMagnification = true
+        webView.allowsBackForwardNavigationGestures = true
 
-        window = NSWindow(
-            contentRect: NSRect(x: x, y: y, width: width, height: height),
+        let window = NSWindow(
+            contentRect: frame ?? DashboardWindowController.defaultFrame(),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Amux"
+        window.title = "amux"
         window.backgroundColor = NSColor(red: 13/255, green: 17/255, blue: 23/255, alpha: 1)
-        window.minSize = NSSize(width: 800, height: 500)
+        window.minSize = NSSize(width: 480, height: 400)
+        window.tabbingIdentifier = "amux"
+        // The title bar takes the dashboard's own colour: the page sets
+        // <meta name="theme-color"> to match its light or dark mode.
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
         window.contentView = webView
-        window.makeKeyAndOrderFront(nil)
+        super.init(window: window)
+        window.delegate = self
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxWindowLabel")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxWindowLabel")
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
+            self?.applyTheme(wv.themeColor)
+        }
+        titleObservation = webView.observe(\.title, options: [.new]) { [weak self] wv, _ in
+            self?.updateTitle()
+        }
+    }
 
-        showConnectPage()
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "amuxWindowLabel" else { return }
+        pageLabel = (message.body as? String) ?? ""
+        updateTitle()
+    }
+
+    func updateTitle() {
+        let page = (webView.title ?? "").trimmingCharacters(in: .whitespaces)
+        window?.title = !pageLabel.isEmpty ? pageLabel : (page.isEmpty ? "amux" : page)
+    }
+
+    func applyTheme(_ color: NSColor?) {
+        guard let window = window, let c = color?.usingColorSpace(.sRGB) else { return }
+        window.backgroundColor = c
+        let luminance = 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+        // Dark page, dark title bar text and traffic-light chrome; and back.
+        window.appearance = NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua)
+    }
+
+    static func defaultFrame() -> NSRect {
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let width: CGFloat = min(1440, screen.width * 0.85)
+        let height: CGFloat = min(900, screen.height * 0.85)
+        return NSRect(x: screen.minX + (screen.width - width) / 2,
+                      y: screen.minY + (screen.height - height) / 2,
+                      width: width, height: height)
+    }
+
+    func load(_ url: URL) {
+        webView.load(URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 15))
     }
 
     func showConnectPage() {
-        config = loadConfig()
-        webView.loadHTMLString(connectPageHTML(config), baseURL: nil)
+        webView.loadHTMLString(connectPageHTML(loadConfig()), baseURL: nil)
     }
 
-    func connectToServer(_ urlString: String) {
-        var url = urlString
-        if !url.hasPrefix("http") { url = "https://" + url }
-        config.lastUrl = url
-        // Add to connections if new
-        if !config.connections.contains(where: { $0.url.replacingOccurrences(of: "/+$", with: "", options: .regularExpression) == url.replacingOccurrences(of: "/+$", with: "", options: .regularExpression) }) {
-            let name = URL(string: url)?.host ?? url
-            config.connections.append(Connection(name: name, url: url))
-        }
-        saveConfig(config)
-        loadWithRetry(url: url, attempts: 0)
+    // ── NSWindowDelegate ──
+    func windowWillClose(_ notification: Notification) {
+        titleObservation = nil
+        themeObservation = nil
+        app?.windowClosed(self)
     }
 
-    func loadWithRetry(url: String, attempts: Int) {
-        guard let nsUrl = URL(string: url) else { return }
-        let request = URLRequest(url: nsUrl, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 3)
-        webView.load(request)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            guard let self = self else { return }
-            if self.webView.isLoading { return }
-            if let host = self.webView.url?.host, host == (URL(string: url)?.host ?? "localhost") { return }
-            if attempts < 20 {
-                self.loadWithRetry(url: url, attempts: attempts + 1)
-            }
-        }
+    // The tab bar's "+" button and File > New Tab.
+    @objc override func newWindowForTab(_ sender: Any?) {
+        app?.newTab(nextTo: self)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return true
-    }
-}
-
-// ── Navigation delegate ──
-extension AppDelegate: WKNavigationDelegate {
+    // ── WKNavigationDelegate ──
     func webView(_ webView: WKWebView,
                  didReceive challenge: URLAuthenticationChallenge,
                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        // Trust localhost / private network self-signed certs
-        if let host = challenge.protectionSpace.host.components(separatedBy: ":").first,
-           (host == "localhost" || host == "127.0.0.1" || host.hasSuffix(".local")
-            || host.hasPrefix("10.") || host.hasPrefix("192.168.")),
+        let host = challenge.protectionSpace.host
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           isLocalHost(host) || host == app?.serverURL?.host,
            let trust = challenge.protectionSpace.serverTrust {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
@@ -240,95 +350,792 @@ extension AppDelegate: WKNavigationDelegate {
             decisionHandler(.allow)
             return
         }
-
-        // Handle connect page actions via custom URL scheme
         if url.scheme == "amux-connect" {
             if let b64 = url.host, let data = Data(base64Encoded: b64),
                let serverUrl = String(data: data, encoding: .utf8) {
-                connectToServer(serverUrl)
+                app?.connect(to: serverUrl, in: self)
             }
             decisionHandler(.cancel)
             return
         }
-
         if url.scheme == "amux-remove" {
-            if let idxStr = url.host, let idx = Int(idxStr), idx < config.connections.count {
-                config.connections.remove(at: idx)
-                saveConfig(config)
+            if let idxStr = url.host, let idx = Int(idxStr) {
+                var config = loadConfig()
+                if idx < config.connections.count {
+                    config.connections.remove(at: idx)
+                    saveConfig(config)
+                }
                 showConnectPage()
             }
             decisionHandler(.cancel)
             return
         }
-
-        // Open external links in default browser
-        if let host = url.host,
-           host != "localhost" && host != "127.0.0.1" && !host.hasSuffix(".local"),
-           navigationAction.navigationType == .linkActivated {
+        if url.scheme == "amux" {
+            app?.handleAmuxURL(url)
+            decisionHandler(.cancel)
+            return
+        }
+        // Links off the amux server open in the default browser.
+        if navigationAction.navigationType == .linkActivated, !(app?.isServerURL(url) ?? true) {
             NSWorkspace.shared.open(url)
             decisionHandler(.cancel)
             return
         }
-
+        if navigationAction.shouldPerformDownload {
+            decisionHandler(.download)
+            return
+        }
         decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        let disposition = (navigationResponse.response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Disposition") ?? ""
+        if !navigationResponse.canShowMIMEType || disposition.lowercased().hasPrefix("attachment") {
+            decisionHandler(.download)
+        } else {
+            decisionHandler(.allow)
+        }
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        app?.loadFailed(in: self, error: error)
+    }
+
+    // A crashed web content process leaves a blank window; reload it.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        NSLog("amux-desktop: verdict=webcontent_terminated url=%@", webView.url?.absoluteString ?? "-")
+        webView.reload()
+    }
+
+    // ── WKDownloadDelegate: into ~/Downloads, never overwriting ──
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        var dest = dir.appendingPathComponent(suggestedFilename)
+        let base = dest.deletingPathExtension().lastPathComponent
+        let ext = dest.pathExtension
+        var n = 1
+        while FileManager.default.fileExists(atPath: dest.path) {
+            dest = dir.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
+            n += 1
+        }
+        completionHandler(dest)
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        NSSound(named: "Glass")?.play()
+    }
+
+    // ── WKUIDelegate ──
+    // window.open, target=_blank and "Open Link in New Window": a page on the
+    // amux server opens as another amux window; anything else in the browser.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = navigationAction.request.url, let app = app {
+            if app.isServerURL(url) {
+                let c = app.openWindow(url: nil, frame: nil, configuration: configuration)
+                return c.webView
+            }
+            NSWorkspace.shared.open(url)
+        }
+        return nil
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        let a = NSAlert()
+        a.messageText = message
+        a.addButton(withTitle: "OK")
+        a.beginSheetModal(for: window!) { _ in completionHandler() }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let a = NSAlert()
+        a.messageText = message
+        a.addButton(withTitle: "OK")
+        a.addButton(withTitle: "Cancel")
+        a.beginSheetModal(for: window!) { r in completionHandler(r == .alertFirstButtonReturn) }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?, initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (String?) -> Void) {
+        let a = NSAlert()
+        a.messageText = prompt
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = defaultText ?? ""
+        a.accessoryView = field
+        a.addButton(withTitle: "OK")
+        a.addButton(withTitle: "Cancel")
+        a.beginSheetModal(for: window!) { r in completionHandler(r == .alertFirstButtonReturn ? field.stringValue : nil) }
+    }
+
+    // <input type="file">: uploads and attachments.
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.canChooseFiles = true
+        panel.beginSheetModal(for: window!) { r in completionHandler(r == .OK ? panel.urls : nil) }
+    }
+
+    // Voice and recording features ask for the microphone; allow it for the
+    // amux server only (macOS still asks you once for the app itself).
+    @available(macOS 12.0, *)
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(origin.host == app?.serverURL?.host ? .grant : .prompt)
     }
 }
 
-// ── Standard menu bar (enables Cmd+C/V/X/A/Z) ──
-func buildMenuBar() {
+// ── Global hotkey (Carbon: no Accessibility permission needed) ──
+var hotKeyHandler: (() -> Void)?
+func registerHotKey() {
+    var ref: EventHotKeyRef?
+    let id = EventHotKeyID(signature: OSType(0x616D7578), id: 1)   // 'amux'
+    // Control-Option-Space toggles amux from any app.
+    RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &ref)
+    var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+    InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+        DispatchQueue.main.async { hotKeyHandler?() }
+        return noErr
+    }, 1, &spec, nil, nil)
+}
+
+// ── App delegate ──
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
+    var config = loadConfig()
+    var controllers: [DashboardWindowController] = []
+    var overlays: [OverlayController] = []
+    var menuBar: MenuBarController?
+    var pins: [[String: Any]] = []
+    var pinsMenu = NSMenu(title: "Pins")
+    var needsKeys: Set<String>? = nil
+    var needsTimer: Timer?
+    var pinsTimer: Timer?
+    var terminating = false
+    var lastNeedsCount = 0
+
+    func applyBadge() {
+        let show = config.dockBadge ?? true
+        NSApp.dockTile.badgeLabel = show && lastNeedsCount > 0 ? String(lastNeedsCount) : nil
+    }
+
+    @objc func toggleDockBadge(_ sender: Any?) {
+        config = loadConfig()
+        config.dockBadge = !(config.dockBadge ?? true)
+        saveConfig(config)
+        applyBadge()
+    }
+
+    var serverURL: URL? {
+        config.connections.isEmpty ? nil : URL(string: normalized(config.lastUrl))
+    }
+
+    func isServerURL(_ url: URL) -> Bool {
+        guard let s = serverURL else { return false }
+        return url.host == s.host && (url.port ?? (url.scheme == "https" ? 443 : 80)) == (s.port ?? (s.scheme == "https" ? 443 : 80))
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleURLEvent(_:withReply:)),
+            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSWindow.allowsAutomaticWindowTabbing = true
+        buildMenuBar(self)
+        NotificationCenter.default.addObserver(forName: .amuxOverlayClosed, object: nil, queue: .main) { [weak self] n in
+            self?.overlays.removeAll { $0 === (n.object as AnyObject) }
+        }
+        restoreWindows()
+        hotKeyHandler = { [weak self] in self?.toggleVisible() }
+        registerHotKey()
+        startMenuBarItem()
+        setUpNotifications()
+        refreshPins()
+        pinsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refreshPins() }
+        pollNeedsInput()
+        needsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.pollNeedsInput() }
+        NSApp.activate(ignoringOtherApps: true)
+        // `amux amux://worker/x` on the command line, once the pins are known.
+        let links = CommandLine.arguments.dropFirst().compactMap { URL(string: $0) }.filter { $0.scheme == "amux" }
+        if !links.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in links.forEach { self?.handleAmuxURL($0) } }
+        }
+    }
+
+    // ── Windows ──
+    @discardableResult
+    func openWindow(url: URL?, frame: NSRect?, configuration: WKWebViewConfiguration? = nil) -> DashboardWindowController {
+        let c = DashboardWindowController(app: self, frame: frame ?? cascadeFrame(), configuration: configuration)
+        controllers.append(c)
+        if let url = url { c.load(url) } else if configuration == nil {
+            if let s = serverURL { c.load(s) } else { c.showConnectPage() }
+        }
+        c.showWindow(nil)
+        c.window?.makeKeyAndOrderFront(nil)
+        return c
+    }
+
+    func cascadeFrame() -> NSRect {
+        guard let key = (NSApp.keyWindow ?? controllers.last?.window), key.isVisible else {
+            return DashboardWindowController.defaultFrame()
+        }
+        return key.frame.offsetBy(dx: 28, dy: -28)
+    }
+
+    func newTab(nextTo c: DashboardWindowController) {
+        let n = DashboardWindowController(app: self, frame: c.window?.frame, configuration: nil)
+        controllers.append(n)
+        if let s = serverURL { n.load(s) } else { n.showConnectPage() }
+        if let w = c.window, let nw = n.window {
+            w.addTabbedWindow(nw, ordered: .above)
+            nw.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func windowClosed(_ c: DashboardWindowController) {
+        if terminating { return }
+        controllers.removeAll { $0 === c }
+        saveWindowsSoon()
+    }
+
+    var keyController: DashboardWindowController? {
+        controllers.first { $0.window == NSApp.keyWindow } ?? controllers.last
+    }
+
+    func url(withHash hash: String) -> URL? {
+        guard let s = serverURL else { return nil }
+        return URL(string: normalized(s.absoluteString) + "/" + hash)
+    }
+
+    func restoreWindows() {
+        let saved = config.windows ?? []
+        guard serverURL != nil, !saved.isEmpty else {
+            openWindow(url: nil, frame: nil)
+            return
+        }
+        var groups: [Int: DashboardWindowController] = [:]
+        for s in saved {
+            let frame = NSRectFromString(s.frame)
+            let c = openWindow(url: URL(string: s.url), frame: frame.width > 100 ? frame : nil)
+            if let g = s.tabGroup {
+                if let lead = groups[g], let lw = lead.window, let cw = c.window {
+                    lw.addTabbedWindow(cw, ordered: .above)
+                } else {
+                    groups[g] = c
+                }
+            }
+        }
+    }
+
+    /// Each window's current view as a deep link, so a relaunch reopens the
+    /// same workers and tabs where they were.
+    func snapshotWindows(_ done: @escaping ([SavedWindow]) -> Void) {
+        let list = controllers.filter { $0.window?.isVisible == true || $0.window?.isMiniaturized == true }
+        if list.isEmpty { done([]); return }
+        var out = Array<SavedWindow?>(repeating: nil, count: list.count)
+        var groupIds: [ObjectIdentifier: Int] = [:]
+        let group = DispatchGroup()
+        for (i, c) in list.enumerated() {
+            var tabGroup: Int? = nil
+            if let tabs = c.window?.tabbedWindows, tabs.count > 1, let first = tabs.first {
+                let key = ObjectIdentifier(first)
+                if groupIds[key] == nil { groupIds[key] = groupIds.count }
+                tabGroup = groupIds[key]
+            }
+            let frame = NSStringFromRect(c.window?.frame ?? .zero)
+            let tg = tabGroup
+            guard let base = c.webView.url, isServerURL(base) else { continue }
+            group.enter()
+            c.webView.evaluateJavaScript(currentViewJS) { [weak self] result, _ in
+                let hash = (result as? String) ?? ""
+                let url = hash.isEmpty ? base.absoluteString : (self?.url(withHash: hash)?.absoluteString ?? base.absoluteString)
+                out[i] = SavedWindow(url: url, frame: frame, tabGroup: tg)
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { done(out.compactMap { $0 }) }
+    }
+
+    var saveWork: DispatchWorkItem?
+    func saveWindowsSoon() {
+        saveWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            self?.snapshotWindows { windows in
+                guard let self = self, !self.terminating else { return }
+                self.config = loadConfig().merging(windows: windows)
+                saveConfig(self.config)
+            }
+        }
+        saveWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: w)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        snapshotWindows { [weak self] windows in
+            guard let self = self else { return }
+            self.terminating = true
+            self.config = loadConfig().merging(windows: windows)
+            saveConfig(self.config)
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    // amux stays in the Dock and menu bar with no window open, like Mail.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !controllers.contains(where: { $0.window?.isVisible == true }) { openWindow(url: nil, frame: nil) }
+        return true
+    }
+
+    func toggleVisible() {
+        if NSApp.isActive, NSApp.keyWindow != nil {
+            NSApp.hide(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            if !controllers.contains(where: { $0.window?.isVisible == true }) { openWindow(url: nil, frame: nil) }
+        }
+    }
+
+    // ── Connecting ──
+    func connect(to urlString: String, in c: DashboardWindowController) {
+        var url = normalized(urlString)
+        if !url.hasPrefix("http") { url = "https://" + url }
+        config = loadConfig()
+        config.lastUrl = url
+        if !config.connections.contains(where: { normalized($0.url) == url }) {
+            config.connections.append(Connection(name: URL(string: url)?.host ?? url, url: url))
+        }
+        saveConfig(config)
+        if let u = URL(string: url) { c.load(u) }
+        startMenuBarItem()
+        refreshPins()
+        needsKeys = nil
+        pollNeedsInput()
+    }
+
+    // The server restarts on every deploy; retry a failed load for a minute
+    // before showing the connect page.
+    var retries: [ObjectIdentifier: Int] = [:]
+    func loadFailed(in c: DashboardWindowController, error: Error) {
+        let key = ObjectIdentifier(c)
+        let n = retries[key, default: 0]
+        guard let target = serverURL, n < 30 else {
+            retries[key] = 0
+            NSLog("amux-desktop: verdict=server_unreachable error=%@", error.localizedDescription)
+            c.showConnectPage()
+            return
+        }
+        retries[key] = n + 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak c] in
+            guard let c = c else { return }
+            c.load(c.webView.url ?? target)
+        }
+    }
+
+    // ── amux:// links ──
+    // amux://worker/<name>  amux://view/<tab>  amux://open#<hash>
+    // amux://new-window     amux://pin/<id>
+    @objc func handleURLEvent(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: s) else { return }
+        handleAmuxURL(url)
+    }
+
+    func handleAmuxURL(_ url: URL) {
+        NSLog("amux-desktop: amux_url=%@ server=%@", url.absoluteString, serverURL?.absoluteString ?? "-")
+        NSApp.activate(ignoringOtherApps: true)
+        let arg = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).removingPercentEncoding ?? ""
+        let enc = arg.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_."))) ?? arg
+        switch url.host ?? "" {
+        case "worker": openWindow(url: self.url(withHash: "#peek=" + enc), frame: nil)
+        case "view": openWindow(url: self.url(withHash: "#view=" + enc), frame: nil)
+        case "open": openWindow(url: self.url(withHash: url.fragment.map { "#" + $0 } ?? ""), frame: nil)
+        case "pin": if let id = Int(arg) { openPin(id: id) }
+        default: openWindow(url: nil, frame: nil)
+        }
+    }
+
+    // ── Pinned notes: floating panels in this process ──
+    func api(_ path: String, method: String = "GET", _ done: @escaping (Any?) -> Void) {
+        guard let s = serverURL, let url = URL(string: normalized(s.absoluteString) + path) else { done(nil); return }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.timeoutInterval = 8
+        let session = URLSession(configuration: .ephemeral, delegate: InsecureDelegate(), delegateQueue: nil)
+        session.dataTask(with: req) { data, _, _ in
+            let obj = data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+            DispatchQueue.main.async { done(obj) }
+            session.finishTasksAndInvalidate()
+        }.resume()
+    }
+
+    func refreshPins(then: (() -> Void)? = nil) {
+        api("/api/pinned") { [weak self] obj in
+            guard let self = self else { return }
+            if let rows = obj as? [[String: Any]] { self.pins = rows }
+            self.rebuildPinsMenu()
+            then?()
+        }
+    }
+
+    func rebuildPinsMenu() {
+        pinsMenu.removeAllItems()
+        var seenGroups = Set<String>()
+        for p in pins {
+            guard let id = p["id"] as? Int else { continue }
+            if let g = p["group_id"] as? String, !g.isEmpty {
+                if seenGroups.contains(g) { continue }
+                seenGroups.insert(g)
+            }
+            let path = (p["file_path"] as? String) ?? ""
+            var title = (p["title"] as? String) ?? ""
+            if title.isEmpty { title = (path as NSString).lastPathComponent }
+            if let g = p["group_id"] as? String, !g.isEmpty {
+                let n = pins.filter { ($0["group_id"] as? String) == g }.count
+                if n > 1 { title += " (\(n) tabs)" }
+            }
+            let item = NSMenuItem(title: title, action: #selector(pinMenuItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = id
+            item.toolTip = path
+            pinsMenu.addItem(item)
+        }
+        if pinsMenu.items.isEmpty {
+            let none = NSMenuItem(title: "No pinned notes", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            pinsMenu.addItem(none)
+        }
+        pinsMenu.addItem(.separator())
+        let all = NSMenuItem(title: "Show All Pins", action: #selector(showAllPins), keyEquivalent: "")
+        all.target = self
+        pinsMenu.addItem(all)
+        let hide = NSMenuItem(title: "Close All Pins", action: #selector(closeAllPins), keyEquivalent: "")
+        hide.target = self
+        pinsMenu.addItem(hide)
+        let manage = NSMenuItem(title: "Manage Pins…", action: #selector(managePins), keyEquivalent: "")
+        manage.target = self
+        pinsMenu.addItem(manage)
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === pinsMenu { refreshPins() }
+    }
+
+    @objc func pinMenuItem(_ sender: NSMenuItem) { openPin(id: sender.tag) }
+
+    func openPin(id: Int, refreshed: Bool = false) {
+        guard let row = pins.first(where: { ($0["id"] as? Int) == id }) else {
+            if refreshed {
+                NSLog("amux-desktop: verdict=pin_not_found id=%d n_considered=%d", id, pins.count)
+            } else {
+                refreshPins { [weak self] in self?.openPin(id: id, refreshed: true) }
+            }
+            return
+        }
+        var paths: [String] = []
+        if let g = row["group_id"] as? String, !g.isEmpty {
+            paths = pins.filter { ($0["group_id"] as? String) == g }
+                .sorted { (($0["created_at"] as? String) ?? "") < (($1["created_at"] as? String) ?? "") }
+                .compactMap { $0["file_path"] as? String }
+        }
+        if paths.isEmpty, let p = row["file_path"] as? String { paths = [p] }
+        // Already open: bring it forward rather than stacking a duplicate.
+        if let open = overlays.first(where: { $0.files.map { $0.path } == paths }) {
+            open.contentWindow.orderFrontRegardless()
+            open.toolbarWindow.orderFrontRegardless()
+            return
+        }
+        func num(_ k: String, _ d: Double) -> Double {
+            (row[k] as? Double) ?? (row[k] as? Int).map(Double.init) ?? d
+        }
+        let o = OverlayController(filePaths: paths,
+                                  x: Int(num("pos_x", 800)), y: Int(num("pos_y", 200)),
+                                  w: Int(num("width", 400)), h: Int(num("height", 500)),
+                                  opacity: num("opacity", 0.85))
+        overlays.append(o)
+    }
+
+    @objc func showAllPins() {
+        var seenGroups = Set<String>()
+        for p in pins {
+            guard let id = p["id"] as? Int else { continue }
+            if let g = p["group_id"] as? String, !g.isEmpty {
+                if seenGroups.contains(g) { continue }
+                seenGroups.insert(g)
+            }
+            openPin(id: id)
+        }
+    }
+
+    @objc func closeAllPins() {
+        for o in overlays { o.closeOverlay() }
+    }
+
+    @objc func managePins() {
+        openWindow(url: url(withHash: "#view=files"), frame: nil)
+    }
+
+    // ── Menu bar readout (scripts/amux-menubar.swift) ──
+    func startMenuBarItem() {
+        menuBar?.stop()
+        menuBar = nil
+        guard config.menuBar ?? true, let s = serverURL else { return }
+        // The standalone readout (make menubar) already owns a status item.
+        if standaloneMenuBarRunning() { return }
+        menuBar = MenuBarController(apiBase: normalized(s.absoluteString))
+    }
+
+    func standaloneMenuBarRunning() -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        p.arguments = ["-x", "amux-menubar"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    @objc func toggleMenuBarItem(_ sender: NSMenuItem) {
+        config = loadConfig()
+        config.menuBar = !(config.menuBar ?? true)
+        saveConfig(config)
+        startMenuBarItem()
+    }
+
+    // ── Needs you: Dock badge and notifications ──
+    func setUpNotifications() {
+        let c = UNUserNotificationCenter.current()
+        c.delegate = self
+        c.requestAuthorization(options: [.alert, .sound, .badge]) { granted, err in
+            NSLog("amux-desktop: notifications granted=%d error=%@", granted ? 1 : 0, err?.localizedDescription ?? "-")
+        }
+    }
+
+    func pollNeedsInput() {
+        api("/api/needs-input") { [weak self] obj in
+            guard let self = self else { return }
+            guard let d = obj as? [String: Any] else {
+                NSApp.dockTile.badgeLabel = nil
+                return
+            }
+            self.lastNeedsCount = (d["count"] as? Int) ?? 0
+            self.applyBadge()
+            let items = (d["items"] as? [[String: Any]]) ?? []
+            let keys = Set(items.compactMap { $0["key"] as? String })
+            // The first poll only learns what is already waiting.
+            if let before = self.needsKeys, self.config.notifications ?? true {
+                for it in items {
+                    guard let k = it["key"] as? String, !before.contains(k) else { continue }
+                    self.notify(it)
+                }
+            }
+            self.needsKeys = keys
+        }
+    }
+
+    func notify(_ item: [String: Any]) {
+        let content = UNMutableNotificationContent()
+        let card = (item["card"] as? String) ?? ""
+        content.title = "amux needs you" + (card.isEmpty ? "" : " · " + card)
+        content.body = (item["question"] as? String) ?? (item["context"] as? String) ?? ""
+        content.sound = .default
+        content.userInfo = ["card": card]
+        let req = UNNotificationRequest(identifier: (item["key"] as? String) ?? UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(url: url(withHash: "#view=board"), frame: nil)
+        completionHandler()
+    }
+
+    @objc func toggleNotifications(_ sender: NSMenuItem) {
+        config = loadConfig()
+        config.notifications = !(config.notifications ?? true)
+        saveConfig(config)
+    }
+
+    // ── Menu actions ──
+    @objc func newWindow(_ sender: Any?) { openWindow(url: nil, frame: nil) }
+
+    @objc func newTabAction(_ sender: Any?) {
+        if let c = keyController, c.window?.isVisible == true { newTab(nextTo: c) } else { openWindow(url: nil, frame: nil) }
+    }
+
+    /// The current worker or tab in its own window.
+    @objc func openCurrentInNewWindow(_ sender: Any?) {
+        guard let c = keyController else { openWindow(url: nil, frame: nil); return }
+        c.webView.evaluateJavaScript(currentViewJS) { [weak self] result, _ in
+            guard let self = self else { return }
+            let hash = (result as? String) ?? ""
+            self.openWindow(url: hash.isEmpty ? c.webView.url : self.url(withHash: hash), frame: nil)
+        }
+    }
+
+    @objc func showConnect(_ sender: Any?) {
+        (keyController ?? openWindow(url: nil, frame: nil)).showConnectPage()
+    }
+
+    @objc func reload(_ sender: Any?) { keyController?.webView.reload() }
+    @objc func zoomIn(_ sender: Any?) { keyController.map { $0.webView.pageZoom = min(3, $0.webView.pageZoom + 0.1) } }
+    @objc func zoomOut(_ sender: Any?) { keyController.map { $0.webView.pageZoom = max(0.5, $0.webView.pageZoom - 0.1) } }
+    @objc func zoomReset(_ sender: Any?) { keyController?.webView.pageZoom = 1 }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleMenuBarItem(_:)) { item.state = (config.menuBar ?? true) ? .on : .off }
+        if item.action == #selector(toggleNotifications(_:)) { item.state = (config.notifications ?? true) ? .on : .off }
+        if item.action == #selector(toggleDockBadge(_:)) { item.state = (config.dockBadge ?? true) ? .on : .off }
+        return true
+    }
+
+    // ── Dock menu ──
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        // macOS lists the open windows above these, by title.
+        let m = NSMenu()
+        m.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "").target = self
+        m.addItem(withTitle: "New Tab", action: #selector(newTabAction(_:)), keyEquivalent: "").target = self
+        let badge = NSMenuItem(title: "Show Count on Dock Icon", action: #selector(toggleDockBadge(_:)), keyEquivalent: "")
+        badge.target = self
+        badge.state = (config.dockBadge ?? true) ? .on : .off
+        m.addItem(badge)
+        let p = NSMenuItem(title: "Pins", action: nil, keyEquivalent: "")
+        let copy = NSMenu(title: "Pins")
+        for it in pinsMenu.items { copy.addItem(it.copy() as! NSMenuItem) }
+        p.submenu = copy
+        m.addItem(p)
+        return m
+    }
+}
+
+extension Config {
+    func merging(windows: [SavedWindow]) -> Config {
+        var c = self
+        c.windows = windows
+        return c
+    }
+}
+
+// ── Standard menu bar ──
+func buildMenuBar(_ d: AppDelegate) {
     let mainMenu = NSMenu()
+    func add(_ menu: NSMenu, _ title: String, _ action: Selector?, _ key: String,
+             _ mods: NSEvent.ModifierFlags = [.command], target: AnyObject? = nil) {
+        let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+        item.keyEquivalentModifierMask = mods
+        if let t = target { item.target = t }
+    }
 
     let appMenuItem = NSMenuItem()
     let appMenu = NSMenu()
-    appMenu.addItem(withTitle: "About Amux", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+    add(appMenu, "About amux", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), "")
     appMenu.addItem(.separator())
-    appMenu.addItem(withTitle: "Hide Amux", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-    let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
-    hideOthers.keyEquivalentModifierMask = [.command, .option]
-    appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+    add(appMenu, "Show in Menu Bar", #selector(AppDelegate.toggleMenuBarItem(_:)), "", target: d)
+    add(appMenu, "Notify When amux Needs You", #selector(AppDelegate.toggleNotifications(_:)), "", target: d)
+    add(appMenu, "Show Count on Dock Icon", #selector(AppDelegate.toggleDockBadge(_:)), "", target: d)
     appMenu.addItem(.separator())
-    appMenu.addItem(withTitle: "Quit Amux", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    add(appMenu, "Hide amux", #selector(NSApplication.hide(_:)), "h")
+    add(appMenu, "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option])
+    add(appMenu, "Show All", #selector(NSApplication.unhideAllApplications(_:)), "")
+    appMenu.addItem(.separator())
+    add(appMenu, "Quit amux", #selector(NSApplication.terminate(_:)), "q")
     appMenuItem.submenu = appMenu
     mainMenu.addItem(appMenuItem)
 
-    let editMenuItem = NSMenuItem()
-    let editMenu = NSMenu(title: "Edit")
-    editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-    let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
-    redo.keyEquivalentModifierMask = [.command, .shift]
-    editMenu.addItem(.separator())
-    editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-    editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-    editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-    editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-    editMenuItem.submenu = editMenu
-    mainMenu.addItem(editMenuItem)
+    let fileItem = NSMenuItem()
+    let file = NSMenu(title: "File")
+    add(file, "New Window", #selector(AppDelegate.newWindow(_:)), "n", target: d)
+    add(file, "New Tab", #selector(AppDelegate.newTabAction(_:)), "t", target: d)
+    add(file, "Open Current View in New Window", #selector(AppDelegate.openCurrentInNewWindow(_:)), "n", [.command, .shift], target: d)
+    file.addItem(.separator())
+    add(file, "Connect to Server…", #selector(AppDelegate.showConnect(_:)), "k", [.command, .shift], target: d)
+    file.addItem(.separator())
+    add(file, "Close", #selector(NSWindow.performClose(_:)), "w")
+    fileItem.submenu = file
+    mainMenu.addItem(fileItem)
 
-    let viewMenuItem = NSMenuItem()
-    let viewMenu = NSMenu(title: "View")
-    let fullScreen = viewMenu.addItem(withTitle: "Toggle Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
-    fullScreen.keyEquivalentModifierMask = [.command, .control]
-    viewMenuItem.submenu = viewMenu
-    mainMenu.addItem(viewMenuItem)
+    let editItem = NSMenuItem()
+    let edit = NSMenu(title: "Edit")
+    add(edit, "Undo", Selector(("undo:")), "z")
+    add(edit, "Redo", Selector(("redo:")), "z", [.command, .shift])
+    edit.addItem(.separator())
+    add(edit, "Cut", #selector(NSText.cut(_:)), "x")
+    add(edit, "Copy", #selector(NSText.copy(_:)), "c")
+    add(edit, "Paste", #selector(NSText.paste(_:)), "v")
+    add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+    editItem.submenu = edit
+    mainMenu.addItem(editItem)
 
-    let windowMenuItem = NSMenuItem()
-    let windowMenu = NSMenu(title: "Window")
-    windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
-    windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
-    let close = windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-    _ = close
-    windowMenuItem.submenu = windowMenu
-    mainMenu.addItem(windowMenuItem)
+    let viewItem = NSMenuItem()
+    let view = NSMenu(title: "View")
+    add(view, "Reload", #selector(AppDelegate.reload(_:)), "r", target: d)
+    view.addItem(.separator())
+    add(view, "Zoom In", #selector(AppDelegate.zoomIn(_:)), "+", target: d)
+    add(view, "Zoom Out", #selector(AppDelegate.zoomOut(_:)), "-", target: d)
+    add(view, "Actual Size", #selector(AppDelegate.zoomReset(_:)), "0", target: d)
+    view.addItem(.separator())
+    add(view, "Show Tab Bar", #selector(NSWindow.toggleTabBar(_:)), "t", [.command, .shift])
+    add(view, "Show All Tabs", #selector(NSWindow.toggleTabOverview(_:)), "\\", [.command, .shift])
+    add(view, "Toggle Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])
+    viewItem.submenu = view
+    mainMenu.addItem(viewItem)
+
+    let pinsItem = NSMenuItem()
+    d.pinsMenu.delegate = d
+    d.rebuildPinsMenu()
+    pinsItem.submenu = d.pinsMenu
+    mainMenu.addItem(pinsItem)
+
+    let windowItem = NSMenuItem()
+    let window = NSMenu(title: "Window")
+    add(window, "Minimize", #selector(NSWindow.miniaturize(_:)), "m")
+    add(window, "Zoom", #selector(NSWindow.zoom(_:)), "")
+    window.addItem(.separator())
+    add(window, "Show Previous Tab", #selector(NSWindow.selectPreviousTab(_:)), "\t", [.control, .shift])
+    add(window, "Show Next Tab", #selector(NSWindow.selectNextTab(_:)), "\t", [.control])
+    add(window, "Merge All Windows", #selector(NSWindow.mergeAllWindows(_:)), "")
+    add(window, "Move Tab to New Window", #selector(NSWindow.moveTabToNewWindow(_:)), "")
+    windowItem.submenu = window
+    mainMenu.addItem(windowItem)
 
     NSApplication.shared.mainMenu = mainMenu
-    NSApplication.shared.windowsMenu = windowMenu
+    NSApplication.shared.windowsMenu = window
 }
 
 // ── Launch ──
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-buildMenuBar()
-app.activate(ignoringOtherApps: true)
-app.run()
+@main
+struct AmuxDesktop {
+    static let delegate = AppDelegate()
+    static func main() {
+        let app = NSApplication.shared
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        app.run()
+    }
+}
