@@ -1858,12 +1858,24 @@ async function modelLoginSubmitCode() {
   if (!run || !run.id) return;
   if (!code) { _mlEl('model-login-err').textContent = 'Paste the code from the sign-in page.'; return; }
   try {
-    await _mlInput(run, code + '\r');
+    // The code and its Enter go in two writes. Claude Code reads one write holding both as a
+    // paste: the code lands in its box and the Enter never submits it, so the sign-in sat at
+    // "Paste code here" forever (amux Cloud e2e, 2026-10-19).
+    await _mlInput(run, code);
+    await new Promise(res => setTimeout(res, 400));
+    await _mlInput(run, '\r');
     inp.value = '';
     _mlEl('model-login-err').textContent = '';
     _mlEl('model-login-status').textContent = 'Checking…';
   } catch (e) { _mlEl('model-login-err').textContent = e.message; }
 }
+
+// Leaving the page ends a sign-in in progress; otherwise its CLI waits in a server terminal
+// until the hour-long idle reaper finds it.
+window.addEventListener('pagehide', () => {
+  const run = _modelLogin;
+  if (run && run.id && !run.done) fetch(API + '/api/terminal/' + run.id, { method: 'DELETE', keepalive: true }).catch(() => {});
+});
 
 function modelLoginCancel(silent) {
   const run = _modelLogin;
