@@ -93,6 +93,31 @@
     }).catch(function () { if (cached) show(cached.n); });
   });
 
+  // EXP-141: a copy button on the one-line install command (getting-started,
+  // docs). Measured by the install_copy event; adds no new CTA.
+  document.addEventListener('DOMContentLoaded', function () {
+    if (!/^\/(guides\/getting-started|docs)\/$/.test(location.pathname)) return;
+    document.querySelectorAll('pre > code').forEach(function (code) {
+      var cmd = code.textContent.trim();
+      if (cmd.indexOf('curl -fsSL https://amux.io/install.sh') !== 0 || cmd.indexOf('\n') !== -1) return;
+      var pre = code.parentNode, wrap = document.createElement('div'), btn = document.createElement('button');
+      wrap.className = 'copy-wrap';
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+      btn.type = 'button'; btn.className = 'copy-btn'; btn.textContent = 'Copy';
+      btn.setAttribute('aria-label', 'Copy install command');
+      btn.addEventListener('click', function () {
+        var done = function () {
+          btn.textContent = 'Copied';
+          setTimeout(function () { btn.textContent = 'Copy'; }, 1600);
+        };
+        if (navigator.clipboard) navigator.clipboard.writeText(cmd).then(done, function () {});
+        if (window.posthog) posthog.capture('install_copy', { path: location.pathname });
+      });
+      wrap.appendChild(btn);
+    });
+  });
+
   // PostHog analytics — async, non-blocking
   !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.people.toString(1)+" (stub)"},o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug getPageViewId captureTrackedMutations setTrackedMutations".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
   posthog.init('phc_Ckeacj8y8X8YiLkwHBcpBsJVSnsFKohch2vMv9sJYmE6', {
