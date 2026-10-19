@@ -71,15 +71,18 @@ class MenuBarController: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
     var currentStats = SysStats()
     let apiBase: String
 
-    override init() {
+    override convenience init() {
+        self.init(apiBase: ProcessInfo.processInfo.environment["AMUX_URL"] ?? "https://localhost:8824")
+    }
+
+    init(apiBase: String) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 420, height: 560), configuration: config)
 
-        apiBase = ProcessInfo.processInfo.environment["AMUX_URL"]
-            ?? "https://localhost:8824"
+        self.apiBase = apiBase
 
         super.init()
 
@@ -117,6 +120,16 @@ class MenuBarController: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
         pollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
             self?.fetchPinnedFiles()
         }
+    }
+
+    /// Remove the status item (the desktop app re-creates it on reconnect).
+    func stop() {
+        pollTimer?.invalidate()
+        statsTimer?.invalidate()
+        for w in fileWatchers { w.cancel() }
+        fileWatchers = []
+        popover.performClose(nil)
+        NSStatusBar.system.removeStatusItem(statusItem)
     }
 
     func updateStatusText() {
@@ -601,6 +614,7 @@ class InsecureDelegate: NSObject, URLSessionDelegate {
 
 // ── Entry point ──
 
+#if !AMUX_APP
 @main
 struct AmuxMenuBarApp {
     static func main() {
@@ -612,3 +626,4 @@ struct AmuxMenuBarApp {
         app.run()
     }
 }
+#endif
