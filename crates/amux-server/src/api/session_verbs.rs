@@ -495,7 +495,7 @@ fn memory_dir() -> PathBuf {
 fn transcripts_dir() -> PathBuf {
     home().join("transcripts")
 }
-fn claude_home() -> PathBuf {
+pub(crate) fn claude_home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
 }
 pub(crate) fn env_path(name: &str) -> PathBuf {
@@ -3277,7 +3277,7 @@ fn clean_gemini_frame(text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Claude's project-dir encoding: EVERY non-alphanumeric char becomes '-'.
-fn project_name(work_dir: &str) -> String {
+pub(crate) fn project_name(work_dir: &str) -> String {
     let resolved = expanduser(work_dir)
         .canonicalize()
         .map(|p| p.to_string_lossy().into_owned())
