@@ -30,16 +30,25 @@ function world() {
       if (p === '/v1/servers' && m === 'POST') {
         if (w.faults.capacity) { w.faults.capacity--; return Response.json({ error: { code: 'resource_unavailable', message: 'error during placement' } }, { status: 412 }); }
         if (w.servers.some(s => s.name === body.name)) return Response.json({ error: { code: 'uniqueness_error', message: 'name' } }, { status: 409 });
-        const s = { id: ++w.n, name: body.name, labels: body.labels, user_data: body.user_data, created: new Date().toISOString(), backup_window: null,
+        if (w.faults.bootImage && body.image !== 1) { w.faults.bootImage--; return Response.json({ error: { code: 'invalid_input', message: 'image disk is larger than server type disk' } }, { status: 422 }); }
+        const s = { id: ++w.n, name: body.name, image: body.image, labels: body.labels, user_data: body.user_data, created: new Date().toISOString(), backup_window: null,
                     public_net: { ipv4: { ip: `192.0.2.${w.n}` } } };
         w.servers.push(s); return ok({ server: s });
       }
       let mm;
-      if ((mm = p.match(/^\/v1\/servers\/(\d+)\/actions\/create_image$/))) { const img = { id: ++w.n, ...body }; w.images.push(img); return ok({ image: img }); }
+      if ((mm = p.match(/^\/v1\/servers\/(\d+)\/actions\/create_image$/))) { const img = { id: ++w.n, status: 'available', created: new Date().toISOString(), ...body }; w.images.push(img); return ok({ image: img }); }
       if ((mm = p.match(/^\/v1\/servers\/(\d+)\/actions\/enable_backup$/))) { w.servers.find(s => s.id == mm[1]).backup_window = '22-02'; return ok({}); }
       if ((mm = p.match(/^\/v1\/servers\/(\d+)$/)) && m === 'PUT') { const s = w.servers.find(s => s.id == mm[1]); s.labels = body.labels; return ok({ server: s }); }
       if ((mm = p.match(/^\/v1\/servers\/(\d+)$/)) && m === 'DELETE') { w.servers = w.servers.filter(s => s.id != mm[1]); return ok({}); }
-      if (p === '/v1/images') return ok({ images: w.images });
+      if (p === '/v1/images') {
+        const sel = (u.searchParams.get('label_selector') || '').split(',').filter(Boolean).map(x => x.split('='));
+        return ok({ images: w.images.filter(i => sel.every(([k, v]) => i.labels?.[k] === v)) });
+      }
+      if ((mm = p.match(/^\/v1\/images\/(\d+)$/)) && m === 'DELETE') {
+        if (!w.images.some(i => i.id == mm[1])) return Response.json({ error: { code: 'not_found' } }, { status: 404 });
+        w.images = w.images.filter(i => i.id != mm[1]); return ok({});
+      }
+      if ((mm = p.match(/^\/v1\/images\/(\d+)$/))) { const i = w.images.find(i => i.id == mm[1]); return i ? ok({ image: i }) : Response.json({ error: { code: 'not_found' } }, { status: 404 }); }
       throw new Error(`hetzner fake: ${m} ${p}`);
     }
     if (u.host === 'api.cloudflare.com') {
@@ -86,7 +95,7 @@ function world() {
       if (p === '/v1/customers') return ok({ data: [...new Set(Object.values(w.subs).filter(s => s.email === f.get('email')).map(s => s.customer_id))].map(id => ({ id })) });
       if (p === '/v1/billing_portal/sessions') return ok({ url: 'https://portal.test/x' });
     }
-    if (u.pathname === '/_door/status') return new Response('down', { status: 502 });
+    if (u.pathname === '/_door/status') return w.up ? Response.json({ live_commit: 'abc', dashboard: true, verdict: 'current' }) : new Response('down', { status: 502 });
     throw new Error(`fake: unexpected ${m} ${url}`);
   };
   return w;
@@ -396,6 +405,60 @@ await test('a browser visit to cloud.amux.io goes to the concierge page; unknown
   }
   eq((await api(w, '/api/nope')).status, 404, 'unknown api path');
   eq((await api(w, '/health')).status, 200, 'health');
+});
+
+async function ended(w, sub) {
+  const body = JSON.stringify({ type: 'customer.subscription.deleted', data: { object: { id: sub, metadata: { ...w.subs[sub].metadata } } } });
+  const t = Math.floor(Date.now() / 1000);
+  const sig = crypto.createHmac('sha256', w.env.STRIPE_WEBHOOK_SECRET).update(`${t}.${body}`).digest('hex');
+  w.subs[sub].status = 'canceled';
+  return call(w, () => worker.fetch(new Request('https://w.test/webhooks/stripe', { method: 'POST', body, headers: { 'stripe-signature': `t=${t},v1=${sig}` } }), w.env));
+}
+const sameOwner = (w, from, to) => { w.subs[to].email = w.subs[from].email; w.subs[to].metadata.email = w.subs[from].email; };
+
+await test('C13 canceled: snapshot kept 30 days, server and address go, then the snapshot expires', async () => {
+  const w = world(); const sub = paid(w, 'gone30');
+  await webhook(w, sub); await ended(w, sub);
+  const img = w.images.find(i => i.labels['amux-sub'] === sub);
+  const days = (Number(img.labels['amux-expires']) * 1000 - Date.now()) / 86400e3;
+  eq([Math.round(days), img.labels['amux-cloud-final']], [30, '1'], 'final snapshot kept 30 days');
+  await cron(w);
+  eq([w.servers.length, w.dns.length, w.images.length], [0, 0, 1], 'server and address gone, snapshot kept');
+  img.labels['amux-expires'] = String(Math.floor(Date.now() / 1000) - 1);    // 30 days later
+  await cron(w);
+  eq(w.images.length, 0, 'snapshot deleted at expiry');
+});
+
+await test('C10/C13 resubscribing within 30 days restores the last server, under a new name too', async () => {
+  const w = world(); const old = paid(w, 'comeback');
+  await webhook(w, old); await ended(w, old); await cron(w);
+  const snap = w.images[0].id;
+  const again = paid(w, 'comeback2'); sameOwner(w, old, again);
+  await webhook(w, again);
+  eq([w.servers.length, w.servers[0].image, w.servers[0].labels['amux-restored-from']], [1, snap, String(snap)], 'booted from the snapshot');
+  eq(/AMUX_WEB_USERS='hello\+comeback@amux\.io:scrypt/.test(w.servers[0].user_data), true, 'the new signup password applies');
+  w.up = true; await cron(w);
+  eq(w.images.length, 0, 'snapshot deleted once the restored server is ready');
+  const mail = w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).find(t => /server is ready/.test(t)) || '';
+  eq(/restored from your previous server/.test(mail), true, 'ready email says it was restored');
+});
+
+await test('C10 another email never gets someone else\'s snapshot', async () => {
+  const w = world(); const old = paid(w, 'private1');
+  await webhook(w, old); await ended(w, old); await cron(w);
+  const other = paid(w, 'stranger1'); w.subs[other].email = 'stranger@example.com'; w.subs[other].metadata.email = 'stranger@example.com';
+  await webhook(w, other);
+  eq([w.servers.length, w.servers[0].image, w.images.length], [1, 1, 1], 'golden image, snapshot untouched');
+});
+
+await test('C10 a snapshot that cannot boot on the new plan falls back to a fresh server', async () => {
+  const w = world(); const old = paid(w, 'shrink');
+  await webhook(w, old); await ended(w, old); await cron(w);
+  const again = paid(w, 'shrink2'); sameOwner(w, old, again);
+  w.faults.bootImage = 1;
+  await webhook(w, again);
+  eq([w.servers.length, w.servers[0].image, w.servers[0].labels['amux-restored-from']], [1, 1, undefined], 'golden image');
+  eq(w.logs.some(l => JSON.stringify(l).includes('provision.restore_failed')), true, 'logged');
 });
 
 process.exitCode = failures;

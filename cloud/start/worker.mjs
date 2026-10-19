@@ -15,6 +15,8 @@
 //                            customer.subscription.deleted: snapshot it, then (cron) delete it
 //   GET  /api/ops            (x-ops-key) the operator audit: books against servers, margin, funnel
 //   cron 13:00 UTC daily     the operator audit; emails hello@amux.io only when something is wrong (and Mondays)
+//                            A new subscription from the same email within those 30 days boots
+//                            from that snapshot: the customer's data comes back, with the new password.
 //   cron every minute        ready emails; delete servers whose final snapshot is done;
 //                            delete snapshots older than 30 days; finish any paid signup the
 //                            webhook did not (reconcile); check each server every 10 minutes
@@ -213,6 +215,20 @@ async function goldenImage(env) {
   return d.images[0].id;
 }
 
+// The newest unexpired final snapshot of a server this email owned. Matched through the old
+// subscription's customer, because a canceled name is free for anyone after its server is gone.
+async function finalSnapshotFor(env, email) {
+  if (!email) return null;
+  const imgs = await hetzner(env, 'GET', '/images?type=snapshot&label_selector=amux-cloud-final=1');
+  const mine = [];
+  for (const i of imgs.images) {
+    if (i.status !== 'available' || Number(i.labels['amux-expires'] || 0) * 1000 < Date.now()) continue;
+    const old = await stripe(env, 'GET', `/subscriptions/${i.labels['amux-sub']}`, { expand: ['customer'] }).catch(() => null);
+    if ((old?.customer?.email || '').toLowerCase() === email.toLowerCase()) mine.push(i);
+  }
+  return mine.sort((a, b) => Date.parse(b.created) - Date.parse(a.created))[0] || null;
+}
+
 // Idempotent, and safe to run again after a partial failure: the webhook calls it, Stripe
 // redelivers it, and the cron's reconcile() calls it for any paid subscription whose signup is
 // not finished (pw_hash still in its metadata). Each step checks before it acts, and pw_hash is
@@ -228,9 +244,11 @@ async function provision(env, { sub, meta, email }) {
   let slug = meta.slug;
   if (await slugTaken(env, slug)) slug = `${slug}-${sub.slice(-4).toLowerCase()}`;   // lost a race since checkout
   const plan = plans(env).find(p => p.id === meta.plan) || plans(env)[0];
-  const image = await goldenImage(env);
+  const golden = await goldenImage(env);
+  const prior = await finalSnapshotFor(env, email || meta.email);
   const labels = { 'amux-cloud': '1', 'amux-standalone': '1', 'amux-sub': sub, 'amux-slug': slug,
-                   'amux-plan': plan.id, 'amux-mode': env.MODE };
+                   'amux-plan': plan.id, 'amux-mode': env.MODE, ...(prior ? { 'amux-restored-from': String(prior.id) } : {}) };
+  let image = prior ? prior.id : golden;
   let srv, lastErr;
   // Hetzner sometimes has no capacity for a type in a location (412 resource_unavailable, seen
   // 2026-10-17 for cx43 in all three at once). Try each; if all refuse, throw, and the cron
@@ -240,10 +258,24 @@ async function provision(env, { sub, meta, email }) {
       srv = (await hetzner(env, 'POST', '/servers', { name: `amux-${slug}`, server_type: plan.server_type, image,
         location, labels, user_data: userData(slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
       break;
-    } catch (e) { lastErr = e; if (!['resource_unavailable', 'placement_error'].includes(e.code)) throw e; }
+    } catch (e) {
+      lastErr = e;
+      // A snapshot that cannot boot on this plan (a smaller disk) must not block the signup: start
+      // fresh, and the snapshot stays until it expires.
+      if (image !== golden && !['resource_unavailable', 'placement_error'].includes(e.code)) {
+        log('provision.restore_failed', { sub, slug, image, error: String(e).slice(0, 200) });
+        image = golden; delete labels['amux-restored-from'];
+        try {
+          srv = (await hetzner(env, 'POST', '/servers', { name: `amux-${slug}`, server_type: plan.server_type, image,
+            location, labels, user_data: userData(slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
+          break;
+        } catch (e2) { lastErr = e2; if (!['resource_unavailable', 'placement_error'].includes(e2.code)) throw e2; continue; }
+      }
+      if (!['resource_unavailable', 'placement_error'].includes(e.code)) throw e;
+    }
   }
   if (!srv) { log('provision.no_capacity', { sub, slug, type: plan.server_type, error: String(lastErr).slice(0, 200) }); throw lastErr; }
-  log('provision.created', { sub, slug, server: srv.id, plan: plan.id, mode: env.MODE });
+  log('provision.created', { sub, slug, server: srv.id, plan: plan.id, mode: env.MODE, restored_from: labels['amux-restored-from'] || null });
   return finish(env, sub, slug, srv);
 }
 
@@ -316,6 +348,9 @@ async function erase(env, sub, slug) {
   }
   const imgs = await hetzner(env, 'GET', `/images?type=snapshot&label_selector=amux-sub=${sub}`);
   for (const i of imgs.images) await gone(() => hetzner(env, 'DELETE', `/images/${i.id}`));
+  // A restored server deleted before it was ready still points at the snapshot it came from.
+  for (const s of d.servers) if (s.labels['amux-restored-from'])
+    await gone(() => hetzner(env, 'DELETE', `/images/${s.labels['amux-restored-from']}`));
   log('account.erased', { sub, servers: d.servers.length, dns, snapshots: imgs.images.length });
 }
 
@@ -379,11 +414,18 @@ async function tick(env) {
       const email = sub.customer?.email;
       if (email && !email.startsWith('synthetic+')) {
         await sendMail(env, email, 'Your amux server is ready',
-          `Your server is ready: https://${host(slug)}\r\n\r\nSign in with this email address and the password you chose at signup. ` +
+          `Your server is ready: https://${host(slug)}\r\n\r\n` +
+          (s.labels['amux-restored-from'] ? `It was restored from your previous server, with your workers, board and files. ` : '') +
+          `Sign in with this email address and the password you chose at signup. ` +
           `Then connect a model: sign in with Claude, ChatGPT or Google, or paste an API key.\r\n\r\n` +
           `Billing and cancellation: ${SITE}/start/billing/`);
       }
       await hetzner(env, 'PUT', `/servers/${s.id}`, { labels: { ...s.labels, 'amux-ready': '1' } });
+      // The data is live again, so the snapshot it came from is no longer the customer's only copy.
+      if (s.labels['amux-restored-from']) {
+        await gone(() => hetzner(env, 'DELETE', `/images/${s.labels['amux-restored-from']}`));
+        log('restore.snapshot_deleted', { slug, image: s.labels['amux-restored-from'] });
+      }
       log('provision.ready', { slug, ms_since_create: Date.now() - Date.parse(s.created) });
     }
   }
