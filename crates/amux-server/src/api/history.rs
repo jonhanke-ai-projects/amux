@@ -58,6 +58,9 @@ pub fn routes() -> Router<AppState> {
         .route("/import", axum::routing::post(import_history))
         // Opt-in, dry run by default: mask credentials already stored.
         .route("/redact-stored", axum::routing::post(redact_stored))
+        // Same shape: dry run by default, owner-only apply. Rebuilds rows the
+        // old 200-per-session cap dropped, from session_events.
+        .route("/backfill", axum::routing::post(super::history_backfill::backfill))
         // AMUX-4664: ask a question of these messages. A literal POST, like
         // `/import`, so the `/{id}` capture below does not take it.
         .route("/ask", axum::routing::post(super::history_ask::ask))
