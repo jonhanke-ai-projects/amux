@@ -10313,7 +10313,13 @@ async function _outcomeStart(text, cfg) {
     r = await fetch(API + '/api/sessions', { method: 'POST',
       headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body) });
   } catch (_) { showToast('Not started: server unreachable. Your description is kept.'); return; }
-  if (_isLocallyQueued(r)) { showToast('Not started yet: queued in this browser until the server is reachable. Your description is kept.'); return; }
+  // The outbox holds this create durably and replays it once (a 5xx is queued
+  // too). Keeping the draft here invited a second press: two workers, one goal.
+  if (_isLocallyQueued(r)) {
+    localStorage.removeItem('amux_outcome_draft');
+    showToast('Queued: ' + name + ' starts on its own when the server is reachable. See Pending operations.');
+    return;
+  }
   if (!r.ok) {
     let e = ''; try { e = (await r.json()).error || ''; } catch (_) {}
     showToast('Not started: ' + (e || 'error ' + r.status) + '. Your description is kept.');

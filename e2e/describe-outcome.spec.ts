@@ -9,7 +9,7 @@ test('Describe what you want starts a worker on a /goal from one box, with remem
   test.setTimeout(90_000);
   const creates: any[] = [];
   const prefs: any[] = [];
-  let failNext = true;
+  let reply: 'refuse' | 'ok' | 'down' = 'refuse';
   await page.addInitScript(() => {
     localStorage.setItem('amux_walkthrough_done', '1');
     localStorage.removeItem('amux_outcome_draft');
@@ -19,7 +19,9 @@ test('Describe what you want starts a worker on a /goal from one box, with remem
   await page.route('**/api/sessions', async route => {
     if (route.request().method() !== 'POST') return route.fallback();
     creates.push(route.request().postDataJSON());
-    if (failNext) { failNext = false; return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"boom"}' }); }
+    if (reply === 'refuse') { reply = 'ok'; return route.fulfill({ status: 400, contentType: 'application/json', body: '{"error":"bad dir"}' }); }
+    // A 5xx is queued by the outbox for replay, so it answers the page with a local 202.
+    if (reply === 'down') return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"down"}' });
     return route.fulfill({ status: 201, contentType: 'application/json', body: '{"ok":true}' });
   });
   await page.route('**/api/prefs**', async route => {
@@ -62,7 +64,7 @@ test('Describe what you want starts a worker on a /goal from one box, with remem
   if (fit.vw <= 600) expect(fit.summaryH).toBeGreaterThanOrEqual(44);
   await page.screenshot({ path: test.info().outputPath('describe-outcome.png') });
 
-  // A failed start keeps the description.
+  // A refused start keeps the description.
   await page.locator('#modal-btns .btn.primary', { hasText: 'Start' }).click();
   await expect.poll(() => creates.length).toBe(1);
   await open();
@@ -100,4 +102,16 @@ test('Describe what you want starts a worker on a /goal from one box, with remem
     return seen;
   });
   expect(fired).toEqual(['add-dark-mode-toggle finished its goal']);
+
+  // Server down: the create is queued for replay, so the draft goes rather
+  // than inviting a second press that would start a duplicate worker.
+  reply = 'down';
+  const before = creates.length;
+  await open();
+  await page.locator('#outcome-text').fill('Write a weekly summary of open cards');
+  await page.locator('#modal-btns .btn.primary', { hasText: 'Start' }).click();
+  await expect.poll(() => creates.length).toBeGreaterThan(before);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('amux_outcome_draft'))).toBeNull();
+  await expect(page.locator('#toast')).toContainText('starts on its own');
+  await expect(page.locator('#toast')).toBeVisible();
 });
