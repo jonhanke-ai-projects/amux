@@ -1592,7 +1592,10 @@ async function _initIdentity() {
     // has_any_model: any provider (Anthropic, OpenAI/Codex, Gemini key or sign-in). An
     // OpenAI-only server was told "No Anthropic API key" (amux Cloud e2e, 2026-10-18).
     if (!(d.has_any_model ?? d.has_api_key)) {
-      if (d.is_cloud) {
+      // An amux Cloud server's owner (account_url) gets the same first-run screen: it is
+      // the only place with "Sign in with Claude/ChatGPT/Gemini". A dedicated server
+      // showed just the API-key banner, so a subscription could not be connected (2026-10-19).
+      if (d.is_cloud || d.account_url) {
         // Blocking modal for cloud users — must set key before using the app
         const m = document.getElementById('apikey-setup-modal');
         if (m) m.style.display = 'flex';

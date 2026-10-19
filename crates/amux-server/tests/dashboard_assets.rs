@@ -2383,3 +2383,26 @@ fn every_notification_emitter_goes_through_the_shared_gate() {
     let feedback = asset("state/feedback.mjs");
     assert!(feedback.contains("amuxNotifyAllowed?.('toast')"), "the press layer's success toast must ask the gate");
 }
+
+/// A server with no model must lead to "Sign in with Claude", not only to an API
+/// key. On an amux Cloud server the first-run window opened only for the old
+/// shared gateway (`is_cloud`), and the banner pointed at the Vault's API keys,
+/// so a customer could not connect a subscription at all (2026-10-19).
+#[test]
+fn no_model_leads_to_the_window_with_the_subscription_sign_in() {
+    let html = asset("index.html");
+    let app = asset("app.js");
+    let banner_start = html.find("id=\"no-apikey-banner\"").expect("banner");
+    let banner = &html[banner_start..banner_start + html[banner_start..].find("</div>").unwrap()];
+    assert!(
+        banner.contains("getElementById('apikey-setup-modal').style.display='flex'"),
+        "the no-model banner opens the first-run window: {banner}"
+    );
+    let modal_start = html.find("id=\"apikey-setup-modal\"").expect("modal");
+    let modal_end = modal_start + html[modal_start..].find("id=\"apikey-setup-input\"").unwrap();
+    assert!(html[modal_start..modal_end].contains("modelLogin('claude')"), "the window offers Sign in with Claude");
+    assert!(
+        app.contains("if (d.is_cloud || d.account_url) {"),
+        "a Cloud server's owner (account_url) gets the first-run window on load"
+    );
+}
