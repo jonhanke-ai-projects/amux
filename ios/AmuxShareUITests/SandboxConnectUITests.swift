@@ -13,8 +13,10 @@ import XCTest
 ///
 /// Run: TEST_RUNNER_SANDBOX_E2E=1 [TEST_RUNNER_SANDBOX_USER=… TEST_RUNNER_SANDBOX_PASS=…]
 ///   xcodebuild test -scheme AmuxShareUITests -only-testing:AmuxShareUITests/SandboxConnectUITests
+/// TEST_RUNNER_SANDBOX_URL=https://<name>.amux.io points it at an amux Cloud customer's server.
 final class SandboxConnectUITests: XCTestCase {
-    private let sandbox = "https://sandbox.amux.io"
+    private let sandbox = ProcessInfo.processInfo.environment["SANDBOX_URL"] ?? "https://sandbox.amux.io"
+    private var sandboxHost: String { URL(string: sandbox)?.host ?? "sandbox.amux.io" }
 
     override func setUp() { continueAfterFailure = false }
 
@@ -45,7 +47,7 @@ final class SandboxConnectUITests: XCTestCase {
         let switchServer = app.buttons["Switch Server"]
         let addServer = app.buttons["Add Server"]
         let deadline = Date().addingTimeInterval(40)
-        let savedSandbox = app.webViews.firstMatch.staticTexts["sandbox.amux.io"]
+        let savedSandbox = app.webViews.firstMatch.staticTexts[sandboxHost]
         while !pickerURL.exists && !addServer.exists && !savedSandbox.exists && Date() < deadline {
             if switchServer.exists { shot(app, "0-saved-server-unreachable"); switchServer.tap() }
             _ = pickerURL.waitForExistence(timeout: 2)
