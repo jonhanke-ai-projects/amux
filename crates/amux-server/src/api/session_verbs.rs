@@ -20681,8 +20681,8 @@ fn compose_worker_block(name: &str, session_content: &str) -> String {
     format!(
         "## Worker memory — `{name}`\n\n\
          <!-- Written by the {name} lane. If you are not {name}, this is a peer's \
-         memory: useful context, not your own notes. Your own is at \
-         ~/.amux/memory/<your-worker>.md and reaches this file when you write it. -->\n\n{}",
+         memory: useful context, not your own notes. Save to your own with \
+         `amux memory add --stdin`. -->\n\n{}",
         session_content.trim()
     )
 }
@@ -30512,11 +30512,31 @@ pub(crate) async fn steer_history_verb(
 
 /// `memory` as a callable verb, extracted for the promoted
 /// `/api/workers/{id}/memory` route (AF-293).
+///
+/// `append` adds a note under the existing memory instead of replacing it
+/// (`amux memory add`). A worker told "add this to your memory" had no verb for
+/// its amux memory, so gainz saved the owner's rule into Claude's directory
+/// auto-memory, which the Memory tab never shows (Ethan, 2026-10-19). Read,
+/// join and write happen under one lock, so a concurrent owner save is not lost.
 pub(crate) fn memory_post_verb(name: &str, body: &Value) -> Response {
-    let content = body_str(body, "content");
+    static MEMORY_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = MEMORY_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mf = mem_file(name);
+    let append = body.get("append").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty());
+    if append.is_none() && body.get("append").is_some() {
+        // Falling through to `content` would replace the memory with "".
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "append is empty"}));
+    }
+    let content = match append {
+        Some(note) => {
+            let prior = std::fs::read_to_string(&mf).unwrap_or_default();
+            let prior = prior.trim_end();
+            if prior.is_empty() { format!("{note}\n") } else { format!("{prior}\n\n{note}\n") }
+        }
+        None => body_str(body, "content").to_string(),
+    };
     let _ = std::fs::create_dir_all(memory_dir());
-    if std::fs::write(&mf, content).is_err() {
+    if std::fs::write(&mf, &content).is_err() {
         return jresp(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({"error": "could not write memory file"}),
@@ -30526,7 +30546,11 @@ pub(crate) fn memory_post_verb(name: &str, body: &Value) -> Response {
     if !wd.is_empty() {
         write_claude_memory(name, &wd);
     }
-    j200(json!({"ok": true}))
+    if append.is_some() {
+        tracing::info!(session = %name, bytes = content.len(), verdict = "worker_memory_appended",
+            "memory: a note was appended to the worker's amux memory");
+    }
+    j200(json!({"ok": true, "bytes": content.len(), "appended": append.is_some()}))
 }
 
 /// `instructions` as a callable verb, extracted for the promoted
@@ -31422,6 +31446,17 @@ Every board switch is off for this worker, so you have no board: do not read, cr
 move or close board cards, and skip the board and task-ledger sections of CLAUDE.md. The board API \
 refuses your calls with code board_off. Keep task state in your own files.";
 
+/// Every non-isolated worker learns where "your memory" lives. Claude Code's
+/// own auto-memory instructions name a directory file shared by every worker
+/// in that directory, which the owner's Memory tab does not show, so a worker
+/// asked to remember something saved it there (gainz, 2026-10-19).
+pub(crate) const MEMORY_VERB_CONTEXT: &str = "# Your worker memory\n\n\
+When the owner asks you to remember something, or to add it to this worker's memory, save it to \
+your amux worker memory: `amux memory add --stdin` (a heredoc keeps backticks literal). That is \
+what the owner sees in the Memory tab, and it reaches your next launch. `amux memory` prints it. \
+Claude Code's own memory directory is shared by every worker in this directory and the owner \
+does not see it in amux.";
+
 pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let lane = compose_lane_context(name, &std::fs::read_to_string(mem_file(name)).unwrap_or_default());
     let rules = compose_rules_block(name);
@@ -31437,6 +31472,7 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let block = if crate::api::board_lifecycle::board_unused(name) {
         format!("{block}\n\n{BOARD_OFF_CONTEXT}")
     } else { block };
+    let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}");
     let file = worker_rules_file(name);
     format!(
         "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Keeping this scoped context current\n\n\
@@ -54025,6 +54061,46 @@ mod commit_shape_tests {
                 "env-explain leaked a value from a 0600 credential file ({secret}): {v}"
             );
         }
+    }
+
+    /// Ethan, 2026-10-19: gainz was told "add to this workers memory", had no
+    /// verb for its amux memory, and saved the rule where the Memory tab never
+    /// shows it. `append` keeps what is there (the owner's text included), and
+    /// every non-isolated launch names the verb.
+    #[tokio::test]
+    async fn a_worker_appends_to_its_own_memory_and_its_launch_names_the_verb() {
+        use axum::http::StatusCode;
+        use serde_json::json;
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/memapp.env"), "CC_DIR=\"\"\n").unwrap();
+
+        let r = super::memory_post_verb("memapp", &json!({"append": "  first note  "}));
+        assert!(r.status().is_success());
+        assert_eq!(std::fs::read_to_string(h.join("memory/memapp.md")).unwrap(), "first note\n");
+
+        // The owner's save, then a worker append: both survive, in order.
+        super::memory_post_verb("memapp", &json!({"content": "OWNER TEXT\n\n"}));
+        super::memory_post_verb("memapp", &json!({"append": "second note"}));
+        assert_eq!(
+            std::fs::read_to_string(h.join("memory/memapp.md")).unwrap(),
+            "OWNER TEXT\n\nsecond note\n"
+        );
+        // An empty append is refused rather than replacing the file with "".
+        assert_eq!(super::memory_post_verb("memapp", &json!({"append": "   "})).status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::fs::read_to_string(h.join("memory/memapp.md")).unwrap(),
+            "OWNER TEXT\n\nsecond note\n"
+        );
+
+        let launch = super::compose_worker_context("memapp", false);
+        assert!(launch.contains(super::MEMORY_VERB_CONTEXT), "{launch}");
+        assert!(launch.contains("amux memory add --stdin"));
+        // The worker block points at the verb, not at a file a guard may refuse.
+        let block = super::compose_worker_block("memapp", "x");
+        assert!(block.contains("amux memory add --stdin") && !block.contains("~/.amux/memory/"), "{block}");
     }
 
     /// AF-296: group-level memory reaches the composed document, and its ABSENCE
