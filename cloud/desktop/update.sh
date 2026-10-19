@@ -117,6 +117,22 @@ if [[ -f $CF ]] && grep -q 'header_up Cookie "amux_member=' $CF && ! grep -q 'he
   fi
 fi
 
+# The "amux is restarting" page instead of a bare 502 (C14). The snippet is refreshed from the
+# checkout every run; a Caddyfile from before it gains the import line once.
+if [[ -f $CF && -f "$SRC/cloud/desktop/caddy-errors.caddy" ]] && ! cmp -s "$SRC/cloud/desktop/caddy-errors.caddy" /etc/caddy/amux-errors.caddy; then
+  had=$([[ -f /etc/caddy/amux-errors.caddy ]] && echo 1 || echo 0)
+  cp -p $CF $CF.prev; [[ $had == 1 ]] && cp -p /etc/caddy/amux-errors.caddy /etc/caddy/amux-errors.caddy.prev
+  install -m 644 "$SRC/cloud/desktop/caddy-errors.caddy" /etc/caddy/amux-errors.caddy
+  grep -q 'import /etc/caddy/amux-errors.caddy' $CF || sed -i '$ s|^}$|  import /etc/caddy/amux-errors.caddy\n}|' $CF
+  if runuser -u caddy -- caddy validate --config $CF --adapter caddyfile >/dev/null 2>&1 && systemctl reload caddy; then
+    say "verdict=caddy_error_page_installed"
+  else
+    mv $CF.prev $CF
+    if [[ $had == 1 ]]; then mv /etc/caddy/amux-errors.caddy.prev /etc/caddy/amux-errors.caddy; else rm -f /etc/caddy/amux-errors.caddy; fi
+    systemctl reload caddy; say "WARN verdict=caddy_error_page_rejected previous Caddyfile kept"
+  fi
+fi
+
 # 2. Newest green image.
 TOKEN=$(curl -fsS --max-time 20 "https://ghcr.io/token?scope=repository:$IMAGE_REPO:pull" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])' 2>/dev/null)
 LATEST=$(curl -fsSI --max-time 20 -H "Authorization: Bearer $TOKEN" \
