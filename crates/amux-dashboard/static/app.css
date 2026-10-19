@@ -4053,6 +4053,8 @@
   .chrome-tab-frames iframe.hidden { display: none; }
   body.in-tab .chrome-tabs-bar,
   body.in-tab .chrome-tab-frames { display: none !important; }
+  body.native-tabs .chrome-tabs-bar,
+  body.native-tabs .chrome-tab-frames { display: none !important; }
   body.in-tab { padding-top: 0 !important; }
   .chrome-tab-rename {
     background: transparent; border: none; outline: none;
