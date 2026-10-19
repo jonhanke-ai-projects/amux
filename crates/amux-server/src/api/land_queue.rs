@@ -24,7 +24,8 @@
 //!
 //! Verdicts (rule 5 at /api/contract/counters): land_queued, land_merged,
 //! land_refused, land_batch_bisected, worker_push_refused, land_lock_acquired,
-//! land_lock_waited, land_lock_timeout_requeued.
+//! land_lock_waited, land_lock_timeout_requeued. Enqueue refusals by the land
+//! guards: land_refused_frozen, land_refused_reused_message (see check_guards).
 use crate::api::AppState;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -642,6 +643,109 @@ async fn requeue(state: &AppState, entries: &[Entry], why: String) {
 }
 
 // ---------------------------------------------------------------------------
+// Land guards (mxp-gs12 review, 2026-10-18): a frozen path and a reused
+// commit message. `amux land` ran them client-side only, so a direct
+// `POST /api/land` skipped both. The server now runs the CLI's own predicate
+// (`_LAND_GUARD_PY` in the bash CLI, embedded at build time so the two cannot
+// drift) on every enqueue and is authoritative; the CLI keeps its early check
+// for a fast message. Freezes come from `.amux/land.conf` on origin/main and
+// verdict lines go to ~/.amux/logs/land.log, the same sources the CLI uses.
+// ---------------------------------------------------------------------------
+
+const AMUX_CLI: &str = include_str!("../../../../amux");
+const GUARD_TIMEOUT_S: u64 = 120;
+
+/// The Python body of `_LAND_GUARD_PY='...'` in the bash CLI.
+pub fn guard_py() -> Option<&'static str> {
+    let start = AMUX_CLI.find("\n_LAND_GUARD_PY='")? + "\n_LAND_GUARD_PY='".len();
+    let len = AMUX_CLI[start..].find('\'')?;
+    Some(&AMUX_CLI[start..start + len])
+}
+
+/// Overrides the caller may pass, mirroring the CLI's environment escapes.
+#[derive(Default, Clone)]
+pub struct GuardOverrides {
+    /// AMUX_LAND_FREEZE_OVERRIDE='<name>: <why>' for this lane's own land.
+    pub freeze: Option<String>,
+    /// AMUX_LAND_ALLOW_REUSED_MESSAGE=1.
+    pub allow_reused_message: bool,
+}
+
+/// A guard refusal: the verdict and the guard's refusal and hint lines.
+#[derive(Debug)]
+pub struct GuardRefusal {
+    pub verdict: &'static str,
+    pub lines: Vec<String>,
+}
+
+fn land_log(lane: &str, mode: &str, text: &str) {
+    use std::io::Write;
+    let dir = home().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("land.log")) else { return };
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let _ = writeln!(f, "{ts} {lane} {mode} guard: {line} (server)");
+    }
+}
+
+async fn run_guard(tree: &Path, mode: &str, base: &str, tip: &str, ov: &GuardOverrides) -> (i32, String) {
+    let Some(py) = guard_py() else { return (3, "guard error: _LAND_GUARD_PY not found in the embedded CLI".into()) };
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg("-c").arg(py).args([mode, "origin/main", base, tip]).current_dir(tree)
+        .env_remove("AMUX_LAND_FREEZE_OVERRIDE").kill_on_drop(true)
+        .stdin(std::process::Stdio::null());
+    match ov.freeze.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(f) => { cmd.env("AMUX_LAND_FREEZE_OWN", "1").env("AMUX_LAND_FREEZE_OVERRIDE", f); }
+        None => { cmd.env("AMUX_LAND_FREEZE_OWN", "0"); }
+    }
+    match tokio::time::timeout(Duration::from_secs(GUARD_TIMEOUT_S), cmd.output()).await {
+        Ok(Ok(o)) => {
+            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&o.stderr));
+            (o.status.code().unwrap_or(3), s)
+        }
+        Ok(Err(e)) => (3, format!("guard error: python3 did not start: {e}")),
+        Err(_) => (3, format!("guard error: timed out after {GUARD_TIMEOUT_S}s")),
+    }
+}
+
+/// Run both land guards on the lane's range merge-base(origin/main, sha)..sha.
+/// A guard that cannot run is logged as unmeasured and refuses nothing, as in
+/// the CLI.
+pub async fn check_guards(tree: &Path, lane: &str, sha: &str, ov: &GuardOverrides) -> Result<(), GuardRefusal> {
+    let _ = git(tree, &["fetch", "-q", "origin", "main"]).await;
+    let Ok(base) = git(tree, &["merge-base", "origin/main", sha]).await else {
+        tracing::warn!(lane, sha, measured = false, n_considered = 0, why_unmeasured = "no merge-base with origin/main",
+            verdict = "land_guard_unmeasured", "land guards skipped");
+        return Ok(());
+    };
+    for (mode, verdict) in [("freeze", "land_refused_frozen"), ("message", "land_refused_reused_message")] {
+        let (mut rc, mut out) = run_guard(tree, mode, &base, sha, ov).await;
+        if mode == "message" && rc == 1 && ov.allow_reused_message {
+            out.push_str("\nverdict=land_message_reused_allowed (allow_reused_message)");
+            tracing::warn!(lane, sha, measured = true, n_considered = 1, verdict = "land_message_reused_allowed",
+                "a reused commit message was landed on request");
+            rc = 0;
+        }
+        if rc > 1 {
+            out.push_str(&format!("\nverdict=land_{mode}_unmeasured rc={rc} (the guard could not run; nothing refused on it)"));
+            tracing::warn!(lane, sha, mode, rc, measured = false, n_considered = 0, why_unmeasured = %tail(out.trim(), 300),
+                verdict = "land_guard_unmeasured", "a land guard could not run");
+            rc = 0;
+        }
+        land_log(lane, mode, &out);
+        if rc == 1 {
+            let lines: Vec<String> = out.lines().filter(|l| l.starts_with("refused:") || l.starts_with("hint:")).map(String::from).collect();
+            tracing::warn!(lane, sha, measured = true, n_considered = 1, verdict, detail = %tail(&lines.join(" | "), 600),
+                "a land was refused by a land guard");
+            return Err(GuardRefusal { verdict, lines });
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
@@ -716,6 +820,15 @@ async fn enqueue_route(State(state): State<AppState>, headers: HeaderMap, Json(b
     if priority && reason.is_none() {
         return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "code": "land_priority_needs_reason",
             "error": "a priority land needs a reason (it moves ahead of every ordinary waiter)"}))).into_response();
+    }
+    let ov = GuardOverrides {
+        freeze: body.get("freeze_override").and_then(Value::as_str).map(String::from),
+        allow_reused_message: body.get("allow_reused_message").and_then(Value::as_bool).unwrap_or(false),
+    };
+    if let Err(r) = check_guards(&tree, &lane, &sha, &ov).await {
+        return (StatusCode::CONFLICT, Json(json!({"ok": false, "code": r.verdict, "verdict": r.verdict,
+            "error": r.lines.iter().find(|l| l.starts_with("refused:")).cloned().unwrap_or_else(|| "refused by a land guard".into()),
+            "refusals": r.lines, "sha": sha}))).into_response();
     }
     let now = crate::config::now_f64();
     let (l2, s2, r2, why2) = (lane.clone(), sha.clone(), repo.clone(), reason.clone());
@@ -1000,6 +1113,57 @@ mod tests {
 
     /// The server names the lock exactly as `amux land` and the Mixpeek
     /// pre-push leg do: printf '%s %s' "$url" main | shasum | cut -c1-16.
+    /// A direct POST /api/land runs the CLI's land guards: a commit changing a
+    /// frozen path and a commit reusing a landed commit's message over other
+    /// files are refused with a verdict; an ordinary commit, and either one
+    /// with its explicit escape, is queued.
+    #[tokio::test]
+    async fn a_direct_post_is_refused_on_a_frozen_path_and_a_reused_message() {
+        assert!(guard_py().is_some_and(|p| p.contains("land_freeze_checked") && p.contains("land_message_reused")),
+            "the CLI's _LAND_GUARD_PY is embedded");
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let lane = fixture(h);
+        let seed = h.join("seed");
+        std::fs::create_dir_all(seed.join(".amux")).unwrap();
+        std::fs::write(seed.join(".amux/land.conf"),
+            "[freeze \"gs12-proofs\"]\n\tpath = proofs/*\n\tuntil = 2099-01-01T00:00:00Z\n\towner = t\n\treason = pinned\n").unwrap();
+        sh(&seed, &["add", ".amux/land.conf"]);
+        sh(&seed, &["commit", "-qm", "freeze proofs"]);
+        sh(&seed, &["push", "-q", "origin", "HEAD:main"]);
+        sh(&lane, &["fetch", "-q", "origin", "main"]);
+        std::fs::write(h.join("sessions/lane-g.env"), format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\n", lane.display())).unwrap();
+        let state = app();
+
+        std::fs::create_dir_all(lane.join("proofs")).unwrap();
+        let frozen = commit(&lane, "proofs/row.txt", "x\n");
+        let (st, b) = call(&state, "POST", "/api/land", "lane-g", json!({"sha": frozen})).await;
+        assert_eq!((st, b["verdict"].as_str()), (StatusCode::CONFLICT, Some("land_refused_frozen")), "{b}");
+        assert!(b["error"].as_str().unwrap_or("").contains("gs12-proofs"), "{b}");
+
+        sh(&lane, &["checkout", "-q", "--detach", "origin/main"]);
+        std::fs::write(lane.join("b.txt"), "b\n").unwrap();
+        sh(&lane, &["add", "b.txt"]);
+        sh(&lane, &["commit", "-qm", "base"]); // the seed commit's message, over another file
+        let reused = sh(&lane, &["rev-parse", "HEAD"]);
+        let (st, b) = call(&state, "POST", "/api/land", "lane-g", json!({"sha": reused})).await;
+        assert_eq!((st, b["verdict"].as_str()), (StatusCode::CONFLICT, Some("land_refused_reused_message")), "{b}");
+
+        let n: i64 = state.store.read().unwrap().query_row("SELECT count(*) FROM land_queue", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "nothing refused was queued");
+        let log = std::fs::read_to_string(h.join("logs/land.log")).unwrap();
+        assert!(log.contains("lane-g freeze guard: refused:") && log.contains("verdict=land_message_reused"), "{log}");
+
+        let ok = commit(&lane, "ok.txt", "ok\n");
+        assert_eq!(call(&state, "POST", "/api/land", "lane-g", json!({"sha": ok})).await.0, StatusCode::ACCEPTED);
+        let (st, b) = call(&state, "POST", "/api/land", "lane-g", json!({"sha": frozen, "freeze_override": "gs12-proofs: re-proved"})).await;
+        assert_eq!(st, StatusCode::ACCEPTED, "{b}");
+        let (st, b) = call(&state, "POST", "/api/land", "lane-g", json!({"sha": reused, "allow_reused_message": true})).await;
+        assert_eq!(st, StatusCode::ACCEPTED, "{b}");
+    }
+
     #[test]
     fn the_lock_path_matches_the_cli_key() {
         let p = lock_path("https://github.com/mixpeek/mixpeek.git", "main");

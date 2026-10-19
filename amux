@@ -9178,7 +9178,11 @@ cmd_land() {
     local _q_sha _q_out _q_code _q_body
     _q_sha="${land_sha:-$(git rev-parse HEAD 2>/dev/null)}"
     if [ -n "$_q_sha" ]; then
-      _q_body=$(python3 -c 'import json,sys; print(json.dumps({"sha": sys.argv[1], "priority": sys.argv[2] == "1", "reason": sys.argv[3]}))' "$_q_sha" "$priority" "$prio_reason")
+      # The server re-runs the land guards and is authoritative, so the
+      # lane's own escapes travel with the request.
+      _q_body=$(python3 -c 'import json,sys; d={"sha": sys.argv[1], "priority": sys.argv[2] == "1", "reason": sys.argv[3], "allow_reused_message": sys.argv[4] == "1"}
+if sys.argv[5]: d["freeze_override"] = sys.argv[5]
+print(json.dumps(d))' "$_q_sha" "$priority" "$prio_reason" "${AMUX_LAND_ALLOW_REUSED_MESSAGE:-0}" "${AMUX_LAND_FREEZE_OVERRIDE:-}")
       _q_out=$(_curl -sk -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
         -H "X-Amux-Session: $AMUX_SESSION" -d "$_q_body" "${AMUX_API:-$(cmd_url)}/api/land" 2>/dev/null) || _q_out=""
       _q_code="${_q_out##*$'\n'}"
@@ -9188,6 +9192,11 @@ cmd_land() {
         # with no reason). Anything else (409 rule off, 404 from a server
         # without the route, unreachable) falls through to the client queue.
         400) echo "amux land: the server queue refused the request: ${_q_out%$'\n'*}" >&2; return 2 ;;
+        # 409 from a land guard on the server (a frozen path or a reused
+        # message): the same refusal as the client guard above, rc 4.
+        409) case "$_q_out" in *'"verdict":"land_refused_'*)
+               echo "amux land: refused by a land guard on the server; nothing queued: ${_q_out%$'\n'*}" >&2; return 4 ;;
+             esac ;;
       esac
     fi
   fi
