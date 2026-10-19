@@ -133,6 +133,28 @@ if [[ -f $CF && -f "$SRC/cloud/desktop/caddy-errors.caddy" ]] && ! cmp -s "$SRC/
   fi
 fi
 
+# The agent CLIs, once a day. bootstrap.sh installs them globally as root, so they cannot update
+# themselves (Claude Code showed "Auto-update failed: no write permission to npm prefix" to the
+# customer) and stayed at whatever the golden image had. Updating them here keeps every server on
+# the current Claude Code, Codex and Gemini CLI. A running worker keeps its loaded version until it
+# restarts. Claude's own updater is switched off in its settings, because it can never succeed here.
+CLI_PKGS=(@anthropic-ai/claude-code @openai/codex @google/gemini-cli)
+cli_versions() { npm ls -g --depth=0 "${CLI_PKGS[@]}" 2>/dev/null | grep -oE '@[a-z-]+/[a-z-]+@[0-9][^ ]*' | tr '\n' ' '; }
+if command -v npm >/dev/null && [[ -z $(find "$STATE/clis-updated" -mmin -1380 2>/dev/null) ]]; then
+  before=$(cli_versions)
+  if timeout 600 npm install -g --no-fund --no-audit "${CLI_PKGS[@]/%/@latest}" >/dev/null 2>&1; then
+    touch "$STATE/clis-updated"; after=$(cli_versions)
+    if [[ "$before" == "$after" ]]; then say "verdict=agent_clis_current $after"; else say "verdict=agent_clis_updated from: $before to: $after"; fi
+  else
+    say "WARN verdict=agent_clis_update_failed still: $before"
+  fi
+fi
+CS="$HOME_DIR/.claude/settings.json"
+if [[ -s $CS ]] && ! jq -e '.env.DISABLE_AUTOUPDATER == "1"' "$CS" >/dev/null 2>&1; then
+  jq '.env = ((.env // {}) + {"DISABLE_AUTOUPDATER": "1"})' "$CS" > "$CS.tmp" && chown "$USER_NAME:$USER_NAME" "$CS.tmp" && mv "$CS.tmp" "$CS" \
+    && say "verdict=claude_self_update_off the agent CLIs are updated by this script"
+fi
+
 # 2. Newest green image.
 TOKEN=$(curl -fsS --max-time 20 "https://ghcr.io/token?scope=repository:$IMAGE_REPO:pull" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])' 2>/dev/null)
 LATEST=$(curl -fsSI --max-time 20 -H "Authorization: Bearer $TOKEN" \

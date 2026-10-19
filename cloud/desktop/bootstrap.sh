@@ -345,7 +345,9 @@ chown "$USER_NAME:$USER_NAME" "$ENV_FILE"; chmod 600 "$ENV_FILE"
 #    characters in ~/.claude.json. Merged, never clobbered.
 install -d -o "$USER_NAME" -g "$USER_NAME" "$HOME_DIR/.claude"
 CS="$HOME_DIR/.claude/settings.json"; [[ -s "$CS" ]] || echo '{}' > "$CS"
-jq '. * {"skipDangerousModePermissionPrompt": true}' "$CS" > "$CS.tmp" && mv "$CS.tmp" "$CS"
+# 3. Claude's own updater: the CLIs are installed as root, so it can only fail and say so to the
+#    customer. update.sh updates all three agent CLIs daily instead.
+jq '. * {"skipDangerousModePermissionPrompt": true, "env": {"DISABLE_AUTOUPDATER": "1"}}' "$CS" > "$CS.tmp" && mv "$CS.tmp" "$CS"
 CJ="$HOME_DIR/.claude.json"; [[ -s "$CJ" ]] || echo '{}' > "$CJ"
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   jq --arg k "${ANTHROPIC_API_KEY: -20}" \
