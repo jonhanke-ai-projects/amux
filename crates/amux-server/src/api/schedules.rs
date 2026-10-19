@@ -1583,6 +1583,25 @@ pub async fn patch(
                     s.set("next_run", json!(nr));
                 }
                 None => {
+                    // A recurring row whose expression was cleared, with no
+                    // legacy recurrence, recurs on nothing. legacy_next_run read
+                    // it as DAILY at run_at's clock time, so a PATCH of
+                    // {"schedule_expr":"","run_at":"2026-10-31T20:05"} answered
+                    // 200 and armed the row for 20:05 TODAY (seven GS-12
+                    // one-offs, 2026-10-19, reverted before they fired). With a
+                    // full date in run_at the caller meant once at that minute,
+                    // which is what `once:` writes; say so in the log.
+                    let run_at = s.str_field("run_at").to_string();
+                    if s.str_field("sched_type") == "recurring"
+                        && s.str_field("recurrence").trim().is_empty()
+                        && crate::runtime_jobs::scheduler::parse_minute(&run_at).is_some()
+                    {
+                        s.set("sched_type", json!("once"));
+                        s.set("schedule_expr", Value::Null);
+                        tracing::info!(schedule = %s.id(), run_at = %run_at,
+                            verdict = "schedule_expr_cleared_to_once", measured = true, n_considered = 1,
+                            "schedule_expr cleared with a dated run_at: the row is now a one-shot at run_at");
+                    }
                     let nr = legacy_next_run(
                         s.str_field("sched_type"),
                         Some(s.str_field("recurrence")).filter(|x| !x.is_empty()),
@@ -2619,6 +2638,34 @@ mod tests {
         assert_eq!(arr[0]["session"], json!("alpha"));
         let (_, all) = send(&app, "GET", "/api/schedules", None, &[]).await;
         assert_eq!(all.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn clearing_the_expr_with_a_dated_run_at_makes_a_one_shot_not_a_daily() {
+        // 2026-10-19: seven GS-12 one-offs were PATCHed this way, answered 200,
+        // and were armed DAILY at run_at's clock time, days early.
+        let (app, _dir) = app();
+        let (_, created) = send(
+            &app,
+            "POST",
+            "/api/schedules",
+            Some(json!({ "title": "t", "session": "alpha", "schedule_expr": "5 20 31 10 *" })),
+            &SES,
+        )
+        .await;
+        let id = created["id"].as_str().unwrap().to_string();
+        let when = (Local::now() + chrono::Duration::days(12)).format("%Y-%m-%dT%H:%M").to_string();
+        let (st, patched) = send(
+            &app,
+            "PATCH",
+            &format!("/api/schedules/{id}"),
+            Some(json!({ "schedule_expr": "", "run_at": when })),
+            &SES,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{patched}");
+        assert_eq!(patched["sched_type"], json!("once"), "{patched}");
+        assert_eq!(patched["next_run"], json!(when), "{patched}");
     }
 
     #[tokio::test]

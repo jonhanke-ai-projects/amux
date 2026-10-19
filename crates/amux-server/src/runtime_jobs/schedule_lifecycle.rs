@@ -92,12 +92,20 @@ pub fn is_fixed_date_cron(expr: &str) -> bool {
 }
 
 /// The create/PATCH note for a fixed-date cron with no bound. States, never
-/// refuses: a yearly reminder is a legitimate thing to want.
+/// refuses.
+///
+/// Since 2026-10-19 such a row fires ONCE and ends (see [`Bounds::end_reason`]):
+/// the note used to say it "fires every YEAR", and that was what happened, so
+/// SCHED-694, a one-shot TubeScience production roll that ran on 10-16, sat
+/// enabled with its next fire on 2027-10-16. A yearly reminder is still a
+/// legitimate thing to want; an explicit `max_runs` keeps it.
 pub fn fixed_date_note(expr: &str) -> String {
     format!(
-        "schedule_expr '{expr}' names one date and fires every YEAR on it. For a one-off pass \
-         once:'YYYY-MM-DDTHH:MM' instead (it fires one time and is done), or add max_runs:1. \
-         Kept as written; classified cadence_class 'yearly'."
+        "schedule_expr '{expr}' names one date and no year, so it fires ONCE, at the first \
+         occurrence after the schedule was created, and then ends (disabled_reason says so). \
+         To repeat it every year, set max_runs to the number of years. For a plain one-off \
+         once:'YYYY-MM-DDTHH:MM' says the same thing with the year in it. \
+         Classified cadence_class 'yearly'."
     )
 }
 
@@ -108,6 +116,10 @@ pub struct Bounds {
     pub until: Option<String>,
     pub max_runs: Option<i64>,
     pub cron_runs: i64,
+    /// For a fixed-date cron with no `max_runs`: the first occurrence after the
+    /// row was created (`%Y-%m-%dT%H:%M` local), which is its only fire. `None`
+    /// for every other schedule, and when it cannot be computed.
+    pub fixed_date_once: Option<String>,
 }
 
 fn nonempty(s: &str) -> Option<String> {
@@ -121,11 +133,16 @@ impl Bounds {
             None | Some(serde_json::Value::Null) => None,
             _ => Some(s.i64_field("max_runs", 0)),
         };
+        let fixed_date_once = match (max_runs, s.schedule_expr()) {
+            (None, Some(e)) if is_fixed_date_cron(e) => fixed_date_first(e, s.raw().get("created")),
+            _ => None,
+        };
         Bounds {
             not_before: nonempty(s.str_field("not_before")),
             until: nonempty(s.str_field("until")),
             max_runs,
             cron_runs: s.i64_field("cron_runs", 0),
+            fixed_date_once,
         }
     }
 
@@ -148,6 +165,26 @@ impl Bounds {
     /// means it may fire. Plain string compare is safe: both sides are the
     /// fixed `%Y-%m-%dT%H:%M` local format `due_schedules` already compares.
     pub fn end_reason(&self, next: Option<&str>) -> Option<String> {
+        // A fixed-date cron with no max_runs is a one-shot: it ends after its
+        // fire, and a row that already fired (cron_runs counts it) or whose
+        // date passed unfired (its next fire is a later year) ends rather than
+        // firing a year late. A reserve refusal gives cron_runs back and the
+        // capacity retry re-enables a row its fire ended, so the date is kept.
+        if let Some(first) = self.fixed_date_once.as_deref() {
+            if self.cron_runs >= 1 {
+                return Some(format!(
+                    "fixed-date cron fired its one date ({first}, {} scheduled fire(s)); it names \
+                     no year, so it ended instead of re-arming for next year. Set max_runs to repeat it",
+                    self.cron_runs
+                ));
+            }
+            if let Some(n) = next.filter(|n| !n.is_empty() && *n > first) {
+                return Some(format!(
+                    "fixed-date cron missed its one date ({first}) and would next fire {n}; it names \
+                     no year, so it ended instead of firing a year late. Set max_runs to repeat it"
+                ));
+            }
+        }
         if let Some(m) = self.max_runs {
             if self.cron_runs >= m {
                 return Some(format!(
@@ -163,6 +200,16 @@ impl Bounds {
         }
         None
     }
+}
+
+/// The first occurrence of a fixed-date cron after `created` (epoch seconds,
+/// as the row stores it), in the stored minute format. `None` when the row
+/// has no readable `created` or the expression does not parse.
+fn fixed_date_first(expr: &str, created: Option<&serde_json::Value>) -> Option<String> {
+    let secs = created.and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))?;
+    let at = DateTime::from_timestamp(secs as i64, 0)?.with_timezone(&Local);
+    let e = ScheduleExpr::parse(expr).ok()?;
+    e.next_run_after(at - ChronoDuration::minutes(1)).map(fmt_minute)
 }
 
 /// Disable a schedule because a bound was reached. Writes `disabled_reason`
@@ -382,6 +429,46 @@ mod tests {
 
     fn row(fields: serde_json::Value) -> DurableSchedule {
         DurableSchedule::from_map(fields.as_object().unwrap().clone())
+    }
+
+    /// Epoch seconds for a local wall-clock minute, the way `created` is stored.
+    fn created_at(local: &str) -> i64 {
+        parse_minute(local).unwrap().timestamp()
+    }
+
+    #[test]
+    fn an_unbounded_fixed_date_cron_fires_once_then_ends() {
+        // SCHED-694 shape: created 10-12, dated 10-16 04:00, no max_runs.
+        let r = row(json!({"schedule_expr": "0 4 16 10 *", "created": created_at("2026-10-12T20:37"), "cron_runs": 0}));
+        let b = Bounds::of(&r);
+        assert_eq!(b.fixed_date_once.as_deref(), Some("2026-10-16T04:00"));
+        // Due on its date: it may fire.
+        assert_eq!(b.end_reason(Some("2026-10-16T04:00")), None);
+        // The fire path's post-fire check (cron_runs + 1, next = a year on) ends it.
+        let after = Bounds { cron_runs: 1, ..b.clone() };
+        let why = after.end_reason(Some("2027-10-16T04:00")).expect("ends after its one fire");
+        assert!(why.contains("fired its one date (2026-10-16T04:00"), "{why}");
+    }
+
+    #[test]
+    fn a_fixed_date_cron_that_already_fired_or_missed_its_date_ends_instead_of_firing() {
+        // Already re-armed for 2027 after firing (the rows in the database today).
+        let fired = Bounds::of(&row(json!({"schedule_expr": "0 4 16 10 *", "created": created_at("2026-10-12T20:37"), "cron_runs": 1})));
+        assert!(fired.end_reason(Some("2027-10-16T04:00")).unwrap().contains("fired its one date"));
+        // Never fired, but its date passed (SCHED-615 shape): next is a year late.
+        let missed = Bounds::of(&row(json!({"schedule_expr": "10 15 7 10 *", "created": created_at("2026-10-05T12:00"), "cron_runs": 0})));
+        let why = missed.end_reason(Some("2027-10-07T15:10")).expect("a year-late fire ends");
+        assert!(why.contains("missed its one date (2026-10-07T15:10)"), "{why}");
+    }
+
+    #[test]
+    fn max_runs_keeps_a_yearly_reminder_and_other_crons_are_untouched() {
+        let yearly = Bounds::of(&row(json!({"schedule_expr": "0 9 14 2 *", "created": created_at("2026-01-01T00:00"), "cron_runs": 1, "max_runs": 10})));
+        assert_eq!(yearly.fixed_date_once, None);
+        assert_eq!(yearly.end_reason(Some("2027-02-14T09:00")), None);
+        let daily = Bounds::of(&row(json!({"schedule_expr": "0 9 * * *", "created": created_at("2026-01-01T00:00"), "cron_runs": 40})));
+        assert_eq!(daily.fixed_date_once, None);
+        assert_eq!(daily.end_reason(Some("2026-10-20T09:00")), None);
     }
 
     #[test]
