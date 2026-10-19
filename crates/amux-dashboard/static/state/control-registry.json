@@ -786,6 +786,42 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cmdkActions": {
+      "kind": "command._cmdkActions",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cmdkCompute": {
+      "kind": "command._cmdkCompute",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cmdkLocal": {
+      "kind": "command._cmdkLocal",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cmdkQueryServer": {
+      "kind": "command._cmdkQueryServer",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cmdkRender": {
+      "kind": "command._cmdkRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cmdkRun": {
+      "kind": "command._cmdkRun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_colMigrateAll": {
       "kind": "command._colMigrateAll",
       "feedback_required": true,
@@ -5366,6 +5402,12 @@
     },
     "openCmdHistoryModal": {
       "kind": "command.openCmdHistoryModal",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "openCmdk": {
+      "kind": "command.openCmdk",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
