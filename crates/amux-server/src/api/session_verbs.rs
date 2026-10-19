@@ -14006,6 +14006,42 @@ async fn send_text_inner_bound(
     //
     // `use_paste` is computed BELOW, after the generating re-check, because
     // being mid-turn is itself a reason to paste (AMUX-2909).
+    //
+    // A USAGE-LIMIT WAIT TAKES NO KEYSTROKES (mxp-gs12 review, 2026-10-18).
+    // Checked here, after the rate-limit menu above has been answered and
+    // before the idle branch's leading Escape, which is the auto-continue
+    // banner's cancel key. See `rate_limit_delivery_hold`.
+    if let Some(hold) = rate_limit_hold_for(name, &tmux_capture(name, 30).await) {
+        let owner_command =
+            origin == SendOrigin::Owner && !from_steering && text.trim_start().starts_with('/');
+        if owner_command {
+            // `/login`, `/extra-usage`, `/model`: the owner acting on the limit
+            // itself. Their call, so it goes through, and the log says so.
+            tracing::warn!(session = %name, source = hold.source(), reset_at = hold.reset_at(),
+                measured = true, n_considered = 1, verdict = "rate_limit_hold_owner_command_passed",
+                "owner slash command typed into a usage-limit wait; it may cancel Claude's auto-continue");
+        } else {
+            let message = rate_limit_hold_message(hold);
+            if from_steering {
+                // The drain retries every pass; its skip record and the stall
+                // reporter (cond=rate-limited) carry this, so no line per pass.
+                tracing::debug!(session = %name, source = hold.source(), verdict = RATE_LIMIT_HOLD_VERDICT,
+                    "steering delivery held for a usage-limit wait");
+                return (false, format!("{message} (durable message remains queued)"));
+            }
+            tracing::warn!(session = %name, source = hold.source(), reset_at = hold.reset_at(),
+                origin = ?origin, preview = %chars_truncate(&text, 80), measured = true, n_considered = 1,
+                verdict = RATE_LIMIT_HOLD_VERDICT,
+                "direct send held: the worker is waiting out a usage limit; parked on the steering queue");
+            return match steer_enqueue(state, name, &text, park_guard(origin), "").await {
+                Ok(id) => {
+                    *queue_id = Some(id);
+                    (true, format!("queued — {message}"))
+                }
+                Err(reason) => (false, block_reason_refused(reason, name)),
+            };
+        }
+    }
     let mut esc_at: Option<std::time::Instant> = None;
     // Exclusive use of the pane for the whole type+Enter+verify choreography.
     // Without it a second send (or the ghost-rescue sweep) can fire an Enter
@@ -21304,6 +21340,247 @@ pub(crate) fn effective_rate_limit_reset(recorded: i64, parsed: i64, now: i64) -
     }
 }
 
+// ---------------------------------------------------------------------------
+// HOLD INPUT WHILE CLAUDE WAITS OUT A USAGE LIMIT (mxp-gs12 review, 2026-10-18)
+//
+// While a lane waits on a limit, Claude Code shows
+// "⚠ Usage limit reached · continuing automatically at 2am · esc to cancel".
+// The lane reads idle (no generating bar, no picker), so every delivery path
+// took the idle branch of `send_text_inner_bound`, whose first keystroke is a
+// leading Escape. Escape is the banner's own cancel key: two deliveries into
+// mxp-gs12 cancelled the auto-continue that way and the worker stayed stopped
+// until a human resumed it. The queue gate (`lane_block_reason`) did not stop
+// them, because owner sends never consult it, the scheduler's boundary fast
+// path skips it, and it releases exactly at the reset while the banner is
+// still counting down.
+//
+// So the hold sits where every producer converges, before the Escape. Steering
+// rows stay queued; direct sends are parked on the same steering queue, and the
+// drain delivers them once the banner is gone or the reset has passed by
+// `AUTO_RESUME_RESET_GRACE_S`, the same grace amux's own auto-resume uses, so
+// that continuation is never held by this.
+// ---------------------------------------------------------------------------
+
+/// The verdict a held delivery carries, in its message, its log line and the
+/// send response (`verdict`). Grep this to count holds.
+pub(crate) const RATE_LIMIT_HOLD_VERDICT: &str = "held_rate_limited";
+
+/// Why [`rate_limit_delivery_hold`] held a delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RateLimitHold {
+    /// Claude's auto-continue banner is live and its reset (plus grace) has
+    /// not passed. Any keystroke risks cancelling it.
+    AutoContinuePending { reset_at: i64 },
+    /// No banner on screen, but the sweep recorded a time-window limit whose
+    /// reset is still in the future: a prompt now only meets the same limit.
+    ProviderClock { reset_at: i64 },
+}
+
+impl RateLimitHold {
+    pub(crate) fn source(self) -> &'static str {
+        match self {
+            RateLimitHold::AutoContinuePending { .. } => "auto-continue-banner",
+            RateLimitHold::ProviderClock { .. } => "provider-clock",
+        }
+    }
+    pub(crate) fn reset_at(self) -> i64 {
+        match self {
+            RateLimitHold::AutoContinuePending { reset_at } | RateLimitHold::ProviderClock { reset_at } => reset_at,
+        }
+    }
+}
+
+/// Should a delivery into this lane wait for the limit to clear? Pure.
+///
+/// `banner_reset` is `None` when no auto-continue banner is on screen, and
+/// `Some(parsed)` when one is (`parsed` 0 = its clock did not parse). The meta
+/// values are the sweep's `rate_limited_since` / `_until` / `_by` stamps.
+///
+/// Deliberately narrower than the queue gate on the meta side: only a KNOWN
+/// future clock holds. A stale stamp with no clock would otherwise hold the
+/// owner's own sends forever, and a credit banner means the lane is working on
+/// credits, not waiting.
+pub(crate) fn rate_limit_delivery_hold(
+    banner_reset: Option<i64>,
+    meta_since: i64,
+    meta_until: i64,
+    meta_kind: &str,
+    now: i64,
+) -> Option<RateLimitHold> {
+    if let Some(parsed) = banner_reset {
+        let reset_at = effective_rate_limit_reset(meta_until, parsed, now);
+        if reset_at <= 0 || now < reset_at.saturating_add(AUTO_RESUME_RESET_GRACE_S) {
+            return Some(RateLimitHold::AutoContinuePending { reset_at: reset_at.max(0) });
+        }
+        return None;
+    }
+    if meta_since > 0 && meta_kind != "credit-banner" && meta_until > now {
+        return Some(RateLimitHold::ProviderClock { reset_at: meta_until });
+    }
+    None
+}
+
+/// The sentence a held delivery reports. Starts with the verdict so
+/// [`is_rate_limit_hold`] and a log grep both find it.
+pub(crate) fn rate_limit_hold_message(hold: RateLimitHold) -> String {
+    let when = chrono::DateTime::from_timestamp(hold.reset_at(), 0)
+        .filter(|_| hold.reset_at() > 0)
+        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| "an unreported time".into());
+    let why = match hold {
+        RateLimitHold::AutoContinuePending { .. } => {
+            "Claude Code is waiting to continue automatically after its usage limit resets, and a keystroke now would cancel that"
+        }
+        RateLimitHold::ProviderClock { .. } => "the worker is at its usage limit until the provider's reset",
+    };
+    format!(
+        "{RATE_LIMIT_HOLD_VERDICT} ({}): {why}; the limit resets at {when}. The message stays queued and \
+         delivers once the worker has resumed.",
+        hold.source()
+    )
+}
+
+/// Is this send verdict / drain skip reason a rate-limit hold?
+pub(crate) fn is_rate_limit_hold(reason: &str) -> bool {
+    reason.contains(RATE_LIMIT_HOLD_VERDICT)
+}
+
+/// [`rate_limit_delivery_hold`] against a live frame and the lane's meta.
+fn rate_limit_hold_for(name: &str, pane: &str) -> Option<RateLimitHold> {
+    let meta = load_meta(name);
+    rate_limit_hold_in_frame(
+        pane,
+        meta_i64(&meta, "rate_limited_since"),
+        meta_i64(&meta, "rate_limited_until"),
+        &meta_str(&meta, "rate_limited_by"),
+        chrono::Local::now(),
+    )
+}
+
+/// The frame half of [`rate_limit_hold_for`], with the clock passed in.
+pub(crate) fn rate_limit_hold_in_frame(
+    pane: &str,
+    meta_since: i64,
+    meta_until: i64,
+    meta_kind: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<RateLimitHold> {
+    let banner_reset = crate::backend::adapter::claude_auto_resume_banner(pane)
+        .map(|b| parse_rate_limit_reset_at(&b, now).unwrap_or(0));
+    rate_limit_delivery_hold(banner_reset, meta_since, meta_until, meta_kind, now.timestamp())
+}
+
+/// Forget a lane's last drain refusal after a delivery, saying so when that
+/// refusal was a rate-limit hold: the release half of the hold's log signal.
+fn clear_steer_skip(session: &str) {
+    let prev = steer_skips().lock().unwrap_or_else(|e| e.into_inner()).remove(session);
+    if let Some((id, reason, at)) = prev {
+        if is_rate_limit_hold(&reason) {
+            tracing::info!(session, id = %id, last_hold_age_s = (now_f64() - at) as i64, measured = true,
+                n_considered = 1, verdict = "rate_limit_hold_released",
+                "a delivery held for a usage limit went out after the worker resumed");
+        }
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_hold_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    // gs12-planes, 2026-10-08: Claude waiting to continue at 4:50am.
+    const BANNER: &str = "✻ Crunched for 27m 16s · done 2:16 AM\n────────────────\n❯\u{a0}\n────────────────\n  ⚠ Usage limit reached · limit resets 4:50am · clau.de/wrap-up\n    Continuing automatically at 4:50am · esc to cancel · /usage-credits to continue now\n  ⏵⏵ bypass permissions on · ↓ to manage";
+    const IDLE: &str = "⏺ done\n────────────────\n❯\u{a0}\n────────────────\n  ⏵⏵ bypass permissions on";
+
+    fn at(h: u32, m: u32, s: u32) -> chrono::DateTime<chrono::Local> {
+        chrono::Local.with_ymd_and_hms(2026, 10, 8, h, m, s).single().unwrap()
+    }
+
+    #[test]
+    fn a_live_auto_continue_banner_holds_delivery_until_reset_plus_grace() {
+        let reset = at(4, 50, 0).timestamp();
+        let held = rate_limit_hold_in_frame(BANNER, 0, 0, "", at(2, 20, 0));
+        assert_eq!(held, Some(RateLimitHold::AutoContinuePending { reset_at: reset }));
+        // Still held inside the grace Claude gets to continue on its own.
+        let just_after = at(4, 50, 0) + chrono::Duration::seconds(AUTO_RESUME_RESET_GRACE_S - 1);
+        assert!(rate_limit_hold_in_frame(BANNER, 1, reset, "auto-resume", just_after).is_some());
+        // Released at the grace, the moment amux's own auto-resume speaks, so
+        // that continuation is never held by this gate.
+        let grace = at(4, 50, 0) + chrono::Duration::seconds(AUTO_RESUME_RESET_GRACE_S);
+        assert_eq!(rate_limit_hold_in_frame(BANNER, 1, reset, "auto-resume", grace), None);
+    }
+
+    #[test]
+    fn a_banner_whose_clock_does_not_parse_still_holds() {
+        let frame = BANNER.replace("4:50am", "soon");
+        let held = rate_limit_hold_in_frame(&frame, 0, 0, "", at(2, 20, 0));
+        assert_eq!(held, Some(RateLimitHold::AutoContinuePending { reset_at: 0 }));
+    }
+
+    #[test]
+    fn a_resumed_or_generating_lane_is_not_held() {
+        let resumed = format!("{BANNER}\n⏺ Resumed\n❯\n⏵⏵ bypass permissions on");
+        assert_eq!(rate_limit_hold_in_frame(&resumed, 0, 0, "", at(4, 51, 0)), None);
+        let working = format!("{BANNER}\n❯\n⏵⏵ bypass permissions on · esc to interrupt");
+        assert_eq!(rate_limit_hold_in_frame(&working, 0, 0, "", at(2, 20, 0)), None);
+        assert_eq!(rate_limit_hold_in_frame(IDLE, 0, 0, "", at(2, 20, 0)), None);
+    }
+
+    #[test]
+    fn without_a_banner_only_a_known_future_clock_holds() {
+        let now = 1_000_000;
+        assert_eq!(
+            rate_limit_delivery_hold(None, now - 60, now + 600, "session-limit", now),
+            Some(RateLimitHold::ProviderClock { reset_at: now + 600 })
+        );
+        // Past clock, no stamp, no clock, and a credit banner (working on
+        // credits) all deliver: a stale stamp must not hold the owner forever.
+        assert_eq!(rate_limit_delivery_hold(None, now - 60, now - 1, "session-limit", now), None);
+        assert_eq!(rate_limit_delivery_hold(None, 0, now + 600, "session-limit", now), None);
+        assert_eq!(rate_limit_delivery_hold(None, now - 60, 0, "menu", now), None);
+        assert_eq!(rate_limit_delivery_hold(None, now - 60, now + 600, "credit-banner", now), None);
+    }
+
+    #[test]
+    fn the_hold_message_is_a_deferred_queue_verdict_the_drain_recognises() {
+        let msg = rate_limit_hold_message(RateLimitHold::AutoContinuePending { reset_at: 1_791_442_200 });
+        assert!(msg.starts_with(RATE_LIMIT_HOLD_VERDICT), "{msg}");
+        assert!(msg.contains("auto-continue-banner") && msg.contains("2026-"), "{msg}");
+        assert!(is_rate_limit_hold(&format!("send-refused: {msg} (durable message remains queued)")));
+        // The direct-send form is a deferral, never a confirmed delivery.
+        assert_eq!(submission_verdict(true, &format!("queued — {msg}")), (None, "deferred"));
+        assert!(!is_rate_limit_hold("composer contains a draft; durable message remains queued"));
+    }
+
+    #[test]
+    fn a_delivery_after_a_hold_clears_the_skip_and_counts_as_a_release() {
+        let lane = "rl-hold-release-test";
+        let reason = format!("send-refused: {}", rate_limit_hold_message(RateLimitHold::ProviderClock { reset_at: 5 }));
+        skip(lane, "row-1", &reason);
+        assert!(steer_skips().lock().unwrap().get(lane).is_some_and(|(_, r, _)| is_rate_limit_hold(r)));
+        clear_steer_skip(lane);
+        assert!(steer_skips().lock().unwrap().get(lane).is_none());
+    }
+
+    /// The hold must run before the idle branch's leading Escape, which is
+    /// the banner's cancel key, and before the paste. A hold placed after
+    /// either would pass every predicate test above and fix nothing.
+    #[test]
+    fn the_send_path_checks_the_hold_before_its_first_keystroke() {
+        let src = include_str!("session_verbs.rs");
+        let body = &src[src.find("async fn send_text_inner_bound(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let hold = body.find("rate_limit_hold_for(name,").expect("send path must call the hold");
+        let esc = body.find("send_key(name, \"Escape\").await;\n            esc_at").unwrap();
+        let clear = body.find("send_key(name, \"C-u\")").unwrap();
+        let paste = body.find("\"paste-buffer\"").unwrap();
+        assert!(hold < esc && hold < clear && hold < paste);
+        // And after the menu is answered, which is itself the way out of a limit.
+        let menu = body.find("session.rate_limit_answered").unwrap();
+        assert!(menu < hold);
+    }
+}
+
 /// [`lane_block_reason_from`] against the real filesystem and tmux.
 ///
 /// ONE predicate, shared by the drain loop, the point of send, the queue
@@ -23386,7 +23663,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
             .await;
         delivered += 1;
         delivered_lanes.insert(session.clone());
-        steer_skips().lock().unwrap().remove(&session);
+        clear_steer_skip(&session);
         capture_delivered_steering(
             state,
             session.clone(),
@@ -23575,6 +23852,10 @@ async fn warn_on_stalled_lanes(state: &AppState) {
         }
         let cond = blocked.unwrap_or(if draft_hold {
             "composer-draft"
+        } else if is_rate_limit_hold(&reason) {
+            // The send path's own usage-limit hold: a designed wait, the same
+            // condition the queue gate names, not a stall.
+            "rate-limited"
         } else if crate::api::prompt_block::blocked_now(&session, now) {
             "permission-prompt"
         } else {
@@ -24121,7 +24402,7 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
         skip(session, &rid, &format!("send-refused: {msg}"));
     }
     let Some((msg, age)) = sent else { return false };
-    steer_skips().lock().unwrap().remove(session);
+    clear_steer_skip(session);
     // COLUMN THE WRITERS FORGOT (Ethan, 2026-08-29: "why are you sending
     // unsubmitted text?"). `outcome` has existed on this table since it was
     // created and 5 of its 6 writers omitted it, so 10,957 of 10,989 rows
@@ -29724,6 +30005,11 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     if ok && msg.contains("at a selector") {
         resp["held_at_selector"] = json!(true);
     }
+    // The usage-limit hold, named for the sender (mxp-gs12 review, 2026-10-18).
+    if ok && is_rate_limit_hold(&msg) {
+        resp["verdict"] = json!(RATE_LIMIT_HOLD_VERDICT);
+        resp["held_rate_limited"] = json!(true);
+    }
     // WHAT "sent" MEANS, stated in the payload (AMUX-2629). Before this, a
     // caller had one bit — `ok` — covering four different outcomes, and the
     // one that mattered ("the keys landed but Claude Code never took the
@@ -30086,8 +30372,19 @@ pub(crate) async fn steer_history_verb(
             .ok()
             .and_then(|m| m.get(name).map(|(_, r, _)| crate::runtime_jobs::draft_hold::is_draft_hold(r)))
             .unwrap_or(false);
+    let rate_limit_held = blocked.is_none()
+        && !out.is_empty()
+        && steer_skips()
+            .lock()
+            .ok()
+            .and_then(|m| m.get(name).map(|(_, r, _)| is_rate_limit_hold(r)))
+            .unwrap_or(false);
     let waiting_for = if out.is_empty() || blocked.is_some() {
         None
+    } else if rate_limit_held {
+        Some(
+            "the worker to resume after its usage limit: Claude Code continues on its own at the reset, and              amux holds keystrokes until then because one would cancel that (held_rate_limited).",
+        )
     } else if draft_held {
         Some(
             "the draft in the worker's composer to be sent or cleared: amux does not overwrite text typed \

@@ -1946,7 +1946,7 @@ if d.get("error") or d.get("ok") is False:
     print(f"send to {tgt} FAILED: {d.get('error') or d.get('message') or 'no reason given'}",
           file=sys.stderr)
     sys.exit(2)
-if d.get("held_for_resume"):
+if d.get("held_for_resume") or d.get("held_rate_limited"):
     # AMUX-5237: NOT delivered. Say so first, so a caller skimming for "sent"
     # cannot read a parked message as a landed one.
     print(f"QUEUED for {tgt}, not delivered: {d.get('message', '')}")
@@ -2029,7 +2029,7 @@ if d.get("error") or d.get("ok") is False:
         file=sys.stderr,
     )
     sys.exit(2)
-if d.get("held_for_resume"):
+if d.get("held_for_resume") or d.get("held_rate_limited"):
     print(f"QUEUED for {tgt} (retry {attempt} after {waited}s), not delivered: {d.get('message', '')}")
     sys.exit(0)
 if os.environ.get("_R_PENDING") == "1":
