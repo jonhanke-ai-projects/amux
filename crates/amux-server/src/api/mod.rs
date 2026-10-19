@@ -1187,7 +1187,23 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         "managed_upstream": has_proxy,
         "key_valid": serde_json::Value::Null,
         "key_error": "",
+        "account_url": account_url(&env_text_all, is_local_member),
     }))
+}
+
+/// Where the server's owner manages billing and deletes the account. An amux
+/// Cloud server gets AMUX_ACCOUNT_URL from its signup (cloud/desktop/bootstrap.sh);
+/// a self-hosted one has none. Invited members never see it: the account and its
+/// server belong to the person paying.
+fn account_url(env_text: &str, is_local_member: bool) -> Option<String> {
+    if is_local_member {
+        return None;
+    }
+    env_text
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("AMUX_ACCOUNT_URL="))
+        .map(|v| v.trim().trim_matches('"').trim_matches('\'').to_string())
+        .rfind(|v| v.starts_with("https://"))
 }
 
 /// Which model sign-ins this server holds, for the first-run "Connect a model"
@@ -1241,7 +1257,16 @@ pub(crate) fn any_model_auth(v: &serde_json::Value) -> bool {
 
 #[cfg(test)]
 mod model_auth_tests {
-    use super::{any_model_auth, model_auth_status};
+    use super::{account_url, any_model_auth, model_auth_status};
+
+    #[test]
+    fn the_owner_of_a_cloud_server_gets_its_account_page_and_a_member_does_not() {
+        let env = "AMUX_AUTH_TOKEN=none\nAMUX_ACCOUNT_URL='https://amux.io/start/billing/?email=a%40b.co'\n";
+        assert_eq!(account_url(env, false).as_deref(), Some("https://amux.io/start/billing/?email=a%40b.co"));
+        assert_eq!(account_url(env, true), None, "an invited member cannot delete the owner's account");
+        assert_eq!(account_url("AMUX_AUTH_TOKEN=none\n", false), None, "self-hosted: no account page");
+        assert_eq!(account_url("AMUX_ACCOUNT_URL=javascript:alert(1)\n", false), None, "only an https link");
+    }
 
     #[test]
     fn an_openai_key_alone_is_a_connected_model() {

@@ -350,6 +350,20 @@ await test('C8 the paying customer is the server owner (no member token)', async
   eq(/AMUX_WEB_USERS='hello\+owner@amux\.io:scrypt\$x\$y:hello\+owner@amux\.io:owner'/.test(w.servers[0].user_data), true, 'user_data owner grant');
 });
 
+await test('the server\'s Settings links its owner to billing and deletion (test mode keeps the test function)', async () => {
+  const w = world(); w.env.SELF_URL = 'https://amux-cloud-test.example.workers.dev';
+  const sub = paid(w, 'acct'); await webhook(w, sub);
+  const m = w.servers[0].user_data.match(/AMUX_ACCOUNT_URL='([^']+)'/);
+  eq(!!m, true, 'user_data carries the account link');
+  const u = new URL(m[1]);
+  eq(u.origin + u.pathname, 'https://amux.io/start/billing/', 'billing page');
+  eq(u.searchParams.get('email'), 'hello+acct@amux.io', 'owner email prefilled');
+  eq(u.searchParams.get('api'), w.env.SELF_URL, 'test function');
+  const w2 = world(); w2.env.MODE = 'live'; w2.env.SELF_URL = 'https://cloud.amux.io'; const sub2 = paid(w2, 'live1'); await webhook(w2, sub2);
+  eq(w2.servers.length, 1, 'live server created');
+  eq(/AMUX_ACCOUNT_URL='[^']*api=/.test(w2.servers[0].user_data), false, 'live link has no api override');
+});
+
 // Sign in with Apple: a fake Apple signing key, and the real door.py checking the Worker's link.
 function apple(w, claims, { key, kid = 'k' + Math.random() } = {}) {
   const pair = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });

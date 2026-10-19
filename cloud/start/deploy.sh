@@ -38,9 +38,9 @@ fi
 [[ -s "$WF" ]] || { log "FATAL: the $MODE webhook exists but its secret is not in $WF"; exit 1; }
 GOLDEN=$(curl -fsS -H "Authorization: Bearer $HC" 'https://api.hetzner.cloud/v1/images?type=snapshot&label_selector=amux-golden&sort=created:desc' | python3 -c 'import json,sys;print(json.load(sys.stdin)["images"][0]["id"])')
 META=$(mktemp); trap 'rm -f "$META"' EXIT; chmod 600 "$META"
-APPLE_BUNDLE_ID="$(envv APPLE_BUNDLE_ID)" POSTHOG_KEY="$(envv POSTHOG_PERSONAL_API_KEY)" python3 - "$META" "$MODE" "$KEY" "$(cat "$WF")" "$HC" "$CF" "$ZID" "$GOLDEN" "$HERE/../control/plans.json" "$S" "$(cat "$PF")" <<'EOF'
+APPLE_BUNDLE_ID="$(envv APPLE_BUNDLE_ID)" POSTHOG_KEY="$(envv POSTHOG_PERSONAL_API_KEY)" python3 - "$META" "$MODE" "$URL" "$KEY" "$(cat "$WF")" "$HC" "$CF" "$ZID" "$GOLDEN" "$HERE/../control/plans.json" "$S" "$(cat "$PF")" <<'EOF'
 import base64, json, os, sys
-meta, mode, key, whs, hc, cf, zid, golden, plans, s, portal = sys.argv[1:]
+meta, mode, url, key, whs, hc, cf, zid, golden, plans, s, portal = sys.argv[1:]
 gt = os.path.expanduser("~/.amux/gmail-tokens/hello@amux.io.json")
 b = [{"type": "secret_text", "name": "STRIPE_SECRET_KEY", "text": key},
      {"type": "secret_text", "name": "STRIPE_WEBHOOK_SECRET", "text": whs},
@@ -48,6 +48,7 @@ b = [{"type": "secret_text", "name": "STRIPE_SECRET_KEY", "text": key},
      {"type": "secret_text", "name": "CF_TOKEN", "text": cf},
      {"type": "plain_text", "name": "CF_ZONE_ID", "text": zid},
      {"type": "plain_text", "name": "MODE", "text": mode},
+     {"type": "plain_text", "name": "SELF_URL", "text": url},
      {"type": "plain_text", "name": "GOLDEN_IMAGE", "text": golden},
      {"type": "plain_text", "name": "PORTAL_CONFIG", "text": portal},
      {"type": "plain_text", "name": "PLANS", "text": json.dumps(json.load(open(plans)))}]

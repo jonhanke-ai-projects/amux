@@ -192,11 +192,19 @@ const BOOT = [
   '[ -f $B ] || B=/opt/amux/bootstrap.sh',
   'bash $B >>/var/log/amux-standalone.log 2>&1 || echo BOOTSTRAP_FAILED >>/var/log/amux-standalone.log',
 ].join('; ');
-function userData(slug, email, pwHash, entryKey) {
+// The page where a server's owner manages billing or deletes the account, linked from the
+// server's Settings. A test-mode server's link carries the test function's address.
+function accountUrl(env, email) {
+  const q = new URLSearchParams({ email });
+  if (env.MODE === 'test' && env.SELF_URL) q.set('api', env.SELF_URL);
+  return `${SITE}/start/billing/?${q}`;
+}
+function userData(env, slug, email, pwHash, entryKey) {
   // Standalone: the golden image's bootstrap gets its domain and its one owner login. The
   // password arrives already hashed (door.py scrypt format); nothing else about the customer.
   // `owner`: no member token, so amux treats this login as the host owner (Settings can invite teammates).
   const envFile = [`AMUX_DOMAIN='${host(slug)}'`, `AMUX_WEB_USERS='${email}:${pwHash}:${email}:owner'`,
+    `AMUX_ACCOUNT_URL='${accountUrl(env, email)}'`,
     `AMUX_SKIP_PACKAGES=1`, ...(entryKey ? [`AMUX_ENTRY_SECRET='${entryKey}'`] : [])].join('\n');
   return `#cloud-config
 write_files:
@@ -265,7 +273,7 @@ async function provision(env, { sub, meta, email }) {
   for (const location of ['fsn1', 'nbg1', 'hel1']) {
     try {
       srv = (await hetzner(env, 'POST', '/servers', { name: `amux-${slug}`, server_type: plan.server_type, image,
-        location, labels, user_data: userData(slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
+        location, labels, user_data: userData(env, slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
       break;
     } catch (e) {
       lastErr = e;
@@ -276,7 +284,7 @@ async function provision(env, { sub, meta, email }) {
         image = golden; delete labels['amux-restored-from'];
         try {
           srv = (await hetzner(env, 'POST', '/servers', { name: `amux-${slug}`, server_type: plan.server_type, image,
-            location, labels, user_data: userData(slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
+            location, labels, user_data: userData(env, slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
           break;
         } catch (e2) { lastErr = e2; if (!['resource_unavailable', 'placement_error'].includes(e2.code)) throw e2; continue; }
       }

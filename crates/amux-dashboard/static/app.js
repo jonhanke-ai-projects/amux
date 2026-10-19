@@ -1605,6 +1605,12 @@ async function _initIdentity() {
       // Key exists but is invalid — show warning banner
       _showKeyWarning(d.key_error);
     }
+    const acct = document.getElementById('settings-account');
+    const acctLink = document.getElementById('settings-account-link');
+    if (acct && acctLink && typeof d.account_url === 'string' && d.account_url.startsWith('https://')) {
+      acctLink.href = d.account_url;
+      acct.style.display = '';
+    }
     _applyIdentityToSettings();
     // Settings can open before this async identity request returns. Refresh an
     // already-open Team section so a scoped member never keeps the owner's

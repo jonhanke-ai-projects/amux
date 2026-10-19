@@ -142,6 +142,8 @@ function mailForm(form, input, button, msg, path, sent) {
     }
   });
 }
+// The Account button in a Cloud server's Settings links here with ?email= for its owner.
+if (Q.get('email')) for (const id of ['email', 'demail']) document.getElementById(id).value = Q.get('email');
 mailForm('b', 'email', 'go', 'msg', '/api/billing', 'If that address has an amux Cloud subscription, a link is on its way. It works for an hour.');
 mailForm('d', 'demail', 'dgo', 'dmsg', '/api/delete', 'If that address has an amux Cloud account, a confirmation link is on its way. It works for an hour.');
 </script>

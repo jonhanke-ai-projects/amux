@@ -334,6 +334,8 @@ set_env() {  # replace-or-append one KEY=value line
 # 401s the whole dashboard (first real run). Same arrangement as the cloud
 # containers behind their gateway: amux auth off, 8824 closed by ufw.
 set_env AMUX_AUTH_TOKEN none
+# amux Cloud: Settings links the owner to billing and account deletion (the signup sets it).
+[[ -n "${AMUX_ACCOUNT_URL:-}" ]] && set_env AMUX_ACCOUNT_URL "$AMUX_ACCOUNT_URL"
 # Source mode: the Pull button and the served-commit check find the checkout.
 [[ "$UPDATES" == source ]] && set_env AMUX_REPO_DIR "$SRC"
 chown "$USER_NAME:$USER_NAME" "$ENV_FILE"; chmod 600 "$ENV_FILE"
