@@ -688,6 +688,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 125,
         name: "0125_schedule_lifecycle",
         sql: include_str!("../../migrations/0125_schedule_lifecycle.sql"),
+    },
+    Migration {
+        version: 126,
+        name: "0126_land_queue_guard_overrides",
+        sql: include_str!("../../migrations/0126_land_queue_guard_overrides.sql"),
     },];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

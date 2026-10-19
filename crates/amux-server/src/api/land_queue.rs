@@ -49,6 +49,8 @@ pub struct Entry {
     pub repo: String,
     pub lane: String,
     pub sha: String,
+    /// The escapes sent with the request, for the turn-time guard re-run.
+    pub ov: GuardOverrides,
 }
 
 /// What became of one entry.
@@ -542,17 +544,18 @@ pub async fn tick(state: &AppState) -> usize {
         }
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
-    type Row = (i64, String, String, String);
+    type Row = (i64, String, String, String, Option<String>, bool);
     let rows: Vec<Row> = state.store.read_async(|c| {
-        let mut st = c.prepare("SELECT id, repo, lane, sha FROM land_queue WHERE state = 'queued'
+        let mut st = c.prepare("SELECT id, repo, lane, sha, freeze_override, allow_reused_message FROM land_queue WHERE state = 'queued'
                                 AND repo NOT IN (SELECT repo FROM land_queue WHERE state = 'running')
                                 ORDER BY priority DESC, id")?;
-        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<Row>>>()?;
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, i64>(5)? != 0)))?
+            .collect::<rusqlite::Result<Vec<Row>>>()?;
         Ok(v)
     }).await.unwrap_or_default();
     let mut by_repo: Vec<(String, Vec<Entry>)> = Vec::new();
-    for (id, repo, lane, sha) in rows {
-        let e = Entry { id, repo: repo.clone(), lane, sha };
+    for (id, repo, lane, sha, freeze, allow_reused_message) in rows {
+        let e = Entry { id, repo: repo.clone(), lane, sha, ov: GuardOverrides { freeze, allow_reused_message } };
         match by_repo.iter_mut().find(|(r, _)| *r == repo) {
             Some((_, v)) => v.push(e),
             None => by_repo.push((repo, vec![e])),
@@ -618,6 +621,26 @@ async fn run_batch(state: &AppState, entries: Vec<Entry>) {
         },
         Err(_) => None,
     };
+    // Turn-time land guards, under the lock: a freeze or a landed message may
+    // have reached origin/main since this entry was queued. The CLI re-runs
+    // them at its holder turn for the same reason.
+    let mut entries = entries;
+    let mut turn_refused: Vec<(i64, Outcome)> = Vec::new();
+    let mut keep = Vec::with_capacity(entries.len());
+    for e in entries.drain(..) {
+        match check_guards(&tree, &e.lane, &e.sha, &e.ov, "turn").await {
+            Ok(()) => keep.push(e),
+            Err(r) => turn_refused.push((e.id, Outcome::Refused(format!(
+                "refused at its turn by a land guard (verdict={} phase=turn); nothing was merged.\n{}", r.verdict, r.lines.join("\n"))))),
+        }
+    }
+    let entries = keep;
+    if !turn_refused.is_empty() {
+        record(state, &turn_refused, &lanes).await;
+    }
+    if entries.is_empty() {
+        return;
+    }
     let result = land_with_receipts(&tree, entries.clone(), gate.as_deref(), &prefix, lock.as_ref(), Some(state)).await;
     drop(lock);
     match result {
@@ -663,7 +686,7 @@ pub fn guard_py() -> Option<&'static str> {
 }
 
 /// Overrides the caller may pass, mirroring the CLI's environment escapes.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct GuardOverrides {
     /// AMUX_LAND_FREEZE_OVERRIDE='<name>: <why>' for this lane's own land.
     pub freeze: Option<String>,
@@ -678,14 +701,14 @@ pub struct GuardRefusal {
     pub lines: Vec<String>,
 }
 
-fn land_log(lane: &str, mode: &str, text: &str) {
+fn land_log(lane: &str, mode: &str, phase: &str, text: &str) {
     use std::io::Write;
     let dir = home().join("logs");
     let _ = std::fs::create_dir_all(&dir);
     let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("land.log")) else { return };
     let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let _ = writeln!(f, "{ts} {lane} {mode} guard: {line} (server)");
+        let _ = writeln!(f, "{ts} {lane} {mode} guard: {line} (server phase={phase})");
     }
 }
 
@@ -712,11 +735,12 @@ async fn run_guard(tree: &Path, mode: &str, base: &str, tip: &str, ov: &GuardOve
 
 /// Run both land guards on the lane's range merge-base(origin/main, sha)..sha.
 /// A guard that cannot run is logged as unmeasured and refuses nothing, as in
-/// the CLI.
-pub async fn check_guards(tree: &Path, lane: &str, sha: &str, ov: &GuardOverrides) -> Result<(), GuardRefusal> {
+/// the CLI. `phase` is "enqueue" (POST /api/land) or "turn" (the batch that
+/// lands it, under the land lock).
+pub async fn check_guards(tree: &Path, lane: &str, sha: &str, ov: &GuardOverrides, phase: &str) -> Result<(), GuardRefusal> {
     let _ = git(tree, &["fetch", "-q", "origin", "main"]).await;
     let Ok(base) = git(tree, &["merge-base", "origin/main", sha]).await else {
-        tracing::warn!(lane, sha, measured = false, n_considered = 0, why_unmeasured = "no merge-base with origin/main",
+        tracing::warn!(lane, sha, phase, measured = false, n_considered = 0, why_unmeasured = "no merge-base with origin/main",
             verdict = "land_guard_unmeasured", "land guards skipped");
         return Ok(());
     };
@@ -724,20 +748,20 @@ pub async fn check_guards(tree: &Path, lane: &str, sha: &str, ov: &GuardOverride
         let (mut rc, mut out) = run_guard(tree, mode, &base, sha, ov).await;
         if mode == "message" && rc == 1 && ov.allow_reused_message {
             out.push_str("\nverdict=land_message_reused_allowed (allow_reused_message)");
-            tracing::warn!(lane, sha, measured = true, n_considered = 1, verdict = "land_message_reused_allowed",
+            tracing::warn!(lane, sha, phase, measured = true, n_considered = 1, verdict = "land_message_reused_allowed",
                 "a reused commit message was landed on request");
             rc = 0;
         }
         if rc > 1 {
             out.push_str(&format!("\nverdict=land_{mode}_unmeasured rc={rc} (the guard could not run; nothing refused on it)"));
-            tracing::warn!(lane, sha, mode, rc, measured = false, n_considered = 0, why_unmeasured = %tail(out.trim(), 300),
+            tracing::warn!(lane, sha, mode, phase, rc, measured = false, n_considered = 0, why_unmeasured = %tail(out.trim(), 300),
                 verdict = "land_guard_unmeasured", "a land guard could not run");
             rc = 0;
         }
-        land_log(lane, mode, &out);
+        land_log(lane, mode, phase, &out);
         if rc == 1 {
             let lines: Vec<String> = out.lines().filter(|l| l.starts_with("refused:") || l.starts_with("hint:")).map(String::from).collect();
-            tracing::warn!(lane, sha, measured = true, n_considered = 1, verdict, detail = %tail(&lines.join(" | "), 600),
+            tracing::warn!(lane, sha, phase, measured = true, n_considered = 1, verdict, detail = %tail(&lines.join(" | "), 600),
                 "a land was refused by a land guard");
             return Err(GuardRefusal { verdict, lines });
         }
@@ -825,16 +849,17 @@ async fn enqueue_route(State(state): State<AppState>, headers: HeaderMap, Json(b
         freeze: body.get("freeze_override").and_then(Value::as_str).map(String::from),
         allow_reused_message: body.get("allow_reused_message").and_then(Value::as_bool).unwrap_or(false),
     };
-    if let Err(r) = check_guards(&tree, &lane, &sha, &ov).await {
+    if let Err(r) = check_guards(&tree, &lane, &sha, &ov, "enqueue").await {
         return (StatusCode::CONFLICT, Json(json!({"ok": false, "code": r.verdict, "verdict": r.verdict,
             "error": r.lines.iter().find(|l| l.starts_with("refused:")).cloned().unwrap_or_else(|| "refused by a land guard".into()),
             "refusals": r.lines, "sha": sha}))).into_response();
     }
     let now = crate::config::now_f64();
-    let (l2, s2, r2, why2) = (lane.clone(), sha.clone(), repo.clone(), reason.clone());
+    let (l2, s2, r2, why2, ov2) = (lane.clone(), sha.clone(), repo.clone(), reason.clone(), ov.clone());
     let id = state.store.write_async(move |conn| {
-        conn.execute("INSERT INTO land_queue (repo, lane, sha, priority, reason, queued_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![r2, l2, s2, priority as i64, why2, now])?;
+        conn.execute("INSERT INTO land_queue (repo, lane, sha, priority, reason, queued_at, freeze_override, allow_reused_message)
+                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![r2, l2, s2, priority as i64, why2, now, ov2.freeze, ov2.allow_reused_message as i64])?;
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     }).await;
     if id.is_err() {
@@ -981,7 +1006,7 @@ mod tests {
         sh(&lane, &["commit", "-qam", "main moves a.txt"]);
         sh(&lane, &["push", "-q", "origin", "HEAD:main"]);
         let entries: Vec<Entry> = [(1, &a), (2, &bad), (3, &c), (4, &clash)].iter()
-            .map(|(i, s)| Entry { id: *i, repo: "r".into(), lane: "l".into(), sha: (*s).clone() }).collect();
+            .map(|(i, s)| Entry { id: *i, repo: "r".into(), lane: "l".into(), sha: (*s).clone(), ov: Default::default() }).collect();
         let gate = "test ! -e bad.txt";
         let out: HashMap<i64, Outcome> = land(&lane, entries, Some(gate), "", None).await.unwrap().into_iter().collect();
         assert!(matches!(out[&1], Outcome::Merged(_)), "{:?}", out[&1]);
@@ -1000,7 +1025,7 @@ mod tests {
         assert!(!files.contains("bad.txt"), "nothing of a refused commit is merged: {files}");
         assert_eq!(std::fs::read_to_string(lane.join("a.txt")).unwrap(), "main moved\n");
         // An already-landed commit is reported merged without a second push.
-        let again = land(&lane, vec![Entry { id: 9, repo: "r".into(), lane: "l".into(), sha: a.clone() }], Some(gate), "", None).await.unwrap();
+        let again = land(&lane, vec![Entry { id: 9, repo: "r".into(), lane: "l".into(), sha: a.clone(), ov: Default::default() }], Some(gate), "", None).await.unwrap();
         assert!(matches!(again[0].1, Outcome::Merged(_)));
     }
 
@@ -1164,6 +1189,54 @@ mod tests {
         assert_eq!(st, StatusCode::ACCEPTED, "{b}");
     }
 
+    /// A freeze that reaches origin/main after a land was queued still stops
+    /// it at its turn (verdict=land_refused_frozen phase=turn, row refused
+    /// with the reason); an entry queued with freeze_override passes, read
+    /// back from its row.
+    #[tokio::test]
+    async fn a_freeze_declared_after_enqueue_refuses_the_land_at_its_turn() {
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let lane = fixture(h);
+        std::fs::write(h.join("sessions/lane-t.env"), format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\n", lane.display())).unwrap();
+        let state = app();
+        let plain = commit(&lane, "proofs-row.txt", "x\n");
+        let (st, b) = call(&state, "POST", "/api/land", "lane-t", json!({"sha": plain})).await;
+        assert_eq!(st, StatusCode::ACCEPTED, "no freeze yet: {b}");
+        let overridden = commit(&lane, "proofs-other.txt", "y\n");
+        let (st, b) = call(&state, "POST", "/api/land", "lane-t", json!({"sha": overridden, "freeze_override": "gs12-proofs: re-proved"})).await;
+        assert_eq!(st, StatusCode::ACCEPTED, "{b}");
+
+        let seed = h.join("seed");
+        std::fs::create_dir_all(seed.join(".amux")).unwrap();
+        std::fs::write(seed.join(".amux/land.conf"),
+            "[freeze \"gs12-proofs\"]\n\tpath = proofs-*\n\tuntil = 2099-01-01T00:00:00Z\n\towner = t\n\treason = pinned\n").unwrap();
+        sh(&seed, &["add", ".amux/land.conf"]);
+        sh(&seed, &["commit", "-qm", "freeze proofs"]);
+        sh(&seed, &["push", "-q", "origin", "HEAD:main"]);
+
+        assert_eq!(tick(&state).await, 1);
+        for _ in 0..300 {
+            let rows: Vec<(String, String, Option<String>)> = state.store.read().unwrap()
+                .prepare("SELECT sha, state, output FROM land_queue ORDER BY id").unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().flatten().collect();
+            if rows.iter().all(|r| r.1 != "queued" && r.1 != "running") {
+                assert_eq!((rows[0].0.as_str(), rows[0].1.as_str()), (plain.as_str(), "refused"), "{rows:?}");
+                let why = rows[0].2.clone().unwrap_or_default();
+                assert!(why.contains("verdict=land_refused_frozen phase=turn") && why.contains("gs12-proofs"), "{why}");
+                assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), (overridden.as_str(), "merged"), "{rows:?}");
+                let log = std::fs::read_to_string(h.join("logs/land.log")).unwrap();
+                assert!(log.contains("lane-t freeze guard: refused:") && log.contains("phase=turn"), "{log}");
+                assert!(log.contains("verdict=land_freeze_override"), "{log}");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the batch never finished");
+    }
+
     #[test]
     fn the_lock_path_matches_the_cli_key() {
         let p = lock_path("https://github.com/mixpeek/mixpeek.git", "main");
@@ -1250,12 +1323,12 @@ mod tests {
             LockWait::TimedOut(h) => panic!("{h}"),
         };
         let a = commit(&lane, "b.txt", "ok\n");
-        let without = land(&lane, vec![Entry { id: 1, repo: "r".into(), lane: "l".into(), sha: a.clone() }], None, "", None).await.unwrap();
+        let without = land(&lane, vec![Entry { id: 1, repo: "r".into(), lane: "l".into(), sha: a.clone(), ov: Default::default() }], None, "", None).await.unwrap();
         match &without[0].1 {
             Outcome::Refused(why) => assert!(why.contains("land-lock: REFUSED"), "{why}"),
             o => panic!("a push that does not carry the holder pid must be refused while the lock is held: {o:?}"),
         }
-        let with = land(&lane, vec![Entry { id: 2, repo: "r".into(), lane: "l".into(), sha: a.clone() }], None, "", Some(&held)).await.unwrap();
+        let with = land(&lane, vec![Entry { id: 2, repo: "r".into(), lane: "l".into(), sha: a.clone(), ov: Default::default() }], None, "", Some(&held)).await.unwrap();
         assert!(matches!(with[0].1, Outcome::Merged(_)), "the holder's own push passes: {:?}", with[0].1);
         drop(held);
         assert!(!lock.exists());
