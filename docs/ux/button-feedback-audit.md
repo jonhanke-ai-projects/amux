@@ -800,7 +800,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Edit | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | + Team | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | + Invite | `openTeamInvite` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
-| index.html | Add an API key in Vault | `openVault` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Open Vault | `openVault` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Push | `peekGitPush` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Global | `peekMemoryTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1036,6 +1035,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Clear cache | `` | onclick |
 | index.html | Close | `` | onclick |
 | index.html | Close | `` | onclick |
+| index.html | Connect a model | `` | onclick |
 | index.html | Dismiss | `` | onclick |
 | index.html | How this inbox is ranked | `` | onclick |
 | index.html | Reload | `` | onclick |
