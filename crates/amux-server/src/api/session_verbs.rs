@@ -4134,6 +4134,17 @@ pub(crate) fn codex_rollout_last_model(path: &std::path::Path) -> Option<String>
     })
 }
 
+/// workspace-write turns network off unless `sandbox_workspace_write.network_access` is set,
+/// and with `-a never` the worker cannot ask for it. So a default Codex worker could not
+/// `git clone`, fetch or install a package ("Could not resolve host: github.com", amux Cloud
+/// e2e C6-4, 2026-10-18). The sandbox still confines writes to the workspace. A flag that
+/// already names network_access wins.
+fn codex_allow_sandbox_network(opts: &mut String) {
+    if opts.contains("workspace-write") && !opts.contains("network_access") {
+        *opts += " -c sandbox_workspace_write.network_access=true";
+    }
+}
+
 pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
     // BEFORE the cache and before any IO, because this function parses one
     // vendor's file format and a worker that does not write it has no evidence
@@ -16139,6 +16150,7 @@ pub(crate) async fn start_session(
             {
                 opts += " --sandbox workspace-write";
             }
+            codex_allow_sandbox_network(&mut opts);
             let logs = logs_dir().to_string_lossy().into_owned();
             if !isolated && !opts.contains(&logs) {
                 opts += &format!(" --add-dir {}", sh_quote(&logs));
@@ -50116,6 +50128,19 @@ mod composer_state_tests {
             None,
             "a picker is a question, not stuck input"
         );
+    }
+
+    #[test]
+    fn a_workspace_write_codex_worker_can_reach_the_network() {
+        let mut o = String::from(" -a never --sandbox workspace-write");
+        codex_allow_sandbox_network(&mut o);
+        assert!(o.ends_with(" -c sandbox_workspace_write.network_access=true"), "{o}");
+        let mut owner = String::from(" --sandbox workspace-write -c sandbox_workspace_write.network_access=false");
+        codex_allow_sandbox_network(&mut owner);
+        assert!(!owner.contains("=true"), "the owner's own choice stands: {owner}");
+        let mut yolo = String::from(" --dangerously-bypass-approvals-and-sandbox");
+        codex_allow_sandbox_network(&mut yolo);
+        assert!(!yolo.contains("network_access"), "no sandbox, nothing to open: {yolo}");
     }
 
     #[test]
