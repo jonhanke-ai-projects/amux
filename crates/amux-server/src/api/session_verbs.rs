@@ -3232,7 +3232,27 @@ pub(crate) fn pane_bar_says_generating(raw_output: &str) -> bool {
     // ambiguous frame as BUSY costs at most `AMUX_STEER_MAX_AGE_S`, after which
     // the message is delivered anyway; reading it as IDLE types into a live turn,
     // which is the regression 336097d exists to prevent. So: fail closed.
-    has_esc
+    has_esc || claude_spinner_live(&nonblank)
+}
+
+/// Claude Code 2.1.30x no longer prints "esc to interrupt" anywhere: its footer
+/// is `⏵⏵ bypass permissions on (shift+tab to cycle) · ← 5 agents` whether or
+/// not a turn is running. The live turn is the spinner row above the composer,
+/// `✶ Calculating… (1m 31s · ↓ 837 tokens)`, or a tool row
+/// `⎿  Running… (12s · timeout 5m)`: a verb, an ellipsis, then an elapsed time
+/// in parentheses. Finished rows (`✻ Worked for 11s · done 9:09 AM`) and an idle
+/// main turn waiting on agents (`✻ Waiting for 2 background agents to finish`)
+/// have no ellipsis-then-elapsed. Without this every live frame read as not
+/// generating, so the re-check before the leading Escape always passed and the
+/// Escape rejected tool calls mid-turn (mixpeek-cicd 2026-10-19T14:07:41Z,
+/// mixpeek-frustrations 2026-10-18T13:12:23Z).
+fn claude_spinner_live(nonblank: &[&str]) -> bool {
+    let re = cached_re!(r"^\S\s+[^()\n]{1,40}\u{2026}\s+\(\d+[hms]");
+    nonblank
+        .iter()
+        .rev()
+        .take(8)
+        .any(|l| re.is_match(l.trim_start().trim_start_matches('\u{23bf}').trim_start_matches(['\u{a0}', ' '])) || re.is_match(l.trim()))
 }
 
 /// py:18676 _clean_gemini_frame — keep only the LAST instance of each chrome
@@ -14098,8 +14118,23 @@ async fn send_text_inner_bound(
         // agents, not from generation), freezing the steering queue for 2h+.
         let still_generating = if structured_status.is_some() {
             !steer_lane_at_boundary(state, name).await
+        } else if hook_confirmed_idle {
+            false
+        } else if pane_bar_says_generating(&tmux_capture(name, 12).await) {
+            true
         } else {
-            !hook_confirmed_idle && pane_bar_says_generating(&tmux_capture(name, 12).await)
+            // The pane is one witness; the lane's own lifecycle report is the
+            // other (D1). A report of a running turn keeps the Escape out of it.
+            let reported = boundary_signals(state, Some(name))
+                .await
+                .and_then(|signals| signals.turn_boundary_status(name));
+            let mid_turn = reported.as_deref() == Some("active");
+            if mid_turn {
+                tracing::warn!(session = %name, from_steering, measured = true, n_considered = 1,
+                    verdict = "escape_withheld_reported_mid_turn",
+                    "the pane read idle but the lane reports a running turn; delivering without the leading Escape");
+            }
+            mid_turn
         };
         if still_generating {
             generating = true;
@@ -42420,6 +42455,35 @@ mod tests {
         );
     }
 
+    /// Claude Code 2.1.30x frames: no "esc to interrupt" anywhere, the live
+    /// turn is the spinner row. Each shape names its own verdict.
+    #[test]
+    fn a_claude_2_1_30x_spinner_reads_as_generating_and_a_finished_row_does_not() {
+        let rule = "\u{2500}".repeat(60);
+        let frame = |above: &str| format!(
+            "\u{23fa} Bash(echo hi)\n{above}\n  \u{23bf}\u{a0}Tip: Use /btw to ask a quick side question\n{rule}\n\u{276f}\u{a0}\n{rule}\n  acct \u{b7} 5h 29%\n  \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} \u{2190} 5 agents\n");
+        let live = [
+            "\u{2736} Calculating\u{2026} (1m 31s \u{b7} \u{2193} 837 tokens)",
+            "\u{b7} Bootstrapping\u{2026} (4m 7s \u{b7} \u{2193} 3.0k tokens)",
+            "\u{273d} Seasoning\u{2026} (12s \u{b7} \u{2193} 13.1k tokens \u{b7} thought for 4s)",
+            "  \u{23bf}\u{a0}Running\u{2026} (29s \u{b7} timeout 5m)",
+        ];
+        for l in live {
+            let f = frame(l);
+            assert!(pane_bar_says_generating(&f), "live: {l}");
+            assert!(!pane_is_at_boundary(&f), "live is no boundary: {l}");
+            assert_eq!(idle_hook_frame(&f), IdleHookFrame::Active, "live: {l}");
+        }
+        let idle = [
+            "\u{273b} Worked for 11s \u{b7} done 9:09 AM",
+            "\u{273b} Waiting for 2 background agents to finish",
+            "  Still waiting on the contract file\u{2026} (see the plan)",
+        ];
+        for l in idle {
+            assert!(!pane_bar_says_generating(&frame(l)), "not live: {l}");
+        }
+    }
+
     /// AF-678. Two callers claim the same row (the shape a concurrent
     /// `steer_deliver_for_session` invocation would hit): the first CLAIM
     /// must win and the second must see nothing to claim, or two deliveries
@@ -57119,3 +57183,4 @@ mod codex_saved_key_login_tests {
         assert!(std::fs::read_to_string(home.join("auth.json")).unwrap().contains("tokens"));
     }
 }
+
