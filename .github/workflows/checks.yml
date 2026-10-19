@@ -36,6 +36,10 @@ jobs:
         run: node --test tests/ci-rust-key.test.mjs
       # Browser methods: the backend ladder, agent selection, and the OpAgent
       # adapter against fixtures produced by OpAgent's own Python.
+      # One header on every amux.io page: scripts/site-header.html, /nav.css,
+      # /site.js in <head>. Fix drift with: node scripts/site-header.mjs --fix
+      - name: site header is the same on every page
+        run: node --test tests/site-header.test.mjs
       - name: browser methods registry and agent adapters
         run: node --test tests/browser-methods.test.mjs
       # AMUX-5397: the ChatGPT front door's tenant rules (a grant reaches only

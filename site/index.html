@@ -329,6 +329,7 @@
   .term .ok { color: var(--green); }
   .term .dim { color: var(--fg-3); }
   .term .acc { color: var(--accent); }
+  @keyframes blink { 50% { opacity: 0; } }
   .term .cursor { display: inline-block; width: 7px; height: 13px; background: var(--accent); vertical-align: -2px; animation: blink 1.1s steps(2) infinite; }
   .term-status {
     margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line);
@@ -741,6 +742,18 @@
   .move-cmd code { font: inherit; }
   @media (max-width: 600px) { .move-cmd { font-size: 11px; padding: 10px 12px; } }
   @media (max-width: 380px) { .move-cmd { font-size: 10px; padding: 10px; } }
+  .hero-watch {
+    display: inline-flex; align-items: center; gap: 10px; min-height: 44px; margin-top: 14px;
+    font-size: 14.5px; font-weight: 500; color: var(--fg); text-decoration: none;
+  }
+  .hero-watch .hw-ic {
+    display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+    border: 1px solid var(--line-2); background: var(--bg-2); color: var(--accent);
+    transition: border-color .15s ease;
+  }
+  .hero-watch:hover { color: var(--accent); }
+  .hero-watch:hover .hw-ic { border-color: var(--accent); }
+  .hero-watch + .hero-sub-cta { margin-top: 6px; }
 </style>
 <script src="/site.js"></script>
   <link rel="stylesheet" href="/nav.css">
@@ -790,6 +803,7 @@
       </a>
       <a class="btn btn-primary" href="/start/" id="hero-start">Run it in the cloud <span aria-hidden="true">&rarr;</span></a>
     </div>
+    <a class="hero-watch" href="/walkthrough/" id="hero-watch"><span class="hw-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="10" height="10"><path d="M7 4.5v15l13-7.5z" fill="currentColor"/></svg></span>Watch the 4-minute walkthrough</a>
     <p class="hero-sub-cta">Free to self-host. Cloud is your own always-on server at <b>yourname.amux.io</b> from $39/mo.</p>
 
     <!-- hero demo tabs -->
