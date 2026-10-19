@@ -47,8 +47,9 @@ got=$(TICK_PATH="$TICK" bash -c '
   SECONDS=40; tick_mark "claude tmp"
   SECONDS=55; tick_mark verdicts
   SECONDS=200; tick_mark end
-  echo "$TICK_SLOWEST"')
-check "the slowest section is named with its seconds"  verdicts:145s "$got"
+  echo "$TICK_SLOWEST ${TICK_SECTIONS:-}"')
+check "the slowest section is named with its seconds"  verdicts:145s "${got%% *}"
+check "every timed section is listed for the done line" "cargo_targets:40,claude_tmp:15,verdicts:145" "${got#* }"
 
 echo "2. a tick out of time still reaches its verdicts and names what it skipped (macOS only)"
 if [ "$(uname)" = Darwin ]; then
@@ -65,7 +66,9 @@ if [ "$(uname)" = Darwin ]; then
     check "the $arm arm is skipped and says so"       yes "$(has "$out" "mac-cleanup: $arm skipped: ")"
   done
   check "the verdicts still run"                      yes "$(has "$out" 'mac-cleanup: assess disk=')"
-  check "the done line names the skipped arms"        yes "$(has "$out" 'skipped=cargo_targets,.*lane_tmp,worktrees,claude_tmp')"
+  check "the done line names the skipped arms"        yes "$(has "$out" 'skipped=cargo_targets,.*claude_tmp,.*lane_tmp,worktrees')"
+  # Session scratch is reached before the cursor-resumable lane tmp (Mac self RCA 20261019-175342).
+  check "claude tmp is reached before user and lane tmp" yes "$(printf '%s\n' "$out" | grep -o 'mac-cleanup: [a-z ]* skipped: ' | tr '\n' '|' | grep -q 'claude tmp skipped: |.*lane tmp skipped: ' && echo yes || echo no)"
   out=$(run env); rc=$?
   check "with the default budget nothing is skipped"  yes "$(has "$out" ' skipped=none ')"
   check "and no arm says it ran out of time"          no  "$(has "$out" 'verdict=tick_out_of_time')"
