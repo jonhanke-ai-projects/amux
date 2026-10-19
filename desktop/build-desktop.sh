@@ -20,10 +20,23 @@ echo "Building $APP from $SRC..."
 # Create app bundle structure
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# Compile
-# shellcheck disable=SC2086  # SRC is a list of paths
-if xcrun swiftc -O -parse-as-library -D AMUX_APP -o "$BIN" $SRC -framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications; then
-    echo "  Compiled successfully"
+# Compile. AMUX_DESKTOP_UNIVERSAL=1 builds arm64 + x86_64 and joins them, so
+# one download runs on Apple silicon and Intel Macs (CI does this).
+FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications"
+compile() {  # $1 = output, $2 = optional -target
+    # shellcheck disable=SC2086  # SRC and FRAMEWORKS are word lists
+    xcrun swiftc -O -parse-as-library -D AMUX_APP ${2:+-target "$2"} -o "$1" $SRC $FRAMEWORKS
+}
+if [ "${AMUX_DESKTOP_UNIVERSAL:-0}" = 1 ]; then
+    TMPB=$(mktemp -d)
+    compile "$TMPB/arm64" arm64-apple-macos12.0 && compile "$TMPB/x86_64" x86_64-apple-macos12.0 \
+        && lipo -create -output "$BIN" "$TMPB/arm64" "$TMPB/x86_64" && OK=1 || OK=0
+    rm -rf "$TMPB"
+else
+    compile "$BIN" "" && OK=1 || OK=0
+fi
+if [ "$OK" = 1 ]; then
+    echo "  Compiled successfully ($(lipo -archs "$BIN" 2>/dev/null))"
 else
     echo "  !! Swift compilation failed."
     echo "  Common fix: xcode-select --install  (or reinstall Command Line Tools)"
@@ -99,10 +112,15 @@ PLIST
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 && echo "  Signed (ad hoc)" || echo "  !! codesign failed; permissions may be asked again"
 
 # Install to /Applications if requested or by default on build
-if [ -d /Applications ]; then
+# AMUX_DESKTOP_NO_INSTALL=1 leaves the bundle in the repo root (CI zips it).
+if [ "${AMUX_DESKTOP_NO_INSTALL:-0}" != 1 ] && [ -d /Applications ]; then
     rm -rf "/Applications/$APP"
     cp -R "$APP" "/Applications/$APP"
     echo "  Installed to /Applications/$APP"
 fi
 
-echo "Done — open /Applications/Amux.app  (or: open Amux.app)"
+if [ "${AMUX_DESKTOP_NO_INSTALL:-0}" = 1 ]; then
+    echo "Done: $APP (not installed)"
+else
+    echo "Done: open /Applications/$APP"
+fi

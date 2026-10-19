@@ -20,6 +20,24 @@ Already running amux? Move it to [amux Cloud](https://amux.io/start/): `amux exp
 
 You need tmux 3.2+ and at least one agent CLI (Claude Code, Codex or Gemini CLI). Runs on macOS and Linux. Prefer to read first? `git clone https://github.com/mixpeek/amux && cd amux && ./install.sh` does the same thing.
 
+## Apps
+
+Every app connects to your amux server (or your amux Cloud address).
+
+| Device | Get it |
+|---|---|
+| **Mac** (macOS 12+, Apple silicon and Intel) | [Download Amux-macOS.zip](https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.zip), or install with the one-liner below |
+| **iPhone and iPad** | [App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435) (one app for both) |
+| **Android and any browser** | Open your dashboard URL and choose **Install app** or **Add to Home Screen** |
+
+Mac, one command:
+
+```bash
+curl -fsSL https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.zip -o /tmp/Amux-macOS.zip && ditto -x -k /tmp/Amux-macOS.zip /Applications && open /Applications/Amux.app
+```
+
+The Mac app is a native window on the system WebKit (about 1.5 MB). It opens several windows and tabs, keeps pinned notes floating above other apps, shows a menu bar readout and a Dock badge when agents need you, and toggles with Control-Option-Space. It is not notarized yet: if you download the zip in a browser, macOS blocks the first open, so go to System Settings, Privacy & Security, and click **Open Anyway**. To build it yourself: `make desktop`.
+
 <p align="center"><a href="https://amux.io"><img src="site/amux.gif" alt="amux dashboard running parallel agents" width="920"/></a></p>
 
 <p align="center"><a href="https://amux.io/walkthrough/"><img src="site/walkthrough/amux-walkthrough-desktop-short.jpg" alt="Watch the amux walkthrough" width="920"/></a><br/><a href="https://amux.io/walkthrough/"><b>▶ Watch the walkthrough</b></a> (desktop and phone, with transcript)</p>
@@ -30,7 +48,7 @@ You need tmux 3.2+ and at least one agent CLI (Claude Code, Codex or Gemini CLI)
 - **Messages to each other.** Agents ask, hand off and unblock peers without you relaying.
 - **Self-healing.** Crashed or stuck sessions restart and pick up where they left off.
 - **Schedules and loops.** `daily at 9am`, `every 15m`, or overnight runs that pace themselves.
-- **Your phone.** Watch, steer and approve from the PWA or the [iOS app](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435).
+- **Your phone, tablet and Mac.** Watch, steer and approve from the [iPhone and iPad app, the Mac app](#apps) or the browser.
 - **Any model.** Claude Code, Codex, Gemini CLI, OpenCode or Ollama, switchable per worker.
 
 Local-first: one Rust binary and SQLite on your own machine.
