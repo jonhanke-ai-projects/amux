@@ -86,6 +86,10 @@ First Claude task, 2026-10-19 on test server ck-11a3 (ready 121 s after payment)
 - Found in the cleanup inventory: fin-fbb1, deleted at 03:50 UTC, was running again with DNS. Stripe redelivered its checkout event an hour after payment, and provision() rebuilt the erased account. Fixed in 53a1d2926 (provision builds only for a live, not erased subscription; the daily audit erases such a leftover with no snapshot). Both Workers redeployed; the test Worker's audit then reported "fin-fbb1: account was deleted, server 171126722 erased".
 - Cleanup: ck-11a3 deleted through the billing flow. Hetzner holds only amux-sandbox and the golden image, Stripe test mode has 0 active, trialing or past_due subscriptions and 0 open checkouts, and ck-11a3 and fin-fbb1 return no DNS.
 
+Round 6 (Codex, 2026-10-19): the Claude first-run seed (f99e3d09a) and the daily CLI updater (1a14491be) pass review and tests. New C12-6: provision() resumed an existing server before checking the subscription, so a redelivery during an erase published the address again. Fixed in bfb032b03 (the guard runs first) and both Workers redeployed.
+
+Round 7 (Codex, 2026-10-19): ALL PASS for C12-6. Both deployed Workers match bfb032b03 byte for byte, the suite is 35 PASS and 0 FAIL, and Codex's own repro passes. Inventory clean: only amux-sandbox and the golden image, no customer images, 0 nonterminal test subscriptions, 0 open checkouts, NXDOMAIN for every test name. Codex thread ENDED.
+
 Live through the pipeline: main went green at 61b7bfe41, the image deploy built, and a fresh signup's first boot reported live_commit 61b7bfe41 with tls_days_left and the error page in place (fin-fbb1, deleted). A logged signup (tl-9330) shows the webhook creating the server 2 s after payment and ready in 132 s.
 
 Seen in the same run: two orders waited about 5 to 6.5 minutes for Hetzner capacity (fsn1 and nbg1 full, created in hel1) and was ready 9 minutes after payment, with the cron retrying as designed.
