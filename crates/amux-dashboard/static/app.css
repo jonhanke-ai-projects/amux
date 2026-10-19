@@ -8438,6 +8438,11 @@ body.light .bd-answer-head { color: #bc4c00; }
 #peek-split-toggle .psp-btn-lbl { font-size:0.8rem; font-weight:600; }
 #peek-split-toggle .psp-btn-caret { font-size:0.65rem; opacity:0.7; }
 #peek-split-toggle .psp-ico-folder { display:none; }
+/* The shared toolbar rule pins every button at flex 0 0 44px; width:auto above
+   cannot undo a flex-basis, so the icon shrank to nothing and "Split" sat
+   cramped against its caret (Ethan, 2026-10-19 screenshot). */
+@media (min-width: 601px) { #peek-split-toggle { flex:0 0 auto; } }
+#peek-split-toggle > * { flex-shrink:0; }
 @media (max-width: 600px) {
   #peek-split-toggle .psp-ico-split, #peek-split-toggle .psp-btn-lbl, #peek-split-toggle .psp-btn-caret { display:none; }
   #peek-split-toggle .psp-ico-folder { display:inline; }
