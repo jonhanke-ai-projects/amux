@@ -1,5 +1,120 @@
 [
   {
+    "hash": "f99e3d09a3e04cf651544ee57eb4e01be7f83d3c",
+    "short": "f99e3d09",
+    "title": "Claude workers skip the first-run screens when you add a key later",
+    "date": "2026-10-19",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "claude-code",
+      "onboarding"
+    ],
+    "description": "On amux Cloud, saving an Anthropic key in the Vault after install left a new Claude worker stuck on Claude Code's first-run theme picker. amux now answers those screens at launch, so the first task runs."
+  },
+  {
+    "hash": "5cdc23855e0d670de76475d02a71c04a00da93ac",
+    "short": "5cdc2385",
+    "title": "Describe what you want, and a worker starts on it",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "goal",
+      "workers"
+    ],
+    "description": "The + button opens with one box: describe the outcome you want and press Cmd or Ctrl+Enter. amux starts a worker on a /goal that keeps going until the outcome is met. Group, folder, provider, model and constraints sit in a closed section with sensible defaults, and you can save them as yours."
+  },
+  {
+    "hash": "bc40dea42dfeecc4a5d06a763a49d048ddac4084",
+    "short": "bc40dea4",
+    "title": "Tasks pages link each stretch of work to its messages, cards and commits",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "tasks",
+      "history",
+      "dashboard"
+    ],
+    "description": "Each worker and the fleet as a whole get a Tasks page. A task shows the messages sent during it, the board card it worked, the commits it landed on main and the requests it closed, and you can search across all of them."
+  },
+  {
+    "hash": "502a767ed20bbacc8b4d2bcb20f9140bd8b85bd8",
+    "short": "502a767e",
+    "title": "A log search hit opens the terminal log at that line",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "search",
+      "logs"
+    ],
+    "description": "Clicking a search result that points into a worker's terminal log now shows the lines around it, even from days ago, instead of only the loaded scrollback."
+  },
+  {
+    "hash": "2a4c8107aca0c5e64a3db28b2a432a1fbe220b52",
+    "short": "2a4c8107",
+    "title": "Disk tab recommends what to clean and writes the script for you",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "disk",
+      "cleanup",
+      "dashboard"
+    ],
+    "description": "The Disk tab now shows free space, what is safe to remove, what needs review and what the scan never mapped. Findings are grouped by the tool that owns them, and a copyable cleanup script replaces deleting from the dashboard."
+  },
+  {
+    "hash": "d59e1a7a96faea9ca341ad0b49fd375e8992575d",
+    "short": "d59e1a7a",
+    "title": "Schedules can end: start dates, end dates, run limits and owner locks",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "scheduler",
+      "schedules"
+    ],
+    "description": "A schedule can wait until a start date, stop after an end date or a number of runs, and be locked by the owner so a worker cannot re-enable it. A disabled schedule records why."
+  },
+  {
+    "hash": "050bdc775b58cb77e75f44a22ccfafba54eafefe",
+    "short": "050bdc77",
+    "title": "Cap how many subagents a worker runs at once",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "boundaries",
+      "subagents",
+      "usage"
+    ],
+    "description": "A new subagents boundary refuses another subagent when a worker already runs its limit (4 by default) or the account is nearly out of usage headroom. The refusal says how many are running and when to retry."
+  },
+  {
+    "hash": "0be3b304a4bdaaf773b01f2a3649a5f594702542",
+    "short": "0be3b304",
+    "title": "Messages no longer cancel Claude's automatic continue after a usage limit",
+    "date": "2026-10-18",
+    "type": "fix",
+    "tags": [
+      "usage",
+      "claude-code",
+      "reliability"
+    ],
+    "description": "While Claude Code counts down to continue after a usage limit, amux holds incoming messages. Before, the Escape key sent ahead of a message cancelled the countdown and left the worker stopped."
+  },
+  {
+    "hash": "96a084a271ed02e75001a17607ac2e730a77287f",
+    "short": "96a084a2",
+    "title": "Draw: rename and delete drawings, a default folder and safer autosave",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "draw",
+      "library"
+    ],
+    "description": "Drawings and components can be renamed or deleted from the library, the selection bar has Delete with undo, new drawings go to a default folder you choose, and a failed autosave retries on its own."
+  },
+  {
     "hash": "68b413f5b01d74857a5317d4dc09a45d08de931a",
     "short": "68b413f5",
     "title": "Move a whole amux between your machine and amux Cloud",
