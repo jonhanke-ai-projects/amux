@@ -46881,6 +46881,11 @@ let _storageEstimate = null;       // {usage, quota} from the browser, not our c
 _storagePersistEnsure();
 
 if ('serviceWorker' in navigator) {
+  // A first visit has no controller yet: the new worker claiming this page fires
+  // controllerchange, and reloading then threw away whatever the visitor had started.
+  // A new amux Cloud customer's "Sign in with Claude" click was lost to it about 5 s
+  // into their first load (2026-10-19). Only a REPLACED worker means stale code.
+  let _swHadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('/sw.js').then(reg => {
     // Store full page HTML in localStorage as fallback if iOS evicts SW cache
     if (navigator.onLine !== false) {
@@ -46892,6 +46897,11 @@ if ('serviceWorker' in navigator) {
     }
   // Auto-reload when a new SW takes control (ensures fresh HTML after update)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!_swHadController) {
+      _swHadController = true;
+      console.info('[amux] service worker installed on first visit; no reload needed');
+      return;
+    }
     // Rescue in-progress peek input from the reload
     try {
       const inp = document.getElementById('peek-cmd-input');
