@@ -1915,6 +1915,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/palette",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/pinned",
         methods: &["GET", "POST"],
     },
