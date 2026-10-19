@@ -132,6 +132,23 @@ bash -c 'sleep 30 & wait' & agent=$!
 sleep 0.5; achild=$(pgrep -P "$agent" sleep | head -1)
 check "a child of a launchd agent is named by its label" "launchd:com.example.agent" "$(lane_for_pid "$achild" "$agent launchd:com.example.agent")"
 kill "$agent" "$achild" 2>/dev/null || true; wait "$agent" 2>/dev/null || true
+# An orphan (parent exited, reparented to launchd) is named by where it runs.
+# Each orphan's pid comes from $! written to a file, never from a pattern
+# match: a pattern kill here once SIGTERMed every process with "-n" in its argv.
+# Not called inside $(...): an orphan started there dies before it is measured.
+orphan() { # <cwd> <pidfile> <argv...>
+  local d=$1 f=$2; shift 2
+  ( ( cd "$d" && exec nohup "$@" >/dev/null 2>&1 ) & echo $! > "$f" )
+}
+mkdir -p "$FIX/lanetmp/gs-under-test/w" "$FIX/repo/.worktrees/wt-lane/x"
+LANE_TMP_ROOT="$FIX/lanetmp"
+orphan "$FIX/lanetmp/gs-under-test/w" "$FIX/o1.pid" sleep 30; orph=$(cat "$FIX/o1.pid"); sleep 0.3
+check "an orphan whose cwd is a lane's tmp is named by path" "gs-under-test (orphan, by path)" "$(lane_for_pid "$orph" "999999 amux-other")"
+orphan / "$FIX/o2.pid" bash -c 'sleep 30; :' "$FIX/repo/.worktrees/wt-lane/x"; warg=$(cat "$FIX/o2.pid"); sleep 0.3
+check "an orphan whose argv names a lane worktree is named by path" "wt-lane (orphan, by path)" "$(lane_for_pid "$warg" "999999 amux-other")"
+orphan "$FIX" "$FIX/o3.pid" sleep 30; plain=$(cat "$FIX/o3.pid"); sleep 0.3
+check "control: an orphan outside any lane path has no lane" "no lane" "$(lane_for_pid "$plain" "999999 amux-other")"
+for p in "$orph" "$warg" "$plain"; do [[ "$p" =~ ^[0-9]+$ ]] && kill "$p" 2>/dev/null; done; true
 
 echo "5. end to end: escalation, cooldown, failure, dry run (macOS only)"
 if [ "$(uname)" = Darwin ]; then

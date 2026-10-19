@@ -501,7 +501,51 @@ def endpoint_url() -> str:
         return ""
 
 
-def count_running_subagents(transcript_path: str, cfg: dict, now: float | None = None) -> dict:
+def host_process_start() -> float | None:
+    """Start time of the Claude Code process this hook runs under, or None.
+
+    Subagents run inside that process, so a transcript last written before it
+    started belongs to an agent the restart ended. Without this, a fleet
+    restart (2026-10-19 16:02Z) left mxp-gs12 refused at "9 subagents running"
+    with none alive until each transcript aged past `stale_s`.
+    """
+    fixed = os.environ.get("AMUX_SUBAGENT_HOST_START")  # tests
+    if fixed:
+        try:
+            return float(fixed)
+        except ValueError:
+            return None
+    import subprocess
+
+    pid = os.getppid()
+    for _ in range(8):
+        if pid <= 1:
+            return None
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=,lstart=,command=", "-p", str(pid)],
+                                 capture_output=True, text=True, timeout=2).stdout.strip()
+        except Exception:  # noqa: BLE001 - unmeasured, the caller keeps the old rule
+            return None
+        if not out:
+            return None
+        parts = out.split(None, 6)
+        if len(parts) < 7:
+            return None
+        ppid, lstart, cmd = parts[0], " ".join(parts[1:6]), parts[6]
+        if os.path.basename(cmd.split()[0]) == "claude" or re.match(r"^\d+\.\d+\.\d+$", os.path.basename(cmd.split()[0])):
+            try:
+                return time.mktime(time.strptime(lstart, "%a %b %d %H:%M:%S %Y"))
+            except ValueError:
+                return None
+        try:
+            pid = int(ppid)
+        except ValueError:
+            return None
+    return None
+
+
+def count_running_subagents(transcript_path: str, cfg: dict, now: float | None = None,
+                            host_start: float | None = None) -> dict:
     """Running subagents of the conversation behind `transcript_path`."""
     now = time.time() if now is None else now
     if not transcript_path:
@@ -523,12 +567,14 @@ def count_running_subagents(transcript_path: str, cfg: dict, now: float | None =
     except OSError as e:
         return {"measured": False, "why_unmeasured": f"cannot list {subs}: {e}", "n_considered": 0}
     running: list[str] = []
+    ended_by_restart = 0
     for n in names:
         stem = n[:-len(".jsonl")]
         try:
-            age = now - os.stat(os.path.join(subs, n)).st_mtime
+            mtime = os.stat(os.path.join(subs, n)).st_mtime
         except OSError:
             continue
+        age = now - mtime
         try:
             with open(os.path.join(subs, stem + ".meta.json")) as fh:
                 meta = json.load(fh)
@@ -538,9 +584,13 @@ def count_running_subagents(transcript_path: str, cfg: dict, now: float | None =
             live = age < warm_s
         else:
             live = not meta.get("finished") and age < stale_s
+        if live and host_start is not None and mtime < host_start - 2:
+            ended_by_restart += 1  # last written before this process started: the restart ended it
+            continue
         if live:
             running.append(stem)
-    return {"measured": True, "running": len(running), "n_considered": len(names), "running_ids": sorted(running)[:12]}
+    return {"measured": True, "running": len(running), "n_considered": len(names), "running_ids": sorted(running)[:12],
+            "ended_by_restart": ended_by_restart, "host_start_measured": host_start is not None}
 
 
 def usage_headroom() -> dict:
@@ -590,10 +640,12 @@ def check_subagents(b: dict, tool: str, transcript_path: str) -> tuple[int, str]
     floor = float(cfg.get("min_headroom_pct", 0) or 0)
     if limit is None and floor <= 0:
         return 0, ""
-    count = count_running_subagents(transcript_path, cfg) if limit is not None else {"measured": False, "why_unmeasured": "cap off"}
+    count = (count_running_subagents(transcript_path, cfg, host_start=host_process_start()) if limit is not None
+             else {"measured": False, "why_unmeasured": "cap off"})
     head = usage_headroom() if floor > 0 else {"measured": False, "why_unmeasured": "headroom floor off"}
     base = {"boundary": b.get("id"), "tool": tool, "limit": limit, "min_headroom_pct": floor,
             "running": count.get("running"), "running_ids": count.get("running_ids"),
+            "ended_by_restart": count.get("ended_by_restart"), "host_start_measured": count.get("host_start_measured"),
             "measured": bool(count.get("measured")), "n_considered": count.get("n_considered", 0),
             "headroom_pct": head.get("headroom_pct"), "headroom_measured": bool(head.get("measured")),
             "window": head.get("window"), "resets_at": head.get("resets_at")}

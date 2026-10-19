@@ -1892,7 +1892,28 @@ lane_for_pid() { # <pid> [pane map text]
     if [ -n "$hit" ]; then printf '%s' "${hit#amux-}"; return 0; fi
     p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' '); i=$((i+1))
   done
-  printf 'no lane'
+  lane_by_path "$1" || printf 'no lane'
+}
+# An orphan's lane from where it runs. A Claude Code background command is
+# reparented to launchd when its shell exits, so the parent walk finds no pane,
+# yet its argv or cwd still sits in the worker's own scratch: LANE_TMP_ROOT/<w>
+# (the workspace-isolation TMPDIR) or <repo>/.worktrees/<w>. Mac RCA
+# 20261019-105318: mxp-gs12's prep.py held 954% CPU and 7.7G as "no lane".
+# Printed as "<w> (orphan, by path)" so a reader knows it was inferred.
+lane_by_path() { # <pid>
+  local cmd cwd w
+  cmd=$(ps -o command= -p "$1" 2>/dev/null) || return 1
+  cwd=$(lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  # lsof reports the resolved cwd (/private/var for /var), so match both spellings.
+  w=$(printf '%s\n%s\n' "$cwd" "$cmd" | ROOT="${LANE_TMP_ROOT%/}" ROOTP="$(cd -P "$LANE_TMP_ROOT" 2>/dev/null && pwd)" python3 -c '
+import os, re, sys
+root = "(?:%s)" % "|".join(re.escape(r) for r in {os.environ["ROOT"], os.environ.get("ROOTP") or os.environ["ROOT"]})
+for line in sys.stdin:
+    m = re.search(root + r"/([A-Za-z0-9._-]+)(/|\s|$)", line) or re.search(r"/\.worktrees/([A-Za-z0-9._-]+)(/|\s|$)", line)
+    if m: print(m.group(1)); break
+' 2>/dev/null)
+  [ -n "$w" ] || return 1
+  printf '%s (orphan, by path)' "${w#amux-}"
 }
 
 # The hand-off prompt (DESKT-58). Rounds 1-3 sent a four-line pointer, and the

@@ -213,6 +213,16 @@ def main() -> int:
                    and hit[0].get("level") == "WARN" and hit[0].get("measured") is True, f"exit {code} {ev}")
             expect("subagents: the refusal tells the model the count, the limit and when to retry",
                    "4 subagents running" in last_stderr and "limit is 4" in last_stderr and "Retry when" in last_stderr, last_stderr)
+            # A restart ends every in-process subagent without a finished flag (2026-10-19, mxp-gs12).
+            rtp = conversation(home, "restarted", running=9)
+            code, ev = run_payload(agent_call(rtp), home, {"AMUX_SUBAGENT_HOST_START": str(time.time() + 60)})
+            expect("subagents: agents last written before the host process started are not counted",
+                   code == 0 and not refused(ev, "running_cap"), f"exit {code} {ev}")
+            code, ev = run_payload(agent_call(rtp), home, {"AMUX_SUBAGENT_HOST_START": str(time.time() - 3600)})
+            hit = refused(ev, "running_cap")
+            expect("subagents: control: the same agents written after the host started are refused",
+                   code == 2 and bool(hit) and hit[0].get("ended_by_restart") == 0 and hit[0].get("host_start_measured") is True,
+                   f"exit {code} {ev}")
             code, ev = run_payload({**agent_call(tp), "tool_name": "Task"}, home)
             expect("subagents: the Task spelling is capped the same", code == 2 and bool(refused(ev, "running_cap")), f"exit {code}")
             code, ev = run_payload({"tool_name": "Bash", "tool_input": {"command": "echo hi"}, "transcript_path": tp}, home)
