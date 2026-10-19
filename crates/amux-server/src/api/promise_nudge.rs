@@ -324,7 +324,7 @@ pub(crate) async fn promise_sweep(state: &AppState) -> usize {
                         nudged += 1;
                         tracing::warn!(session = %name, verdict = "promise_nudged", card = %card, steer_id = %r.id,
                             "promise sweep: lane went idle after promising a next step; re-prompted once (AMUX-5236)");
-                        sv::steer_deliver_for_session(state, name).await;
+                        sv::steer_deliver_at_boundary(state, name, "promise-nudge").await;
                     }
                     Err(e) => tracing::warn!(session = %name, verdict = "promise_nudge_refused", error = e,
                         "promise sweep: nudge could not be queued; not retried for this promise"),

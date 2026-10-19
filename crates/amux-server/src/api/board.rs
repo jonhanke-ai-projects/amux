@@ -15388,7 +15388,7 @@ pub async fn patch_item(
                     crate::db::interactions::spawn(async move {
                         let _ =
                             crate::runtime_jobs::board_drive::drive_session(&st, &session).await;
-                        crate::api::session_verbs::steer_deliver_for_session(&st, &session).await;
+                        crate::api::session_verbs::steer_deliver_at_boundary(&st, &session, "board-card-closed").await;
                     });
                 }
             }

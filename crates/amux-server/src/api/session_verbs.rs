@@ -24392,6 +24392,25 @@ pub(crate) async fn steer_try_deliver_now(state: &AppState, session: &str, id: &
     delivered
 }
 
+/// A reactive drain from a caller that is NOT the lane's own idle report: a
+/// card closing, a promise sweep. `steer_deliver_for_session` trusts its caller
+/// to have seen the boundary and presses the leading Escape, and Escape mid-turn
+/// rejects the running tool call. That is what stopped mixpeek-frustrations for
+/// ~20h on 2026-10-18: its own `amux board done` fired the board's reactive
+/// drain at 13:12:08, the Escape landed on its next tool call at 13:12:23, and
+/// Claude Code told it "the user doesn't want to proceed ... STOP and wait",
+/// which it read as an owner stop. A lane that is not at a boundary keeps its
+/// row; its idle report or the timer pass delivers it.
+pub(crate) async fn steer_deliver_at_boundary(state: &AppState, session: &str, caller: &str) -> bool {
+    if !steer_lane_at_boundary(state, session).await {
+        tracing::info!(session, caller, measured = true, n_considered = 1,
+            verdict = "steer_reactive_not_at_boundary",
+            "reactive steering drain skipped: the lane is mid-turn, so no Escape is pressed; the row waits for its boundary");
+        return false;
+    }
+    steer_deliver_for_session(state, session).await
+}
+
 /// Called reactively when a session reports "idle" — the report IS the turn
 /// boundary, so there is no need to re-check `steer_lane_at_boundary` (the
 /// caller just wrote "idle" into session_reports). This closes the race where
@@ -42642,6 +42661,50 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM steering_queue WHERE id='n1' AND delivering_since IS NULL", [], |r| r.get(0))
             .unwrap();
         assert_eq!(still, 1, "a lane with no boundary keeps its row queued and unclaimed");
+    }
+
+    /// The board's done-reaction and the promise sweep fire while the lane may
+    /// be mid-turn, so they must take the boundary-gated drain. Behavioural
+    /// half: no boundary, no delivery, row unclaimed. Source half: both callers
+    /// use it, so a revert to the ungated drain reds here.
+    #[tokio::test]
+    async fn a_reactive_drain_from_a_card_close_never_types_into_a_lane_mid_turn() {
+        let (st, _dir) = state();
+        let now = now_f64();
+        let _ = st
+            .store
+            .write_async(move |conn| {
+                ensure_fleet_tables(conn)?;
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at) VALUES('r1','lane-busy','hi',?1)",
+                    rusqlite::params![now],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await;
+        assert!(!steer_deliver_at_boundary(&st, "lane-busy", "test").await);
+        let still: i64 = st
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM steering_queue WHERE id='r1' AND delivering_since IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(still, 1, "a lane not at a boundary keeps its row queued and unclaimed");
+        // The no-lane case above returns false with or without the gate, so
+        // the gate itself is pinned here: checked first, and only its yes drains.
+        let me = include_str!("session_verbs.rs");
+        let at = me.find("pub(crate) async fn steer_deliver_at_boundary(").expect("gated drain present");
+        let body = &me[at..at + me[at..].find("\n}\n").expect("body end")];
+        let gate = body.find("if !steer_lane_at_boundary(state, session).await {\n").expect("boundary checked");
+        let drain = body.find("steer_deliver_for_session(state, session).await").expect("claimed drain");
+        assert!(gate < drain && body[gate..drain].contains("return false;"), "a lane not at a boundary returns before the drain");
+        for (file, src) in [
+            ("board.rs", include_str!("board.rs")),
+            ("promise_nudge.rs", include_str!("promise_nudge.rs")),
+        ] {
+            assert!(src.contains("steer_deliver_at_boundary("), "{file} must use the boundary-gated drain");
+            assert!(!src.contains("steer_deliver_for_session("), "{file} must not call the ungated drain");
+        }
     }
 
     /// The behavioural half: a guard set at enqueue must still be readable in
