@@ -95,12 +95,12 @@ cfapi -X PUT -H 'Content-Type: application/json' "$A/schedules" -d '[{"cron":"* 
 cfapi -X POST -H 'Content-Type: application/json' "$A/subdomain" -d '{"enabled":true}' >/dev/null
 if [[ "$MODE" == live ]]; then
   # cloud.amux.io belongs to this function. A plain DNS record on the name (the old control plane)
-  # blocks the custom domain, so it goes first.
-  for rid in $(cfapi "https://api.cloudflare.com/client/v4/zones/$ZID/dns_records?name=cloud.amux.io" | python3 -c 'import json,sys;print(" ".join(r["id"] for r in json.load(sys.stdin)["result"] if r["type"] in ("A","AAAA","CNAME")))'); do
+  # blocks the custom domain, so it goes first. The custom domain's own record is read-only and
+  # Cloudflare refuses to delete it with a 400, which failed every redeploy after the first.
+  for rid in $(cfapi "https://api.cloudflare.com/client/v4/zones/$ZID/dns_records?name=cloud.amux.io" | python3 -c 'import json,sys;print(" ".join(r["id"] for r in json.load(sys.stdin)["result"] if r["type"] in ("A","AAAA","CNAME") and not (r.get("meta") or {}).get("read_only")))'); do
     cfapi -X DELETE "https://api.cloudflare.com/client/v4/zones/$ZID/dns_records/$rid" >/dev/null; log "removed DNS record $rid for cloud.amux.io"
   done
-  # Cloudflare answers this PUT with a transient 400 now and then, right after the upload
-  # (2026-10-18). Retry before failing the whole deploy.
+  # A few tries before failing the whole deploy over one API error.
   for try in 1 2 3 4 5; do
     cfapi -X PUT -H 'Content-Type: application/json' "https://api.cloudflare.com/client/v4/accounts/$ACCT/workers/domains" \
       -d "{\"hostname\":\"cloud.amux.io\",\"service\":\"$NAME\",\"zone_id\":\"$ZID\",\"environment\":\"production\"}" >/dev/null && break
