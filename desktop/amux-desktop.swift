@@ -12,6 +12,10 @@ import UserNotifications
 
 // ── Persistent config ──
 let configURL: URL = {
+    // A second copy (tests, a second server) can keep its own state.
+    if let p = ProcessInfo.processInfo.environment["AMUX_DESKTOP_CONFIG"], !p.isEmpty {
+        return URL(fileURLWithPath: p)
+    }
     let dir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".amux")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -37,6 +41,9 @@ struct Config: Codable {
     var menuBar: Bool?
     var notifications: Bool?
     var dockBadge: Bool?
+    var layouts: [Layout]?
+    // "last" (default), "new", or "layout:<name>"
+    var launch: String?
 }
 
 func loadConfig() -> Config {
@@ -529,6 +536,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var pinsTimer: Timer?
     var terminating = false
     var lastNeedsCount = 0
+    var settings: SettingsWindowController?
+    let layoutsMenu = NSMenu(title: "Layouts")
 
     func applyBadge() {
         let show = config.dockBadge ?? true
@@ -563,7 +572,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         NotificationCenter.default.addObserver(forName: .amuxOverlayClosed, object: nil, queue: .main) { [weak self] n in
             self?.overlays.removeAll { $0 === (n.object as AnyObject) }
         }
-        restoreWindows()
+        // A layout link at launch replaces the windows anyway; skip opening them first.
+        let launchLinks = CommandLine.arguments.dropFirst().compactMap { URL(string: $0) }.filter { $0.scheme == "amux" }
+        if !launchLinks.contains(where: { $0.host == "layout" }) { launchWindows() }
         hotKeyHandler = { [weak self] in self?.toggleVisible() }
         registerHotKey()
         startMenuBarItem()
@@ -623,26 +634,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func url(withHash hash: String) -> URL? {
         guard let s = serverURL else { return nil }
         return URL(string: normalized(s.absoluteString) + "/" + hash)
-    }
-
-    func restoreWindows() {
-        let saved = config.windows ?? []
-        guard serverURL != nil, !saved.isEmpty else {
-            openWindow(url: nil, frame: nil)
-            return
-        }
-        var groups: [Int: DashboardWindowController] = [:]
-        for s in saved {
-            let frame = NSRectFromString(s.frame)
-            let c = openWindow(url: URL(string: s.url), frame: frame.width > 100 ? frame : nil)
-            if let g = s.tabGroup {
-                if let lead = groups[g], let lw = lead.window, let cw = c.window {
-                    lw.addTabbedWindow(cw, ordered: .above)
-                } else {
-                    groups[g] = c
-                }
-            }
-        }
     }
 
     /// Each window's current view as a deep link, so a relaunch reopens the
@@ -754,7 +745,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     // ── amux:// links ──
     // amux://worker/<name>  amux://view/<tab>  amux://open#<hash>
-    // amux://new-window     amux://pin/<id>
+    // amux://new-window     amux://pin/<id>     amux://settings
+    // amux://layout/<name>  amux://save-layout/<name>
     @objc func handleURLEvent(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: s) else { return }
         handleAmuxURL(url)
@@ -770,6 +762,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         case "view": openWindow(url: self.url(withHash: "#view=" + enc), frame: nil)
         case "open": openWindow(url: self.url(withHash: url.fragment.map { "#" + $0 } ?? ""), frame: nil)
         case "pin": if let id = Int(arg) { openPin(id: id) }
+        case "layout": openLayout(named: arg)
+        case "save-layout": saveLayout(named: arg)
+        case "settings": showSettings(nil)
         default: openWindow(url: nil, frame: nil)
         }
     }
@@ -923,7 +918,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     // ── Needs you: Dock badge and notifications ──
+    /// Notifications need a real .app bundle: UNUserNotificationCenter throws
+    /// (and takes the app down) when the binary runs outside one.
+    var canNotify: Bool { Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil }
+
     func setUpNotifications() {
+        guard canNotify else {
+            NSLog("amux-desktop: verdict=notifications_unavailable reason=not_in_app_bundle path=%@", Bundle.main.bundlePath)
+            return
+        }
         let c = UNUserNotificationCenter.current()
         c.delegate = self
         c.requestAuthorization(options: [.alert, .sound, .badge]) { granted, err in
@@ -954,6 +957,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     func notify(_ item: [String: Any]) {
+        guard canNotify else { return }
         let content = UNMutableNotificationContent()
         let card = (item["card"] as? String) ?? ""
         content.title = "amux needs you" + (card.isEmpty ? "" : " · " + card)
@@ -1030,6 +1034,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         for it in pinsMenu.items { copy.addItem(it.copy() as! NSMenuItem) }
         p.submenu = copy
         m.addItem(p)
+        let l = NSMenuItem(title: "Layouts", action: nil, keyEquivalent: "")
+        let lcopy = NSMenu(title: "Layouts")
+        for it in layoutsMenu.items { lcopy.addItem(it.copy() as! NSMenuItem) }
+        l.submenu = lcopy
+        m.addItem(l)
+        m.addItem(.separator())
+        m.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: "").target = self
         return m
     }
 }
@@ -1055,6 +1066,8 @@ func buildMenuBar(_ d: AppDelegate) {
     let appMenuItem = NSMenuItem()
     let appMenu = NSMenu()
     add(appMenu, "About amux", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), "")
+    appMenu.addItem(.separator())
+    add(appMenu, "Settings…", #selector(AppDelegate.showSettings(_:)), ",", target: d)
     appMenu.addItem(.separator())
     add(appMenu, "Show in Menu Bar", #selector(AppDelegate.toggleMenuBarItem(_:)), "", target: d)
     add(appMenu, "Notify When amux Needs You", #selector(AppDelegate.toggleNotifications(_:)), "", target: d)
@@ -1121,6 +1134,11 @@ func buildMenuBar(_ d: AppDelegate) {
     add(window, "Show Next Tab", #selector(NSWindow.selectNextTab(_:)), "\t", [.control])
     add(window, "Merge All Windows", #selector(NSWindow.mergeAllWindows(_:)), "")
     add(window, "Move Tab to New Window", #selector(NSWindow.moveTabToNewWindow(_:)), "")
+    window.addItem(.separator())
+    let layoutsItem = NSMenuItem(title: "Layouts", action: nil, keyEquivalent: "")
+    d.rebuildLayoutsMenu()
+    layoutsItem.submenu = d.layoutsMenu
+    window.addItem(layoutsItem)
     windowItem.submenu = window
     mainMenu.addItem(windowItem)
 

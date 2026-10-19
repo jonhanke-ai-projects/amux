@@ -35532,9 +35532,14 @@ function statusStyle(id) {
 // ═══════ CHROME TABS ═══════
 const _isInTab = new URLSearchParams(location.search).has('_tab');
 if (_isInTab) document.body.classList.add('in-tab');
+// The Mac app has real windows and tabs (Cmd-N, Cmd-T), so the in-page strip
+// is hidden there and the page always shows its own first tab (Ethan,
+// 2026-10-19: "this is much cleaner, you can get rid of this now").
+const _nativeTabs = /Amux-Desktop/.test(navigator.userAgent || '');
+if (_nativeTabs) document.body.classList.add('native-tabs');
 
 let _chromeTabs = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null') || [{id:1, name:'Tab 1'}];
-let _chromeActiveId = parseInt(localStorage.getItem('amux_chrome_active2')) || _chromeTabs[0]?.id || 1;
+let _chromeActiveId = (_nativeTabs ? null : parseInt(localStorage.getItem('amux_chrome_active2'))) || _chromeTabs[0]?.id || 1;
 let _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
 let _chromeCollapsed = localStorage.getItem('amux_chrome_collapsed') === '1';
 
@@ -35673,7 +35678,7 @@ function _chromeUpdateOffsets() {
     if (ctb) {
       // Phones hide the tab strip entirely (CSS) — its height must not leak
       // into layout offsets (it pushed the peek 54px down on mobile).
-      const h = (_chromeCollapsed || window.innerWidth <= 700) ? 0 : ctb.offsetHeight;
+      const h = (_chromeCollapsed || _nativeTabs || window.innerWidth <= 700) ? 0 : ctb.offsetHeight;
       document.documentElement.style.setProperty('--chrome-tab-h', h + 'px');
     }
     // --sticky-nav-top no longer used (tab-bar-outer is position:relative)

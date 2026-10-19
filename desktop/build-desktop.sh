@@ -10,7 +10,7 @@ APP="Amux.app"
 # One binary: the app, the pinned-note overlay and the menu bar readout. The
 # last two keep their own standalone builds; -D AMUX_APP drops their entry
 # points here.
-SRC="desktop/amux-desktop.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
+SRC="desktop/amux-desktop.swift desktop/amux-settings.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
 BIN="$APP/Contents/MacOS/amux"
 ICON_SRC="assets/icon-512.png"
 ICNS="$APP/Contents/Resources/AppIcon.icns"
