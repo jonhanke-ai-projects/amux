@@ -782,7 +782,7 @@
   </header>
 
 <!-- =================== HERO =================== -->
-<div class="hero">
+<div class="hero" data-cta-loc="hero">
   <div class="hero-grid-bg"></div>
   <div class="hero-glow"></div>
   <div class="container hero-inner">
@@ -1202,6 +1202,8 @@ amux import &lt;file&gt; --to https://yourname.amux.io</code></pre>
   /* Copy install command */
   document.querySelectorAll('.copy-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
+      var loc = btn.closest('[data-cta-loc]'), sec = btn.closest('section[id]');
+      if (window.posthog) posthog.capture('install_copy', { path: location.pathname, spot: loc ? loc.dataset.ctaLoc : (sec ? sec.id : 'body') });
       if (!navigator.clipboard) return;
       navigator.clipboard.writeText('curl -fsSL https://amux.io/install.sh | bash').then(function () {
         btn.textContent = 'copied';

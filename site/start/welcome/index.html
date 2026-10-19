@@ -131,6 +131,14 @@ const keep = s => (Q.get('api') ? '&api=' + encodeURIComponent(Q.get('api')) : '
 
 const ORDER = ['paying', 'creating', 'booting', 'ready'];
 const sid = Q.get('session_id') || '';
+// Funnel steps (scripts/site-funnel.py): Stripe only redirects here after payment, so a
+// first visit per order is a paid signup. Deduped per order so a reload is not a second one.
+function trackOnce(ev, props) {
+  const k = 'amux-funnel:' + ev + ':' + sid;
+  try { if (!sid || localStorage.getItem(k)) return; localStorage.setItem(k, '1'); } catch (e) {}
+  if (window.posthog) posthog.capture(ev, { test: !!(TK || Q.get('api')), ...props });
+}
+trackOnce('signup_paid');
 function show(state) {
   const i = ORDER.indexOf(state);
   document.querySelectorAll('#steps li').forEach((li, n) => li.className = n < i ? 'done' : (n === i ? 'now' : ''));
@@ -158,6 +166,7 @@ async function poll() {
   fails = 0; missing = 0;
   show(d.state);
   if (d.state === 'ready') {
+    trackOnce('server_ready', { waited_s: d.waited_s || 0 });
     document.querySelectorAll('#steps li').forEach(li => li.className = 'done');
     const rd = document.getElementById('ready'); rd.style.display = '';
     document.querySelector('h1').textContent = 'Your server is ready';

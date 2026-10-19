@@ -1,13 +1,17 @@
 # amux.io Homepage Experiments
 
-**KPIs we optimize for:**
-| KPI | PostHog event | Target |
-|-----|--------------|--------|
-| GitHub stars | `$pageview` → github.com/mixpeek/amux click | ↑ star rate |
-| iOS downloads | click on App Store link | ↑ iOS installs |
-| Cloud signups | click on concierge/cloud CTA | ↑ onboarding calls |
+**Two goals: a GitHub star and a paid Cloud signup.** iOS downloads are secondary.
 
-**Tracking note:** PostHog project key is `phc_Ckeacj8y8X8YiLkwHBcpBsJVSnsFKohch2vMv9sJYmE6` (project 378145 "amux", US cloud, us.i.posthog.com). To query KPI clicks use HogQL on `$autocapture` events filtered by `elements_chain` containing the relevant href. Personal API key needed for API queries — set `POSTHOG_PERSONAL_API_KEY` in ~/.amux/server.env. **Note:** site.js was mistakenly using a personal API key (`phx_`) before 2026-07-09 — no website analytics exist prior to that date.
+| Goal | Funnel (PostHog events, project 378145) | Truth outside PostHog |
+|------|------------------------------------------|-----------------------|
+| GitHub star | `$pageview` → `cta_click` goal=github | new stargazers (GitHub API) |
+| Cloud signup | `cta_click` goal=cloud → `/start/` view → `signup_form_start` → `signup_submit` → `checkout_redirect` → `signup_paid` → `server_ready` | Stripe order (`source` metadata = first touch) |
+| Local install | `install_copy` | |
+| iOS | `cta_click` goal=ios | |
+
+**Read it with one command:** `python3 scripts/site-funnel.py --days 7`. It prints both funnels against the prior window, split by traffic source (ai, search, direct, github, social) and landing page, plus the gaps: pages with traffic and no goal action. `--json` gives the same numbers to a script.
+
+**How it is instrumented (2026-10-19):** site.js sends one `cta_click` for every goal link on every page, with `goal`, `spot` (header, hero, get, footer, a section id, or the nearest `data-cta-loc`), `href`, `label` and `plan`. It registers `first_source`, `first_landing` and `session_source` on each visitor. /start/ and /start/welcome/ send the signup steps; test checkouts carry `test: true` and the report drops them, as it drops localhost. To measure an experiment, wrap its CTA in `data-cta-loc="expNNN-where"` and query `cta_click` by `spot`. Do not add a new event name. The `exp0NN_*_click` events and concierge clicks are retired as KPIs. Before 2026-10-19, GitHub clicks exist only as `$autocapture` on github.com/mixpeek/amux links (the report counts both). Before 2026-07-09 there is no analytics at all. Checks: `python3 scripts/site-funnel.py --self-test` (CI) and `node tests/site-funnel.e2e.mjs` against a local server.
 
 ---
 
@@ -1022,7 +1026,7 @@ _Updated by SCHED-149 Job 9 after each run with PostHog data and experiment resu
 ## Notes for SCHED-149
 
 When running Job 9:
-1. Query PostHog for click events on `github.com/mixpeek/amux`, `apps.apple.com` links, and `/concierge/` CTAs — these are the three KPI proxies.
+1. Run `python3 scripts/site-funnel.py --days 7` (see the top of this doc). The KPIs are GitHub stars and paid Cloud signups.
 2. Check which pages have the highest click-through on each KPI (not just pageviews).
 3. Move the highest-confidence `queued` experiment to `running` — implement it (it will be small/XS effort by design in the backlog). Log the start date and expected measurement period (minimum 7 days of traffic).
 4. Check any `running` experiments: if ≥7 days of data, read PostHog for pre/post comparison and log result in Concluded section.

@@ -151,6 +151,11 @@ const keep = s => (Q.get('api') ? '&api=' + encodeURIComponent(Q.get('api')) : '
 if (Q.get('canceled')) document.getElementById('canceled').style.display = '';
 const plan0 = Q.get('plan'); if (plan0) { const r = document.querySelector(`input[name=plan][value="${plan0}"]`); if (r) r.checked = true; }
 const $ = id => document.getElementById(id);
+// Funnel steps (scripts/site-funnel.py): signup_form_start, signup_submit, signup_error, checkout_redirect.
+const track = (ev, props, opts) => window.posthog && posthog.capture(ev, { plan: (document.querySelector('input[name=plan]:checked') || {}).value, test: !!(TK || Q.get('api')), ...props }, opts);
+// Where the buyer first came from, for the order's Stripe metadata (40 chars max there).
+const firstTouch = () => { try { return [posthog.get_property('first_source'), posthog.get_property('first_landing')].filter(Boolean).join(':').slice(0, 40) || 'start'; } catch (e) { return 'start'; } };
+$('f').addEventListener('focusin', () => track('signup_form_start'), { once: true });
 let slugTimer, slugOk = false;
 $('slug').addEventListener('input', () => {
   const v = $('slug').value = $('slug').value.toLowerCase().replace(/[^a-z0-9-]/g, '');
@@ -177,6 +182,7 @@ $('f').addEventListener('submit', async ev => {
   ev.preventDefault(); $('err').textContent = '';
   const slug = $('slug').value, email = $('email').value.trim().toLowerCase(), pw = $('pw').value;
   const plan = document.querySelector('input[name=plan]:checked').value;
+  track('signup_submit');
   if (!/^[a-z][a-z0-9-]{2,29}$/.test(slug)) return $('err').textContent = 'Choose a server name: 3 to 30 lowercase letters, digits or dashes, starting with a letter.';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return $('err').textContent = 'Enter a valid email address.';
   if (pw.length < 10) return $('err').textContent = 'Use a password of at least 10 characters.';
@@ -185,11 +191,12 @@ $('f').addEventListener('submit', async ev => {
     const pw_hash = await hash(pw);
     $('go').textContent = 'Opening checkout...';
     const r = await fetch(API + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...(TK ? { 'x-test-key': TK } : {}) },
-      body: JSON.stringify({ plan, slug, email, pw_hash, source: Q.get('source') || 'start' }) });
+      body: JSON.stringify({ plan, slug, email, pw_hash, source: Q.get('source') || firstTouch() }) });
     const d = await r.json();
     if (!r.ok || !d.url) throw new Error(d.error || 'Checkout could not start.');
+    track('checkout_redirect', {}, { transport: 'sendBeacon' });
     location.assign(d.url);
-  } catch (e) { $('err').textContent = e.message; $('go').disabled = false; $('go').textContent = 'Continue to payment'; }
+  } catch (e) { track('signup_error', { message: e.message.slice(0, 120) }); $('err').textContent = e.message; $('go').disabled = false; $('go').textContent = 'Continue to payment'; }
 });
 </script>
 </body>

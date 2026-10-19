@@ -129,4 +129,61 @@
   });
   posthog.register({ theme_preference: pref, theme: theme });
 
+  // Funnel. The site has two goals, a GitHub star and a Cloud signup, and
+  // every page is measured against them the same way: one `cta_click` event
+  // per goal link, carrying the page, the spot on the page and the visitor's
+  // traffic source. scripts/site-funnel.py reads these for the daily AEO run.
+  function sourceOf(host, utm) {
+    var s = (utm || '').toLowerCase(), h = (host || '').toLowerCase();
+    if (/chatgpt|openai|perplexity|claude|gemini|copilot|phind|you\.com|grok|deepseek|mistral|kagi/.test(s + ' ' + h)) return 'ai';
+    if (!h) return s ? 'campaign' : 'direct';
+    if (h === location.hostname || /(^|\.)amux\.io$/.test(h)) return 'internal';
+    if (/(^|\.)(google|bing|duckduckgo|yahoo|yandex|baidu|ecosia|brave|startpage|naver)\./.test(h)) return 'search';
+    if (/github\.com$/.test(h)) return 'github';
+    if (/reddit|t\.co$|x\.com$|twitter|linkedin|ycombinator|youtube|facebook|threads|bsky|mastodon|discord/.test(h)) return 'social';
+    return 'referral';
+  }
+  var ref = '';
+  try { ref = document.referrer ? new URL(document.referrer).hostname : ''; } catch (e) {}
+  var utm = new URLSearchParams(location.search).get('utm_source') || '';
+  var src = sourceOf(ref, utm);
+  if (src !== 'internal') {
+    posthog.register_once({ first_source: src, first_landing: location.pathname, first_referrer_host: ref || '$direct' });
+    posthog.register_for_session({ session_source: src, session_landing: location.pathname });
+  }
+
+  function goalOf(a) {
+    var u;
+    try { u = new URL(a.getAttribute('href'), location.href); } catch (e) { return null; }
+    if (u.hostname === 'github.com' && /^\/mixpeek\/amux(\/|$)/.test(u.pathname)) return 'github';
+    if (u.hostname === location.hostname) {
+      if (/^\/start\/(welcome|billing|delete)\//.test(u.pathname)) return null;
+      if (/^\/start\/?$/.test(u.pathname)) return 'cloud';
+      if (/^\/pricing\/?$/.test(u.pathname) || u.hash === '#get') return 'pricing';
+      if (/^\/walkthrough\/?$/.test(u.pathname)) return 'walkthrough';
+    }
+    if (u.hostname === 'apps.apple.com') return 'ios';
+    return null;
+  }
+  function spotOf(el) {
+    var tagged = el.closest('[data-cta-loc]');
+    if (tagged) return tagged.getAttribute('data-cta-loc');
+    if (el.closest('.site-header')) return 'header';
+    if (el.closest('footer')) return 'footer';
+    var sec = el.closest('section[id], [id].hero, main [id]');
+    return sec ? sec.id : 'body';
+  }
+  document.addEventListener('click', function (ev) {
+    var a = ev.target.closest && ev.target.closest('a[href]');
+    if (!a) return;
+    var goal = goalOf(a);
+    if (!goal) return;
+    var plan = '';
+    try { plan = new URL(a.href).searchParams.get('plan') || ''; } catch (e) {}
+    posthog.capture('cta_click', {
+      goal: goal, spot: spotOf(a), href: a.getAttribute('href'),
+      label: (a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60), plan: plan
+    }, { transport: 'sendBeacon' });
+  }, true);
+
 })();
