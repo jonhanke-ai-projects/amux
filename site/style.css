@@ -699,6 +699,8 @@ footer, .site-footer {
 /* ────────────────── MOBILE ────────────────── */
 @media (max-width: 900px) {
   .footer-top { flex-direction: column; gap: 24px; }
+  /* The 200px column basis becomes a 200px HEIGHT once the footer stacks. */
+  .footer-brand-col { flex: none; }
   .footer-link-cols { gap: 24px; }
   .grid { grid-template-columns: 1fr; }
 }
