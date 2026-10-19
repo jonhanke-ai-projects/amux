@@ -52,6 +52,28 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+
+def tls_days_left(host):
+    """Days until the certificate Caddy serves for this host expires, verified the way a browser
+    would, or None when it cannot be checked. Caddy renews about 30 days out; the Cloud monitor
+    emails the operator when this falls under 14, weeks before customers would see an expired
+    certificate (C9)."""
+    import socket
+    import ssl
+    host = host.split(":")[0].strip().lower()
+    if not host or len(host) > 253 or not all(c.isalnum() or c in ".-" for c in host):
+        return None
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection(("127.0.0.1", 443), timeout=3) as raw:
+            with ctx.wrap_socket(raw, server_hostname=host) as tls:
+                not_after = tls.getpeercert()["notAfter"]
+        return int((ssl.cert_time_to_seconds(not_after) - time.time()) // 86400)
+    except ssl.SSLCertVerificationError:
+        return -1   # expired or otherwise invalid: as bad as it gets
+    except Exception:
+        return None
+
 USERS_FILE = os.environ.get("DOOR_USERS", "/etc/amux-door/users")
 SECRET_FILE = os.environ.get("DOOR_SECRET", "/etc/amux-door/secret")
 UPDATE_STATUS = os.environ.get("DOOR_UPDATE_STATUS", "/var/lib/amux-update/status.json")
@@ -428,6 +450,7 @@ class Door(BaseHTTPRequestHandler):
                 st["dashboard"] = code == 200 and b"<html" in body[:4096].lower()
             except Exception:
                 st["dashboard"] = False
+            st["tls_days_left"] = tls_days_left(self.headers.get("Host", ""))
             st["measured"] = True
             return self.send(200, json.dumps(st).encode(), [("Content-Type", "application/json"),
                                                              ("Cache-Control", "no-store")])

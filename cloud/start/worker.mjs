@@ -460,6 +460,9 @@ async function serverProblem(env, s) {
   if (st.verdict === 'unknown') return Date.now() - Date.parse(s.created) > 30 * 60e3 ? 'self-updater has never reported' : '';
   if (age > 3 * 3600) return `self-updater last reported ${Math.round(age / 3600)}h ago`;
   if (String(st.verdict).startsWith('failed')) return `self-update ${st.verdict}: ${st.detail || ''}`;
+  // Caddy renews about 30 days before expiry, so under 14 means renewal has been failing for weeks.
+  if (typeof st.tls_days_left === 'number' && st.tls_days_left < 14)
+    return st.tls_days_left < 0 ? 'TLS certificate is expired or invalid' : `TLS certificate expires in ${st.tls_days_left} days (renewal is failing)`;
   return '';
 }
 async function monitor(env, servers) {

@@ -95,7 +95,7 @@ function world() {
       if (p === '/v1/customers') return ok({ data: [...new Set(Object.values(w.subs).filter(s => s.email === f.get('email')).map(s => s.customer_id))].map(id => ({ id })) });
       if (p === '/v1/billing_portal/sessions') return ok({ url: 'https://portal.test/x' });
     }
-    if (u.pathname === '/_door/status') return w.up ? Response.json({ live_commit: 'abc', dashboard: true, verdict: 'current' }) : new Response('down', { status: 502 });
+    if (u.pathname === '/_door/status') return w.up ? Response.json({ live_commit: 'abc', dashboard: true, verdict: 'current', checked_at: Math.floor(Date.now() / 1000), ...(typeof w.up === 'object' ? w.up : {}) }) : new Response('down', { status: 502 });
     throw new Error(`fake: unexpected ${m} ${url}`);
   };
   return w;
@@ -459,6 +459,20 @@ await test('C10 a snapshot that cannot boot on the new plan falls back to a fres
   await webhook(w, again);
   eq([w.servers.length, w.servers[0].image, w.servers[0].labels['amux-restored-from']], [1, 1, undefined], 'golden image');
   eq(w.logs.some(l => JSON.stringify(l).includes('provision.restore_failed')), true, 'logged');
+});
+
+await test('C9 a certificate that is not renewing reaches the operator before it expires', async () => {
+  const w = world(); const sub = paid(w, 'tlsold');
+  await webhook(w, sub);
+  const s = w.servers[0]; s.labels['amux-ready'] = '1'; s.backup_window = '22-02';
+  s.id = 10 - (new Date().getUTCMinutes() % 10);           // this minute is its monitor slot
+  w.up = { tls_days_left: 5 };
+  await cron(w); await cron(w);
+  const subj = w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).filter(t => /TLS certificate expires in 5 days/.test(t));
+  eq(subj.length, 1, 'one operator email after two failed checks');
+  w.up = { tls_days_left: 60 }; w.mail = [];
+  await cron(w);
+  eq(w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).some(t => /recovered/.test(t)), true, 'recovery email');
 });
 
 process.exitCode = failures;
