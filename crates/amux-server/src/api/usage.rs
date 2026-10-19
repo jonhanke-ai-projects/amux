@@ -177,7 +177,11 @@ pub async fn background_should_pause_now() -> bool {
     }
     let probe = crate::provider::claude::probe_usage_raw().await;
     if let Some(body) = probe.exact_body() {
-        if let Some(pct) = session_pct_of(&shape_probe(UsageProbe::Ok(body.clone()))) {
+        let shaped = shape_probe(UsageProbe::Ok(body.clone()));
+        if let Some(reset) = session_reset_of(&shaped) {
+            note_window_reset(reset);
+        }
+        if let Some(pct) = session_pct_of(&shaped) {
             note_window_pct(pct);
             return background_should_pause(Some(pct), reserve);
         }
@@ -194,6 +198,53 @@ pub fn reserve_pause_note(kind: &str) -> String {
          (AMUX_BACKGROUND_RESERVE_PCT). Background work stops here so a prompt you type still \
           has room; direct sends are never gated. Set the pref to 0 to disable the reserve."
     )
+}
+
+/// When the session (5-hour) window last observed will reset.
+///
+/// The reserve gates on the session window only, so this is the one reset that
+/// can lift a reserve refusal. The scheduler aims a refused fire's retry at it
+/// instead of polling every 15 minutes. Kept apart from [`WINDOW_PCT`] because
+/// a reset time stays true after the percentage goes stale; the caller still
+/// has to check that it lies in the future.
+static WINDOW_RESET: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>> =
+    std::sync::Mutex::new(None);
+
+/// Record the session window's reset time. Idempotent, cheap, never fails.
+pub fn note_window_reset(at: chrono::DateTime<chrono::Utc>) {
+    if let Ok(mut g) = WINDOW_RESET.lock() {
+        *g = Some(at);
+    }
+}
+
+/// The last observed session-window reset, if any. It may already be in the
+/// past; `None` means amux never saw one.
+pub fn window_reset_known() -> Option<chrono::DateTime<chrono::Utc>> {
+    *WINDOW_RESET.lock().ok()?
+}
+
+/// Parse a `resets_at` value: RFC 3339 text or unix seconds.
+fn parse_reset(v: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Some(n) = v.as_i64() {
+        return chrono::DateTime::from_timestamp(n, 0);
+    }
+    chrono::DateTime::parse_from_rfc3339(v.as_str()?)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// Pull the `session` window's reset time out of a shaped usage body: the
+/// `limits[kind=session].resets_at`, else the top-level `five_hour.resets_at`.
+pub fn session_reset_of(body: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    body.get("limits")
+        .and_then(Value::as_array)
+        .and_then(|ls| {
+            ls.iter()
+                .find(|l| l.get("kind").and_then(Value::as_str) == Some("session"))
+        })
+        .and_then(|l| l.get("resets_at"))
+        .and_then(parse_reset)
+        .or_else(|| body.pointer("/five_hour/resets_at").and_then(parse_reset))
 }
 
 /// Pull the `session` window's percent out of a shaped usage body.
@@ -2087,6 +2138,17 @@ mod tests {
     /// The real endpoint's success body, built from the live response SHAPE
     /// (both the top-level windows and the `limits[]` array Anthropic sends
     /// together). Numbers are invented; no credential is involved.
+    #[test]
+    fn session_reset_reads_the_limits_array_then_five_hour_then_nothing() {
+        let body = live_shaped_body();
+        assert_eq!(session_reset_of(&body).map(|t| t.to_rfc3339()), Some("2026-08-09T18:00:00+00:00".into()));
+        let only_top = json!({"five_hour": {"utilization": 3.0, "resets_at": "2026-08-09T19:00:00+00:00"}});
+        assert_eq!(session_reset_of(&only_top).map(|t| t.timestamp()), Some(1786302000));
+        let epoch = json!({"limits": [{"kind": "session", "percent": 80, "resets_at": 1786302000}]});
+        assert_eq!(session_reset_of(&epoch).map(|t| t.timestamp()), Some(1786302000));
+        assert_eq!(session_reset_of(&json!({"limits": [{"kind": "weekly_all", "resets_at": 1}]})), None);
+    }
+
     fn live_shaped_body() -> Value {
         json!({
             "five_hour": {"utilization": 34.4, "resets_at": "2026-08-09T18:00:00+00:00"},

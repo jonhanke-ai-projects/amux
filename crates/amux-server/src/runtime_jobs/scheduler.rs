@@ -294,6 +294,52 @@ pub trait Deliverer: Send + Sync {
     /// session can tell a run-now from the 9am fire in its own terminal rather
     /// than by polling an endpoint (AMUX-1998).
     async fn deliver(&self, sched: &DurableSchedule, source: &str) -> RunOutcome;
+
+    /// When the plan window the background reserve gates on will reset, if
+    /// amux has seen it. A reserve refusal aims its retry here. Overridable so
+    /// tests inject a reset instead of reading the process-wide reading.
+    fn window_reset(&self) -> Option<DateTime<chrono::Utc>> {
+        crate::api::usage::window_reset_known()
+    }
+}
+
+/// The fallback retry step for a reserve-refused one-off when no future
+/// window reset is known.
+pub const RESERVE_RETRY_FALLBACK_MINUTES: i64 = 15;
+
+/// Where a reserve-refused fire should retry, and which basis chose it.
+///
+/// A known reset still in the future wins: nothing can lift the reserve before
+/// the window resets, so polling every 15 minutes only spends refusals. The
+/// target is the reset plus 30 to 90 seconds of jitter (spread per schedule so
+/// a fleet of refused rows does not land on the new window in one tick),
+/// rounded UP to the minute because `next_run` has minute resolution and a
+/// rounded-down minute could fire before the reset. An unknown or already
+/// passed reset keeps the 15-minute fallback.
+pub fn reserve_retry_target(
+    sid: &str,
+    now: DateTime<Local>,
+    reset: Option<DateTime<chrono::Utc>>,
+) -> (DateTime<Local>, &'static str) {
+    match reset.filter(|r| *r > now.with_timezone(&chrono::Utc)) {
+        Some(r) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (sid, r.timestamp()).hash(&mut h);
+            let jitter = 30 + (h.finish() % 61) as i64;
+            let t = (r + ChronoDuration::seconds(jitter)).with_timezone(&Local);
+            let floor = t
+                .with_second(0)
+                .and_then(|x| x.with_nanosecond(0))
+                .unwrap_or(t);
+            let ceil = if floor < t { floor + ChronoDuration::minutes(1) } else { floor };
+            (ceil, "reserve_retry_at_reset")
+        }
+        None => (
+            now + ChronoDuration::minutes(RESERVE_RETRY_FALLBACK_MINUTES),
+            "reserve_retry_fallback_15m",
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2838,6 +2884,20 @@ async fn fire_one(
         .schedule_expr()
         .is_some_and(super::schedule_lifecycle::is_fixed_date_cron);
     let retry_once = reserve_refused_all && (ended_by_claim || fixed_date);
+    // Read the reset once, after delivery: the refusal itself may have just
+    // probed the window and recorded a fresh one.
+    let (retry_target, retry_verdict) = reserve_retry_target(
+        claim.sched.id(),
+        now,
+        if reserve_refused_all { deliverer.window_reset() } else { None },
+    );
+    // A RECURRING refusal keeps its natural next fire unless the window resets
+    // sooner; then it is pulled forward to the reset (never delayed, and never
+    // on the 15-minute fallback, which would turn a cron into a poll). The
+    // target always lies past the reset, so the retry lands in the NEXT window
+    // and a refused recurring fire retries at most once per window.
+    let pull_forward = reserve_refused_all && !retry_once && retry_verdict == "reserve_retry_at_reset";
+    let last_run_id = claim.run_ids.last().copied();
     let occurrences_n = outcomes.len() as i64;
     let expected_version = claim.sched.i64_field("version", 0);
     let expected_command = claim.sched.str_field("command").to_string();
@@ -2880,8 +2940,9 @@ async fn fire_one(
                     rusqlite::params![occurrences_n, sid],
                 )?;
             }
+            let retry_at = fmt_minute(retry_target);
+            let mut retried = false;
             if retry_once {
-                let retry_at = fmt_minute(now + ChronoDuration::minutes(15));
                 let changed = if ended_by_claim {
                     conn.execute(
                         "UPDATE schedules SET enabled=1, next_run=?1, disabled_reason=NULL WHERE id=?2 AND enabled=0 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5",
@@ -2898,6 +2959,24 @@ async fn fire_one(
                     }
                     tracing::info!(schedule = %sid, retry_at, fixed_date, measured = true, n_considered = 1,
                         verdict = "schedule_capacity_deferred", "undelivered one-off retained for capacity recovery");
+                    retried = true;
+                }
+            } else if pull_forward {
+                // `next_run > ?1`: only ever SOONER than the natural next fire
+                // the claim already wrote (minute strings sort as times).
+                let changed = conn.execute(
+                    "UPDATE schedules SET next_run=?1 WHERE id=?2 AND enabled=1 AND deleted IS NULL AND next_run > ?1 AND version=?3 AND command=?4 AND session=?5",
+                    rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session])?;
+                retried = changed > 0;
+            }
+            if retried {
+                tracing::info!(schedule = %sid, retry_at, verdict = retry_verdict, recurring = pull_forward,
+                    measured = true, n_considered = 1, "reserve-refused fire rescheduled");
+                if let Some(id) = last_run_id {
+                    let basis = if retry_verdict == "reserve_retry_at_reset" { "at window reset" } else { "fallback 15m" };
+                    conn.execute(
+                        "UPDATE schedule_runs SET note = substr(COALESCE(note || ' · ', '') || ?1, 1, 500) WHERE id=?2",
+                        rusqlite::params![format!("retry at {retry_at} ({basis}; {retry_verdict})"), id])?;
                 }
             }
             // AF-648: last_run/run_count already advanced in the CLAIM phase
@@ -3291,6 +3370,110 @@ mod tests {
         assert!(next > fmt_minute(now + ChronoDuration::days(1)), "after it lands, the cron's own next date applies: {next}");
     }
 
+
+    // ---- reserve retry aimed at the window reset --------------------------
+
+    fn last_run_note(store: &SharedStore, id: &str) -> String {
+        store.read().unwrap().query_row(
+            "SELECT COALESCE(note,'') FROM schedule_runs WHERE schedule_id=?1 ORDER BY id DESC LIMIT 1",
+            [id], |r| r.get(0)).unwrap()
+    }
+
+    fn fixed_now() -> DateTime<Local> {
+        Local.with_ymd_and_hms(2030, 6, 1, 12, 0, 20).single().unwrap()
+    }
+
+    #[test]
+    fn reserve_retry_target_aims_at_reset_plus_jitter_and_falls_back_otherwise() {
+        let now = fixed_now();
+        let reset = (now + ChronoDuration::minutes(97)).with_timezone(&chrono::Utc);
+        for sid in ["A", "B", "SCHED-1", "SCHED-999"] {
+            let (t, v) = reserve_retry_target(sid, now, Some(reset));
+            assert_eq!(v, "reserve_retry_at_reset");
+            let lead = (t.with_timezone(&chrono::Utc) - reset).num_seconds();
+            assert!((30..=150).contains(&lead), "{sid}: at least 30s of jitter, rounded up to a minute: {lead}s");
+            assert_eq!(t.second(), 0, "minute resolution");
+        }
+        let (t, v) = reserve_retry_target("A", now, None);
+        assert_eq!((t, v), (now + ChronoDuration::minutes(15), "reserve_retry_fallback_15m"));
+        let passed = (now - ChronoDuration::minutes(1)).with_timezone(&chrono::Utc);
+        let (t, v) = reserve_retry_target("A", now, Some(passed));
+        assert_eq!((t, v), (now + ChronoDuration::minutes(15), "reserve_retry_fallback_15m"), "a reset already passed is no target");
+    }
+
+    #[tokio::test]
+    async fn a_refused_one_off_retries_at_the_known_reset_not_every_15_minutes() {
+        let (store, _dir) = store();
+        let now = fixed_now();
+        put_row(&store, make_row("ONE", "lane", None, &fmt_minute(now - ChronoDuration::minutes(1))));
+        let reset = (now + ChronoDuration::minutes(140)).with_timezone(&chrono::Utc);
+        let refused = StubDeliverer::new(reserve_refusal()).with_reset(reset);
+        fire_one(&store, &refused, "ONE", now, MissedRunPolicy::Skip).await.unwrap();
+        let (en, _, _, next) = lifecycle_cols(&store, "ONE");
+        let (want, _) = reserve_retry_target("ONE", now, Some(reset));
+        assert!(en, "the one-off is kept");
+        assert_eq!(next, fmt_minute(want), "aimed at the reset");
+        assert_ne!(next, fmt_minute(now + ChronoDuration::minutes(15)));
+        let note = last_run_note(&store, "ONE");
+        assert!(note.contains("reserve_retry_at_reset") && note.contains(&next), "the run row says why: {note}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_one_off_with_no_or_a_passed_reset_keeps_the_15_minute_fallback() {
+        let now = fixed_now();
+        for reset in [None, Some((now - ChronoDuration::minutes(3)).with_timezone(&chrono::Utc))] {
+            let (store, _dir) = store();
+            put_row(&store, make_row("ONE", "lane", None, &fmt_minute(now - ChronoDuration::minutes(1))));
+            let mut refused = StubDeliverer::new(reserve_refusal());
+            refused.reset = reset;
+            fire_one(&store, &refused, "ONE", now, MissedRunPolicy::Skip).await.unwrap();
+            let (en, _, _, next) = lifecycle_cols(&store, "ONE");
+            assert!(en);
+            assert_eq!(next, fmt_minute(now + ChronoDuration::minutes(15)), "reset {reset:?}");
+            assert!(last_run_note(&store, "ONE").contains("reserve_retry_fallback_15m"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_recurring_fire_is_pulled_to_a_sooner_reset_once_and_never_delayed() {
+        let now = fixed_now();
+        let due = fmt_minute(now - ChronoDuration::minutes(1));
+        // Daily at 09:00: the natural next fire is tomorrow, the reset is in 2h.
+        let (s1, _d1) = store();
+        put_row(&s1, make_row("DAILY", "lane", Some("daily at 09:00"), &due));
+        let reset = (now + ChronoDuration::minutes(120)).with_timezone(&chrono::Utc);
+        let refused = StubDeliverer::new(reserve_refusal()).with_reset(reset);
+        fire_one(&s1, &refused, "DAILY", now, MissedRunPolicy::Skip).await.unwrap();
+        let (en, _, _, next) = lifecycle_cols(&s1, "DAILY");
+        let (want, _) = reserve_retry_target("DAILY", now, Some(reset));
+        assert!(en);
+        assert_eq!(next, fmt_minute(want), "pulled forward to the reset");
+        assert!(last_run_note(&s1, "DAILY").contains("reserve_retry_at_reset"));
+        // The retry fires in the new window and is refused again on a reading
+        // that still names the reset just passed: no second retry this window,
+        // the cron's own next date applies.
+        let at = want + ChronoDuration::seconds(10);
+        fire_one(&s1, &refused, "DAILY", at, MissedRunPolicy::Skip).await.unwrap();
+        assert_eq!(refused.calls(), 2);
+        let (_, _, _, next) = lifecycle_cols(&s1, "DAILY");
+        assert!(next.ends_with("09:00") && next > fmt_minute(at), "back on its natural cadence: {next}");
+
+        // Every 10m: the natural next fire is sooner than the reset, so it stays.
+        let (st2, _d2) = store();
+        put_row(&st2, make_row("TEN", "lane", Some("every 10m"), &due));
+        let refused = StubDeliverer::new(reserve_refusal()).with_reset(reset);
+        fire_one(&st2, &refused, "TEN", now, MissedRunPolicy::Skip).await.unwrap();
+        let (_, _, _, next) = lifecycle_cols(&st2, "TEN");
+        assert!(next <= fmt_minute(now + ChronoDuration::minutes(10)), "never delayed to the reset: {next}");
+
+        // No known reset: a recurring refusal does not start a 15-minute poll.
+        let (st3, _d3) = store();
+        put_row(&st3, make_row("NORESET", "lane", Some("daily at 09:00"), &due));
+        fire_one(&st3, &StubDeliverer::new(reserve_refusal()), "NORESET", now, MissedRunPolicy::Skip).await.unwrap();
+        let (_, _, _, next) = lifecycle_cols(&st3, "NORESET");
+        assert!(next.ends_with("09:00"), "{next}");
+    }
+
     #[tokio::test]
     async fn a_run_in_flight_at_restart_is_recorded_interrupted_and_stamped_on_its_schedule() {
         let (store, _dir) = store();
@@ -3575,6 +3758,7 @@ mod tests {
     struct StubDeliverer {
         outcome: RunOutcome,
         calls: std::sync::atomic::AtomicUsize,
+        reset: Option<DateTime<chrono::Utc>>,
     }
 
     impl StubDeliverer {
@@ -3582,7 +3766,12 @@ mod tests {
             StubDeliverer {
                 outcome,
                 calls: std::sync::atomic::AtomicUsize::new(0),
+                reset: None,
             }
+        }
+        fn with_reset(mut self, reset: DateTime<chrono::Utc>) -> Self {
+            self.reset = Some(reset);
+            self
         }
         fn confirmed() -> Self {
             StubDeliverer::new(RunOutcome::Delivered {
@@ -3600,6 +3789,9 @@ mod tests {
         async fn deliver(&self, _sched: &DurableSchedule, _source: &str) -> RunOutcome {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.outcome.clone()
+        }
+        fn window_reset(&self) -> Option<DateTime<chrono::Utc>> {
+            self.reset
         }
     }
 
