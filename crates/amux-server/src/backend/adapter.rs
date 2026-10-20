@@ -595,7 +595,11 @@ pub(crate) fn claude_auto_resume_banner(raw: &str) -> Option<String> {
     // Claude's current footer splits the reset warning and capitalized
     // continuation across lines. The same composer/chrome anchors still own it.
     let normalized = warning.to_ascii_lowercase();
-    if normalized.contains("continuing automatically at ") && normalized.contains("esc to cancel") {
+    // 2026-10-20 Claude Code also words it "limit resets 1pm / Continuing
+    // shortly · esc to cancel" once the reset is near or past.
+    if (normalized.contains("continuing automatically at ") || normalized.contains("continuing shortly"))
+        && normalized.contains("esc to cancel")
+    {
         Some(warning.to_string())
     } else {
         None

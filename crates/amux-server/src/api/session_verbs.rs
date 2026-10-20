@@ -2159,6 +2159,12 @@ fn last_turn_record(records: &[Value]) -> Option<&Value> {
 }
 
 pub(crate) fn transcript_rate_limit(records: &[Value]) -> Option<i64> {
+    open_limit_record(records)
+        .map(|r| r.pointer("/quotaLimits/resetsAt").and_then(Value::as_i64).unwrap_or(0))
+}
+
+/// The transcript record of the limit the main turn ended on, if it ended on one.
+fn open_limit_record(records: &[Value]) -> Option<&Value> {
     let last = records.iter().rev().find(|r| {
         matches!(r.get("type").and_then(Value::as_str), Some("user" | "assistant"))
             && !r.get("isSidechain").and_then(Value::as_bool).unwrap_or(false)
@@ -2167,7 +2173,15 @@ pub(crate) fn transcript_rate_limit(records: &[Value]) -> Option<i64> {
     let limited = last.get("type").and_then(Value::as_str) == Some("assistant")
         && last.get("error").and_then(Value::as_str) == Some("rate_limit")
         && last.pointer("/quotaLimits/status").and_then(Value::as_str) == Some("rejected");
-    limited.then(|| last.pointer("/quotaLimits/resetsAt").and_then(Value::as_i64).unwrap_or(0))
+    limited.then_some(last)
+}
+
+/// When that limit was hit: the record's own timestamp (unix seconds). Unlike
+/// the sweep's `rate_limited_since` stamp it never moves and is not cleared by
+/// a resume, so it can say "this limit came from the previous account".
+pub(crate) fn transcript_rate_limit_hit_at(records: &[Value]) -> Option<i64> {
+    let ts = open_limit_record(records)?.get("timestamp")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp())
 }
 
 /// Screen-only observation; production passes the transcript through
@@ -2524,6 +2538,28 @@ fn empty_foreground_boundary(pane: &str) -> bool {
         && !is_resume_mode_prompt(pane)
         && idle_hook_frame(pane) != IdleHookFrame::Selector
         && matches!(composer_state(pane), ComposerState::Empty | ComposerState::Placeholder(_))
+}
+
+// A limit hit on the PREVIOUS account has ended the parent, and the account
+// has since changed. Background shells or agents left running must not hold
+// the continue: on 2026-10-20 mixpeek-frustrations hit getmixpeek's weekly
+// limit at 10:30Z with "1 shell still running", the fleet switched accounts at
+// 12:07Z, and the resume was held as lane_busy until the owner typed continue
+// at 14:43Z. `hit_at` is when the limit was hit (the transcript record's time,
+// else the sweep's stamp), so a limit hit on the new account never qualifies.
+pub(crate) fn switched_limit_foreground_at_boundary(
+    pane: &str,
+    limit: Option<&ClaudeLimitObservation>,
+    api_error: Option<&str>,
+    hit_at: i64,
+    account_changed_at: i64,
+) -> bool {
+    api_error.is_none_or(api_error_is_retryable)
+        && limit.is_some_and(|l| !l.menu && l.kind != "credit-banner")
+        && account_changed_at > 0
+        && hit_at > 0
+        && hit_at <= account_changed_at
+        && empty_foreground_boundary(pane)
 }
 
 // A clocked quota stop has ended the parent too. Only a passed reset with the
@@ -22570,6 +22606,17 @@ pub(crate) async fn steer_delivery_for(state: &AppState, name: &str, age_s: f64)
             }
             return SteerDelivery::OverdueMidTurn;
         }
+        let hit_at = transcript_rate_limit_hit_at(&records).unwrap_or_else(|| meta_i64(&meta, "rate_limited_since"));
+        if hit_at > 0 && signals.panes.get(name).is_some_and(|pane| switched_limit_foreground_at_boundary(
+            pane, limit.as_ref(), transcript_api_error(&records).as_deref(), hit_at,
+            observe_claude_account_change(now.timestamp())))
+        {
+            if first_in_window("account_switch_boundary", name, 600.0) {
+                tracing::info!(session = name, measured = true, n_considered = 1,
+                    verdict = "steer_account_switch_boundary", "limit was hit on the previous account; delivering by paste while background work survives");
+            }
+            return SteerDelivery::OverdueMidTurn;
+        }
     }
     let held = steer_decide_with_background(
         Some(&status),
@@ -25472,12 +25519,20 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                 .filter(|k| super::agent_limit_resume::kill_is_over(k, now_i64(), account_changed_at))
                 .cloned()
                 .collect();
+            // When this lane's limit was hit: the transcript record's own time,
+            // which a re-stamp cannot move, else the sweep's first sighting.
+            let limit_hit_at = transcript_rate_limit_hit_at(&records)
+                .unwrap_or_else(|| meta_i64(&meta, "rate_limited_since"));
             let inputs = AutoResumeInputs {
                 enabled: auto_resume_enabled(name) && !lane_is_paused(name),
-                idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref()) || expired_limit_foreground_at_boundary(&pane, observation.as_ref(), api_error.as_deref(), now_i64())),
+                idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref()) || expired_limit_foreground_at_boundary(&pane, observation.as_ref(), api_error.as_deref(), now_i64())
+                    || switched_limit_foreground_at_boundary(&pane, observation.as_ref(), api_error.as_deref(), limit_hit_at, account_changed_at)),
                 now: now_i64(),
                 limit: observation.as_ref(),
-                limited_since: meta_i64(&meta, "rate_limited_since"),
+                limited_since: match meta_i64(&meta, "rate_limited_since") {
+                    0 => 0,
+                    since => since.min(limit_hit_at.max(1)),
+                },
                 account_changed_at,
                 api_error: api_error.as_deref(),
                 api_error_since: meta_i64(&meta, "api_error_since"),
@@ -43968,6 +44023,46 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             let token: ulid::Ulid = id.strip_prefix("steer-").unwrap().parse().unwrap();
             assert_eq!(token.timestamp_ms(),1_790_000_000_000);
         }
+    }
+
+    /// mixpeek-frustrations, 2026-10-20: weekly limit on the old account at
+    /// 10:30Z with a shell still running, account switch at 12:07Z, resume held
+    /// as lane_busy until the owner typed continue at 14:43Z.
+    #[test]
+    fn an_account_switch_resumes_a_parent_whose_background_shell_survived_its_limit() {
+        let hit = 1_792_492_215; // 10:30:15Z
+        let switched = 1_792_498_029; // 12:07:09Z
+        let now = switched + 30;
+        let pane = LIMITED_IDLE_PANE.replace("bypass permissions on (shift+tab to cycle)", "bypass permissions on · 1 shell · ↓ to manage");
+        let limit = ClaudeLimitObservation { menu:false, kind:"transcript", reset_at:1_792_980_000 };
+        assert!(!auto_resume_pane_idle(&pane, true), "the leftover shell is what read as busy");
+        assert!(switched_limit_foreground_at_boundary(&pane,Some(&limit),None,hit,switched));
+        let i = AutoResumeInputs {
+            idle: switched_limit_foreground_at_boundary(&pane,Some(&limit),None,hit,switched),
+            now, limited_since: hit, account_changed_at: switched,
+            ..resume_inputs(Some(&limit),None)
+        };
+        assert!(matches!(auto_resume_decision(&i),AutoResume::Send{reason:"account_changed",..}));
+        // A limit hit on the NEW account waits for its own reset.
+        assert!(!switched_limit_foreground_at_boundary(&pane,Some(&limit),None,switched+5,switched));
+        // No switch, no stamp, a menu, a credit cap, a draft, a live turn, a hard failure: no.
+        assert!(!switched_limit_foreground_at_boundary(&pane,Some(&limit),None,hit,0));
+        assert!(!switched_limit_foreground_at_boundary(&pane,Some(&limit),None,0,switched));
+        for l in [ClaudeLimitObservation{menu:true,kind:"menu",reset_at:0},ClaudeLimitObservation{menu:false,kind:"credit-banner",reset_at:0}] {
+            assert!(!switched_limit_foreground_at_boundary(&pane,Some(&l),None,hit,switched));
+        }
+        assert!(!switched_limit_foreground_at_boundary(&pane.replace("❯\u{a0}","❯ draft"),Some(&limit),None,hit,switched));
+        assert!(!switched_limit_foreground_at_boundary(WORKING_PANE,Some(&limit),None,hit,switched));
+        assert!(!switched_limit_foreground_at_boundary(&pane,Some(&limit),Some("authentication_failed"),hit,switched));
+    }
+
+    #[test]
+    fn the_limit_record_says_when_the_limit_was_hit() {
+        let limit = json!({"type":"assistant","timestamp":"2026-10-20T10:30:15.227Z","error":"rate_limit",
+            "quotaLimits":{"status":"rejected","resetsAt":1792980000,"rateLimitType":"seven_day"}});
+        let later = json!({"type":"user","message":{"role":"user","content":"continue"}});
+        assert_eq!(transcript_rate_limit_hit_at(std::slice::from_ref(&limit)), Some(1_792_492_215));
+        assert_eq!(transcript_rate_limit_hit_at(&[limit, later]), None, "a later turn ends it");
     }
 
     #[test]

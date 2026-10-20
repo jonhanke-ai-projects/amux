@@ -202,6 +202,8 @@ timer = "\x1b[38;5;231mContinuing\x1b[39m \x1b[38;5;231mautomatically\x1b[39m at
 expect(rot.resume_action(timer) == "Escape", f"timer screen resumes with Escape, got {rot.resume_action(timer)!r}")
 expect(rot.resume_action("Stop and wait for limit to reset") == "1", "the menu still answers 1")
 expect(rot.resume_action("working on it") is None, "no keys for a worker that is not parked")
+shortly = "  \u26a0 Usage limit reached \u00b7 limit resets 1pm\n    Continuing shortly \u00b7 esc to cancel\n  \u23f5\u23f5 bypass permissions on"
+expect(rot.resume_action(shortly) == "Escape", f"the 'Continuing shortly' timer resumes with Escape, got {rot.resume_action(shortly)!r}")
 
 
 # An installed copy that differs from origin/main says so; the shipped script

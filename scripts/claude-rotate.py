@@ -878,7 +878,10 @@ def stranded(sessions):
 # switch to hello@amux.io, logged not_on_prompt_or_recent, because only the
 # menu was recognised. Escape cancels the timer and the "continue" that follows
 # runs on the new login.
-AUTO_WAIT = re.compile(r"Continuing automatically at[^\n]{0,40}esc to cancel")
+# Claude Code 2026-10-20 also words it "Usage limit reached · limit resets
+# 1pm / Continuing shortly · esc to cancel"; the rotator logged eight workers
+# not_on_prompt_or_recent at 13:00 because only the "at <time>" form matched.
+AUTO_WAIT = re.compile(r"Continuing (?:automatically at|shortly)[^\n]{0,40}esc to cancel")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
