@@ -11329,6 +11329,54 @@ function autoGrow(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, parseFloat(getComputedStyle(el).maxHeight) || 999) + 'px';
 }
+// A COMPOSER YOU CAN SIZE BY HAND (Ethan, 2026-10-20: "i want to be able to
+// drag this input box by a corner and manually make it bigger"). The box sits
+// on the bottom edge, so the native bottom-right resize handle could only push
+// it off screen; the grip is on its top-left corner and dragging it up raises
+// the box's minimum height. Text still grows the box past that, up to 70% of
+// the screen. The height is kept per device; a double-click on the grip goes
+// back to sizing by content.
+const _COMPOSER_H_KEY = 'amux_peek_composer_h';
+function _composerSetHeight(ta, h) {
+  if (!ta) return;
+  if (!h) { ta.classList.remove('user-sized'); ta.style.removeProperty('--composer-h'); return; }
+  const max = Math.round(innerHeight * 0.7);
+  h = Math.max(44, Math.min(max, Math.round(h)));
+  ta.style.setProperty('--composer-h', h + 'px');
+  ta.classList.add('user-sized');
+  return h;
+}
+function _composerGripInit(gripId, taId, key) {
+  const grip = document.getElementById(gripId), ta = document.getElementById(taId);
+  if (!grip || !ta || grip._wired) return;
+  grip._wired = true;
+  const saved = parseInt(localStorage.getItem(key) || '', 10);
+  if (saved > 0) _composerSetHeight(ta, saved);
+  let startY = 0, startH = 0, last = 0;
+  const move = e => { last = _composerSetHeight(ta, startH + (startY - e.clientY)) || last; e.preventDefault(); };
+  const up = () => {
+    grip.classList.remove('dragging');
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', up);
+    if (last) { try { localStorage.setItem(key, String(last)); } catch (e) {} }
+  };
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    startY = e.clientY; startH = ta.getBoundingClientRect().height; last = 0;
+    grip.classList.add('dragging');
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
+  grip.addEventListener('dblclick', () => {
+    _composerSetHeight(ta, 0);
+    try { localStorage.removeItem(key); } catch (e) {}
+    autoGrow(ta);
+  });
+}
+_composerGripInit('peek-composer-grip', 'peek-cmd-input', _COMPOSER_H_KEY);
+
 async function gitPush(name, e) {
   if (!name) return;
   const ok = await showConfirm(`Deploy ${name} to main?\n\nThis will tell Claude to commit and push to main.`, 'Deploy', false);
