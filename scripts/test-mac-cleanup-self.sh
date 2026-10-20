@@ -79,6 +79,16 @@ check "blocked fires are one, though recorded ok"     yes "$(has "$out" '^self 2
 check "a killed run is counted, a blocked one is not" yes "$(has "$out" '1 killed before the done line, 2 found another tick running')"
 check "a log still being written is not judged"       yes "$(has "$out" ' 7 run log\(s\)')"
 
+echo "4a2. skipped runs already escalated are not raised again (RCA self 20261020-005306)"
+mkdir -p "$FIX/state"; printf 'esc_self=%s\n' "$((NOW-600))" > "$FIX/state/state"
+out=$(probe)
+check "every skip predates the last escalation: no constraint" no "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+check "it says so, with a verdict"                    yes "$(has "$out" 'all 3 runs that skipped arms in 24h predate the last self escalation.*verdict=self_skips_already_escalated')"
+printf 'esc_self=%s\n' "$((NOW-1500))" > "$FIX/state/state"
+out=$(probe)
+check "a skip after the escalation raises it again"   yes "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+rm -f "$FIX/state/state"
+
 echo "4b. a slow run older than 6h is reported, not escalated (RCA self 20261016-082126)"
 newdb 1 <<<"600|ok|"; newlogs
 addlog old 61200 "mac-cleanup: done elapsed=497s purge=no skipped=none constraints=0"
