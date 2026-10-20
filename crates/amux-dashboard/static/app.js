@@ -40412,10 +40412,15 @@ function _beTagInputUpdate(prefix) {
   // to dump twelve fleet-wide suggestions into every card and visually bury
   // its source message, epic, gate and output. Suggestions are autocomplete:
   // they exist only after the user asks by typing.
-  // Worker groups are a multiselect: the whole list shows before typing.
-  if (!q && prefix !== 'eg') { el.innerHTML = ''; return; }
-  if (prefix !== 'eg') _themesRefresh(prefix);   // once per TTL; re-renders itself when it lands
-  const suggestions = prefix === 'eg' ? _egGroupSuggestions(q) : _tagSuggestions(prefix, q);
+  let suggestions;
+  if (prefix === 'eg') {
+    // A worker's groups are a multiselect: the whole list shows before typing.
+    suggestions = _egGroupSuggestions(q);
+  } else {
+    if (!q) { el.innerHTML = ''; return; }
+    _themesRefresh(prefix);   // once per TTL; re-renders itself when it lands
+    suggestions = _tagSuggestions(prefix, q);
+  }
   // Data attributes + a delegated listener, NOT an inline onclick.
   //
   // The inline version was silently dead. `JSON.stringify(t)` emits DOUBLE
