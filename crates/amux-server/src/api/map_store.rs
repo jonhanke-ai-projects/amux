@@ -128,6 +128,15 @@ pub fn get_meta(c: &Connection, key: &str) -> R<Option<Value>> {
 }
 
 pub fn set_meta(c: &Connection, key: &str, v: &Value) -> R<()> {
+    // The server adds the Google key to settings on every read; older
+    // dashboards saved it back into map.json. It is never stored here.
+    let mut v = v.clone();
+    if key == "settings" {
+        if let Some(o) = v.as_object_mut() {
+            o.remove("googleMapsKey");
+        }
+    }
+    let v = &v;
     c.execute(
         "INSERT INTO map_meta(key,value,updated_at) VALUES(?1,?2,?3)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -746,7 +755,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("map.json");
         let body = json!({"pins": [pin("a", "Joe's", 40.7, -74.0), {"name": "string coords", "lat": "40.71", "lng": "-74.01"}],
-            "tags": [{"id": "t1", "name": "Coffee", "color": "#000"}], "settings": {"sortBy": "name"}, "trials": []});
+            "tags": [{"id": "t1", "name": "Coffee", "color": "#000"}], "settings": {"sortBy": "name", "googleMapsKey": "fake-key"}, "trials": []});
         std::fs::write(&f, body.to_string()).unwrap();
         assert_eq!(ensure_imported(&c, &f).unwrap(), Some(2));
         assert_eq!(ensure_imported(&c, &f).unwrap(), None, "second call does nothing");
@@ -755,6 +764,7 @@ mod tests {
         assert_eq!(d["pins"][1]["lat"], json!(40.71), "string coordinates become numbers");
         assert_eq!(d["tags"][0]["name"], "Coffee");
         assert_eq!(d["settings"]["sortBy"], "name");
+        assert!(d["settings"].get("googleMapsKey").is_none(), "the API key saved in old map.json files is not stored");
         assert!(f.exists(), "map.json stays as the backup");
     }
 
