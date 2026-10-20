@@ -3,6 +3,7 @@
 // description into a column a few words wide. The row now wraps: the text keeps
 // the full width and the buttons sit below it.
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 
 test('the Board switch description keeps the row width on a phone', async ({ page, request }, testInfo) => {
   await page.setViewportSize({ width: 375, height: 812 });
@@ -40,6 +41,6 @@ test('the Board switch description keeps the row width on a phone', async ({ pag
     const box = await sw.boundingBox();
     expect(box!.height).toBeGreaterThanOrEqual(44);
   } finally {
-    await request.delete(`/api/sessions/${encodeURIComponent(name)}`, { headers: auth }).catch(() => {});
+    await cleanup('delete fixture worker', () => request.delete(`/api/sessions/${encodeURIComponent(name)}`, { headers: auth }));
   }
 });
