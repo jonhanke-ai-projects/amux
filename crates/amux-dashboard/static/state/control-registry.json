@@ -2934,6 +2934,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxFastConfirm": {
+      "kind": "command._outboxFastConfirm",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxFetch": {
       "kind": "command._outboxFetch",
       "feedback_required": true,

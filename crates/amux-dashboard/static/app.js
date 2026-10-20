@@ -4317,24 +4317,55 @@ function _outboxSettleDecisions(list, now = Date.now()) {
 async function _outboxRetryNow(id) {
   if (typeof id !== 'string' || !id) return;
   let found = false;
+  let fastConfirm = false;
   await _mutateQueue(current => {
     const q = current.find(entry => entry.id === id);
     if (!q || _outboxActive.has(id)) return;
     found = true;
-    // Same body, same msg_id: a copy the server already holds is deduped.
     const checking = !q.needs_decision && _outboxUncertainMessage(q);
-    // "Check again" on a message still being confirmed re-reads its receipt now;
-    // everything else is sent again. Either way the msg_id is unchanged.
+    fastConfirm = checking;
     Object.assign(q, checking
       ? {state: 'pending', delivery_uncertain: true, checking_since: Date.now(), retried_at: Date.now()}
       : {needs_decision: '', state: 'pending', delivery_uncertain: false, error: '', attempts: 0, checking_since: 0, retried_at: Date.now()});
   });
-  try { amuxTrack('outbox_retry_now', {id, measured: true, n_considered: 1, found}); } catch (_) {}
+  try { amuxTrack('outbox_retry_now', {id, measured: true, n_considered: 1, found, fastConfirm}); } catch (_) {}
   updateConnectionStatus();
   try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
   if (!found) { showToast('That message is no longer queued here.'); return; }
-  showToast('Sending again…');
-  runSyncBanner(true);
+  if (fastConfirm) {
+    showToast('Checking…');
+    _outboxFastConfirm(id).catch(() => {});
+  } else {
+    showToast('Sending again…');
+    runSyncBanner(true);
+  }
+}
+async function _outboxFastConfirm(id) {
+  const q = (offlineQueue || []).find(entry => entry.id === id);
+  if (!q) return;
+  const opts = { method: 'GET', headers: _authHeaders(), cache: 'no-store' };
+  try {
+    const r = await _outboxConfirmMessage(q, opts);
+    if (r.ok) {
+      await _mutateQueue(current => {
+        const at = current.findIndex(entry => entry.id === id);
+        if (at >= 0) current.splice(at, 1);
+      });
+      showToast('Confirmed delivered');
+    }
+  } catch (e) {
+    if (e.outboxExpired) {
+      await _mutateQueue(current => {
+        const at = current.findIndex(entry => entry.id === id);
+        if (at >= 0) current.splice(at, 1);
+      });
+      showToast('Delivery expired; removed');
+    } else {
+      showToast('Still awaiting confirmation');
+    }
+  }
+  updateConnectionStatus();
+  try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
 }
 async function _outboxRemoveMessage(id) {
   if (typeof id !== 'string' || !id) return;
