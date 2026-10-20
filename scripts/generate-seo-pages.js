@@ -134,7 +134,7 @@ function template({ title, description, keywords, canonical, content, breadcrumb
     <a href="/glossary/">Glossary</a><span class="sep">·</span>
     <a href="/faq/">FAQ</a><span class="sep">·</span>
     <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><span class="sep">·</span>
-    <span>MIT License</span>
+    <span>MIT + Commons Clause</span>
   </footer>
 </body>
 </html>`;
