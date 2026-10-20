@@ -134,9 +134,13 @@ check "it says so, with a verdict"                    yes   "$(has "$out" 'git c
 touch "$(ls "$CRASH_DIR"/git-*.ips | head -1)"
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
 check "a rewritten old report does not revive an ended loop" no "$(has "$HEALTH_VERDICTS" '^crashes git')"
-: > "$CRASH_DIR/git-$(stamp 30).ips"   # one fresh crash: the loop is live again
+: > "$CRASH_DIR/git-$(stamp 30).ips"   # one fresh crash after the gap: a new episode of one
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
-check "a fresh crash makes it a constraint again"     yes   "$(has "$HEALTH_VERDICTS" '^crashes git crashed 13 times in 24h')"
+check "one fresh crash does not revive the ended loop (RCA crashes 20261020-085229)" no "$(has "$HEALTH_VERDICTS" '^crashes git')"
+check "it says so, with a verdict"                    yes   "$(has "$out" 'git crashed 13 times in 24h, but only 1 since its last 6h without a crash.*verdict=crash_new_episode_under_threshold')"
+for i in $(seq 2 10); do : > "$CRASH_DIR/git-$(stamp $((30 + i * 20))).ips"; done   # a fresh loop after the gap
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
+check "a fresh loop after the gap is a constraint again" yes "$(has "$HEALTH_VERDICTS" '^crashes git crashed 22 times in 24h')"
 
 echo "4b2. a live loop with no crash since the last crashes escalation is not escalated again (RCA crashes 20261020-015312)"
 CRASH_DIR="$FIX/crash-handed"; mkdir -p "$CRASH_DIR" "$FIX/state"

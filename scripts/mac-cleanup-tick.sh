@@ -1187,8 +1187,33 @@ print(int(best))
 PY
 }
 
+crash_episode() { # <dir> <app> <gap minutes>: crashes since the app's last quiet gap of at least <gap>
+  python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null
+import os, re, sys, time
+d, only, gap = sys.argv[1], sys.argv[2], float(sys.argv[3]) * 60
+ts = []
+for n in os.listdir(d):
+    p = os.path.join(d, n)
+    if not os.path.isfile(p) or re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", n) != only:
+        continue
+    t = os.stat(p).st_mtime
+    m = re.search(r"[-_]([0-9]{4}-[0-9]{2}-[0-9]{2})-([0-9]{6})", n)
+    if m:
+        try:
+            t = min(t, time.mktime(time.strptime(m.group(1) + m.group(2), "%Y-%m-%d%H%M%S")))
+        except ValueError:
+            pass
+    ts.append(t)
+ts.sort(reverse=True)
+k = 1 if ts else 0
+while k < len(ts) and ts[k - 1] - ts[k] < gap:
+    k += 1
+print(k)
+PY
+}
+
 check_crash_reports() { # <dry:0|1>
-  local DRY=${1:-0} top name cnt pruned=0 old newest esc
+  local DRY=${1:-0} top name cnt pruned=0 old newest esc episode
   if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
   # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
   top=$(crash_counts "$CRASH_DIR" 1440 | head -3)
@@ -1205,6 +1230,12 @@ check_crash_reports() { # <dry:0|1>
       esc=$(state_get "$CRASH_STATE" esc_crashes 2>/dev/null || true); case "$esc" in ''|*[!0-9]*) esc=0 ;; esac
       if [ "$recent" -gt 0 ] && [ "$esc" -gt 0 ] && [ "$newest" -le "$esc" ]; then
         echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h, the newest $(( ($(date +%s) - newest) / 60 ))m ago, before the last crashes escalation $(( ($(date +%s) - esc) / 60 ))m ago; nothing new to hand over (verdict=crash_loop_already_escalated)"
+      elif [ "$recent" -gt 0 ] && episode=$(crash_episode "$CRASH_DIR" "$name" "$CRASH_RECENT_MIN") && [ "${episode:-0}" -lt "$CRASH_LOOP_N" ]; then
+        # Crashes from before a quiet gap belong to a loop that already ended.
+        # Mac crashes RCA 20261020-085229: one Chrome relaunch onto an update
+        # (2 reports at 08:06) revived 11 reports of a burst that ended 20h
+        # earlier, and the 24h total of 13 escalated a loop that was not there.
+        echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h, but only $episode since its last $(( CRASH_RECENT_MIN / 60 ))h without a crash; the rest is a loop that ended (verdict=crash_new_episode_under_threshold)"
       elif [ "$recent" -gt 0 ]; then
         HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
       else
