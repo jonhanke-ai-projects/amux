@@ -2318,6 +2318,53 @@ mod tests {
         assert_eq!(claude["account"], "b@example.com");
     }
 
+    /// A live probe of the signed-in account lands in the per-account history
+    /// (claude_account_usage) that the account rotator reads.
+    #[tokio::test]
+    async fn a_live_probe_is_kept_in_the_account_usage_history() {
+        let (probe, _) = probe_sequence(vec![UsageProbe::Ok(live_shaped_body())]);
+        let unavailable: ProviderProbeFn = Arc::new(|| {
+            Box::pin(async {
+                ProviderProbe::Unavailable {
+                    cause: "test",
+                    reason: "test".into(),
+                }
+            })
+        });
+        let app = app_routes(routes_with_probes(UsageProbes {
+            claude: probe,
+            claude_account: Arc::new(|| Box::pin(async { Some("b@example.com".to_string()) })),
+            codex: unavailable.clone(),
+            gemini: unavailable,
+        }));
+        let (_, usage) = get(&app).await;
+        let mut history = Value::Null;
+        for _ in 0..50 {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/usage/accounts?rows=5")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            history = serde_json::from_slice(&bytes).unwrap();
+            if history["n_considered"] == json!(1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(history["n_considered"], json!(1), "no history row: {history}");
+        let row = &history["rows"][0];
+        assert_eq!(row["account"], "b@example.com");
+        assert_eq!(row["source"], "server-probe");
+        assert_eq!(row["seven_day_pct"], usage["seven_day"]["utilization"]);
+        assert_eq!(row["five_hour_pct"], usage["five_hour"]["utilization"]);
+    }
+
     #[test]
     fn one_unavailable_probe_does_not_hide_the_other_provider_rows() {
         let body = shape_all_providers(
