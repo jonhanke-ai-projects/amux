@@ -3552,15 +3552,23 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <h3 id="edit-title">Edit</h3>
     <div class="ac-wrap" id="edit-input-wrap">
       <input id="edit-input" type="text" autocomplete="off" autocorrect="off"
-        oninput="if(editState&&editState.field==='dir')editAcFetch(this.value);if(editState&&editState.field==='tags')tagAcType(this.value)"
-        onfocus="if(editState&&editState.field==='dir')editAcFetch(this.value);if(editState&&editState.field==='tags')tagAcFocus(this.value)"
+        oninput="if(editState&&editState.field==='dir')editAcFetch(this.value)"
+        onfocus="if(editState&&editState.field==='dir')editAcFetch(this.value)"
         onkeydown="editAcKeydown(event)">
       <div id="edit-ac-list" class="ac-list"></div>
     </div>
     <select id="edit-select" style="display:none;" onchange="_editSelectChanged()">
       <option value="" id="model-default-opt">Loading models…</option>
     </select>
-    <select id="edit-group-picker" class="edit-select" style="display:none;margin-bottom:6px;" onchange="_editAddGroup(this)"></select>
+    <div id="eg-groups" style="display:none;">
+      <div class="be-tag-wrap" id="eg-tag-wrap" onclick="document.getElementById('eg-tag-input').focus()">
+        <input id="eg-tag-input" class="be-tag-input" type="text" placeholder="Add group…" aria-label="Add a group"
+          autocomplete="off" autocorrect="off" autocapitalize="none"
+          oninput="_beTagInputUpdate('eg')" onfocus="_beTagInputUpdate('eg')"
+          onkeydown="_beTagKeydown(event,'eg')">
+      </div>
+      <div id="eg-tag-suggestions" class="be-tag-suggestions"></div>
+    </div>
     <div id="edit-effort-wrap" style="display:none;margin-top:12px;">
       <label class="field-label" style="display:block;margin-bottom:5px;font-size:0.78rem;color:var(--dim);">Reasoning effort</label>
       <select id="edit-effort-select">

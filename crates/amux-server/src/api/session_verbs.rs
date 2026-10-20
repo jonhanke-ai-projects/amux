@@ -34635,7 +34635,17 @@ pub(crate) fn membership_patch_refusal(headers: &HeaderMap, membership_named: bo
 
 pub(crate) async fn config_patch(state: &AppState, name: &str, body: &Value) -> Response {
     let out = config_patch_inner(state, name, body).await;
-    crate::api::sessions_legacy::invalidate_sessions_cache();
+    // A groups-only edit does not throw the session list away. Invalidating
+    // made the next caller wait for a full fleet build (11 to 16 s live), so
+    // the dashboard kept showing the removed group while its refresh hung
+    // (Ethan, 2026-10-20). The new groups are laid over the served snapshot
+    // instead (overlay_session_fields, set on a successful write) and the next
+    // routine build reads them from the env file. Message reach is enforced
+    // from the env file itself, never from this list.
+    let tags_only = body.as_object().is_some_and(|o| !o.is_empty() && o.keys().all(|k| k == "tags"));
+    if !tags_only {
+        crate::api::sessions_legacy::invalidate_sessions_cache();
+    }
     out
 }
 
@@ -35728,6 +35738,14 @@ async fn config_patch_with_liveness(
                 json!({"error": env_write_error(&f, &e)}),
             );
         }
+        // The list the dashboard polls can be a snapshot built before this
+        // write; carry the new groups over it until a newer build lands.
+        let mut f = serde_json::Map::new();
+        f.insert(
+            "tags".into(),
+            json!(joined.split(',').map(str::trim).filter(|t| !t.is_empty()).collect::<Vec<_>>()),
+        );
+        crate::api::sessions_legacy::overlay_session_fields(name, f);
         // Echo what was stored: the caller sent an array and a bare "ok" is what
         // let the silent clear go unnoticed for as long as it did.
         return j200(json!({"ok": true, "message": "tags updated", "tags": joined}));

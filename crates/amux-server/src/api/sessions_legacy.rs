@@ -4173,6 +4173,77 @@ fn announce_sticky_runtime_claim(session: &str, observed_card: &str, suppressed:
 /// A 2s-stale response is invisible to a human and halves the subprocess
 /// load.
 pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<String> {
+    let json = legacy_sessions_array_built(store)?;
+    Ok(apply_config_overlays(json))
+}
+
+// A CONFIG WRITE SHOWS AT ONCE, NOT AFTER THE NEXT FLEET BUILD (Ethan,
+// 2026-10-20: removing a worker's group "did not update"). The PATCH stored
+// the new groups, but a full list build takes 11 to 16 s on the live fleet
+// (sessions_build_exceeds_ttl build_ms=11046..15621) and callers are served the
+// previous snapshot meanwhile, so the dashboard's next poll put the removed
+// group back on screen for ~15 s. The write records the fields it changed for
+// that worker; every snapshot whose build STARTED before the write carries
+// them over the stale values, and the first snapshot built after the write
+// retires them.
+type ConfigOverlays = std::collections::HashMap<String, (f64, serde_json::Map<String, Value>)>;
+
+fn config_overlays() -> &'static std::sync::Mutex<ConfigOverlays> {
+    static O: std::sync::OnceLock<std::sync::Mutex<ConfigOverlays>> = std::sync::OnceLock::new();
+    O.get_or_init(Default::default)
+}
+
+/// Record fields a config write changed for one worker (e.g. `tags`).
+pub fn overlay_session_fields(name: &str, fields: serde_json::Map<String, Value>) {
+    let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+    if let Ok(mut o) = config_overlays().lock() {
+        let e = o.entry(name.to_string()).or_insert((now, serde_json::Map::new()));
+        e.0 = now;
+        e.1.extend(fields);
+    }
+}
+
+/// Lay pending config writes over a snapshot built before them.
+fn apply_config_overlays(json: String) -> String {
+    let built_at = build_array_cache().lock().map(|c| c.stamp).unwrap_or(0.0);
+    let pending: Vec<(String, serde_json::Map<String, Value>)> = {
+        let Ok(mut o) = config_overlays().lock() else { return json };
+        if o.is_empty() {
+            return json;
+        }
+        let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+        // Retired by a build that started after the write, or after 10 minutes
+        // so an overlay can never outlive a write made some other way.
+        o.retain(|_, (at, _)| built_at <= *at && now - *at < 600.0);
+        o.iter().map(|(k, (_, f))| (k.clone(), f.clone())).collect()
+    };
+    if pending.is_empty() {
+        return json;
+    }
+    overlay_rows(&json, &pending).unwrap_or(json)
+}
+
+fn overlay_rows(json: &str, pending: &[(String, serde_json::Map<String, Value>)]) -> Option<String> {
+    let mut rows: Vec<Value> = serde_json::from_str(json).ok()?;
+    let mut applied = 0usize;
+    for row in rows.iter_mut() {
+        let Some(name) = row.get("name").and_then(Value::as_str).map(str::to_string) else { continue };
+        if let Some((_, fields)) = pending.iter().find(|(n, _)| *n == name) {
+            if let Some(obj) = row.as_object_mut() {
+                for (k, v) in fields {
+                    obj.insert(k.clone(), v.clone());
+                }
+                applied += 1;
+            }
+        }
+    }
+    tracing::debug!(target: "amux::sessions", applied, pending = pending.len(), measured = true,
+        n_considered = rows.len(), verdict = "sessions_config_overlay_applied",
+        "a config write was laid over a session list built before it");
+    serde_json::to_string(&rows).ok()
+}
+
+fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result<String> {
     let store_key = std::sync::Arc::downgrade(store);
     let ttl = env_secs("AMUX_SESSIONS_CACHE_TTL_S", 2.0);
     let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
@@ -11052,5 +11123,22 @@ mod picker_companion_tests {
         // Its companion is hidden either way it is marked.
         assert!(is_chat_companion_row("amux@chat", None));
         assert!(is_chat_companion_row("amux-chat-1", Some("amux")));
+    }
+}
+
+#[cfg(test)]
+mod config_overlay_tests {
+    use super::*;
+
+    #[test]
+    fn a_pending_write_replaces_the_stale_field_and_nothing_else() {
+        let json = r#"[{"name":"a","tags":["x","y"],"desc":"d"},{"name":"b","tags":["x"]}]"#;
+        let mut f = serde_json::Map::new();
+        f.insert("tags".into(), json!(["x"]));
+        let out = overlay_rows(json, &[("a".into(), f)]).unwrap();
+        let v: Vec<Value> = serde_json::from_str(&out).unwrap();
+        assert_eq!(v[0]["tags"], json!(["x"]));
+        assert_eq!(v[0]["desc"], json!("d"));
+        assert_eq!(v[1]["tags"], json!(["x"]));
     }
 }
