@@ -2784,6 +2784,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_notifOpen": {
+      "kind": "command._notifOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_notifPush": {
       "kind": "command._notifPush",
       "feedback_required": true,

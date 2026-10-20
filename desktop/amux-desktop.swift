@@ -976,8 +976,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         NSApp.activate(ignoringOtherApps: true)
-        openWindow(url: url(withHash: "#view=board"), frame: nil)
+        openCard((response.notification.request.content.userInfo["card"] as? String) ?? "")
         completionHandler()
+    }
+
+    /// A "needs you" notification opens its card on the board. An open window
+    /// jumps to it (the dashboard's #issue= deep link handles hashchange);
+    /// with none, a new window opens there. Without a card id it shows the board.
+    func openCard(_ card: String) {
+        let ok = !card.isEmpty && card.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        let hash = ok ? "#issue=" + card : "#view=board"
+        NSLog("amux-desktop: verdict=notification_opened card=%@ hash=%@", card.isEmpty ? "-" : card, hash)
+        if let c = keyController, let w = c.window, w.isVisible || w.isMiniaturized {
+            if w.isMiniaturized { w.deminiaturize(nil) }
+            w.makeKeyAndOrderFront(nil)
+            c.webView.evaluateJavaScript("location.hash = '\(hash)'") { [weak self] _, err in
+                if err != nil { self?.openWindow(url: self?.url(withHash: hash), frame: nil) }
+            }
+        } else {
+            openWindow(url: url(withHash: hash), frame: nil)
+        }
     }
 
     @objc func toggleNotifications(_ sender: NSMenuItem) {

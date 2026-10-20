@@ -3830,10 +3830,15 @@ function _connPillClick() {
   const failed = offlineQueue.some(q => q.state === 'blocked' && !_outboxUncertainMessage(q));
   const pending = offlineQueue.length || drafts.length || _syncPillText;
   if (failed || !pending) return showConnHistory();
+  // Pending work opens BOTH: the status modal (what is queued, connection
+  // history, retry) and the checklist at the bottom. 0ccc6e06c (09-24) made a
+  // pending tap open only the checklist; Ethan 2026-10-20: "it should show me
+  // the modal thing in addition to the thing in the bottom".
   _syncBannerRequested = true;
   const banner = document.getElementById('sync-banner');
   if (banner) banner.classList.add('active');
   if (!_syncFlight) runSyncBanner();
+  showConnHistory();
 }
 // Delivery diagnostics contain identities/timing, never prompt text. The
 // replay may happen long after the original click's fast-peek window expired.
@@ -5183,7 +5188,21 @@ function amuxNotifyAllowed(kind) {
   return on;
 }
 
-function _notifShowBanner(icon, title, body, session) {
+// Where a notification goes when clicked: its card on the board, else its worker.
+function _notifOpen(session, card) {
+  if (card) { location.hash = '#issue=' + encodeURIComponent(card); return; }
+  if (session) openPeek(session);
+}
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => {
+    const d = e.data || {};
+    if (d.type !== 'amux-open-url' || typeof d.url !== 'string') return;
+    const i = d.url.indexOf('#');
+    if (i >= 0) location.hash = d.url.slice(i);
+  });
+}
+
+function _notifShowBanner(icon, title, body, session, card) {
   if (!amuxNotifyAllowed('banner')) return;
   const container = document.getElementById('notif-banners');
   if (!container) return;
@@ -5193,30 +5212,31 @@ function _notifShowBanner(icon, title, body, session) {
     + '<div class="notif-banner-body"><div class="notif-banner-title">' + esc(title) + '</div>'
     + '<div class="notif-banner-text">' + esc(body) + '</div></div>'
     + '<button class="notif-banner-close" onclick="event.stopPropagation();this.parentElement.classList.add(\'removing\');setTimeout(()=>this.parentElement.remove(),250)">&times;</button>';
-  el.onclick = () => { el.classList.add('removing'); setTimeout(() => el.remove(), 250); if (session) openPeek(session); };
+  el.onclick = () => { el.classList.add('removing'); setTimeout(() => el.remove(), 250); _notifOpen(session, card); };
   container.appendChild(el);
   requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('visible')));
   setTimeout(() => { if (el.parentElement) { el.classList.add('removing'); setTimeout(() => el.remove(), 250); } }, 5000);
   if (container.children.length > 4) container.firstElementChild.remove();
 }
 
-function _notifPush(icon, title, body, session) {
-  _notifItems.unshift({ icon, title, body, session: session || '', ts: Date.now(), read: false });
+function _notifPush(icon, title, body, session, card) {
+  _notifItems.unshift({ icon, title, body, session: session || '', card: card || '', ts: Date.now(), read: false });
   _notifSave();
   _notifUpdateBadge();
-  _notifShowBanner(icon, title, body, session);
+  _notifShowBanner(icon, title, body, session, card);
   if (_notifPanelOpen) _notifRenderPanel();
-  _notifFireNative(title, body, session);
+  _notifFireNative(title, body, session, card);
 }
 
-async function _notifFireNative(title, body, session) {
+async function _notifFireNative(title, body, session, card) {
   if (!amuxNotifyAllowed('native')) return;
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   const opts = {
     body, icon: '/icon-192.png', badge: '/icon-192.png',
     tag: 'amux-' + (session || Date.now()), renotify: true, silent: false,
     requireInteraction: true,           // stays on screen until dismissed (desktop)
-    data: { session: session || '', url: '/' },
+    data: { session: session || '', card: card || '',
+            url: card ? '/#issue=' + encodeURIComponent(card) : (session ? '/#peek=' + encodeURIComponent(session) : '/') },
   };
   // Prefer the service worker — REQUIRED on iOS (new Notification() is unsupported
   // there) and gives persistent, lock-screen notifications on installed PWAs.
@@ -5230,7 +5250,7 @@ async function _notifFireNative(title, body, session) {
   // Desktop fallback for browsers without an active SW registration.
   try {
     const n = new Notification(title, opts);
-    n.onclick = () => { window.focus(); if (session) openPeek(session); n.close(); };
+    n.onclick = () => { window.focus(); _notifOpen(session, card); n.close(); };
   } catch(e) {}
 }
 
@@ -5455,7 +5475,7 @@ function _notifRenderPanel() {
   list.innerHTML = _notifItems.slice(0, 50).map(n => {
     const ago = _notifTimeAgo(n.ts);
     return '<div class="notif-panel-item' + (n.read ? '' : ' unread') + '"'
-      + (n.session ? ' onclick="toggleNotifPanel();openPeek(\'' + n.session.replace(/'/g, "\\'") + '\')"' : '')
+      + ((n.session || n.card) ? ' onclick="toggleNotifPanel();_notifOpen(\'' + (n.session || '').replace(/'/g, "\\'") + '\',\'' + (n.card || '').replace(/'/g, "\\'") + '\')"' : '')
       + '><span class="npi-icon">' + n.icon + '</span>'
       + '<div class="npi-body"><div class="npi-title">' + esc(n.title) + '</div>'
       + '<div class="npi-text">' + esc(n.body) + '</div></div>'
@@ -5587,7 +5607,8 @@ function _fireAmuxAlert(a) {
   const fn = _ALERT_LABELS[a.type];
   if (!fn) return;
   const { icon, title, body } = fn(a);
-  _notifPush(icon, title, body, a.session || '');
+  const card = a.card || a.card_id || a.issue || a.issue_id || '';
+  _notifPush(icon, title, body, a.session || '', /^[A-Za-z0-9_-]+$/.test(card) ? card : '');
 }
 
 function _checkSessionTransitions(newData) {

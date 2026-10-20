@@ -95,12 +95,23 @@ self.addEventListener('push', e => {
 
 // Focus the app (or open it) when a notification is tapped — required for the
 // click to do anything on iOS, where notifications are shown via the SW.
+// The notification's own url wins: a card notification carries /#issue=<id>,
+// a worker one /#peek=<name>. An open window is focused and told to go there
+// (a hash change, no reload); with none, a window opens at the url.
 self.addEventListener('notificationclick', e => {
   e.notification.close();
+  const d = e.notification.data || {};
+  let url = d.url && d.url !== '/' ? d.url : (d.card ? '/#issue=' + encodeURIComponent(d.card)
+    : (d.session ? '/#peek=' + encodeURIComponent(d.session) : '/'));
   e.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cl => {
-      for (const c of cl) { if ('focus' in c) return c.focus(); }
-      if (clients.openWindow) return clients.openWindow('/');
+      for (const c of cl) {
+        if ('focus' in c) {
+          if (url !== '/') c.postMessage({ type: 'amux-open-url', url });
+          return c.focus();
+        }
+      }
+      if (clients.openWindow) return clients.openWindow(url);
     })
   );
 });
