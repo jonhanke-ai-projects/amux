@@ -28829,6 +28829,30 @@ pub(crate) fn lane_groups(lane: &str) -> std::collections::BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// A lane's explicit peers from `CC_PEERS` in its env file.
+pub(crate) fn lane_peers(lane: &str) -> std::collections::BTreeSet<String> {
+    parse_env(lane)
+        .get("CC_PEERS")
+        .map(|v| {
+            v.split(',')
+                .map(|t| t.trim().trim_matches('"').to_lowercase())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// True if both lanes name each other in `CC_PEERS` (bilateral).
+/// Neither side can unilaterally open a channel to the other.
+pub(crate) fn bilateral_peers(a: &str, b: &str) -> bool {
+    let ap = lane_peers(a);
+    if !ap.contains(&b.to_lowercase()) {
+        return false;
+    }
+    let bp = lane_peers(b);
+    bp.contains(&a.to_lowercase())
+}
+
 /// Why a worker-to-worker send is allowed, or `Err(reason)` if it is not.
 ///
 /// Worker-origin input stays inside a shared group. Owner input remains direct.
@@ -28914,6 +28938,9 @@ pub(crate) fn cross_group_policy_ok(origin: &str, target: &str) -> Result<&'stat
     }
     if speaks_for_owner(origin) {
         return Ok("admin-group");
+    }
+    if bilateral_peers(origin, target) {
+        return Ok("bilateral-peers");
     }
     // ISOLATED TARGET (AMUX-3232): a raw agent is not a peer/relay target. The
     // OWNER (empty origin) already returned above, so this refuses ONLY a PEER
@@ -29448,11 +29475,6 @@ async fn isolated_peer_refusal(
     {
         return None;
     }
-    // A worker's own Chat tab speaks for the owner (Ethan, 2026-10-08:
-    // "shouldn't chat with a worker have privileges to interact with the
-    // worker if needed?"). Its turns are started only by the owner, and the tab
-    // is part of the worker, not a peer (chat_worker.rs), so its send to its
-    // own worker is owner input relayed through that worker's tab.
     if is_admin_worker(&origin) {
         tracing::info!(origin = %origin, target = %name, measured = true, n_considered = 1,
             verdict = "isolated_send_from_admin", "an isolated worker took a send from an admin-group worker");
@@ -29462,6 +29484,9 @@ async fn isolated_peer_refusal(
         let verdict = if chat_tab_of(&origin, name) { "isolated_send_from_own_chat_tab" } else { "isolated_send_from_chat" };
         tracing::info!(origin = %origin, target = %name, measured = true, n_considered = 1,
             verdict, "an isolated worker took a send from a chat (owner input)");
+        return None;
+    }
+    if bilateral_peers(&origin, name) {
         return None;
     }
     let reason = format!(
