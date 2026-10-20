@@ -3246,6 +3246,26 @@ pub fn list_issues_quota(
     hydrate_light(conn, &kept_light, prose)
 }
 
+/// The list's rows for just these ids, under the same filters and order.
+/// Built on the list's own loader so a card it returns is exactly a card the
+/// unrestricted list would have shown; no terminal cap, since the caller named
+/// the cards. Used by the dashboard's change feed (`?ids=`).
+pub fn list_issues_by_ids(
+    conn: &Connection,
+    status_filter: &[String],
+    session_filter: &[String],
+    archived: ArchivedFilter,
+    ids: &[String],
+    prose: Prose,
+) -> rusqlite::Result<Vec<IssueRow>> {
+    let want: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let light: Vec<LightRow> = light_rows(conn, status_filter, session_filter, archived)?
+        .into_iter()
+        .filter(|r| want.contains(r.id.as_str()))
+        .collect();
+    hydrate_light(conn, &light, prose)
+}
+
 /// Pass 1 shared by the capped and quota lists: filter + sort over the
 /// no-prose columns. ONE loader on purpose — two spellings of the filter
 /// canon or the sort would drift exactly the way the predicate rule warns.

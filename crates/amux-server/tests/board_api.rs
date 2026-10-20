@@ -6786,6 +6786,75 @@ async fn count_agrees_with_the_list_and_is_not_shaped_like_one() {
     assert_eq!(a0["count"], json!(2), "2 active were seeded: {a0}");
 }
 
+/// `?ids=` answers the list's question for just the named cards, in one
+/// request. The dashboard's change feed used to GET each changed card in
+/// sequence; this returns the same slim rows the list ships, under the same
+/// filters, so an archived card drops out exactly as it does from the list.
+#[tokio::test]
+async fn ids_returns_the_lists_rows_for_just_those_cards() {
+    let (app, _dir) = app();
+    let mut ids = Vec::new();
+    for i in 0..4 {
+        let c = create(&app, json!({"title": format!("ids{i}"), "session": "lane"})).await;
+        ids.push(c["id"].as_str().expect("created id").to_string());
+    }
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{}", ids[3]), Some(json!({"archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden", "authorized_by": "lifecycle fixture owner"}))).await;
+    assert_eq!(st, StatusCode::OK, "archive failed: {v}");
+
+    let q = format!("/api/board?archived=0&slim=1&ids={},{},{},NOPE-1", ids[0], ids[3], ids[2]);
+    let (st, h, rows) = send(&app, "GET", &q, None).await;
+    assert_eq!(st, StatusCode::OK, "{rows}");
+    assert_eq!(hdr(&h, "x-amux-ids-asked"), "4", "the filter must say it ran");
+    assert!(h.get("x-amux-params-ignored").is_none(), "ids must be a recognised param");
+    let mut got: Vec<&str> = rows.as_array().expect("bare array").iter().map(|r| r["id"].as_str().unwrap()).collect();
+    got.sort();
+    let mut want = vec![ids[0].as_str(), ids[2].as_str()];
+    want.sort();
+    assert_eq!(got, want, "only the named, still-listed cards come back");
+
+    // Same row shape as the list itself, byte for byte.
+    let (_, _, full) = send(&app, "GET", "/api/board?archived=0&slim=1", None).await;
+    let from_list = full.as_array().unwrap().iter().find(|r| r["id"] == json!(ids[0])).unwrap();
+    let from_ids = rows.as_array().unwrap().iter().find(|r| r["id"] == json!(ids[0])).unwrap();
+    assert_eq!(from_ids, from_list);
+
+    // Without ids, no header, and the whole list answers.
+    let (_, h, all) = send(&app, "GET", "/api/board?archived=0&slim=1", None).await;
+    assert!(h.get("x-amux-ids-asked").is_none());
+    assert_eq!(all.as_array().unwrap().len(), 3);
+}
+
+/// The change feed's cursor is the log's head as of this read. It came from
+/// the poller's in-memory copy, which trails writes by a 200ms tail and is 0
+/// after a restart (and in this harness, which runs no poller), so a client
+/// seeded right after a write got 0 and had no change feed at all.
+#[tokio::test]
+async fn change_cursor_is_the_logs_head_without_waiting_for_the_poller() {
+    let (app, _dir) = app();
+    let (_, _, before) = send(&app, "GET", "/api/board/changes?since_seq=0&limit=1", None).await;
+    let c0 = before["cursor"].as_i64().expect("cursor");
+    create(&app, json!({"title": "cursor a", "session": "lane"})).await;
+    create(&app, json!({"title": "cursor b", "session": "lane"})).await;
+    let (_, _, after) = send(&app, "GET", "/api/board/changes?since_seq=0&limit=1", None).await;
+    let c1 = after["cursor"].as_i64().expect("cursor");
+    assert!(c1 >= c0 + 2, "two writes must move the cursor at once: {c0} -> {c1}");
+    let (_, _, tail) = send(&app, "GET", &format!("/api/board/changes?since_seq={c1}"), None).await;
+    assert_eq!(tail["changes"], json!([]), "nothing lies past the head: {tail}");
+
+    // Edits that change neither status nor title reach the feed too. Archiving
+    // and a description edit used to write no change row, so the board never
+    // heard about them.
+    let (_, _, list) = send(&app, "GET", "/api/board?session=lane", None).await;
+    let id = list[0]["id"].as_str().expect("id").to_string();
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({"desc": "edited"}))).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({"archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden", "authorized_by": "lifecycle fixture owner"}))).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (_, _, fed) = send(&app, "GET", &format!("/api/board/changes?since_seq={c1}"), None).await;
+    let hits = fed["changes"].as_array().expect("changes").iter().filter(|c| c["row_id"] == json!(id)).count();
+    assert!(hits >= 2, "a desc edit and an archive must each reach the feed: {fed}");
+}
+
 /// AMUX-3715: archiving a card that carries a live trigger says so, and one
 /// without a trigger does not.
 ///

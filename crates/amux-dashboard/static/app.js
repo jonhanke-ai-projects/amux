@@ -46472,33 +46472,40 @@ async function _cdcBoardUpdate() {
     const changes = data.changes || [];
     if (data.cursor) _cdcSeq = data.cursor;
     if (!changes.length) return;
-    // For each changed row_id, refetch that single card and patch boardItems
+    // `cursor` is the log's head, so a page cut at the limit would skip the
+    // rest. A burst that big is cheaper as one full read anyway.
+    if (changes.length >= 500) { fetchBoard(); return; }
+    // Patch the changed cards from ONE list read per 100 ids. This used to GET
+    // each card in sequence, so a busy minute cost a round trip per card. The
+    // ids read runs the board poll's own filters, so a card that does not come
+    // back has left this view (archived, deleted) and is dropped here too.
     const ids = [...new Set(changes.map(c => c.row_id))];
-    let needsFullFetch = false;
-    for (const id of ids) {
-      const op = changes.filter(c => c.row_id === id).pop();
-      if (op && op.operation === 'DELETE') {
-        boardItems = boardItems.filter(item => item.id !== id);
-        _boardSnapshotEpoch++;
-        continue;
-      }
-      try {
-        const cr = await fetch(API + '/api/board/' + encodeURIComponent(id));
-        if (cr.status === 404) {
-          boardItems = boardItems.filter(item => item.id !== id);
-          _boardSnapshotEpoch++;
-          continue;
-        }
-        if (!cr.ok) { needsFullFetch = true; continue; }
-        const card = await cr.json();
-        if (!card || !card.id) { needsFullFetch = true; continue; }
-        const idx = boardItems.findIndex(item => item.id === card.id);
-        if (idx >= 0) { boardItems[idx] = card; }
-        else { boardItems.push(card); }
-        _boardSnapshotEpoch++;
-      } catch (e) { needsFullFetch = true; }
+    const t0 = performance.now();
+    const gone = new Set(ids.filter(id => (changes.filter(c => c.row_id === id).pop() || {}).operation === 'DELETE'));
+    const want = ids.filter(id => !gone.has(id));
+    const fresh = new Map();
+    for (let i = 0; i < want.length; i += 100) {
+      const chunk = want.slice(i, i + 100);
+      const cr = await fetch(API + '/api/board?archived=0&slim=1&ids=' + chunk.map(encodeURIComponent).join(','));
+      // An older server drops the param and answers with the whole board.
+      if (!cr.ok || !cr.headers.get('x-amux-ids-asked')) { fetchBoard(); return; }
+      const rows = await cr.json();
+      if (!Array.isArray(rows)) { fetchBoard(); return; }
+      for (const row of rows) if (row && row.id) fresh.set(row.id, row);
+      for (const id of chunk) if (!fresh.has(id)) gone.add(id);
     }
-    if (needsFullFetch) { fetchBoard(); return; }
+    if (gone.size) boardItems = boardItems.filter(item => !gone.has(item.id));
+    for (const [id, card] of fresh) {
+      const idx = boardItems.findIndex(item => item.id === id);
+      if (idx >= 0) boardItems[idx] = card; else boardItems.push(card);
+    }
+    _boardSnapshotEpoch++;
+    const ms = Math.round(performance.now() - t0);
+    if (ms > 2000) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ kind: 'board-cdc-patch', verdict: 'board_cdc_patch_slow', ms, n_considered: ids.length,
+          measured: true, ver: APP_VER }) }).catch(() => {});
+    }
     lastBoardJSON = JSON.stringify(boardItems);
     _cacheBoardJSON(lastBoardJSON);
     if (activeView === 'board') renderBoard();

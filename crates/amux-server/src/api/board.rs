@@ -989,7 +989,14 @@ async fn board_changes(
 
     match crate::runtime_jobs::cdc_poller::changes_since(&conn, since_seq, limit) {
         Ok(rows) => {
-            let cursor = crate::runtime_jobs::cdc_poller::last_seq();
+            // The log's head, read from the log. The poller's copy trails it by
+            // up to one 200ms tail and reads 0 right after a restart, and a
+            // client seeded with 0 has no change feed: every invalidation fell
+            // back to a full board read until some later read re-seeded it.
+            let head: i64 = conn
+                .query_row("SELECT COALESCE(MAX(seq), 0) FROM board_change_log", [], |r| r.get(0))
+                .unwrap_or(0);
+            let cursor = head.max(crate::runtime_jobs::cdc_poller::last_seq());
             Json(json!({
                 "changes": rows,
                 "cursor": cursor,
@@ -4101,6 +4108,14 @@ pub struct ListParams {
     // either changed.
     #[serde(default)]
     pub count: Option<String>,
+    // `?ids=A-1,B-2` — the same list, restricted to these cards. The dashboard's
+    // change feed names the cards that moved; it fetched each one with its own
+    // GET, in sequence, so a busy minute cost one round trip per card. Every
+    // other filter still applies, so an id that does not come back has left the
+    // caller's view (archived, deleted, out of scope) rather than gone missing.
+    // The terminal cap does not apply: a named card is a bounded question.
+    #[serde(default)]
+    pub ids: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
     #[serde(default)]
@@ -4153,6 +4168,7 @@ const RECOGNISED_BOARD_PARAMS: &[&str] = &[
     "full",
     "quota",
     "count",
+    "ids",
     "limit",
     "offset",
     "q",
@@ -4573,7 +4589,7 @@ pub async fn list_board(
                 "use_instead": format!("/api/search?q={term}"),
                 "why": "This param was silently ignored until 2026-08-11, so the full board came \
                         back looking like ranked results. Refusing loudly beats answering wrongly.",
-                "board_filters": ["status", "session", "archived", "done_limit", "all", "slim", "full", "quota", "count", "limit", "offset"],
+                "board_filters": ["status", "session", "archived", "done_limit", "all", "slim", "full", "quota", "count", "ids", "limit", "offset"],
             })),
         )
             .into_response();
@@ -4681,6 +4697,17 @@ pub async fn list_board(
         bs::Prose::Full
     };
     let quota = qp_truthy(p.quota.as_deref());
+    let ids: Option<Vec<String>> = p.ids.as_deref().map(|s| {
+        let mut v: Vec<String> = s
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    });
+    let ids_asked = ids.as_ref().map(|v| v.len());
     let store = state.store.clone();
     let list_started = std::time::Instant::now();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
@@ -4702,7 +4729,13 @@ pub async fn list_board(
         // ?quota=1 swaps the lumped cap for per-status quotas (AMUX-3503);
         // quota has no single truncation count, so it reports (0, 0) and
         // the truncation warn/headers stay silent for it.
-        let (kept, term_total, term_kept) = if quota {
+        let (kept, term_total, term_kept) = if let Some(ids) = ids.as_deref() {
+            (
+                bs::list_issues_by_ids(&conn, &status_f, &session_f, archived, ids, prose)?,
+                0,
+                0,
+            )
+        } else if quota {
             (
                 bs::list_issues_quota(
                     &conn,
@@ -4880,6 +4913,11 @@ pub async fn list_board(
     put(&mut headers, "x-amux-total", total.to_string());
     put(&mut headers, "x-amux-offset", offset.to_string());
     put(&mut headers, "x-amux-returned", items.len().to_string());
+    // Says the ids filter RAN, so a client talking to an older server (which
+    // drops the param and answers with the whole board) can tell the two apart.
+    if let Some(n) = ids_asked {
+        put(&mut headers, "x-amux-ids-asked", n.to_string());
+    }
     // BACKE-3228: announce any query params we ignored, so a filter typo cannot
     // masquerade as an empty/absent result. Non-breaking (informational header).
     if !ignored.is_empty() {
