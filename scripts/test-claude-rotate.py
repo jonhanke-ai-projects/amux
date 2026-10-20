@@ -11,6 +11,7 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["CLAUDE_ROTATE_DIR"] = tempfile.mkdtemp()
+os.environ["CLAUDE_ROTATE_USAGE_LOG"] = "off"
 os.environ["CLAUDE_ROTATE_LOG"] = os.path.join(os.environ["CLAUDE_ROTATE_DIR"], "log")
 spec = importlib.util.spec_from_file_location("rot", os.path.join(ROOT, "scripts", "claude-rotate.py"))
 rot = importlib.util.module_from_spec(spec)

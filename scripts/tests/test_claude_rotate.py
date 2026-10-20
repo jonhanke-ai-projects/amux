@@ -1,9 +1,13 @@
 """Policy tests for scripts/claude-rotate.py. Run: python3 scripts/tests/test_claude_rotate.py"""
 import datetime as dt, importlib.util, io, json, os, sys, tempfile, time, unittest
 from contextlib import redirect_stdout
+import subprocess as _sp, threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+# Some tests below patch the subprocess module itself; keep the real calls.
+REAL_RUN, REAL_POPEN = _sp.run, _sp.Popen
 
 TMP = tempfile.mkdtemp()
-os.environ.update(CLAUDE_ROTATE_DIR=TMP, CLAUDE_ROTATE_LOG=os.path.join(TMP, "log"),
+os.environ.update(CLAUDE_ROTATE_DIR=TMP, CLAUDE_ROTATE_USAGE_LOG="off", CLAUDE_ROTATE_LOG=os.path.join(TMP, "log"),
                   CLAUDE_ROTATE_CLAUDE_JSON=os.path.join(TMP, "claude.json"))
 spec = importlib.util.spec_from_file_location("cr", os.path.join(os.path.dirname(__file__), "..", "claude-rotate.py"))
 cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
@@ -310,6 +314,79 @@ class Logins(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(cr._switch("nologin@x.com", "preempt_limit"), 1)
         self.assertFalse(any(c[:2] == ["amux", "alert"] for c in calls))
+
+
+class FakeAmux(BaseHTTPRequestHandler):
+    have, posted = {}, []
+
+    def log_message(self, *a):
+        pass
+
+    def _reply(self, body):
+        data = json.dumps(body).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+    def do_GET(self):
+        self._reply({"measured": True, "accounts": [{"account": a, "latest": {"at": at}} for a, at in FakeAmux.have.items()]})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeAmux.posted.append(body)
+        self._reply({"ok": True, "recorded": True})
+
+
+class UsageLog(unittest.TestCase):
+    """Readings reach the amux DB history (POST /api/usage/accounts/readings)."""
+
+    def setUp(self):
+        cr.subprocess.run, cr.subprocess.Popen = REAL_RUN, REAL_POPEN
+        self.srv = HTTPServer(("127.0.0.1", 0), FakeAmux)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        os.environ["CLAUDE_ROTATE_AMUX_URL"] = "http://127.0.0.1:%d" % self.srv.server_port
+        cr.USAGE_LOG = "on"
+        FakeAmux.have, FakeAmux.posted = {}, []
+        open(cr.LOG, "w").close()
+
+    def tearDown(self):
+        cr.USAGE_LOG = "off"
+        os.environ.pop("CLAUDE_ROTATE_AMUX_URL", None)
+        self.srv.shutdown(); self.srv.server_close()
+
+    def verdicts(self):
+        return [json.loads(l) for l in open(cr.LOG) if l.strip()]
+
+    def test_an_accepted_reading_is_posted_with_its_observation_time(self):
+        setup({})
+        self.assertTrue(cr.record("a@x.com", five=12, five_reset=r(3), week=34, week_reset=r(90), source="usage-probe"))
+        self.assertEqual(len(FakeAmux.posted), 1)
+        body = FakeAmux.posted[0]
+        acct = cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]
+        self.assertEqual((body["account"], body["source"], body["five_hour_pct"], body["seven_day_pct"]),
+                         ("a@x.com", "usage-probe", 12, 34))
+        self.assertEqual(body["at"], dt.datetime.fromisoformat(acct["observed_at"]).timestamp())
+        self.assertEqual(body["seven_day_resets_at"], acct["seven_day"]["resets_at"])
+
+    def test_sync_backfills_only_what_the_db_lacks(self):
+        fresh = dict(acct(5, r(2), 20, r(80)), observed_at=r(0), source="usage-probe")
+        stale = dict(acct(6, r(2), 30, r(80)), observed_at=r(0), source="statusline")
+        setup({"have@x.com": fresh, "miss@x.com": stale, "never@x.com": {}})
+        FakeAmux.have = {"have@x.com": dt.datetime.fromisoformat(fresh["observed_at"]).timestamp()}
+        out = cr.usage_log_sync()
+        self.assertEqual(out["added"], ["miss@x.com"])
+        self.assertEqual([b["account"] for b in FakeAmux.posted], ["miss@x.com"])
+        v = [x for x in self.verdicts() if x["verdict"] == "claude_rotate_usage_log_backfilled"]
+        self.assertEqual(v[-1]["added"], ["miss@x.com"])
+        # Nothing to do on the next tick once the DB has it: no post, no log line.
+        FakeAmux.have["miss@x.com"] = dt.datetime.fromisoformat(stale["observed_at"]).timestamp()
+        FakeAmux.posted = []
+        self.assertEqual(cr.usage_log_sync()["added"], [])
+        self.assertEqual(FakeAmux.posted, [])
+
+    def test_unreachable_server_is_logged(self):
+        os.environ["CLAUDE_ROTATE_AMUX_URL"] = "http://127.0.0.1:9"
+        self.assertIsNone(cr.usage_log_sync())
+        self.assertEqual(self.verdicts()[-1]["verdict"], "claude_rotate_usage_log_unreachable")
 
 
 if __name__ == "__main__":

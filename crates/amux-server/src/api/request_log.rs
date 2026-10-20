@@ -2147,6 +2147,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/usage/accounts",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/usage/accounts/readings",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/alert/config",
         methods: &["GET", "PATCH"],
     },

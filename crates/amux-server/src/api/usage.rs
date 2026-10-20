@@ -373,6 +373,12 @@ fn routes_with_probes(probes: UsageProbes) -> Router<AppState> {
         .route("/attribution", axum::routing::get(get_attribution))
         // AMUX-4584: the same numbers as markdown, deterministic, for MDAI.
         .route("/report.md", axum::routing::get(get_usage_report_md))
+        // Per-account Claude usage history for the account rotator (0129).
+        .route("/accounts", axum::routing::get(super::usage_accounts::get_accounts))
+        .route(
+            "/accounts/readings",
+            axum::routing::post(super::usage_accounts::post_reading),
+        )
         .layer(Extension(probes))
         .layer(Extension(Arc::new(tokio::sync::Mutex::new(
             UsageCache::default(),
@@ -380,6 +386,7 @@ fn routes_with_probes(probes: UsageProbes) -> Router<AppState> {
 }
 
 async fn get_usage(
+    State(state): State<AppState>,
     Extension(probes): Extension<UsageProbes>,
     Extension(cache): Extension<Arc<tokio::sync::Mutex<UsageCache>>>,
 ) -> Response {
@@ -409,6 +416,11 @@ async fn get_usage(
         {
             c.last_good = Some(shaped.clone());
             c.last_good_at = Some(Instant::now());
+        }
+        // Keep a per-account history of every live probe, for the rotator.
+        if let Some(reading) = super::usage_accounts::reading_from_usage(&shaped) {
+            let state = state.clone();
+            tokio::spawn(async move { super::usage_accounts::record_logged(&state, reading).await });
         }
         c.data = Some(shaped);
         c.at = Some(Instant::now());

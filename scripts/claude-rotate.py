@@ -16,6 +16,8 @@ Subcommands:
                  accounts, email sign-in link read from the forwarded inbox.
   record EMAIL 5H 5H_RESET WK WK_RESET   Save a reading by hand (ISO times).
   status         Show the current account, its reading and the last switch.
+  history [H]    Per-account usage history from the amux DB over the last H
+                 hours (default 168): latest reading, burn rate, hours to full.
   on | off       Opt this machine in to (or out of) automatic switching.
 
 Automatic switching is opt-in and off by default: tick only switches when
@@ -24,7 +26,10 @@ CLAUDE_ROTATE_ENABLE=1)
 or CLAUDE_ROTATE_ENABLED=1. CLAUDE_ROTATE_ENABLED=0 or a `paused` file there
 turns it off even when enabled. Manual `switch EMAIL` always works.
 
-State lives in ~/.amux/claude-usage (accounts.json, state.json). Every decision
+State lives in ~/.amux/claude-usage (accounts.json, state.json). Every
+accepted reading is also stored in the amux DB (table claude_account_usage,
+GET /api/usage/accounts); each tick backfills any account the DB is behind on.
+Every decision
 is one JSON line in ~/.amux/logs/claude-rotate.log with a `verdict`.
 
 Policy, readings for an account that is not logged in can only fall, so a
@@ -259,7 +264,89 @@ def record(email, five=None, five_reset=None, week=None, week_reset=None, source
         acct["observed_at"] = now().isoformat(timespec="seconds")
         acct["source"] = source
         save(ACCOUNTS, data)
-        return True
+        snapshot = dict(acct)
+    # Status lines render constantly; never make one wait on the server.
+    usage_log_post(email, snapshot, wait=source != "statusline")
+    return True
+
+
+USAGE_LOG_PATH = "/api/usage/accounts"
+# "off" stops writes to the amux DB history (the tests set it).
+USAGE_LOG = os.environ.get("CLAUDE_ROTATE_USAGE_LOG", "on")
+
+
+def _observed_epoch(acct):
+    try:
+        return dt.datetime.fromisoformat(acct["observed_at"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def usage_log_body(email, acct):
+    """One accounts.json entry as a reading for the amux DB history
+    (POST /api/usage/accounts/readings, table claude_account_usage)."""
+    five, week = acct.get("five_hour") or {}, acct.get("seven_day") or {}
+    return {
+        "account": email,
+        "source": acct.get("source") or "unknown",
+        "at": _observed_epoch(acct),
+        "five_hour_pct": five.get("used_percentage"),
+        "five_hour_resets_at": five.get("resets_at"),
+        "seven_day_pct": week.get("used_percentage"),
+        "seven_day_resets_at": week.get("resets_at"),
+        "plan": acct.get("plan"),
+    }
+
+
+def _amux_base():
+    return os.environ.get("CLAUDE_ROTATE_AMUX_URL") or os.environ.get("AMUX_URL") or subprocess.run(
+        ["amux", "url"], capture_output=True, text=True, timeout=10).stdout.strip()
+
+
+def usage_log_post(email, acct, wait=True):
+    """Add a reading to the amux DB history. Returns the server's reply when
+    waited for, else None. A missed post is caught by usage_log_sync on the
+    next tick, so this never raises."""
+    body = usage_log_body(email, acct)
+    if USAGE_LOG == "off" or body["five_hour_pct"] is None and body["seven_day_pct"] is None:
+        return None
+    try:
+        cmd = ["curl", "-sk", "--max-time", "5", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", json.dumps(body), _amux_base() + USAGE_LOG_PATH + "/readings"]
+        if not wait:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return None
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        return json.loads(out) if out.strip() else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def usage_log_sync():
+    """Make the amux DB history hold every account's latest reading. Posts the
+    ones it lacks and logs what it did, so a server that was down or a dropped
+    status-line post is repaired and visible in the log."""
+    if USAGE_LOG == "off":
+        return None
+    try:
+        out = subprocess.run(["curl", "-sk", "--max-time", "10", _amux_base() + USAGE_LOG_PATH + "?since_h=2160"],
+                             capture_output=True, text=True, timeout=15).stdout
+        have = {a["account"]: a["latest"]["at"] for a in json.loads(out)["accounts"]}
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as e:
+        log("claude_rotate_usage_log_unreachable", measured=False, why_unmeasured=str(e)[:200] or "empty reply")
+        return None
+    accounts = load(ACCOUNTS, {"accounts": {}})["accounts"]
+    added, failed = [], []
+    for email, acct in sorted(accounts.items()):
+        at = _observed_epoch(acct)
+        if at is None or (email in have and have[email] >= at - 1):
+            continue
+        reply = usage_log_post(email, acct)
+        (added if reply and reply.get("ok") else failed).append(email)
+    if added or failed:
+        log("claude_rotate_usage_log_backfilled", measured=True, n_considered=len(accounts),
+            added=added, failed=failed)
+    return {"added": added, "failed": failed, "n_considered": len(accounts)}
 
 
 REPORTERS = os.path.join(DIR, "reporters")
@@ -696,6 +783,7 @@ def cmd_tick():
         install_drift()
     except Exception as e:
         log("claude_rotate_install_drift", measured=False, why_unmeasured=str(e)[:200])
+    usage_log_sync()
     if not enabled():
         print(log("claude_rotate_disabled", measured=False,
                   why_unmeasured="automatic switching is opt-in; run `claude-rotate.py on` to enable"))
@@ -1583,6 +1671,13 @@ def main(argv):
         _, _, email, f, fr, w, wr = argv
         record(email, float(f), fr or None, float(w), wr or None, source="manual")
         return 0
+    if cmd == "history":
+        hours = argv[2] if len(argv) > 2 else "168"
+        out = subprocess.run(["curl", "-sk", "--max-time", "10",
+                              _amux_base() + USAGE_LOG_PATH + "?since_h=" + hours],
+                             capture_output=True, text=True).stdout
+        print(out)
+        return 0 if out.strip() else 1
     if cmd == "status":
         state = load(STATE, {})
         email = current_email()
