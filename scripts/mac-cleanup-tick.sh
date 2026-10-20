@@ -300,6 +300,16 @@ LANE_TMP_WALK_S=${AMUX_CLEANUP_LANE_TMP_WALK_S:-20}
 VM_IMAGE_PRUNE_CMD=${AMUX_CLEANUP_VM_IMAGE_PRUNE_CMD:-vm_image_prune_by_tag colima-PROFILE AGE}
 VM_DOCKER=${AMUX_CLEANUP_VM_DOCKER:-docker}
 VM_STEP_S=${AMUX_CLEANUP_VM_STEP_S:-120}
+# Every running container in a colima VM gets a CPU cap if it has none (Mac hog
+# RCA 20261020-115243). colima goal-shared has 12 vCPUs, and an uncapped
+# container's Ray and MVS shard reached ~10 of them: the guest's own load was
+# 10-12 and the VM process read 500-1580% on the Mac at load15 36/28. A one-off
+# `docker update --cpus 3` (the 10-19 hog card) was lost when the owning lane's
+# launcher recreated the container without --cpus, so the cap has to be reapplied
+# every tick. A container that already has a cap is left alone, whatever it is.
+# 0 turns the arm off; names in VM_CPU_CAP_EXEMPT (space separated) are skipped.
+VM_CPU_CAP=${AMUX_CLEANUP_VM_CPU_CAP:-4}
+VM_CPU_CAP_EXEMPT=${AMUX_CLEANUP_VM_CPU_CAP_EXEMPT:-}
 # Idle colima VMs under pressure (DESKT-70). On 2026-10-01 eight goal-spec lanes
 # had each started a private VM (16-32G apiece); with five running the Mac hit
 # load 116 and memory pressure 2, and the one idle VM stopped by hand freed ~80G
@@ -2428,6 +2438,40 @@ EOF
 
 # Over <cap> of build cache in docker context <ctx>, prune cache unused for
 # VM_PRUNE_CAP_AGE. Prints the measured total and a Total: line like prune.
+# Cap every running, uncapped container in docker context <ctx> at <cpus>.
+# Prints one line per container it capped or failed, then a summary line.
+vm_cap_container_cpus() { # <ctx> <cpus>
+  local ctx=$1 cpus=$2 name nano capped=0 failed=0 kept=0 exempt=0
+  while read -r name nano; do
+    [ -n "$name" ] || continue
+    name=${name#/}
+    if in_list "$name" "$VM_CPU_CAP_EXEMPT"; then exempt=$((exempt+1)); continue; fi
+    if [ "${nano:-0}" != 0 ]; then kept=$((kept+1)); continue; fi
+    if "$VM_DOCKER" --context "$ctx" update --cpus "$cpus" "$name" >/dev/null 2>&1; then
+      capped=$((capped+1)); echo "capped $name at $cpus CPUs (it had none; undo: docker --context $ctx update --cpus 0 $name) verdict=vm_container_cpu_capped"
+    else
+      failed=$((failed+1)); echo "FAILED to cap $name at $cpus CPUs verdict=vm_container_cpu_cap_failed"
+    fi
+  done < <("$VM_DOCKER" --context "$ctx" ps -q 2>/dev/null | xargs "$VM_DOCKER" --context "$ctx" inspect --format '{{.Name}} {{.HostConfig.NanoCpus}}' 2>/dev/null)
+  echo "summary capped=$capped already_capped=$kept exempt=$exempt failed=$failed"
+}
+
+cap_vm_container_cpus() { # <dry:0|1>
+  local dry=$1 p out
+  [ "$VM_CPU_CAP" != 0 ] || { echo "mac-cleanup: vm cpu caps: off (AMUX_CLEANUP_VM_CPU_CAP=0)"; return 0; }
+  local profiles; profiles=$(running_vm_profiles)
+  [ -n "$profiles" ] || { echo "mac-cleanup: vm cpu caps: no running colima VM"; return 0; }
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ "$dry" = 1 ]; then echo "mac-cleanup:   would cap uncapped containers in colima VM $p at $VM_CPU_CAP CPUs (dry run)"; continue; fi
+    out=$(export -f vm_cap_container_cpus in_list; export VM_DOCKER VM_CPU_CAP_EXEMPT; perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" bash -c 'vm_cap_container_cpus "$@"' _ "colima-$p" "$VM_CPU_CAP" 2>&1) || true
+    printf '%s\n' "$out" | grep -v '^summary ' | sed "s/^/mac-cleanup:   vm $p /"
+    echo "mac-cleanup: vm cpu caps: $p $(printf '%s\n' "$out" | grep '^summary ' | tail -1 | sed 's/^summary //') at $VM_CPU_CAP CPUs (verdict=vm_cpu_caps)"
+  done <<EOF2
+$profiles
+EOF2
+}
+
 vm_build_cache_cap() { # <ctx> <cap: NNgb>
   local ctx=$1 cap=$2 total
   total=$("$VM_DOCKER" --context "$ctx" builder du 2>/dev/null | awk '/^Total:/{print $2}' | tail -1)
@@ -2808,6 +2852,7 @@ VMS_PRUNED=0
 # superseded 9.84 GB builds a tick removed stayed allocated on the host until
 # the next hourly trim.
 [ "${AMUX_CLEANUP_VM_IMAGE_PRUNE:-1}" = 1 ] && tick_arm "vm images" && prune_vm_images "$DRY"
+[ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"
 if tick_arm "vm trim"; then
   if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
 fi
