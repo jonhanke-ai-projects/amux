@@ -9936,3 +9936,10 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .file-overlay-body.md-content, #peek-split-files .file-overlay-body.md-content { font-size: 0.98rem; padding: 14px; }
 }
 .file-overlay-body.md-content ul ul { list-style-type: disc; }
+
+/* Host pressure dialog: each suggested fix with its command and actions. */
+.host-fix-list li p { margin: 0 0 6px; }
+.host-fix-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.host-fix-cmd { flex: 1 1 220px; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.75rem;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-control); padding: 6px 8px; }
+@media (max-width: 600px) { .host-fix-row .btn { min-height: 44px; } }

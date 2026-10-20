@@ -10068,10 +10068,40 @@ async function refreshHostPressure() {
   pill.setAttribute('aria-label', 'Host ' + level + ': ' + (p.reasons || []).join(', '));
   pill.classList.add('show');
 }
+// What to do about it (Ethan, 2026-10-17, MSG-90406: "this should give me a
+// suggested action to run to fix it"). Built from the same sample the dialog
+// shows: the biggest consumers first, each with the one step that addresses
+// it. Workers get a Pause button; anything outside amux gets a command to
+// copy, because amux does not stop processes it does not own.
+function _hostPressureSuggestions(p) {
+  const u = p.utilization || {};
+  const cores = x => (x / 100).toFixed(1) + ' cores';
+  const out = [];
+  (u.workers || []).filter(w => w.cpu_percent >= 150).sort((a, b) => b.cpu_percent - a.cpu_percent).slice(0, 2).forEach(w => out.push({
+    cpu: w.cpu_percent, text: 'Worker ' + w.name + ' is using ' + cores(w.cpu_percent) + '. Pause it if it can wait.',
+    cmd: 'amux pause ' + w.name, pause: w.name }));
+  (u.top_unattributed || []).filter(o => o.cpu_percent >= 100).slice(0, 3).forEach(o => {
+    const prog = (o.command || '').split('/').pop().slice(0, 60) || 'pid ' + o.root_pid;
+    if (o.kind === 'vm') out.push({ cpu: o.cpu_percent, text: 'A virtual machine (Docker or another VM) is using ' + cores(o.cpu_percent)
+      + '. Stop the containers you are not using.', cmd: 'docker ps --format "{{.Names}}  {{.Status}}"   # then: docker stop <name>' });
+    else if (o.kind === 'detached' || o.kind === 'apps') out.push({ cpu: o.cpu_percent, text: (o.kind === 'apps' ? 'The app ' : 'A process no worker owns, ')
+      + prog + ', is using ' + cores(o.cpu_percent) + '. Lower its priority, or quit it if you do not need it.', cmd: 'renice -n 10 -p ' + o.root_pid });
+  });
+  out.sort((a, b) => b.cpu - a.cpu);
+  if (!out.length && p.level && p.level !== 'ok') out.push({ text: 'Nothing single stands out: the load is spread across many small processes. See the full split.', cmd: 'amux resources' });
+  return out;
+}
+
 function showHostPressure() {
   const p = _hostPressure || {};
   const r = p.readings || {};
   let html = '<ul class="chip-detail-list">' + ((p.reasons || []).map(x => '<li>' + esc(x) + '</li>').join('') || '<li>No pressure.</li>') + '</ul>';
+  const fixes = _hostPressureSuggestions(p);
+  if (fixes.length) html += '<h4>Suggested fix</h4><ul class="chip-detail-list host-fix-list">' + fixes.map(f =>
+    '<li><p>' + esc(f.text) + '</p><div class="host-fix-row"><code class="host-fix-cmd">' + esc(f.cmd) + '</code>'
+    + '<button class="btn btn-sm" data-host-fix-copy="' + esc(f.cmd) + '">Copy</button>'
+    + (f.pause ? '<button class="btn btn-sm primary" data-host-fix-pause="' + esc(f.pause) + '">Pause worker</button>' : '')
+    + '</div></li>').join('') + '</ul>';
   html += '<p class="ui-help">Load ' + (r.load5 != null ? r.load5.toFixed(1) : '?') + ' on ' + (r.ncpu || '?') + ' cores · memory level '
     + (r.mem_level ?? '?') + ' · ' + (r.disk_free_gb != null ? Math.round(r.disk_free_gb) + ' GiB free' : 'disk ?') + '</p>';
   if (p.level === 'critical') html += '<p>Automated dispatch, schedules and worker starts are paused until this eases. Your own actions are not affected.</p>';
@@ -10096,6 +10126,18 @@ function showHostPressure() {
   if (held.length) html += '<h4>Deferred automated ticks</h4><p class="ui-help">' + held.map(([k, v]) => esc(k) + ' ' + v).join(' · ') + '</p>';
   _chipDetailModal('host-pressure-detail', 'Host ' + (p.level || 'unknown'), p.measured === false ? (p.why_unmeasured || 'not measured') : '', html);
 }
+document.addEventListener('click', e => {
+  const copy = e.target.closest?.('[data-host-fix-copy]');
+  if (copy) {
+    e.stopPropagation();
+    const cmd = copy.dataset.hostFixCopy;
+    (navigator.clipboard ? navigator.clipboard.writeText(cmd) : Promise.reject())
+      .then(() => showToast('Copied: ' + cmd), () => showToast('Copy failed; select the command and copy it'));
+    return;
+  }
+  const pause = e.target.closest?.('[data-host-fix-pause]');
+  if (pause) { e.stopPropagation(); pause.disabled = true; pauseWorker(pause.dataset.hostFixPause); }
+});
 setInterval(refreshHostPressure, 60000);
 setTimeout(refreshHostPressure, 3000);
 // STATUS COVERAGE CHIP (MSG-69352 item 1). How many running workers have a
