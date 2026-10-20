@@ -166,6 +166,32 @@ check "the line counts it, with its verdict"          yes   "$(has "$out" 'found
 for p in "$gone" "$kept" "$named" "$other"; do if [[ "$p" =~ ^[0-9]+$ ]]; then kill "$p" 2>/dev/null || true; fi; done
 else echo "  skip: no C compiler to build a stand-in crash handler"; fi
 
+echo "4d. an orphaned multiprocessing worker is stopped, other orphans are kept (RCA memory 20261019-205313)"
+# Real python processes started by exact pid ($!), each orphaned to launchd.
+mpspawn() { local f=$1; shift; ( ( exec "$@" >/dev/null 2>&1 ) & echo $! > "$f" ); }   # not inside $(...)
+mpspawn "$FIX/mp.pid" python3 -c 'import time; time.sleep(60)  # from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=9, pipe_handle=21)' --multiprocessing-fork
+mpspawn "$FIX/py.pid" python3 -c 'import time; time.sleep(60)'
+mp=$(cat "$FIX/mp.pid"); py=$(cat "$FIX/py.pid"); sleep 0.5
+ORPHAN_PS_CMD="ps -o pid=,ppid=,uid=,etime=,args= -p $mp,$py"
+out=$(MP_ORPHAN_MIN=600; reap_orphan_mp_workers 0)
+check "control: a worker younger than the threshold is kept" yes "$(kill -0 "$mp" 2>/dev/null && echo yes || echo no)"
+out=$(MP_ORPHAN_MIN=0; reap_orphan_mp_workers 1)
+check "a dry run names it"                            yes   "$(has "$out" "orphaned multiprocessing worker pid $mp")"
+check "and stops nothing"                             yes   "$(kill -0 "$mp" 2>/dev/null && echo yes || echo no)"
+MP_ORPHAN_MIN=0 reap_orphan_mp_workers 0 > "$FIX/mp.out"; out=$(cat "$FIX/mp.out")
+check "an orphaned multiprocessing worker is stopped" no    "$(kill -0 "$mp" 2>/dev/null && echo yes || echo no)"
+check "control: an orphaned plain python is kept"     yes   "$(kill -0 "$py" 2>/dev/null && echo yes || echo no)"
+check "the line counts it, with its verdict"          yes   "$(has "$out" 'found 1, stopped 1 (verdict=mp_orphans)')"
+check "it is ledgered"                                yes   "$(grep -q "stopped	$mp	" "$STATE_DIR/mp-orphans.log" 2>/dev/null && echo yes || echo no)"
+for p in "$mp" "$py"; do if [[ "$p" =~ ^[0-9]+$ ]]; then kill "$p" 2>/dev/null || true; fi; done
+
+echo "4e. a process in a Claude session scratchpad is named by that session's worker"
+SDIR="$FIX/claude-501/-proj/0123abcd-0000-4000-8000-0123456789ab/work"; mkdir -p "$SDIR"
+( ( cd "$SDIR" && exec sleep 30 ) & echo $! > "$FIX/s.pid" ); spid=$(cat "$FIX/s.pid"); sleep 0.3
+check "an orphan in a live session's scratchpad is named by its worker" "worker-x (orphan, by path)" "$(AMUX_CLEANUP_SESSION_MAP="0123abcd-0000-4000-8000-0123456789ab worker-x" lane_for_pid "$spid" "999999 amux-other")"
+check "control: an unknown session id has no lane"    "no lane" "$(AMUX_CLEANUP_SESSION_MAP="ffffffff-0000-4000-8000-0123456789ab worker-x" lane_for_pid "$spid" "999999 amux-other")"
+if [[ "$spid" =~ ^[0-9]+$ ]]; then kill "$spid" 2>/dev/null || true; fi
+
 echo "5. report-only probes: launchd, network, thermal"
 printf 'PID\tStatus\tLabel\n-\t0\tcom.amux.ok\n-\t78\tcom.amux.broken\n123\t1\tcom.amux.running\n-\t1\tcom.apple.noise\n' > "$FIX/launchd"
 LAUNCHD_LIST_CMD="cat $FIX/launchd"; out=$(check_launchd_failing)
@@ -190,8 +216,8 @@ HEALTH_PROBES=off; out=$(system_health 0)
 check "nothing probed"                                ""    "$(cat "$FIX/probe.hits")"
 check "and it says the probes are off"                yes   "$(has "$out" 'probes off')"
 HEALTH_PROBES=on; system_health 0 >/dev/null
-# orph twice: leftover test processes and orphaned crash handlers both read the process list.
-check "control: switched on, every probe runs"        "cpu orph orph lim net" "$(tr '\n' ' ' < "$FIX/probe.hits" | sed 's/ $//')"
+# orph three times: leftover test processes, multiprocessing orphans and crash handlers all read the process list.
+check "control: switched on, every probe runs"        "cpu orph orph orph lim net" "$(tr '\n' ' ' < "$FIX/probe.hits" | sed 's/ $//')"
 
 echo "7. the whole tick carries the section, its constraints and its counters (macOS only)"
 if [ "$(uname)" = Darwin ]; then

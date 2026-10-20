@@ -517,6 +517,11 @@ HEALTH_PS_CMD=${AMUX_CLEANUP_HEALTH_PS_CMD:-ps -Ao pid=,ppid=,uid=,pcpu=,etime=,
 # 2026-10-12, 99 fake kubectl stubs from mixpeek tests had sat 4-22h this way.
 TEST_ORPHAN_MIN=${AMUX_CLEANUP_TEST_ORPHAN_MIN:-120}
 ORPHAN_PS_CMD=${AMUX_CLEANUP_ORPHAN_PS_CMD:-ps -Ao pid=,ppid=,uid=,etime=,args=}
+# Python multiprocessing workers whose parent has exited (ppid 1) and that are
+# older than MP_ORPHAN_MIN. A spawn worker reports only to its parent, so with
+# the parent gone it can never deliver a result; it only holds memory. Mac
+# memory RCA 20261019-205313: four pgimp workers sat 5 days this way, ~6.6G.
+MP_ORPHAN_MIN=${AMUX_CLEANUP_MP_ORPHAN_MIN:-360}
 # Kernel limits: open files, this user's processes, inodes, zombies. Over
 # LIMITS_PCT of a limit is a constraint and escalates; zombies are reported.
 LIMITS_PCT=${AMUX_CLEANUP_LIMITS_PCT:-85}
@@ -1010,6 +1015,27 @@ reap_test_orphans() { # <dry:0|1>
   [ -z "$ex" ] || echo "mac-cleanup:   e.g. $ex (full list in $STATE_DIR/test-orphans.log)"
 }
 
+reap_orphan_mp_workers() { # <dry:0|1>
+  local DRY=${1:-0} pid ppid puid et args sec found=0 stopped=0
+  while read -r pid ppid puid et args; do
+    [ "$ppid" = 1 ] && [ "$puid" = "$(id -u)" ] || continue
+    case "$args" in *"from multiprocessing.spawn import spawn_main"*"--multiprocessing-fork"*) ;; *) continue ;; esac
+    sec=$(etime_secs "$et"); case "$sec" in ''|*[!0-9]*) continue ;; esac
+    [ "$sec" -ge $(( MP_ORPHAN_MIN * 60 )) ] || continue
+    found=$((found+1))
+    echo "mac-cleanup:   orphaned multiprocessing worker pid $pid age $et, lane $(lane_for_pid "$pid")"
+    [ "$DRY" = 1 ] && continue
+    [ "$(ps -o args= -p "$pid" 2>/dev/null)" = "$args" ] || continue   # still the same process
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.3; kill -0 "$pid" 2>/dev/null && { sleep 1; kill -KILL "$pid" 2>/dev/null; }
+    if kill -0 "$pid" 2>/dev/null; then echo "mac-cleanup: FAILED to stop orphaned multiprocessing worker pid=$pid"; continue; fi
+    stopped=$((stopped+1)); mkdir -p "$STATE_DIR"
+    printf '%s\tstopped\t%s\t%s\t%s\n' "$(date '+%F %T')" "$pid" "$et" "${args:0:300}" >> "$STATE_DIR/mp-orphans.log"
+  done < <($ORPHAN_PS_CMD 2>/dev/null)
+  MP_ORPHANS_STOPPED=$stopped
+  echo "mac-cleanup: orphaned multiprocessing workers (ppid 1, over ${MP_ORPHAN_MIN}m): found ${found}, stopped ${stopped}$( [ "$DRY" = 1 ] && [ "$found" -gt 0 ] && echo " (dry run)") (verdict=mp_orphans)"
+}
+
 # An app's crash handler left behind by an update: parent gone (ppid 1) and its
 # own executable no longer on disk. It keeps forking children that exec that
 # missing path and die before exec (SIGTRAP), one crash report each. Mac crashes
@@ -1334,7 +1360,7 @@ for o in m.get("top_unattributed") or []:
 system_health() { # <dry:0|1>
   HEALTH_VERDICTS=""; CPU_RESTARTED=0; TEST_ORPHANS_STOPPED=0; CRASH_PRUNED=0
   if [ "$HEALTH_PROBES" = off ]; then echo "mac-cleanup: system health: probes off (AMUX_CLEANUP_HEALTH_PROBES=off)"; return 0; fi
-  check_cpu_hogs "$1"; reap_test_orphans "$1"; reap_orphan_crash_handlers "$1"; check_limits; check_crash_reports "$1"
+  check_cpu_hogs "$1"; reap_test_orphans "$1"; reap_orphan_mp_workers "$1"; reap_orphan_crash_handlers "$1"; check_limits; check_crash_reports "$1"
   check_launchd_failing; check_network; check_thermal; check_agent_volume; check_utilization "$1"; check_self_runs
   HEALTH_VERDICTS=$(printf '%s\n' "$HEALTH_VERDICTS" | grep . || true)
 }
@@ -1970,17 +1996,29 @@ lane_for_pid() { # <pid> [pane map text]
 # (the workspace-isolation TMPDIR) or <repo>/.worktrees/<w>. Mac RCA
 # 20261019-105318: mxp-gs12's prep.py held 954% CPU and 7.7G as "no lane".
 # Printed as "<w> (orphan, by path)" so a reader knows it was inferred.
+# "<session-uuid> <worker>" for every live Claude worker, from its own argv
+# (--resume <uuid> ... --name <worker>). Seam: AMUX_CLEANUP_SESSION_MAP.
+claude_session_map() {
+  if [ "${AMUX_CLEANUP_SESSION_MAP+set}" = set ]; then printf '%s\n' "$AMUX_CLEANUP_SESSION_MAP"; return 0; fi
+  ps -Ao args= 2>/dev/null | sed -nE 's/.*--resume ([0-9a-f-]{36}).* --name ([A-Za-z0-9._-]+).*/\1 \2/p'
+}
 lane_by_path() { # <pid>
   local cmd cwd w
   cmd=$(ps -o command= -p "$1" 2>/dev/null) || return 1
   cwd=$(lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
   # lsof reports the resolved cwd (/private/var for /var), so match both spellings.
-  w=$(printf '%s\n%s\n' "$cwd" "$cmd" | ROOT="${LANE_TMP_ROOT%/}" ROOTP="$(cd -P "$LANE_TMP_ROOT" 2>/dev/null && pwd)" python3 -c '
+  # A Claude session scratchpad (claude-<uid>/<project>/<session-uuid>/) names
+  # the worker whose live session it is (Mac memory RCA 20261019-205313: four
+  # 5-day-old orphans under mxp-gs12's scratchpad read "no lane").
+  w=$(printf '%s\n%s\n' "$cwd" "$cmd" | SESSMAP="$(claude_session_map)" ROOT="${LANE_TMP_ROOT%/}" ROOTP="$(cd -P "$LANE_TMP_ROOT" 2>/dev/null && pwd)" python3 -c '
 import os, re, sys
 root = "(?:%s)" % "|".join(re.escape(r) for r in {os.environ["ROOT"], os.environ.get("ROOTP") or os.environ["ROOT"]})
+sess = dict(l.split()[:2] for l in os.environ.get("SESSMAP", "").splitlines() if len(l.split()) >= 2)
 for line in sys.stdin:
     m = re.search(root + r"/([A-Za-z0-9._-]+)(/|\s|$)", line) or re.search(r"/\.worktrees/([A-Za-z0-9._-]+)(/|\s|$)", line)
     if m: print(m.group(1)); break
+    m = re.search(r"/claude-[0-9]+/[^/\s]+/([0-9a-f-]{36})(/|\s|$)", line)
+    if m and m.group(1) in sess: print(sess[m.group(1)]); break
 ' 2>/dev/null)
   [ -n "$w" ] || return 1
   printf '%s (orphan, by path)' "${w#amux-}"
