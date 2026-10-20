@@ -9943,3 +9943,22 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .host-fix-cmd { flex: 1 1 220px; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.75rem;
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-control); padding: 6px 8px; }
 @media (max-width: 600px) { .host-fix-row .btn { min-height: 44px; } }
+
+/* Composer resize grip (top-left corner of the peek's message box): drag up
+   to make the box taller. A user-set height becomes the floor; content can
+   still grow it, to 70% of the screen. */
+.send-input.user-sized { min-height: var(--composer-h, 44px); max-height: 70dvh; }
+.composer-grip {
+  position: absolute; top: -7px; left: -7px; width: 18px; height: 18px; z-index: 4;
+  cursor: ns-resize; touch-action: none; border-radius: 50%;
+  background:
+    linear-gradient(135deg, transparent 38%, var(--dim) 38%, var(--dim) 46%, transparent 46%,
+      transparent 58%, var(--dim) 58%, var(--dim) 66%, transparent 66%);
+  opacity: 0.55;
+}
+.composer-grip:hover, .composer-grip.dragging { opacity: 1; background-color: var(--card); }
+@media (max-width: 600px) {
+  /* A 44px target around a small visible grip. */
+  .composer-grip { width: 22px; height: 22px; top: -11px; left: -11px; }
+  .composer-grip::before { content: ''; position: absolute; inset: -11px; }
+}

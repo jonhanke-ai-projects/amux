@@ -3132,6 +3132,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset();_draftSaveDebounced(_peekComposerTarget(),this.value)" onkeydown="slashAcKeydown(event)"
             onbeforeinput="slashAcBeforeInput(event)"
             onpaste="handlePeekPaste(event)"></textarea>
+          <div class="composer-grip" id="peek-composer-grip" role="separator" aria-orientation="horizontal" aria-label="Drag to resize the message box (double-click to reset)" title="Drag to resize · double-click to reset"></div>
           <button type="button" class="peek-input-expand" id="peek-input-expand" title="Expand to full screen" onclick="_expandPeekInput()">&#x26F6;</button>
           <div id="slash-ac-list" class="ac-list slash-ac"></div>
         </div>
