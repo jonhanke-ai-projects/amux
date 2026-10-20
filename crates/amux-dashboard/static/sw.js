@@ -19,8 +19,6 @@ const CDN_URLS = [
   'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css',
   'https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js',
   'https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js',
-  'https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js',
-  'https://cdn.jsdelivr.net/npm/quilljs-markdown@latest/dist/quilljs-markdown.js',
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js',
   'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
   'https://cdn.jsdelivr.net/npm/motion@11.11.17/dist/motion.min.js',

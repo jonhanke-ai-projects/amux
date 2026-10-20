@@ -26968,6 +26968,45 @@ function _loadScriptOnce(src) {
   });
 }
 
+function _loadStyleOnce(href) {
+  if (document.querySelector('link[href="' + href + '"]')) return;
+  const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; l.crossOrigin = 'anonymous';
+  document.head.appendChild(l);
+}
+// View-only libraries, loaded on first use rather than on every page load.
+// Scripts within one entry load in order. The service worker still precaches
+// every URL here, so a lazy load works offline once the app is installed.
+const _LAZY_LIBS = {
+  chart: { js: ['https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'], ready: () => typeof Chart !== 'undefined' },
+  xlsx: { js: ['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'], ready: () => !!window.XLSX },
+  gridstack: { css: ['https://cdn.jsdelivr.net/npm/gridstack@7/dist/gridstack.min.css'],
+    js: ['https://cdn.jsdelivr.net/npm/gridstack@7/dist/gridstack-all.js'], ready: () => !!window.GridStack },
+  leaflet: { css: ['https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css',
+      'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css'],
+    js: ['https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js'],
+    ready: () => typeof L !== 'undefined' },
+  fullcalendar: { js: ['https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'], ready: () => !!window.FullCalendar },
+};
+const _lazyLibLoads = {};
+function _lazyLib(name) {
+  const lib = _LAZY_LIBS[name];
+  if (lib.ready()) return Promise.resolve();
+  if (_lazyLibLoads[name]) return _lazyLibLoads[name];
+  const t0 = performance.now();
+  (lib.css || []).forEach(_loadStyleOnce);
+  return _lazyLibLoads[name] = Promise.all(lib.js.map(_loadScriptOnce)).then(() => {
+    if (!lib.ready()) throw new Error(name + ' loaded but did not define its global');
+  }).catch(e => {
+    // A failed load must be retryable on the next open and visible to a sweep.
+    delete _lazyLibLoads[name];
+    lib.js.forEach(src => document.querySelector('script[data-src="' + src + '"]')?.remove());
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'lazy-lib', verdict: 'lazy_lib_failed', lib: name, measured: true, n_considered: 1,
+        ms: Math.round(performance.now() - t0), error: String(e && e.message || e), ver: APP_VER }) }).catch(() => {});
+    throw e;
+  });
+}
+
 function _univerShimReact() {
   const g = window;
   if (g.ReactDOM && !g.ReactDOM.createRoot) g.ReactDOM.createRoot = c => ({ render: e => g.ReactDOM.render(e, c) });
@@ -27460,6 +27499,7 @@ async function _openXlsxPreview(path) {
     // browser and preserves merged cells, number formats and multi-sheet
     // structure via sheet_to_html (AMUX-3343, Ethan). Falls back to the
     // server-side (calamine) parse if the CDN library is unavailable (offline).
+    await _lazyLib('xlsx').catch(() => {});
     if (window.XLSX) {
       const buf = await (await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path))).arrayBuffer();
       const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
@@ -34921,6 +34961,9 @@ function _renderReportChart(id, data, period) {
 
   const _isCount = (_reportTypes[rtype]?.display === 'count');
   const _yFmt = _isCount ? (v => v.toLocaleString()) : (v => '$' + v.toFixed(0));
+  if (typeof Chart === 'undefined' && labels.length) {
+    _lazyLib('chart').then(() => _renderReportChart(id, data, period), () => {});
+  }
   if (typeof Chart !== 'undefined' && labels.length) {
     _reportCharts[id] = new Chart(canvas, {
       type: 'bar',
@@ -36176,6 +36219,36 @@ function _mapSave() {
 
 function _mapInit() {
   if (!document.getElementById('map-container')) return;
+  // Leaflet loads on the first Map open. The sidebar, pins list and history
+  // panes do not need it, so they set up now; only the map itself waits, and
+  // it then draws whatever the user has opened meanwhile.
+  const leafletPending = typeof L === 'undefined';
+  if (!leafletPending) _mapCreate();
+  // On mobile the sidebar overlays the entire map; default to showing the MAP
+  // on first open this session (otherwise an empty pin list hides the map).
+  // Desktop keeps its persisted side-by-side preference.
+  if (window.innerWidth <= 600 && !_mapMobileSidebarInited) {
+    _mapMobileSidebarInited = true;
+    _mapSettings.sidebarOpen = false;
+  }
+  _mapApplySidebarState();
+  _mapRenderTags();
+  _mapRenderPins();
+  _mapRenderMarkers();
+  _mapMeAuto();
+  // Location history (AMUX-5458): the tab may have been left open; draw it now
+  // that the map exists.
+  if (typeof _mapTab !== 'undefined' && _mapTab === 'history') _mapSidebarTab('history');
+  if (leafletPending) _lazyLib('leaflet').then(() => {
+    if (_map) return;
+    _mapCreate();
+    _mapRenderMarkers();
+    _mapMeAuto();
+    _locDraw(true);
+    _locHeatDraw();
+  }, () => {});
+}
+function _mapCreate() {
   if (!_map) {
     _map = L.map('map-container', {
       center: [_mapSettings.defaultLat, _mapSettings.defaultLng],
@@ -36197,21 +36270,6 @@ function _mapInit() {
   } else {
     setTimeout(function() { _map.invalidateSize(); }, 50);
   }
-  // On mobile the sidebar overlays the entire map; default to showing the MAP
-  // on first open this session (otherwise an empty pin list hides the map).
-  // Desktop keeps its persisted side-by-side preference.
-  if (window.innerWidth <= 600 && !_mapMobileSidebarInited) {
-    _mapMobileSidebarInited = true;
-    _mapSettings.sidebarOpen = false;
-  }
-  _mapApplySidebarState();
-  _mapRenderTags();
-  _mapRenderPins();
-  _mapRenderMarkers();
-  _mapMeAuto();
-  // Location history (AMUX-5458): the tab may have been left open; draw it now
-  // that the map exists.
-  if (typeof _mapTab !== 'undefined' && _mapTab === 'history') _mapSidebarTab('history');
 }
 
 function _mapTagColor(tagId) {
@@ -44630,7 +44688,8 @@ function _fcGetEvents() {
 
 function _fcInit() {
   const el = document.getElementById('fc-container');
-  if (!el || !window.FullCalendar) return;
+  if (!el) return;
+  if (!window.FullCalendar) { _lazyLib('fullcalendar').then(_fcInit, () => {}); return; }
   if (_fcInstance) { _fcInstance.destroy(); _fcInstance = null; }
   // Map old view names to FullCalendar view names
   let savedView = localStorage.getItem('amux_cal_view') || 'dayGridMonth';
@@ -45208,6 +45267,7 @@ function _gpSafeId(name) {
 }
 
 function enterGridMode() {
+  if (!window.GridStack) { _lazyLib('gridstack').then(enterGridMode, () => showToast('Could not load the grid layout library')); return; }
   const view = document.getElementById('grid-view');
   // Position below the tab bar so both header and tabs remain visible
   const tabBar = document.querySelector('.tab-bar-outer');
@@ -57464,15 +57524,7 @@ function _jrnlRenderMap() {
   const container = document.getElementById('jrnl-map-container');
   if (!window.L) {
     container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">Loading map...</div>';
-    // Leaflet should already be loaded for the Map tab
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    document.head.appendChild(link);
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.onload = () => _jrnlRenderMap();
-    document.head.appendChild(script);
+    _lazyLib('leaflet').then(_jrnlRenderMap, () => { container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">Could not load the map.</div>'; });
     return;
   }
   if (_jrnlMap) { _jrnlMap.remove(); _jrnlMap = null; }

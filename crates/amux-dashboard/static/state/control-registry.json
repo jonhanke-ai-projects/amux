@@ -2154,6 +2154,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_journalInit": {
+      "kind": "command._journalInit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_journalLoad": {
+      "kind": "command._journalLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_jrnlCalDayClick": {
+      "kind": "command._jrnlCalDayClick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_jrnlDelete": {
       "kind": "command._jrnlDelete",
       "feedback_required": true,
@@ -2166,14 +2184,68 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_jrnlFilterTag": {
+      "kind": "command._jrnlFilterTag",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_jrnlNew": {
+      "kind": "command._jrnlNew",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_jrnlRenderCurrentView": {
+      "kind": "command._jrnlRenderCurrentView",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_jrnlRenderMap": {
+      "kind": "command._jrnlRenderMap",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_jrnlSave": {
+      "kind": "command._jrnlSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_jrnlSaveConfig": {
       "kind": "command._jrnlSaveConfig",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_jrnlSearch": {
+      "kind": "command._jrnlSearch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_jrnlSelect": {
+      "kind": "command._jrnlSelect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_jrnlSwitchSub": {
+      "kind": "command._jrnlSwitchSub",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_jrnlUploadMedia": {
       "kind": "command._jrnlUploadMedia",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_lazyLib": {
+      "kind": "command._lazyLib",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2246,6 +2318,12 @@
     },
     "_mapImportFile": {
       "kind": "command._mapImportFile",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapInit": {
+      "kind": "command._mapInit",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3656,6 +3734,12 @@
     },
     "_renderPeekWorkerActions": {
       "kind": "command._renderPeekWorkerActions",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_renderReportChart": {
+      "kind": "command._renderReportChart",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5334,6 +5418,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "loadReportData": {
+      "kind": "command.loadReportData",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "loadTunnelSettings": {
       "kind": "command.loadTunnelSettings",
       "feedback_required": true,
@@ -5900,6 +5990,12 @@
     },
     "setPeekTab": {
       "kind": "command.setPeekTab",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "setReportPeriod": {
+      "kind": "command.setReportPeriod",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
