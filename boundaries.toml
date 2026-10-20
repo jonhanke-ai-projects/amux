@@ -169,13 +169,26 @@ allow_examples = ["ls ~/.amux/gmail-tokens", "Read /Users/ethan/Dev/amux/docs/cr
 
 # The same credentials reached without the full path (from inside ~/.amux, or
 # through a glob such as gmail-tok*).
+#
+# The credential name must START a path segment (after /, a space, a quote, = or
+# the start of the line). Until 2026-10-20 it matched anywhere in the command, so
+# any command that also mentioned ~/.amux and contained "sb-<ref>-auth-token" (the
+# Supabase localStorage key) read as reading the owner's credentials: on one
+# afternoon it refused a commit message, a memory note and a schedule test across
+# two lanes, each reported as "Outbound email" (Ethan: "fix both in amux").
 [[boundary.deny]]
 tools = ["Bash"]
-match_all = ['\.amux\b', '(gmail-tok|gmail-oauth|gcal-tok|auth[-_]tok|worker-tok)']
+match_all = ['\.amux\b', '(?<![\w.*-])(gmail-tok|gmail-oauth|gcal-tok|auth[-_]tok|worker-tok)']
 match_none = ['^\s*((cd|ls|du|grep|rg)\b[^;&|]*(&&|\|\||;|\|)\s*)*(cd|ls|du|grep|rg)\b[^;&|]*$']
 reason = "These are the owner's credentials. Use the amux API, which holds them for you; a worker reading them can bypass every send gate."
-block_examples = ["cd ~/.amux && cat gmail-tokens/x.json", "cat ~/.amux/gmail-tok*/x.json"]
-allow_examples = ["cd ~/.amux && ls gmail-tokens", "grep -rn auth-token ~/Dev/amux/docs"]
+block_examples = ["cd ~/.amux && cat gmail-tokens/x.json", "cat ~/.amux/gmail-tok*/x.json", "cd ~/.amux; cat 'auth-token'", "cat ~/.amux/worker-tokens/x"]
+allow_examples = [
+  "cd ~/.amux && ls gmail-tokens",
+  "grep -rn auth-token ~/Dev/amux/docs",
+  "git commit -F msg.txt  # Supabase sb-*-auth-token; eval \"$(~/.amux/github-app/get-token.sh)\"",
+  "~/.amux/scripts/browser-session-check.sh ethan-tubescience https://x.ts.app/ '^sb-.*-auth-token$'",
+  "cat > ~/.claude/notes.md <<'EOF'\nnever copy a Supabase sb-abc-auth-token between browsers; see ~/.amux/logs\nEOF",
+]
 
 [[boundary.deny]]
 tools = ["Bash"]
