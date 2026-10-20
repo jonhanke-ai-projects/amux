@@ -7048,7 +7048,8 @@ pub(crate) async fn emit_event(
     idem: Option<String>,
     source: &str,
 ) {
-    emit_event_store(&state.store, session, etype, data, idem, source).await
+    emit_event_store(&state.store, session, etype, data.clone(), idem, source).await;
+    super::signals::on_event(state, etype, session, source, data.as_ref()).await;
 }
 
 /// [`emit_event`] addressed by store — see [`steer_enqueue_store`] for why

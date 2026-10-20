@@ -230,6 +230,7 @@ pub fn router_with_connector_transport(
         // blocked_on="signal:<name>"; POST /api/signals/<name> raises it,
         // clears those waits and wakes their lanes.
         .nest("/api/signals", signals::routes())
+        .nest("/api/subscriptions", signals::subscription_routes())
         // RR-0110: universal FTS5 search across cards (incl. their log lines),
         // messages, memories, workers, journal and schedules. Net-new — there
         // was never a /api/search in the Python server or the SPA.
