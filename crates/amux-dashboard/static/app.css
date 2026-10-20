@@ -9947,7 +9947,8 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 /* Composer resize grip (top-left corner of the peek's message box): drag up
    to make the box taller. A user-set height becomes the floor; content can
    still grow it, to 70% of the screen. */
-.send-input.user-sized { min-height: var(--composer-h, 44px); max-height: 70dvh; }
+.send-input.user-sized,
+#peek-overlay #peek-cmd-input.user-sized { min-height: var(--composer-h, 44px); max-height: 70dvh; }
 .composer-grip {
   position: absolute; top: -7px; left: -7px; width: 18px; height: 18px; z-index: 4;
   cursor: ns-resize; touch-action: none; border-radius: 50%;
