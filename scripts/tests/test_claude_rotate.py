@@ -222,5 +222,88 @@ class Policy(unittest.TestCase):
         with redirect_stdout(io.StringIO()): cr.cmd_statusline()
         self.assertNotIn("ethan@a.com", cr.load(cr.ACCOUNTS, {"accounts": {}})["accounts"])
 
+class Logins(unittest.TestCase):
+    """2026-10-20: a fresh account with a signed-in config folder went to the
+    browser 47 times while the browser could not be reached."""
+
+    def setUp(self):
+        self.kc = {}
+        self.saved = {k: getattr(cr, k) for k in ("_kc_read", "_kc_write", "cli_email", "probe", "resume_stranded",
+                                                   "resume_auth_lost", "ACCOUNTS_DIR", "relay_upstream")}
+        self.real_run, self.real_popen = cr.subprocess.run, cr.subprocess.Popen
+        cr._kc_read = lambda svc, acct: self.kc.get((svc, acct))
+        cr._kc_write = lambda svc, acct, v: self.kc.__setitem__((svc, acct), v) or True
+        cr.cli_email = lambda: (cr.load(cr.CLAUDE_JSON, {}).get("oauthAccount") or {}).get("emailAddress")
+        cr.probe = lambda: {"five_hour": 0}
+        cr.resume_stranded = lambda force=False: []
+        cr.resume_auth_lost = lambda: []
+        cr.ACCOUNTS_DIR = tempfile.mkdtemp()
+        cr.save(cr.STATE, {})
+        json.dump({"oauthAccount": {"emailAddress": "spent@x.com"}}, open(cr.CLAUDE_JSON, "w"))
+        self.kc[(cr.CRED_SVC, cr.CRED_ACCT)] = json.dumps({"claudeAiOauth": {"refreshToken": "spent-rt"}})
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(cr, k, v)
+        cr.subprocess.run, cr.subprocess.Popen = self.real_run, self.real_popen
+
+    def folder(self, name, email, rt="fresh-rt"):
+        d = os.path.join(cr.ACCOUNTS_DIR, name)
+        os.makedirs(d)
+        json.dump({"oauthAccount": {"emailAddress": email}}, open(os.path.join(d, ".claude.json"), "w"))
+        self.kc[(cr._folder_service(d), cr.CRED_ACCT)] = json.dumps({"claudeAiOauth": {"refreshToken": rt}})
+
+    def test_folder_service_matches_the_cli(self):
+        # Observed on this Mac: CLAUDE_CONFIG_DIR=~/.amux/claude-accounts/amux
+        # stores its login as "Claude Code-credentials-02d1cc0b".
+        self.assertEqual(cr._folder_service("/Users/ethan/.amux/claude-accounts/amux"),
+                         "Claude Code-credentials-02d1cc0b")
+
+    def test_switch_uses_the_account_folder_when_nothing_is_stored(self):
+        self.folder("usemixpeek", "fresh@x.com")
+        self.assertEqual(cr.login_coverage(["fresh@x.com", "none@x.com"]),
+                         {"fresh@x.com": "account_folder", "none@x.com": "browser"})
+        with redirect_stdout(io.StringIO()):
+            rc = cr.stored_switch("fresh@x.com", "spent@x.com", "current_exhausted", time.time())
+        self.assertEqual(rc, 0)
+        self.assertEqual(cr.cli_email(), "fresh@x.com")
+        cred = json.loads(self.kc[(cr.CRED_SVC, cr.CRED_ACCT)])
+        self.assertEqual(cred["claudeAiOauth"]["refreshToken"], "fresh-rt")
+        switched = [json.loads(l) for l in open(cr.LOG) if '"claude_rotate_switched"' in l][-1]
+        self.assertEqual((switched["to"], switched["via"]), ("fresh@x.com", "account_folder"))
+
+    def test_failed_folder_login_restores_the_previous_one(self):
+        self.folder("dead", "dead@x.com")
+        cr.probe = lambda: None
+        with redirect_stdout(io.StringIO()):
+            self.assertIsNone(cr.stored_switch("dead@x.com", "spent@x.com", "current_exhausted", time.time()))
+        self.assertEqual(cr.cli_email(), "spent@x.com")
+        self.assertEqual(json.loads(self.kc[(cr.CRED_SVC, cr.CRED_ACCT)])["claudeAiOauth"]["refreshToken"], "spent-rt")
+
+    def test_unreachable_browser_fails_fast_and_alerts_once(self):
+        calls = []
+        cr.relay_upstream = lambda: "awaiting_approval"
+        cr.subprocess.Popen = lambda args, **kw: calls.append(list(args))
+        cr.subprocess.run = lambda args, **kw: calls.append(list(args)) or type("P", (), {"returncode": 0})()
+        t = time.time()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(cr._switch("nologin@x.com", "current_exhausted"), 1)
+            self.assertEqual(cr._switch("nologin@x.com", "current_exhausted"), 1)
+        self.assertLess(time.time() - t, 5, "no 6-minute sign-in wait")
+        self.assertFalse(any("auth" in c for c in calls), "the CLI sign-in never starts: %r" % calls)
+        self.assertEqual(sum(1 for c in calls if c[:2] == ["amux", "alert"]), 1, calls)
+        self.assertNotIn("nologin@x.com", cr.load(cr.STATE, {}).get("switch_failures") or {},
+                         "the browser's outage is not the account's failure")
+
+    def test_unreachable_browser_does_not_alert_for_a_preempt(self):
+        calls = []
+        cr.relay_upstream = lambda: "disconnected"
+        cr.subprocess.Popen = lambda args, **kw: calls.append(list(args))
+        cr.subprocess.run = lambda args, **kw: calls.append(list(args)) or type("P", (), {"returncode": 0})()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(cr._switch("nologin@x.com", "preempt_limit"), 1)
+        self.assertFalse(any(c[:2] == ["amux", "alert"] for c in calls))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

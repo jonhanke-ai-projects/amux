@@ -715,6 +715,16 @@ def cmd_tick():
     current = current_email()
     rows = rank()
     state = load(STATE, {})
+    try:
+        cov = login_coverage([r["email"] for r in rows])
+        if cov != state.get("login_coverage"):
+            log("claude_rotate_login_coverage", measured=True, n_considered=len(cov), coverage=cov,
+                browser_only=sorted(e for e, v in cov.items() if v == "browser"))
+            if not os.path.exists(LOCK) or not _switch_running():
+                state["login_coverage"] = cov
+                save(STATE, state)
+    except Exception as e:
+        log("claude_rotate_login_coverage", measured=False, why_unmeasured=str(e)[:200])
     health = dead_mailboxes()
     if health is None:
         log("claude_rotate_mailbox_health_unmeasured", measured=False, why_unmeasured="GET /api/gmail/accounts failed")
@@ -1142,6 +1152,98 @@ def _kc_write(service, account, value):
     return p.returncode == 0 and "error" not in (p.stderr or "").lower()
 
 
+# Per-account config folders, each signed in on its own with CLAUDE_CONFIG_DIR
+# set. The CLI keeps such a login in the keychain under CRED_SVC plus "-" and
+# the first 8 hex digits of sha256(folder path). 2026-10-20: all seven of
+# ~/.amux/claude-accounts held logins valid to 11-11, and the rotator, reading
+# only STORE_SVC, sent ethan@usemixpeek.com (the one account with weekly
+# capacity left) to the browser 47 times over 4.5 hours while the browser
+# could not be reached.
+ACCOUNTS_DIR = os.environ.get("CLAUDE_ROTATE_ACCOUNTS_DIR", os.path.join(HOME, ".amux", "claude-accounts"))
+
+
+def _folder_service(folder):
+    import hashlib
+    return CRED_SVC + "-" + hashlib.sha256(folder.encode()).hexdigest()[:8]
+
+
+def account_folders():
+    """email -> the config folder signed in to it."""
+    out = {}
+    try:
+        names = sorted(os.listdir(ACCOUNTS_DIR))
+    except OSError:
+        return out
+    for n in names:
+        folder = os.path.join(ACCOUNTS_DIR, n)
+        acct = (load(os.path.join(folder, ".claude.json"), {}) or {}).get("oauthAccount") or {}
+        email = (acct.get("emailAddress") or "").lower()
+        if email:
+            out[email] = folder
+    return out
+
+
+def folder_login(email, folders=None):
+    """The login held by `email`'s own config folder, shaped like a STORE_SVC
+    entry, or None."""
+    folder = (account_folders() if folders is None else folders).get((email or "").lower())
+    if not folder:
+        return None
+    try:
+        oauth = json.loads(_kc_read(_folder_service(folder), CRED_ACCT) or "{}").get("claudeAiOauth")
+    except ValueError:
+        oauth = None
+    if not oauth or not oauth.get("refreshToken"):
+        return None
+    acct = (load(os.path.join(folder, ".claude.json"), {}) or {}).get("oauthAccount") or {}
+    return {"claudeAiOauth": oauth, "oauthAccount": acct, "folder": folder}
+
+
+def _expired(oauth):
+    exp = oauth.get("refreshTokenExpiresAt") or 0
+    exp = exp / 1000 if exp > 1e12 else exp
+    return bool(exp) and exp < time.time()
+
+
+def login_candidates(target):
+    """[(via, saved)] to try in order: the rotator's own snapshot, then the
+    account's config folder when it holds a different token."""
+    out = []
+    raw = _kc_read(STORE_SVC, target)
+    if raw:
+        try:
+            out.append(("stored_login", json.loads(raw)))
+        except ValueError:
+            pass
+    side = folder_login(target)
+    if side:
+        mine = (out[0][1].get("claudeAiOauth") or {}).get("refreshToken") if out else None
+        if side["claudeAiOauth"].get("refreshToken") != mine:
+            out.append(("account_folder", side))
+    return out
+
+
+def login_coverage(emails):
+    """email -> how a switch to it would sign in: stored_login, account_folder,
+    or browser (nothing saved, so it needs the Chrome sign-in)."""
+    folders = account_folders()
+    cov = {}
+    for e in emails:
+        raw = _kc_read(STORE_SVC, e)
+        ok = False
+        if raw:
+            try:
+                ok = not _expired(json.loads(raw).get("claudeAiOauth") or {})
+            except ValueError:
+                ok = False
+        if ok:
+            cov[e] = "stored_login"
+        else:
+            side = folder_login(e, folders)
+            cov[e] = "account_folder" if side and not _expired(side["claudeAiOauth"]) else "browser"
+    return cov
+
+
 def _write_oauth_account(acct):
     data = load(CLAUDE_JSON, {}) or {}
     data["oauthAccount"] = acct
@@ -1175,52 +1277,103 @@ def capture_login():
 
 
 def stored_switch(target, before, reason, started):
-    """Swap in `target`'s stored login. Returns 0 on a proven switch, None to
-    fall back to the browser flow."""
-    saved_raw = _kc_read(STORE_SVC, target)
-    if not saved_raw:
-        log("claude_rotate_no_stored_login", target=target)
-        return None
-    saved = json.loads(saved_raw)
-    oauth = saved.get("claudeAiOauth") or {}
-    exp = (oauth.get("refreshTokenExpiresAt") or 0) / (1000 if (oauth.get("refreshTokenExpiresAt") or 0) > 1e12 else 1)
-    if exp and exp < time.time():
-        log("claude_rotate_stored_login_expired", target=target)
+    """Swap in a saved login for `target`: the rotator's snapshot, then the
+    account's own config folder. Returns 0 on a proven switch, None to fall
+    back to the browser flow."""
+    candidates = login_candidates(target)
+    if not candidates:
+        log("claude_rotate_no_stored_login", target=target, account_folder_checked=ACCOUNTS_DIR)
         return None
     capture_login()  # the account being left keeps its newest refresh token
-    prev_raw = _kc_read(CRED_SVC, CRED_ACCT)
-    prev_acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount")
-    try:
-        cred = json.loads(prev_raw or "{}")
-    except ValueError:
-        cred = {}
-    cred["claudeAiOauth"] = oauth
-    if not _kc_write(CRED_SVC, CRED_ACCT, json.dumps(cred)):
-        log("claude_rotate_stored_switch_failed", target=target, why="keychain write failed")
-        return None
-    _write_oauth_account(saved.get("oauthAccount") or {})
-    after = cli_email()
-    windows = probe() if after == target else None
-    if after == target and windows is not None:
-        elapsed = round(time.time() - started, 1)
-        state = load(STATE, {})
-        state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
-        (state.get("switch_failures") or {}).pop(target, None)
-        save(STATE, state)
-        print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
-                  elapsed_s=elapsed, via="stored_login"))
-        capture_login()
-        resume_stranded(force=True)
-        resume_auth_lost()
-        return 0
-    # Put the previous login back exactly, then let the browser flow try.
-    if prev_raw:
-        _kc_write(CRED_SVC, CRED_ACCT, prev_raw)
-    if prev_acct:
-        _write_oauth_account(prev_acct)
-    log("claude_rotate_stored_switch_failed", target=target, still=cli_email(), cli_said=after,
-        probed=windows is not None, restored=bool(prev_raw))
+    for via, saved in candidates:
+        oauth = saved.get("claudeAiOauth") or {}
+        if _expired(oauth):
+            log("claude_rotate_stored_login_expired", target=target, via=via)
+            continue
+        prev_raw = _kc_read(CRED_SVC, CRED_ACCT)
+        prev_acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount")
+        try:
+            cred = json.loads(prev_raw or "{}")
+        except ValueError:
+            cred = {}
+        cred["claudeAiOauth"] = oauth
+        if not _kc_write(CRED_SVC, CRED_ACCT, json.dumps(cred)):
+            log("claude_rotate_stored_switch_failed", target=target, via=via, why="keychain write failed")
+            return None
+        _write_oauth_account(saved.get("oauthAccount") or {})
+        after = cli_email()
+        windows = probe() if after == target else None
+        if after == target and windows is not None:
+            elapsed = round(time.time() - started, 1)
+            state = load(STATE, {})
+            state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
+            (state.get("switch_failures") or {}).pop(target, None)
+            save(STATE, state)
+            print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
+                      elapsed_s=elapsed, via=via, folder=saved.get("folder")))
+            capture_login()
+            resume_stranded(force=True)
+            resume_auth_lost()
+            return 0
+        # Put the previous login back exactly, then try the next candidate.
+        if prev_raw:
+            _kc_write(CRED_SVC, CRED_ACCT, prev_raw)
+        if prev_acct:
+            _write_oauth_account(prev_acct)
+        log("claude_rotate_stored_switch_failed", target=target, via=via, still=cli_email(), cli_said=after,
+            probed=windows is not None, restored=bool(prev_raw))
     return None
+
+
+# The browser sign-in drives Ethan's Chrome through the CDP relay, which needs
+# one "Allow remote debugging?" click per Chrome launch. 2026-10-19 15:42 to
+# 2026-10-20 08:06 the relay had no Chrome connection; every switch still waited
+# out a 6-minute sign-in that ended "no tab appeared", and nobody was told.
+OWNER_ALERT_GAP_S = int(os.environ.get("CLAUDE_ROTATE_OWNER_ALERT_GAP_S", str(3 * 3600)))
+
+
+def relay_upstream():
+    """The relay's Chrome connection: connected, awaiting_approval or
+    disconnected. None when the relay status cannot be read (unknown, so the
+    browser flow runs as before)."""
+    try:
+        p = subprocess.run(["amux", "cdp", "relay"], capture_output=True, text=True, timeout=15)
+        line = next((l for l in reversed(p.stdout.splitlines()) if l.strip().startswith("{")), "")
+        return json.loads(line).get("upstream") if line else None
+    except Exception:
+        return None
+
+
+def browser_unreachable(target, reason, upstream):
+    """Skip a sign-in that cannot work, ask Chrome for approval, and tell the
+    owner once per OWNER_ALERT_GAP_S when the fleet is on a spent account."""
+    try:  # a relay client makes Chrome show the approval prompt
+        subprocess.Popen(["amux", "cdp", "list"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+    fix = "click Allow on Chrome's \"Allow remote debugging?\" prompt"
+    print(log("claude_rotate_browser_unreachable", measured=True, n_considered=1, target=target,
+              reason=reason, upstream=upstream, fix=fix))
+    if reason != "current_exhausted":
+        return 1
+    state = load(STATE, {})
+    if time.time() - float(state.get("owner_alerted_at") or 0) < OWNER_ALERT_GAP_S:
+        return 1
+    current = current_email()
+    msg = ("Claude account switching is stuck: %s is spent and %s has no saved login, so it needs a "
+           "browser sign-in, but Chrome is not connected to amux (relay: %s). %s." % (current, target, upstream, fix))
+    try:
+        p = subprocess.run(["amux", "alert", msg, "workers are rate-limited until the switch lands"],
+                           capture_output=True, text=True, timeout=30)
+        sent = p.returncode == 0
+    except Exception:
+        sent = False
+    state = load(STATE, {})
+    state["owner_alerted_at"] = time.time()
+    save(STATE, state)
+    log("claude_rotate_owner_alerted", measured=True, target=target, sent=sent)
+    return 1
 
 
 def _switch_running():
@@ -1245,6 +1398,9 @@ def _switch(target, reason):
     rc = stored_switch(target, before, reason, started)
     if rc is not None:
         return rc
+    upstream = relay_upstream()
+    if upstream is not None and upstream != "connected":
+        return browser_unreachable(target, reason, upstream)
     with tempfile.TemporaryDirectory(prefix="claude-rotate-") as tmp:
         url_file = os.path.join(tmp, "url")
         opener = os.path.join(tmp, "open.sh")
