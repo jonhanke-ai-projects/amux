@@ -5,6 +5,7 @@ import { test, expect } from './fixtures';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scratchpadDir } from './scratchpad-dir';
+import { cleanup } from './teardown';
 
 test('wikilinks: [[#Heading|label]] in a table scrolls to the heading, [[Note#Heading]] opens the note there', async ({ page, request }) => {
   test.setTimeout(90_000);
@@ -43,5 +44,5 @@ test('wikilinks: [[#Heading|label]] in a table scrolls to the heading, [[Note#He
     await expect(body).toContainText('WA-BODY');
     await expect(page.locator('#file-title')).toHaveText('glossary.md');
     await expect.poll(() => inView('write-amplification')).toBe(true);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { await cleanup('remove fixture note', () => fs.rmSync(dir, { recursive: true, force: true })); }
 });

@@ -7,6 +7,7 @@ import { test, expect } from './fixtures';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scratchpadDir } from './scratchpad-dir';
+import { cleanup } from './teardown';
 
 test('math, callouts and a long note render the way Obsidian shows them', async ({ page, request }) => {
   test.setTimeout(120_000);
@@ -43,5 +44,5 @@ test('math, callouts and a long note render the way Obsidian shows them', async 
     await fold.locator('summary').click();
     await expect(fold.getByText('HIDDEN-UNTIL-OPENED')).toBeVisible();
     await expect(body.locator('blockquote')).toContainText('A plain quote stays a quote.');
-  } finally { fs.rmSync(file, { force: true }); }
+  } finally { await cleanup('remove fixture note', () => fs.rmSync(file, { force: true })); }
 });

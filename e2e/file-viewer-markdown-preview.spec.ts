@@ -7,6 +7,7 @@ import { test, expect, Page } from './fixtures';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scratchpadDir } from './scratchpad-dir';
+import { cleanup } from './teardown';
 
 const MD = ['# GTM', '', '## OSS', '', '- https://github.com/mixpeek/mvs-migrate', '- https://github.com/mixpeek/mixpeek-extractors', '',
   '## New Capabilities to Market', '', 'each one should have an integration partner', '',
@@ -44,7 +45,7 @@ test('zoomed in, the file viewer ends inside the window and its last line scroll
       const r = last.getBoundingClientRect();
       return r.bottom <= Math.min(innerHeight, b.bottom) + 1 && r.top >= b.top;
     })).toBe(true);
-  } finally { fs.rmSync(file, { force: true }); }
+  } finally { await cleanup('remove fixture note', () => fs.rmSync(file, { force: true })); }
 });
 
 test('markdown preview is compact: no blank line between blocks, no rule under headings, Raw keeps its lines', async ({ page, request }) => {
@@ -68,5 +69,5 @@ test('markdown preview is compact: no blank line between blocks, no rule under h
     // The Raw view still shows the file's own line breaks.
     await page.evaluate(() => (window as any).setFileViewMode('raw'));
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById('file-body')!).whiteSpace)).toMatch(/pre/);
-  } finally { fs.rmSync(file, { force: true }); }
+  } finally { await cleanup('remove fixture note', () => fs.rmSync(file, { force: true })); }
 });
