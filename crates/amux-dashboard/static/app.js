@@ -7746,6 +7746,47 @@ function _goalTile(g) {
 // #cards in render() goes through here, so the comparison is against what the
 // list actually holds.
 const _cardsRenderStats = { written: 0, skipped: 0 };
+
+// The peek's live tail is re-rendered on every poll, about 3 times a second
+// while a worker runs, and almost every frame differs from the last only in a
+// line or two (the agent's running timer). Replacing #pk-live's innerHTML threw
+// away ~1,400 nodes per frame: 230k nodes a minute, and the desktop app's web
+// view reached 11 GB of WebKit malloc after a day open (Mac memory RCA
+// 20261020-165200). The tail is now patched in place: nodes that did not change
+// are kept, and only what differs is replaced. window._peekLiveStats counts it.
+const _peekLiveStats = { frames: 0, unchanged: 0, nodesReplaced: 0, fullWrites: 0 };
+const _peekLiveTpl = document.createElement('template');
+function _peekMorphChildren(from, to) {
+  let replaced = 0;
+  const a = Array.from(from.childNodes), b = Array.from(to.childNodes);
+  for (let i = 0; i < b.length; i++) {
+    const o = a[i], n = b[i];
+    if (!o) { from.appendChild(n); replaced++; continue; }
+    if (o.isEqualNode(n)) continue;
+    if (o.nodeType === 3 && n.nodeType === 3) { o.nodeValue = n.nodeValue; continue; }
+    if (o.nodeType === 1 && n.nodeType === 1 && o.nodeName === n.nodeName) {
+      for (const at of Array.from(o.attributes)) if (!n.hasAttribute(at.name)) o.removeAttribute(at.name);
+      for (const at of Array.from(n.attributes)) if (o.getAttribute(at.name) !== at.value) o.setAttribute(at.name, at.value);
+      replaced += _peekMorphChildren(o, n);
+      continue;
+    }
+    from.replaceChild(n, o); replaced++;
+  }
+  for (let i = a.length - 1; i >= b.length; i--) { from.removeChild(a[i]); replaced++; }
+  return replaced;
+}
+function _peekSetLiveHtml(el, html) {
+  _peekLiveStats.frames++;
+  if (el._liveHtml === html) { _peekLiveStats.unchanged++; return; }
+  if (!el.childNodes.length) { el.innerHTML = html; _peekLiveStats.fullWrites++; }
+  else {
+    _peekLiveTpl.innerHTML = html;
+    _peekLiveStats.nodesReplaced += _peekMorphChildren(el, _peekLiveTpl.content);
+    _peekLiveTpl.innerHTML = '';
+  }
+  el._liveHtml = html;
+}
+window._peekLiveStats = _peekLiveStats;
 function _setCardsHtml(el, html) {
   if (el._cardsHtml === html && el.childNodes.length) { _cardsRenderStats.skipped++; return; }
   el.innerHTML = html;
@@ -19328,7 +19369,7 @@ async function _refreshPeekFrame(liveOnly, request) {
       }
     } else if (!_peekScrollLocked && !_peekPressHold) {
       const _liveEl = document.getElementById('pk-live');
-      if (!histChanged && _liveEl) { _liveEl.innerHTML = _lastLiveHTML; _peekReclassifyPrompts(); }   // live tick → swap the small region only
+      if (!histChanged && _liveEl) { _peekSetLiveHtml(_liveEl, _lastLiveHTML); _peekReclassifyPrompts(); }   // live tick → patch the small region only
       else applyPeekSearch(false);
     }
     if (_peekPressHold) {
