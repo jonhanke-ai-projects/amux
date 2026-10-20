@@ -40073,6 +40073,72 @@ async function fetchBoard() {
 // API token — so unsanitized HTML = stored XSS → RCE. DOMPurify strips
 // scripts, event handlers, and javascript: URLs while keeping normal
 // formatting. If it failed to load, fall back to a conservative strip.
+// MERMAID IN MARKDOWN (Ethan, 2026-10-20: a "Course map" flowchart showed as
+// its source: "this should render"). marked emits ```mermaid fences as
+// <pre><code class="language-mermaid">; one observer finds them wherever
+// markdown is rendered (file viewer, scratchpad, chat, MDAI, cards), loads
+// Mermaid once, from the CDN the other libraries use, only when a page has a
+// diagram, and swaps in the SVG. Until then, offline, or on a diagram that
+// does not parse, the source stays visible; a parse error says why.
+const _mermaidCache = new Map();   // theme + source -> svg
+let _mermaidLib = null, _mermaidSeq = 0;
+function _mermaidLoad() {
+  if (!_mermaidLib) {
+    _mermaidLib = import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs').then(m => m.default)
+      .catch(e => { _mermaidLib = null; throw e; });
+  }
+  return _mermaidLib;
+}
+async function _mermaidHydrate(root) {
+  const codes = [...(root.querySelectorAll ? root.querySelectorAll('pre > code.language-mermaid') : [])]
+    .filter(c => !c.closest('[data-mermaid-done]'));
+  if (!codes.length) return;
+  const theme = document.body.classList.contains('light') ? 'default' : 'dark';
+  let mermaid;
+  try { mermaid = await _mermaidLoad(); } catch (e) {
+    console.warn('[amux] mermaid could not load; diagrams stay as source', e);
+    return;
+  }
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme, fontFamily: 'inherit' });
+  for (const code of codes) {
+    const pre = code.parentElement;
+    if (!pre || !pre.isConnected || pre.hasAttribute('data-mermaid-done')) continue;
+    pre.setAttribute('data-mermaid-done', '1');
+    const src = code.textContent || '';
+    const key = theme + '\n' + src;
+    let svg = _mermaidCache.get(key);
+    if (!svg) {
+      try {
+        svg = (await mermaid.render('amux-mermaid-' + (++_mermaidSeq), src)).svg;
+        _mermaidCache.set(key, svg);
+      } catch (e) {
+        const note = document.createElement('div');
+        note.className = 'md-mermaid-error';
+        note.textContent = 'Diagram not drawn: ' + String((e && e.message) || e).split('\n')[0];
+        pre.after(note);
+        continue;
+      }
+    }
+    const fig = document.createElement('div');
+    fig.className = 'md-mermaid';
+    fig.setAttribute('data-mermaid-done', '1');
+    fig.innerHTML = svg;   // Mermaid's own output, rendered with securityLevel strict
+    fig.title = 'Mermaid diagram';
+    pre.replaceWith(fig);
+  }
+}
+let _mermaidPending = false;
+new MutationObserver(records => {
+  if (_mermaidPending) return;
+  for (const r of records) for (const n of r.addedNodes) {
+    if (n.nodeType === 1 && (n.matches?.('code.language-mermaid') || n.querySelector?.('code.language-mermaid'))) {
+      _mermaidPending = true;
+      requestAnimationFrame(() => { _mermaidPending = false; _mermaidHydrate(document.body); });
+      return;
+    }
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
+
 function _sanitizeHtml(html) {
   if (html == null) return '';
   if (typeof DOMPurify !== 'undefined' && DOMPurify.sanitize) {

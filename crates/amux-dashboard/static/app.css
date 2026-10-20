@@ -1482,6 +1482,11 @@
   .md-content td { padding: 5px 10px; border: 1px solid var(--border); }
   .md-content tbody tr:nth-child(even) { background: rgba(88,166,255,0.04); }
   .md-content tbody tr:hover { background: rgba(88,166,255,0.08); }
+  /* Mermaid diagrams: centred, scaled to the column, scrollable sideways when
+     a wide graph cannot shrink further. */
+  .md-mermaid { margin: 0.6em 0 1em; overflow-x: auto; text-align: center; }
+  .md-mermaid svg { max-width: 100%; height: auto; }
+  .md-mermaid-error { color: var(--dim); font-size: 0.78rem; margin: -6px 0 10px; }
   @media (max-width: 600px) {
     .md-content th, .md-content td { padding: 4px 7px; font-size: 0.8em; }
   }
