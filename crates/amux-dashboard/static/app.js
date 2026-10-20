@@ -7679,6 +7679,19 @@ function _goalTile(g) {
   return `<span class="badge goal ${esc(cls)}" data-goal-state="${esc(state)}" title="${esc(lines.join('\n'))}">&#9678; ${esc(label)}${esc(progress)}</span>`;
 }
 
+// The card list re-renders on every worker-list change, and most of those
+// produce byte-identical card HTML (7 of 8 in a measured run): the change was
+// in a field no card shows. Re-parsing ~4,500 nodes for nothing cost ~40ms per
+// render on a throttled phone. An identical write is skipped. Every write to
+// #cards in render() goes through here, so the comparison is against what the
+// list actually holds.
+const _cardsRenderStats = { written: 0, skipped: 0 };
+function _setCardsHtml(el, html) {
+  if (el._cardsHtml === html && el.childNodes.length) { _cardsRenderStats.skipped++; return; }
+  el.innerHTML = html;
+  el._cardsHtml = html;
+  _cardsRenderStats.written++;
+}
 function render() {
   // The Send/Queue label reads the target's status, so it follows each render.
   try { _syncComposerPending(); } catch (_) {}
@@ -7782,7 +7795,7 @@ function render() {
   const _nonArchivedCount = sessions.filter(s => !s.project && !s.archived && !_workerLifecycleInactive(s)).length;
   if (!_nonArchivedCount && !drafts.length) {
     if (_sessionLoadError) {
-      el.innerHTML = ''; // Actionable detail is in the Sync error badge modal.
+      _setCardsHtml(el, ''); // Actionable detail is in the Sync error badge modal.
     } else if (_initialLoad) {
       // A SPINNER THAT NEVER RESOLVES IS A LIE (amux-cloud, AC-275, 2026-08-06).
       // _initialLoad clears on ANY successful /api/sessions fetch, empty list
@@ -7795,17 +7808,17 @@ function render() {
       // show" from "I was never given what I need to show it" — board search on
       // a stale corpus, the co-edit notice, the peek Board, the kanban over 30
       // real issues, and now this. Say which it is.
-      el.innerHTML = consecutiveFailures > 0
+      _setCardsHtml(el, consecutiveFailures > 0
         ? '<div class="empty">Can\u2019t reach the server \u2014 ' + consecutiveFailures +
           ' failed attempt' + (consecutiveFailures === 1 ? '' : 's') + '.<br>' +
           '<span style="color:var(--dim);font-size:0.85rem;">This is a connection problem, not an ' +
           'empty workspace. Workers may exist and be unreachable.</span><br>' +
           '<a href="/api/_clear_sw" style="color:var(--accent);font-size:0.8rem;">Clear cache &amp; reload</a></div>'
         : '<div class="empty"><span class="loading-spinner"></span>Connecting to server…<br>' +
-          '<a href="/api/_clear_sw" style="color:var(--dim);font-size:0.75rem;margin-top:8px;display:inline-block;">Stuck? Clear cache</a></div>';
+          '<a href="/api/_clear_sw" style="color:var(--dim);font-size:0.75rem;margin-top:8px;display:inline-block;">Stuck? Clear cache</a></div>');
     } else {
-      el.innerHTML = '<div class="empty">' + (sessions.some(s => s.project) ? 'Project workers are grouped below.' : sessions.some(s => s.lifecycle === 'paused' || s.lifecycle === 'review') ? 'No active workers. Resume a paused worker to continue.' : 'No workers yet.<br>Tap <strong>+</strong> to create one.') +
-        (!online ? '<br><span style="color:var(--yellow)">You\'re offline — workers created now will sync when connected.</span>' : '') + '</div>';
+      _setCardsHtml(el, '<div class="empty">' + (sessions.some(s => s.project) ? 'Project workers are grouped below.' : sessions.some(s => s.lifecycle === 'paused' || s.lifecycle === 'review') ? 'No active workers. Resume a paused worker to continue.' : 'No workers yet.<br>Tap <strong>+</strong> to create one.') +
+        (!online ? '<br><span style="color:var(--yellow)">You\'re offline — workers created now will sync when connected.</span>' : '') + '</div>');
     }
     _renderProjectWorkersSection();
     _renderReviewSection();
@@ -7852,7 +7865,7 @@ function render() {
   // Filters modal: provider + model-type facets (multi-select, AND across facets)
   if (filterStatuses.size) filtered = filtered.filter(s => filterStatuses.has(_sessStatusKey(s)));
   if ((q || activeTag || hiddenTags.size || filterProviders.size || filterModels.size || filterStatuses.size) && !filtered.length) {
-    el.innerHTML = '<div class="empty">No matching workers.</div>';
+    _setCardsHtml(el, '<div class="empty">No matching workers.</div>');
     _renderProjectWorkersSection();
     _renderReviewSection();
     _renderPausedSection();
@@ -8049,7 +8062,7 @@ function render() {
   // Freeze mode: flat list locked to captured order — bypasses status grouping and activity re-sort
   if (_frozen && cardOrder.length) {
     const frozenList = _sortByCardOrder(filtered);
-    el.innerHTML = draftCards + frozenList.map(_renderSessionCard).join('');
+    _setCardsHtml(el, draftCards + frozenList.map(_renderSessionCard).join(''));
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     _restoreCardFocus(focusedId, savedInputs);
     _renderProjectWorkersSection();
@@ -8066,7 +8079,7 @@ function render() {
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
     let sortedFiltered;
     sortedFiltered = [...filtered].sort(_sortFnFor(sortMode));
-    el.innerHTML = staleWorkerPrefix + draftCards + sortedFiltered.map(_renderSessionCard).join('');
+    _setCardsHtml(el, staleWorkerPrefix + draftCards + sortedFiltered.map(_renderSessionCard).join(''));
     _checkWorkerStatusOrder();
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     _restoreCardFocus(focusedId, savedInputs);
@@ -8131,14 +8144,14 @@ function render() {
           ${!col ? `<div class="tag-group-body">${items.map(_renderSessionCard).join('')}</div>` : ''}
         </div>`;
       });
-      el.innerHTML = staleWorkerPrefix + draftCards + groupHtml;
+      _setCardsHtml(el, staleWorkerPrefix + draftCards + groupHtml);
     } else {
-      el.innerHTML = staleWorkerPrefix + draftCards + (nonEmpty.length ? buckets[nonEmpty[0].key] : []).map(_renderSessionCard).join('');
+      _setCardsHtml(el, staleWorkerPrefix + draftCards + (nonEmpty.length ? buckets[nonEmpty[0].key] : []).map(_renderSessionCard).join(''));
     }
   } else {
     // list mode (flat) or group mode with active filter: flat list
     let flatList = [...filtered].sort(_sortFnFor(sortMode));
-    el.innerHTML = staleWorkerPrefix + draftCards + flatList.map(_renderSessionCard).join('');
+    _setCardsHtml(el, staleWorkerPrefix + draftCards + flatList.map(_renderSessionCard).join(''));
     if (layoutMode === 'list') requestAnimationFrame(initSortable);
   }
   _checkWorkerStatusOrder();
