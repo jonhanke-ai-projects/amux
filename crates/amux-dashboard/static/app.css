@@ -9895,3 +9895,12 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .cmdk-foot { border-top: 1px solid var(--border); color: var(--dim); font-size: 0.7rem; padding: 8px 14px; flex-shrink: 0; }
 @media (max-width: 600px) { .cmdk-kind { flex-basis: 60px; } }
 .header-search-btn { min-width: 44px; min-height: 44px; }
+
+/* Worker groups editor (the edit modal's multiselect): a phone needs a real
+   target to remove a group, not a 10px x. */
+#eg-groups .be-tag-suggestions { max-height: 220px; overflow-y: auto; }
+@media (max-width: 600px) {
+  #eg-groups .be-tag-chip { font-size: 0.82rem; padding: 4px 4px 4px 10px; }
+  #eg-groups .be-tag-chip-remove { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; font-size: 1rem; }
+  #eg-groups .be-tag-input { min-height: 36px; font-size: 1rem; }
+}

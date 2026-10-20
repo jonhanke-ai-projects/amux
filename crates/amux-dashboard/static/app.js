@@ -10380,24 +10380,10 @@ if (window._AMUX_DEFAULT_MODEL) {
   if (defOpt) defOpt.textContent = 'Default (' + window._AMUX_DEFAULT_MODEL + ')';
 }
 
-// Append a picked group to the comma list without clobbering what is typed,
-// and without adding it twice — the picker is an aid to the field, not a second
-// source of truth for it.
-function _editAddGroup(sel) {
-  const g = sel.value;
-  sel.selectedIndex = 0;
-  if (!g) return;
-  const inp = document.getElementById('edit-input');
-  const cur = (inp.value || '').split(',').map(x => x.trim()).filter(Boolean);
-  if (cur.some(x => x.toLowerCase() === g.toLowerCase())) return;
-  cur.push(g);
-  inp.value = cur.join(', ');
-  inp.focus();
-}
-
 // ── Edit modal ──
 let editState = null;  // {session, field, current}
 function editField(session, field, current, provider) {
+  document.getElementById('eg-groups').style.display = 'none';
   closeAllMenus();
   const titles = { name: 'Rename worker', provider: 'Change provider', model: 'Change model', effort: 'Reasoning effort', dir: 'Change directory', desc: 'Set description', tags: 'Edit groups', task: 'Edit task label', branch: 'Set worker branch', mcp: 'Browser tooling', send_allow: 'Cross-group messaging', duplicate: 'Duplicate worker', clone: 'Clone & continue' };
   const placeholders = { name: 'Worker name', model: 'e.g. opus, sonnet, haiku', dir: window._cloudEmail ? '/root' : '/path/to/project', desc: 'Brief description...', tags: 'e.g. work, frontend, urgent', task: 'e.g. Fix login bug (blank to auto-generate)', branch: 'Branch name; blank = detected branch; none = main', send_allow: 'Comma-separated groups, * for all, blank to refuse', duplicate: 'New worker name', clone: 'New worker name' };
@@ -10460,43 +10446,26 @@ function editField(session, field, current, provider) {
     sel.style.display = 'block';
     sel.value = current || '';
   } else if (field === 'tags') {
-    // GROUPS GET A DROPDOWN (Ethan, 2026-08-06: "groups isnt working it should be
-    // a dropdown when I create it"). It was a bare text box, so joining an
-    // existing group meant retyping its name from memory and matching the
-    // spelling exactly — one typo silently created a new single-worker group
-    // instead of joining "customers". There was no list to pick from because
-    // GET /api/groups 404'd; that endpoint is added in this same change.
-    //
-    // Dropdown ALONGSIDE the input rather than replacing it, because a worker
-    // belongs to zero or more groups and new groups have to be creatable. The
-    // select is a picker that appends; the field stays the source of truth. A
-    // pure <select> would have made "dropdown" true and "create a group"
-    // impossible.
-    inpWrap.style.display = '';
+    // GROUPS ARE A MULTISELECT (Ethan, 2026-10-20: "i can remove groups and
+    // it'll update. also make groups multiselect not just comma separated").
+    // Each group is a chip with a remove button; typing filters the existing
+    // groups and Enter adds one, existing or new. It replaces the comma field
+    // and its second autocomplete, whose open list took the Enter that should
+    // have saved. The chips are the widget the board's card form already uses.
+    inpWrap.style.display = 'none';
     sel.style.display = 'none';
-    inp.value = current || '';
-    inp.placeholder = placeholders[field] || '';
-    const gw = document.getElementById('edit-group-picker');
-    if (gw) {
-      gw.style.display = '';
-      gw.innerHTML = '<option value="">+ Add existing group…</option>';
-      fetch(API + '/api/groups', { headers: _authHeaders() })
-        .then(r => r.json())
-        .then(d => {
-          (d.groups || []).forEach(g => {
-            const o = document.createElement('option');
-            o.value = g.name;
-            o.textContent = g.name + '  (' + g.workers + ')';
-            gw.appendChild(o);
-          });
-        })
-        .catch(() => {});   // picker is an aid; the text field still works
-    }
+    _tagState.eg = String(current || '').split(',').map(x => x.trim()).filter(Boolean);
+    document.getElementById('eg-groups').style.display = '';
+    document.getElementById('eg-tag-input').value = '';
+    _beTagRenderChips('eg');
+    _beTagInputUpdate('eg');
+    fetch(API + '/api/groups', { headers: _authHeaders() })
+      .then(r => r.json())
+      .then(d => { _egGroups = (d.groups || []).map(g => ({ name: g.name, workers: g.workers })); _beTagInputUpdate('eg'); })
+      .catch(() => {});   // suggestions are an aid; typing a name still adds it
   } else {
     inpWrap.style.display = '';
     sel.style.display = 'none';
-    const _gw0 = document.getElementById('edit-group-picker');
-    if (_gw0) _gw0.style.display = 'none';
     inp.value = current || '';
     inp.placeholder = placeholders[field] || '';
   }
@@ -10506,12 +10475,12 @@ function editField(session, field, current, provider) {
 }
 function closeEdit() {
   document.getElementById('edit-overlay').classList.remove('active');
+  document.getElementById('eg-groups').style.display = 'none';
   document.getElementById('edit-ac-list').classList.remove('open');
   document.getElementById('edit-input-wrap').style.display = '';
   document.getElementById('edit-select').style.display = 'none';
   const _effW = document.getElementById('edit-effort-wrap');
   if (_effW) _effW.style.display = 'none';
-  tagAcItems = []; tagAcSelected = -1;
   editState = null;
 }
 // edit-select auto-submits for quick single-select fields (provider), but the
@@ -10537,6 +10506,12 @@ async function submitEdit() {
     : document.getElementById('edit-input').value.trim();
   if (editState.field === 'model' && val === '__custom__') {
     val = document.getElementById('edit-input').value.trim();
+  }
+  let groups = null;
+  if (editState.field === 'tags') {
+    const typed = document.getElementById('eg-tag-input').value.trim().replace(/,/g, '');
+    if (typed) _beTagAdd('eg', typed);
+    groups = [..._tagState.eg];
   }
   if (!val && !['desc','tags','model','task','effort','branch','mcp','send_allow'].includes(editState.field)) return;
   const { session, field } = editState;
@@ -10601,10 +10576,19 @@ async function submitEdit() {
       body: JSON.stringify({ task_summary: val })
     });
   } else if (field === 'tags') {
-    await apiCall(API + '/api/sessions/' + session + '/config', {
+    const r = await apiCall(API + '/api/sessions/' + session + '/config', {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ tags: val })
+      body: JSON.stringify({ tags: groups })
     });
+    // Show the change at once rather than after the next sessions poll.
+    if (r && r.ok) {
+      const s = (sessions || []).find(x => x.name === session);
+      if (s) { s.tags = groups; render(); }
+      showToast(groups.length ? session + ' groups: ' + groups.join(', ') : session + ' is in no groups');
+    } else if (r && !_isLocallyQueued(r)) {
+      let e = ''; try { e = (await r.json()).error || ''; } catch (_) {}
+      showToast('Groups not saved: ' + (e || 'error ' + r.status));
+    }
   } else if (field === 'branch') {
     await apiCall(API + '/api/sessions/' + session + '/config', {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
@@ -10658,35 +10642,26 @@ function editAcPick(i) {
 }
 function editAcKeydown(e) {
   const el = document.getElementById('edit-ac-list');
-  const isTagField = editState && editState.field === 'tags';
-  const acItems = isTagField ? tagAcItems : editAcItems;
-  const pickFn = isTagField ? tagAcPick : editAcPick;
-  const highlightFn = isTagField ? (() => {
-    const items = el.querySelectorAll('.ac-item');
-    items.forEach((item, i) => item.classList.toggle('selected', i === tagAcSelected));
-    if (items[tagAcSelected]) items[tagAcSelected].scrollIntoView({ block: 'nearest' });
-  }) : editAcHighlight;
+  const acItems = editAcItems;
   if (!el.classList.contains('open')) {
     if (e.key === 'Enter') { e.preventDefault(); submitEdit(); }
     return;
   }
   if (e.key === 'ArrowDown') {
     e.preventDefault();
-    if (isTagField) { tagAcSelected = Math.min(tagAcSelected + 1, acItems.length - 1); highlightFn(); }
-    else { editAcSelected = Math.min(editAcSelected + 1, acItems.length - 1); highlightFn(); }
+    editAcSelected = Math.min(editAcSelected + 1, acItems.length - 1); editAcHighlight();
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
-    if (isTagField) { tagAcSelected = Math.max(tagAcSelected - 1, 0); highlightFn(); }
-    else { editAcSelected = Math.max(editAcSelected - 1, 0); highlightFn(); }
+    editAcSelected = Math.max(editAcSelected - 1, 0); editAcHighlight();
   } else if (e.key === 'Enter') {
     e.preventDefault();
-    const sel = isTagField ? tagAcSelected : editAcSelected;
-    if (sel >= 0) pickFn(sel);
+    const sel = editAcSelected;
+    if (sel >= 0) editAcPick(sel);
     else { el.classList.remove('open'); submitEdit(); }
   } else if (e.key === 'Tab' && acItems.length) {
     e.preventDefault();
-    const sel = isTagField ? tagAcSelected : editAcSelected;
-    pickFn(sel >= 0 ? sel : 0);
+    const sel = editAcSelected;
+    editAcPick(sel >= 0 ? sel : 0);
   } else if (e.key === 'Escape') {
     el.classList.remove('open');
   }
@@ -10697,48 +10672,6 @@ function editAcHighlight() {
   if (items[editAcSelected]) items[editAcSelected].scrollIntoView({ block: 'nearest' });
 }
 
-// ── Tag autocomplete ──
-let tagAcItems = [];
-let tagAcSelected = -1;
-let _tagBrowse = false;
-// Focus/click → browse mode: show every unused tag right away so you can just
-// click one (no typing needed). Typing → filter by the token.
-function tagAcFocus(val) { _tagBrowse = true; tagAcUpdate(val); }
-function tagAcType(val) { _tagBrowse = false; tagAcUpdate(val); }
-function tagAcUpdate(val) {
-  const el = document.getElementById('edit-ac-list');
-  const parts = val.split(',');
-  // Browse mode (just focused): treat ALL non-empty parts as already-chosen and
-  // show the rest; typing mode: the last part is the token being filtered on.
-  const token = _tagBrowse ? '' : parts[parts.length - 1].trim().toLowerCase();
-  const usedParts = _tagBrowse ? parts : parts.slice(0, -1);
-  const used = usedParts.map(p => p.trim().toLowerCase()).filter(Boolean);
-  const allTags = [...new Set(sessions.flatMap(s => s.tags || []))].sort();
-  tagAcItems = allTags.filter(t => { const tl = t.toLowerCase(); return !used.includes(tl) && (!token || tl.startsWith(token)); });
-  tagAcSelected = -1;
-  if (!tagAcItems.length) { el.classList.remove('open'); return; }
-  el.innerHTML = tagAcItems.map((t, i) =>
-    `<div class="ac-item" onmousedown="tagAcPick(${i})">${esc(t)}</div>`
-  ).join('');
-  el.classList.add('open');
-}
-function tagAcPick(i) {
-  const inp = document.getElementById('edit-input');
-  const tag = tagAcItems[i];
-  if (_tagBrowse) {
-    // Append as a new tag; keep browsing so you can click several in a row.
-    const cur = inp.value.replace(/,\s*$/, '').trim();
-    inp.value = cur ? (cur + ', ' + tag) : tag;
-    tagAcUpdate(inp.value);
-  } else {
-    const parts = inp.value.split(',');
-    parts[parts.length - 1] = (parts.length > 1 ? ' ' : '') + tag;
-    inp.value = parts.join(',');
-    document.getElementById('edit-ac-list').classList.remove('open');
-    tagAcItems = [];
-  }
-  inp.focus({ preventScroll: true });
-}
 
 async function toggleYolo(session) {
   closeAllMenus();
@@ -40271,7 +40204,17 @@ function renderMarkdown(raw, basePath) {
 }
 
 // ── Tag input widget (shared by add-modal "be" and detail view "bd") ──
-const _tagState = { be: [], bd: [] };
+const _tagState = { be: [], bd: [], eg: [] };
+let _egGroups = [];   // the edit modal's group list, from /api/groups
+// Worker groups: every existing group not already chosen, filtered by what is
+// typed, and the typed name itself when it is new.
+function _egGroupSuggestions(q) {
+  const mine = new Set(_tagState.eg.map(t => t.toLowerCase()));
+  const out = _egGroups.filter(g => !mine.has(g.name.toLowerCase()) && (!q || g.name.toLowerCase().includes(q)))
+    .map(g => ({ tag: g.name, note: g.workers + (g.workers === 1 ? ' worker' : ' workers') }));
+  if (q && !mine.has(q) && !_egGroups.some(g => g.name.toLowerCase() === q)) out.push({ tag: q, note: 'new group' });
+  return out;
+}
 
 function _beTagRenderChips(prefix) {
   const tags = _tagState[prefix];
@@ -40469,9 +40412,10 @@ function _beTagInputUpdate(prefix) {
   // to dump twelve fleet-wide suggestions into every card and visually bury
   // its source message, epic, gate and output. Suggestions are autocomplete:
   // they exist only after the user asks by typing.
-  if (!q) { el.innerHTML = ''; return; }
-  _themesRefresh(prefix);   // once per TTL; re-renders itself when it lands
-  const suggestions = _tagSuggestions(prefix, q);
+  // Worker groups are a multiselect: the whole list shows before typing.
+  if (!q && prefix !== 'eg') { el.innerHTML = ''; return; }
+  if (prefix !== 'eg') _themesRefresh(prefix);   // once per TTL; re-renders itself when it lands
+  const suggestions = prefix === 'eg' ? _egGroupSuggestions(q) : _tagSuggestions(prefix, q);
   // Data attributes + a delegated listener, NOT an inline onclick.
   //
   // The inline version was silently dead. `JSON.stringify(t)` emits DOUBLE
@@ -40520,6 +40464,9 @@ function _beTagRemove(prefix, tag) {
 }
 
 function _beTagKeydown(e, prefix) {
+  // In the groups editor, Enter on an empty field saves the dialog.
+  if (prefix === 'eg' && e.key === 'Enter' && !e.target.value.trim()) { e.preventDefault(); submitEdit(); return; }
+  if (prefix === 'eg' && e.key === 'Escape') { e.preventDefault(); closeEdit(); return; }
   if (e.key === 'Enter' || e.key === ',') {
     e.preventDefault();
     const val = e.target.value.trim().replace(/,/g, '');

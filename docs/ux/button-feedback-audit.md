@@ -918,7 +918,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Start free trial | `startCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Start free trial | `startCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Create | `submitCreate` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| index.html | Save | `submitEdit` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Save | `submitEdit` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | + | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1078,6 +1078,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | brand-icon-drop | `` | onclick |
 | index.html | brand-logo-drop | `` | onclick |
 | index.html | div | `` | onclick |
+| index.html | eg-tag-wrap | `` | onclick |
 | index.html | settings-owner-link-url | `` | onclick |
 | index.html | Close player | `_abClose` | onclick |
 | index.html | 1x | `_abCycleSpeed` | onclick |
