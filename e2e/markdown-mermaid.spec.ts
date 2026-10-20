@@ -6,6 +6,7 @@ import { test, expect } from './fixtures';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scratchpadDir } from './scratchpad-dir';
+import { cleanup } from './teardown';
 
 const COURSE = ['## Course map', '', '```mermaid', 'flowchart LR',
   '    P1["Part 1<br/>The storage hierarchy<br/>L1-L3"] --> P2["Part 2<br/>Data structures on disk<br/>L4-L6"]',
@@ -42,5 +43,5 @@ test('a mermaid block in a markdown file draws as a diagram; a broken one keeps 
       return s.width <= b.width + 1;
     });
     expect(fits).toBe(true);
-  } finally { fs.rmSync(file, { force: true }); }
+  } finally { await cleanup('remove fixture note', () => fs.rmSync(file, { force: true })); }
 });

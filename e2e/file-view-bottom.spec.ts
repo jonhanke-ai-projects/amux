@@ -406,11 +406,13 @@ test('late directory and file responses cannot replace the worker current file',
 test('capped PDF and large text disclose their limits and download the complete original',async({page})=>{
   const dir=await mkdtemp(join(tmpdir(),'amux-file-caps-'));
   try{
-    const fixtures={'large.txt':Buffer.from('Large evidence.\n'.repeat(16000)+end),'many-pages.pdf':pdfBytes(31)};
+    // Just past the viewer's 5,000,000-character text limit (it was 200,000 until
+    // a 410 KB note was cut in half, 2026-10-20).
+    const fixtures={'large.txt':Buffer.from('Large evidence.\n'.repeat(312600)+end),'many-pages.pdf':pdfBytes(31)};
     await page.goto('/');await page.setViewportSize(sizes[1]);
     for(const [name,bytes] of Object.entries(fixtures)){
       const file=join(dir,name);await writeFile(file,bytes);await page.evaluate(p=>(window as any).openFilePreview(p),file);
-      const note=name.endsWith('.pdf')?'Showing 30 of 31 pages — use Download to open the full document.':'... (truncated at 200KB)';
+      const note=name.endsWith('.pdf')?'Showing 30 of 31 pages — use Download to open the full document.':'... (truncated at 5MB)';
       await expect(page.locator('#file-body')).toContainText(note,{timeout:30000});await fits(page);await finalLine(page,'#file-body',true,note);
       await page.locator('#file-menu-btn').click();
       const downloading=page.waitForEvent('download');await page.locator('#file-download-btn').click();const download=await downloading;

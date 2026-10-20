@@ -1470,6 +1470,25 @@
   .md-content blockquote { border-left: 3px solid var(--border); margin: 0 0 10px; padding: 2px 12px; color: var(--dim); }
   .md-content hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
   .md-content a { color: var(--accent); text-decoration: underline; }
+  /* Math (KaTeX) and Obsidian callouts in rendered markdown. */
+  .md-content .md-math-display { display: block; margin: 0.7em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+  .md-content .md-math-error { color: var(--danger, #cf222e); font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.85em; }
+  .md-content .md-callout { --c: 88,166,255; margin: 0.8em 0; padding: 10px 14px; border-radius: 8px;
+    background: rgba(var(--c), 0.08); border-left: 3px solid rgb(var(--c)); }
+  .md-content .md-callout-title { font-weight: 650; color: rgb(var(--c)); margin: 0 0 4px; }
+  .md-content details.md-callout > summary.md-callout-title { cursor: pointer; margin: 0; list-style-position: inside; }
+  .md-content details.md-callout[open] > summary.md-callout-title { margin-bottom: 4px; }
+  .md-content .md-callout-body > :last-child { margin-bottom: 0; }
+  .md-content .md-callout-abstract { --c: 0,191,188; }
+  .md-content .md-callout-tip { --c: 0,191,165; }
+  .md-content .md-callout-success { --c: 8,185,78; }
+  .md-content .md-callout-question { --c: 236,117,0; }
+  .md-content .md-callout-warning { --c: 236,117,0; }
+  .md-content .md-callout-danger { --c: 233,49,71; }
+  .md-content .md-callout-example { --c: 120,82,238; }
+  .md-content .md-callout-quote { --c: 158,158,158; }
+  .md-content .md-anchor-target { animation: md-anchor-flash 1.6s ease-out; border-radius: 4px; }
+  @keyframes md-anchor-flash { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
   .md-content strong { font-weight: 700; }
   .md-content em { font-style: italic; }
   .md-content del { color: var(--dim); text-decoration: line-through; }
