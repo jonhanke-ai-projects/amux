@@ -39506,6 +39506,16 @@ async function fetchBoard() {
   // phone. Fetched once, not on every board poll.
   if (!_boardViewsLoaded) { _boardViewsLoaded = true; await _boardViewsLoad(); }
   const snapshotEpoch = _boardSnapshotEpoch;
+  // The change-feed head is read BEFORE the board, so the board it seeds is at
+  // least as new. Read after (as it was), a card created between the two reads
+  // was in neither: missing from this data and behind the cursor, so no later
+  // invalidation brought it back (golden_realtime_convergence, 2 of 5 cards).
+  // Changes between the two reads are replayed instead, and a patch is idempotent.
+  let cdcHead = 0;
+  try {
+    const cr = await fetch(API + '/api/board/changes?since_seq=0&limit=1');
+    if (cr.ok) cdcHead = (await cr.json()).cursor || 0;
+  } catch (e2) {}
   try {
     const boardHeaders = {};
     if (_boardEtag) boardHeaders['If-None-Match'] = _boardEtag;
@@ -39612,11 +39622,8 @@ async function fetchBoard() {
       renderBoard();
       _nudgeWorkersOnBoardChange();
     }
-    // Seed CDC cursor so subsequent invalidations can use granular updates
-    try {
-      const cr = await fetch(API + '/api/board/changes?since_seq=0&limit=1');
-      if (cr.ok) { const cd = await cr.json(); if (cd.cursor && readGeneration === _boardReadAppliedGeneration) _cdcSeq = cd.cursor; }
-    } catch (e2) {}
+    // Seed the CDC cursor so later invalidations patch instead of re-reading.
+    if (cdcHead && readGeneration === _boardReadAppliedGeneration) _cdcSeq = cdcHead;
   } catch(e) {
     if (readGeneration < _boardReadAppliedGeneration) {
       amuxTrack('board_read_superseded', {read_generation:readGeneration, current_generation:_boardReadAppliedGeneration, outcome:'error', measured:true, n_considered:1});
