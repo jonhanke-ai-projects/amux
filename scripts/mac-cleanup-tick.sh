@@ -1010,6 +1010,41 @@ reap_test_orphans() { # <dry:0|1>
   [ -z "$ex" ] || echo "mac-cleanup:   e.g. $ex (full list in $STATE_DIR/test-orphans.log)"
 }
 
+# An app's crash handler left behind by an update: parent gone (ppid 1) and its
+# own executable no longer on disk. It keeps forking children that exec that
+# missing path and die before exec (SIGTRAP), one crash report each. Mac crashes
+# RCA 20261019-195257: ChatGPT's v154 browser_crashpad_handler, orphaned since
+# 10-08 after the app moved to v155, crash-looped 8 times in 3 minutes. Stopping
+# it loses nothing: the app starts a fresh handler from its current version.
+reap_orphan_crash_handlers() { # <dry:0|1>
+  local DRY=${1:-0} pid ppid puid et args exe comm found=0 stopped=0
+  while read -r pid ppid puid et args; do
+    [ "$ppid" = 1 ] && [ "$puid" = "$(id -u)" ] || continue
+    case "$args" in *[Cc]rashpad*[Hh]andler*) ;; *) continue ;; esac
+    # The executable is the argv prefix whose basename is a crash handler's
+    # name, and the kernel's own short name for the process (ps -c: the
+    # executable's basename, cut to 15 characters) must begin that basename.
+    # So a script or a tool that merely names a handler in its args is never
+    # matched, and neither is any other process whose binary an update deleted.
+    exe=$(printf '%s' "$args" | sed -nE 's#^(/.*/[A-Za-z0-9_.-]*([Cc]rashpad_[Hh]andler|CrashpadHandler))( .*)?$#\1#p')
+    [ -n "$exe" ] || continue
+    comm=$(ps -c -o comm= -p "$pid" 2>/dev/null)
+    case "${exe##*/}" in "${comm:-//}"*) ;; *) continue ;; esac   # "//" never begins a basename: no name, no match
+    [ ! -e "$exe" ] || continue
+    found=$((found+1))
+    echo "mac-cleanup:   orphaned crash handler pid $pid age $et: its executable is gone ($exe)"
+    [ "$DRY" = 1 ] && continue
+    # The pid must still be this process: re-read its args right before the signal.
+    [ "$(ps -o args= -p "$pid" 2>/dev/null)" = "$args" ] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.3; kill -0 "$pid" 2>/dev/null && { sleep 1; kill -KILL "$pid" 2>/dev/null; }
+    if kill -0 "$pid" 2>/dev/null; then echo "mac-cleanup: FAILED to stop orphaned crash handler pid=$pid"; continue; fi
+    stopped=$((stopped+1))
+  done < <($ORPHAN_PS_CMD 2>/dev/null)
+  ORPHAN_HANDLERS_STOPPED=$stopped
+  echo "mac-cleanup: orphaned crash handlers (ppid 1, executable deleted by an app update): found ${found}, stopped ${stopped}$( [ "$DRY" = 1 ] && [ "$found" -gt 0 ] && echo " (dry run)") (verdict=orphan_crash_handlers)"
+}
+
 # Prints "<open_files> <max_files> <user_procs> <max_user_procs> <inode_pct> <zombies> <top_zombie_ppid> <its_zombies>".
 limits_reading() {
   local f mf p mp ip z zp
@@ -1041,16 +1076,50 @@ check_limits() {
   echo "mac-cleanup: limits: open files ${f}/${mf}, user processes ${p}/${mp}, inodes ${ip}% used, zombies ${z}$( [ -n "$zname" ] && echo " (most under $zname pid $zpid: $zn)")$( [ -z "$out" ] && echo ", none at a limit" || echo ", $(printf '%s\n' "$out" | grep -c .) constraint(s)")"
 }
 
+# Crash counts per app over the last <minutes>, as "<count> <app>" lines, most
+# first. A report's crash time is the EARLIER of the stamp macOS puts in its
+# name (-YYYY-MM-DD-HHMMSS, local) and its mtime: macOS rewrites a report long
+# after the crash (seen: a 12:02:37 crash rewritten at 19:55), so mtime alone
+# kept a loop that ended at 12:05 "live" and re-escalated it 8h later (Mac
+# crashes RCA 20261019-195257). A rewrite only moves mtime later, so the
+# earlier of the two is never newer than the crash.
+crash_counts() { # <dir> <minutes> [app]
+  python3 - "$1" "$2" "${3:-}" <<'PY' 2>/dev/null
+import collections, os, re, sys, time
+d, mins, only = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+cut = time.time() - mins * 60
+c = collections.Counter()
+for n in os.listdir(d):
+    p = os.path.join(d, n)
+    if not os.path.isfile(p):
+        continue
+    app = re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", n)
+    if only and app != only:
+        continue
+    t = os.stat(p).st_mtime
+    m = re.search(r"[-_]([0-9]{4}-[0-9]{2}-[0-9]{2})-([0-9]{6})", n)
+    if m:
+        try:
+            t = min(t, time.mktime(time.strptime(m.group(1) + m.group(2), "%Y-%m-%d%H%M%S")))
+        except ValueError:
+            pass
+    if t >= cut:
+        c[app] += 1
+for app, k in c.most_common():
+    print(k, app)
+PY
+}
+
 check_crash_reports() { # <dry:0|1>
   local DRY=${1:-0} top name cnt pruned=0 old
   if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
   # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
-  top=$(find "$CRASH_DIR" -maxdepth 1 -type f -mtime -1 2>/dev/null | sed 's#.*/##; s/[-_][0-9]\{4\}-[0-9][0-9]-[0-9][0-9].*//' | sort | uniq -c | sort -rn | head -3)
+  top=$(crash_counts "$CRASH_DIR" 1440 | head -3)
   local recent
   while read -r cnt name; do
     [ -n "${cnt:-}" ] || continue
     if [ "$cnt" -ge "$CRASH_LOOP_N" ]; then
-      recent=$(find "$CRASH_DIR" -maxdepth 1 -type f -mmin -"$CRASH_RECENT_MIN" -name "${name}[-_]*" 2>/dev/null | grep -c . || true)
+      recent=$(crash_counts "$CRASH_DIR" "$CRASH_RECENT_MIN" "$name" | awk '{print $1}'); recent=${recent:-0}
       if [ "$recent" -gt 0 ]; then
         HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
       else
@@ -1265,7 +1334,7 @@ for o in m.get("top_unattributed") or []:
 system_health() { # <dry:0|1>
   HEALTH_VERDICTS=""; CPU_RESTARTED=0; TEST_ORPHANS_STOPPED=0; CRASH_PRUNED=0
   if [ "$HEALTH_PROBES" = off ]; then echo "mac-cleanup: system health: probes off (AMUX_CLEANUP_HEALTH_PROBES=off)"; return 0; fi
-  check_cpu_hogs "$1"; reap_test_orphans "$1"; check_limits; check_crash_reports "$1"
+  check_cpu_hogs "$1"; reap_test_orphans "$1"; reap_orphan_crash_handlers "$1"; check_limits; check_crash_reports "$1"
   check_launchd_failing; check_network; check_thermal; check_agent_volume; check_utilization "$1"; check_self_runs
   HEALTH_VERDICTS=$(printf '%s\n' "$HEALTH_VERDICTS" | grep . || true)
 }

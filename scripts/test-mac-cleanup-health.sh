@@ -106,8 +106,9 @@ check "an empty probe is unmeasured, not healthy"     yes   "$(has "$out" 'limit
 
 echo "4. crash reports: a crash loop escalates, old reports are pruned, nothing else is"
 CRASH_DIR="$FIX/crash"; mkdir -p "$CRASH_DIR"
-for i in $(seq 1 12); do : > "$CRASH_DIR/Looper-2026-10-13-0101$(printf '%02d' "$i").ips"; done
-: > "$CRASH_DIR/Once-2026-10-13-010101.ips"
+stamp() { python3 -c 'import sys,time; print(time.strftime("%Y-%m-%d-%H%M%S", time.localtime(time.time() - float(sys.argv[1]))))' "$1"; }   # a name stamp <s> ago
+for i in $(seq 1 12); do : > "$CRASH_DIR/Looper-$(stamp $((i * 60))).ips"; done
+ONCE="Once-$(stamp 120).ips"; : > "$CRASH_DIR/$ONCE"
 : > "$CRASH_DIR/Old-2020-01-01-010101.ips"; : > "$CRASH_DIR/Old-2020-01-02-010101.crash"; : > "$CRASH_DIR/notes.txt"
 touch -t 202001010000 "$CRASH_DIR/Old-2020-01-01-010101.ips" "$CRASH_DIR/Old-2020-01-02-010101.crash" "$CRASH_DIR/notes.txt"
 HEALTH_VERDICTS=""; out=$(check_crash_reports 1; echo "V=$HEALTH_VERDICTS")
@@ -120,18 +121,50 @@ check "the line names the crashers with counts"       yes   "$(has "$out" 'Loope
 check "old reports are pruned"                        no    "$([ -e "$CRASH_DIR/Old-2020-01-01-010101.ips" ] && echo yes || echo no)"
 check "the count is reported"                         yes   "$(has "$out" 'pruned 2 older than 30d')"
 check "a file that is not a crash report is kept, however old" yes "$([ -e "$CRASH_DIR/notes.txt" ] && echo yes || echo no)"
-check "a recent report is kept"                       yes   "$([ -e "$CRASH_DIR/Once-2026-10-13-010101.ips" ] && echo yes || echo no)"
+check "a recent report is kept"                       yes   "$([ -e "$CRASH_DIR/$ONCE" ] && echo yes || echo no)"
 
 echo "4b. a loop that stopped crashing 6h+ ago is reported, not escalated (RCA crashes 20261017-022150)"
 CRASH_DIR="$FIX/crash-ended"; mkdir -p "$CRASH_DIR"
-for i in $(seq 10 21); do : > "$CRASH_DIR/git-2026-10-16-1${i}00.ips"; done
+for i in $(seq 10 21); do : > "$CRASH_DIR/git-$(stamp $((8 * 3600 + i * 60))).ips"; done
 perl -e 'my $t = time - 8*3600; utime $t, $t, @ARGV' "$CRASH_DIR"/git-*.ips
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
 check "no constraint for a loop that ended"           no    "$(has "$HEALTH_VERDICTS" '^crashes git')"
 check "it says so, with a verdict"                    yes   "$(has "$out" 'git crashed 12 times in 24h but none in the last 6h')"
-: > "$CRASH_DIR/git-2026-10-16-230000.ips"   # one fresh crash: the loop is live again
+# macOS rewrote an old report just now: its mtime is fresh, its crash is 8h old.
+touch "$(ls "$CRASH_DIR"/git-*.ips | head -1)"
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
+check "a rewritten old report does not revive an ended loop" no "$(has "$HEALTH_VERDICTS" '^crashes git')"
+: > "$CRASH_DIR/git-$(stamp 30).ips"   # one fresh crash: the loop is live again
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
 check "a fresh crash makes it a constraint again"     yes   "$(has "$HEALTH_VERDICTS" '^crashes git crashed 13 times in 24h')"
+
+echo "4c. an orphaned crash handler whose executable is gone is stopped (RCA crashes 20261019-195257)"
+# Real processes, each pid from $! (never a pattern match), each orphaned to
+# launchd. A compiled stand-in: macOS kills a copied system binary on launch.
+H="$FIX/App.app/Versions/154/Helpers"; mkdir -p "$H"
+if printf '#include <unistd.h>\nint main(void){sleep(60);return 0;}\n' | cc -x c - -o "$FIX/handler.bin" 2>/dev/null; then
+cp "$FIX/handler.bin" "$H/browser_crashpad_handler"; cp "$FIX/handler.bin" "$FIX/kept_crashpad_handler"; cp "$FIX/handler.bin" "$FIX/other_tool"
+printf '#!/bin/bash\nsleep 60\n' > "$FIX/names_crashpad_handler.sh"; chmod +x "$FIX/names_crashpad_handler.sh"
+# Not inside $(...): an orphan started there dies before it is measured.
+spawn() { local f=$1; shift; ( ( exec "$@" >/dev/null 2>&1 ) & echo $! > "$f" ); }
+spawn "$FIX/gone.pid" "$H/browser_crashpad_handler" --monitor-self; gone=$(cat "$FIX/gone.pid")
+spawn "$FIX/kept.pid" "$FIX/kept_crashpad_handler" --monitor-self; kept=$(cat "$FIX/kept.pid")
+spawn "$FIX/named.pid" /bin/bash "$FIX/names_crashpad_handler.sh" "$FIX/gone/browser_crashpad_handler"; named=$(cat "$FIX/named.pid")
+# Any other orphan whose binary an upgrade deleted is not a crash handler, even if its args name one.
+spawn "$FIX/other.pid" "$FIX/other_tool" --report-to=browser_crashpad_handler; other=$(cat "$FIX/other.pid")
+sleep 0.5; rm -f "$H/browser_crashpad_handler" "$FIX/other_tool"
+ORPHAN_PS_CMD="ps -o pid=,ppid=,uid=,etime=,args= -p $gone,$kept,$named,$other"
+out=$(reap_orphan_crash_handlers 1)
+check "a dry run names the orphan whose executable is gone" yes "$(has "$out" "pid $gone .*executable is gone")"
+check "and stops nothing"                             yes   "$(kill -0 "$gone" 2>/dev/null && echo yes || echo no)"
+reap_orphan_crash_handlers 0 > "$FIX/orph.out"; out=$(cat "$FIX/orph.out")
+check "the orphan with a deleted executable is stopped" no  "$(kill -0 "$gone" 2>/dev/null && echo yes || echo no)"
+check "control: a handler whose executable exists is kept" yes "$(kill -0 "$kept" 2>/dev/null && echo yes || echo no)"
+check "control: a script that only names a missing handler is kept" yes "$(kill -0 "$named" 2>/dev/null && echo yes || echo no)"
+check "control: another orphan with a deleted binary is kept" yes "$(kill -0 "$other" 2>/dev/null && echo yes || echo no)"
+check "the line counts it, with its verdict"          yes   "$(has "$out" 'found 1, stopped 1 (verdict=orphan_crash_handlers)')"
+for p in "$gone" "$kept" "$named" "$other"; do if [[ "$p" =~ ^[0-9]+$ ]]; then kill "$p" 2>/dev/null || true; fi; done
+else echo "  skip: no C compiler to build a stand-in crash handler"; fi
 
 echo "5. report-only probes: launchd, network, thermal"
 printf 'PID\tStatus\tLabel\n-\t0\tcom.amux.ok\n-\t78\tcom.amux.broken\n123\t1\tcom.amux.running\n-\t1\tcom.apple.noise\n' > "$FIX/launchd"
@@ -157,7 +190,8 @@ HEALTH_PROBES=off; out=$(system_health 0)
 check "nothing probed"                                ""    "$(cat "$FIX/probe.hits")"
 check "and it says the probes are off"                yes   "$(has "$out" 'probes off')"
 HEALTH_PROBES=on; system_health 0 >/dev/null
-check "control: switched on, every probe runs"        "cpu orph lim net" "$(tr '\n' ' ' < "$FIX/probe.hits" | sed 's/ $//')"
+# orph twice: leftover test processes and orphaned crash handlers both read the process list.
+check "control: switched on, every probe runs"        "cpu orph orph lim net" "$(tr '\n' ' ' < "$FIX/probe.hits" | sed 's/ $//')"
 
 echo "7. the whole tick carries the section, its constraints and its counters (macOS only)"
 if [ "$(uname)" = Darwin ]; then
