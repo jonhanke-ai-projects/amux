@@ -4704,7 +4704,12 @@ pub async fn list_sessions_legacy(
     headers: axum::http::HeaderMap,
     axum::extract::RawQuery(q): axum::extract::RawQuery,
 ) -> Response {
-    if crate::api::fs::parse_qs(q.as_deref().unwrap_or("")).iter().any(|(k, v)| k == "view" && v == "picker") {
+    let qs = crate::api::fs::parse_qs(q.as_deref().unwrap_or(""));
+    // A header as well as the query: the dashboard sends the header, so its
+    // request URL (which tests and the service worker match on) is unchanged.
+    let dashboard_view = qs.iter().any(|(k, v)| k == "view" && v == "dashboard")
+        || headers.get("x-amux-view").and_then(|v| v.to_str().ok()) == Some("dashboard");
+    if qs.iter().any(|(k, v)| k == "view" && v == "picker") {
         let body = picker_sessions().await;
         let body = filter_isolated_for_peer(&body, &headers);
         let body = filter_for_local_member(&body, &headers);
@@ -4736,6 +4741,7 @@ pub async fn list_sessions_legacy(
         Ok(json) => {
             let body = filter_isolated_for_peer(&json, &headers);
             let body = filter_for_local_member(&body, &headers);
+            let body = if dashboard_view { dashboard_slim(&body) } else { body };
             // CONTENT-hash ETag (AMUX-3504), not a store-rev one: this payload
             // is part store, part scrape (pane previews, token counts), so a
             // rev ETag would serve stale 304s when scrape state moved. The
@@ -4773,6 +4779,28 @@ pub async fn list_sessions_legacy(
         }
         Err(e) => discovery_failure(&e, e.to_string()),
     }
+}
+
+/// Fields the dashboard never reads, dropped from `?view=dashboard`.
+///
+/// Measured 2026-10-19 over 197 sessions: worktree_integration was 166KB and
+/// status_evidence 80KB of a 920KB list, and the dashboard parses and
+/// re-stringifies the whole list on every change (~8 a minute on a busy
+/// fleet). CLI and API callers keep the full shape; only the dashboard asks.
+const DASHBOARD_UNREAD_FIELDS: &[&str] = &["worktree_integration", "status_evidence"];
+
+fn dashboard_slim(body: &str) -> String {
+    let Ok(Value::Array(mut rows)) = serde_json::from_str::<Value>(body) else {
+        return body.to_string();
+    };
+    for row in &mut rows {
+        if let Some(o) = row.as_object_mut() {
+            for k in DASHBOARD_UNREAD_FIELDS {
+                o.remove(*k);
+            }
+        }
+    }
+    Value::Array(rows).to_string()
 }
 
 /// Whether the caller is a PEER worker rather than the owner. A peer's request

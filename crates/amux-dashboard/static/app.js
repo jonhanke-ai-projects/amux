@@ -5823,7 +5823,7 @@ async function _fetchSessionsOnce() {
     // AMUX-3504: conditional fetch — the server hashes the (now byte-stable)
     // payload, so an unchanged fleet answers 304 with no body. That is the
     // whole cost of the reconnect/resume refetches intermittent mobile fires.
-    const r = await _stateQuery.response(['sessions', 'response'], () => fetch(API + '/api/sessions', _sessEtag ? { headers: { 'If-None-Match': _sessEtag } } : undefined));
+    const r = await _stateQuery.response(['sessions', 'response'], () => fetch(API + '/api/sessions', { headers: _sessEtag ? { 'If-None-Match': _sessEtag, 'X-Amux-View': 'dashboard' } : { 'X-Amux-View': 'dashboard' } }));
     if (r.status === 304) {
       consecutiveFailures = 0;
       _lastDataTime = Date.now();
