@@ -7552,14 +7552,17 @@ let _peekDecoratedMenuLogged = false;
 function _renderPeekWorkerActions(s) {
   const menu = document.getElementById('peek-more-dropdown');
   if (!menu) return;
-  const html = _renderWorkerActionMenu(s, 'peek')
+  // Focus mode first (Ethan, 2026-10-20): it was below the whole worker action
+  // list, off-screen on a phone, for the control used most from this menu.
+  const html = '<div class="peek-more-item" id="peek-focus-btn" role="menuitem" '
+    + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
+    + '<span class="mi">&#x25B4;</span>Focus mode</div>'
+    + '<div class="peek-more-sep"></div>'
+    + _renderWorkerActionMenu(s, 'peek')
     + '<div class="peek-more-sep"></div>'
     + '<div class="peek-more-item" id="peek-file-browser-btn" data-peek-action="file-browser" role="menuitem" '
     + 'onclick="event.stopPropagation();_closePeekMore();togglePeekSplit()">'
     + '<span class="mi">&#x1F4C2;</span>File browser (split)</div>'
-    + '<div class="peek-more-item" id="peek-focus-btn" role="menuitem" '
-    + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
-    + '<span class="mi">&#x25B4;</span>Focus mode</div>'
     + '<div class="peek-more-item" id="peek-render-steps-btn" role="menuitem" '
     + 'onclick="event.stopPropagation();_closePeekMore();_peekShowRenderSteps()">'
     + '<span class="mi">&#x2699;</span>Rendering steps</div>'
