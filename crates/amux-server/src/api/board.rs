@@ -987,16 +987,25 @@ async fn board_changes(
         }
     };
 
-    match crate::runtime_jobs::cdc_poller::changes_since(&conn, since_seq, limit) {
-        Ok(rows) => {
-            // The log's head, read from the log. The poller's copy trails it by
-            // up to one 200ms tail and reads 0 right after a restart, and a
-            // client seeded with 0 has no change feed: every invalidation fell
-            // back to a full board read until some later read re-seeded it.
-            let head: i64 = conn
-                .query_row("SELECT COALESCE(MAX(seq), 0) FROM board_change_log", [], |r| r.get(0))
-                .unwrap_or(0);
-            let cursor = head.max(crate::runtime_jobs::cdc_poller::last_seq());
+    // The rows and the head come from ONE read snapshot. Read as two
+    // statements, a write landing between them gave a cursor past rows this
+    // response never carried, and the client skipped those cards for good: a
+    // burst of five creates converged on zero (golden_realtime_convergence in
+    // CI). The head is read from the log, not the poller, whose copy trails by
+    // up to one 200ms tail, reads 0 after a restart, and is taken at yet
+    // another moment.
+    let read = conn.unchecked_transaction().and_then(|tx| {
+        let rows = crate::runtime_jobs::cdc_poller::changes_since(&tx, since_seq, limit)?;
+        let head: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) FROM board_change_log", [], |r| r.get(0))?;
+        Ok((rows, head))
+    });
+    match read {
+        Ok((rows, head)) => {
+            let poller = crate::runtime_jobs::cdc_poller::last_seq();
+            if poller > head {
+                tracing::warn!(verdict = "board_changes_poller_ahead", poller, head, "poller cursor is past the log head it reads");
+            }
+            let cursor = head;
             Json(json!({
                 "changes": rows,
                 "cursor": cursor,

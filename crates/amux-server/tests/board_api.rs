@@ -6855,6 +6855,49 @@ async fn change_cursor_is_the_logs_head_without_waiting_for_the_poller() {
     assert!(hits >= 2, "a desc edit and an archive must each reach the feed: {fed}");
 }
 
+/// Walking the change feed from cursor to cursor sees every change while
+/// writes are landing. The rows and the head were read as two statements, so a
+/// write between them returned a cursor past rows the response never carried,
+/// and those cards were skipped for good (golden_realtime_convergence: five
+/// creates, zero converged).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn change_feed_never_skips_a_row_written_during_the_read() {
+    let (app, _store, dir) = app_with_store();
+    let db = dir.path().join("amux-test.db");
+    const N: usize = 3000;
+    let writer = std::thread::spawn(move || {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        for i in 0..N {
+            c.execute(
+                "INSERT INTO board_change_log (table_name, row_id, operation, changed_at) VALUES ('issues', ?1, 'UPDATE', 0)",
+                [format!("RACE-{i}")],
+            )
+            .unwrap();
+        }
+    });
+    let mut seen = std::collections::HashSet::new();
+    let mut cursor = 0i64;
+    let mut done = false;
+    loop {
+        let finished = writer.is_finished();
+        let (st, _, v) = send(&app, "GET", &format!("/api/board/changes?since_seq={cursor}&limit=5000"), None).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        for c in v["changes"].as_array().expect("changes") {
+            if let Some(id) = c["row_id"].as_str().filter(|s| s.starts_with("RACE-")) {
+                seen.insert(id.to_string());
+            }
+        }
+        cursor = v["cursor"].as_i64().expect("cursor");
+        if done {
+            break;
+        }
+        done = finished;
+    }
+    writer.join().unwrap();
+    assert_eq!(seen.len(), N, "the feed skipped {} of {N} rows written while it was read", N - seen.len());
+}
+
 /// AMUX-3715: archiving a card that carries a live trigger says so, and one
 /// without a trigger does not.
 ///
