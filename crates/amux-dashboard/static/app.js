@@ -40247,6 +40247,13 @@ function _bindMdFileLinks(container) {
   if (!container || container._mdLinksBound) return;
   container._mdLinksBound = true;
   container.addEventListener('click', (e) => {
+    const jump = e.target.closest && e.target.closest('.md-anchor-link');
+    if (jump && container.contains(jump)) {
+      e.preventDefault();
+      e.stopPropagation();
+      _mdScrollToAnchor(container, jump.dataset.anchor || '');
+      return;
+    }
     const a = e.target.closest && e.target.closest('.md-file-link');
     if (!a || !container.contains(a) || !a.dataset.file) return;
     e.preventDefault();
@@ -40261,7 +40268,10 @@ function _bindMdFileLinks(container) {
         || (typeof peekSession !== 'undefined' && peekSession) || null;
       openExplore(a.dataset.file, sess);
     } else {
-      openFilePreview(a.dataset.file);
+      const slug = a.dataset.anchor;
+      const opened = openFilePreview(a.dataset.file);
+      // [[Note#Heading]]: open the note, then scroll to the heading.
+      if (slug) Promise.resolve(opened).then(() => setTimeout(() => _mdScrollToAnchor(document.getElementById('file-body'), slug), 80));
     }
   });
 }
@@ -40290,6 +40300,137 @@ function _renderFrontmatterBlock(entries) {
     + '<table style="border-collapse:collapse;margin:4px 0 12px;">' + rows + '</table></details>';
 }
 
+// A heading's id, and the anchor a link to it uses: one function for both, so
+// [[#Heading]] always lands on the heading it names.
+function _mdSlug(text) {
+  return String(text || '').replace(/<[^>]+>/g, '').toLowerCase().trim()
+    .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+}
+
+// OBSIDIAN WIKILINKS (Ethan, 2026-10-20: a lesson table of [[#Lesson 1 ...|1. ...]]
+// links showed as text, "these should link"). [[#Heading]] scrolls to that
+// heading in the same note; [[Note]], [[Note|label]] and [[Note#Heading]] open
+// the note beside the current file (".md" added when there is no extension).
+// Rendered as data-attribute links, handled by _bindMdFileLinks: a bare "#"
+// href would reach the dashboard's hash routing.
+let _mdWikiBase = '';
+function _mdUseWikiLinks() {   // and math (the same marked.use call)
+  if (typeof marked === 'undefined' || marked._amuxWikiLinks) return;
+  marked._amuxWikiLinks = true;
+  marked.use({ extensions: [{
+    // $$...$$ on its own lines: a display formula.
+    name: 'blockMath', level: 'block',
+    start(src) { const i = src.indexOf('$$'); return i < 0 ? undefined : i; },
+    tokenizer(src) {
+      const m = /^\$\$([\s\S]+?)\$\$[ \t]*(?:\n|$)/.exec(src);
+      if (m) return { type: 'blockMath', raw: m[0], text: m[1].trim() };
+    },
+    renderer(t) { return '<div class="md-math md-math-display">' + esc(t.text) + '</div>\n'; },
+  }, {
+    // $...$ inline (and $$...$$ inside a line). Obsidian's rules keep prices
+    // as text: no space just inside either $, no digit right after the
+    // closing $, and \$ is a literal dollar sign.
+    name: 'inlineMath', level: 'inline',
+    start(src) {
+      for (let i = src.indexOf('$'); i >= 0; i = src.indexOf('$', i + 1)) if (i === 0 || src[i - 1] !== '\\') return i;
+      return undefined;
+    },
+    tokenizer(src) {
+      let m = /^\$\$([^$\n]+?)\$\$/.exec(src);
+      if (m) return { type: 'inlineMath', raw: m[0], text: m[1].trim(), display: true };
+      m = /^\$(?![\s$])((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\d)/.exec(src);
+      if (m) return { type: 'inlineMath', raw: m[0], text: m[1], display: false };
+    },
+    renderer(t) { return '<span class="md-math' + (t.display ? ' md-math-display' : '') + '">' + esc(t.text) + '</span>'; },
+  }, {
+    name: 'wikilink', level: 'inline',
+    start(src) { const i = src.indexOf('[['); return i < 0 ? undefined : i; },
+    tokenizer(src) {
+      const m = /^\[\[([^\[\]|\n]+?)(?:\|([^\[\]\n]+?))?\]\]/.exec(src);
+      if (m) return { type: 'wikilink', raw: m[0], target: m[1].trim(), alias: (m[2] || '').trim() };
+    },
+    renderer(t) {
+      const hash = t.target.indexOf('#');
+      const note = (hash < 0 ? t.target : t.target.slice(0, hash)).trim();
+      const heading = hash < 0 ? '' : t.target.slice(hash + 1).trim();
+      const label = esc(t.alias || (note ? note + (heading ? ' > ' + heading : '') : heading));
+      const anchor = heading ? ' data-anchor="' + esc(_mdSlug(heading)) + '"' : '';
+      if (!note) return '<a href="#" class="md-anchor-link"' + anchor + '>' + label + '</a>';
+      const file = _resolveFileLink(_mdWikiBase, /\.[a-z0-9]{1,6}$/i.test(note) ? note : note + '.md');
+      if (!file) return label;
+      return '<a href="#" class="md-file-link" data-file="' + esc(file) + '"' + anchor + ' title="' + esc(file) + '">' + label + '</a>';
+    },
+  }] });
+}
+
+// Obsidian's callout types, grouped by the colour they share there.
+function _mdCalloutFamily(type) {
+  const fam = { note: 'note', info: 'note', todo: 'note', abstract: 'abstract', summary: 'abstract', tldr: 'abstract',
+    tip: 'tip', hint: 'tip', important: 'tip', success: 'success', check: 'success', done: 'success',
+    question: 'question', help: 'question', faq: 'question', warning: 'warning', caution: 'warning', attention: 'warning',
+    failure: 'danger', fail: 'danger', missing: 'danger', danger: 'danger', error: 'danger', bug: 'danger',
+    example: 'example', quote: 'quote', cite: 'quote' };
+  return fam[type] || 'note';
+}
+
+// Math placeholders (.md-math) become KaTeX wherever markdown renders. KaTeX
+// loads once, only on a page with math; until then, or offline, the TeX
+// source shows, and a formula that does not parse shows its source in red.
+let _katexLib = null;
+function _katexLoad() {
+  if (!_katexLib) {
+    const base = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/';
+    if (!document.getElementById('katex-css')) {
+      const l = document.createElement('link');
+      l.id = 'katex-css'; l.rel = 'stylesheet'; l.crossOrigin = 'anonymous'; l.href = base + 'katex.min.css';
+      document.head.appendChild(l);
+    }
+    _katexLib = import(base + 'katex.mjs').then(m => m.default).catch(e => { _katexLib = null; throw e; });
+  }
+  return _katexLib;
+}
+async function _mathHydrate(root) {
+  const els = [...root.querySelectorAll('.md-math:not([data-math-done])')];
+  if (!els.length) return;
+  let katex;
+  try { katex = await _katexLoad(); } catch (e) { console.warn('[amux] KaTeX could not load; math stays as source', e); return; }
+  // Visible formulas first, then the rest in small batches with a yield
+  // between them: a 512-formula note drawn in one loop held the main thread
+  // for a quarter of a second.
+  const vh = innerHeight;
+  const dist = el => { const r = el.getBoundingClientRect(); return r.bottom < 0 ? -r.bottom + vh : Math.max(0, r.top - vh); };
+  els.sort((a, b) => dist(a) - dist(b));
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i];
+    if (el.hasAttribute('data-math-done') || !el.isConnected) continue;
+    el.setAttribute('data-math-done', '1');
+    const tex = el.textContent || '';
+    try { katex.render(tex, el, { displayMode: el.classList.contains('md-math-display'), throwOnError: false, trust: false, output: 'html' }); }
+    catch (e) { el.textContent = tex; el.classList.add('md-math-error'); }
+    if (i % 25 === 24) await new Promise(r => setTimeout(r, 0));
+  }
+}
+let _mathPending = false;
+new MutationObserver(records => {
+  if (_mathPending) return;
+  for (const r of records) for (const n of r.addedNodes) {
+    if (n.nodeType === 1 && (n.classList?.contains('md-math') || n.querySelector?.('.md-math:not([data-math-done])'))) {
+      _mathPending = true;
+      requestAnimationFrame(() => { _mathPending = false; _mathHydrate(document.body); });
+      return;
+    }
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
+
+function _mdScrollToAnchor(root, slug) {
+  const el = root && slug ? root.querySelector('#' + CSS.escape(slug)) : null;
+  if (!el) { showToast('No heading "' + slug.replace(/-/g, ' ') + '" in this note'); return false; }
+  el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  el.classList.add('md-anchor-target');
+  setTimeout(() => el.classList.remove('md-anchor-target'), 1600);
+  return true;
+}
+
 function renderMarkdown(raw, basePath) {
   if (!raw) return '';
   // Use marked.js for full GFM support (tables, task lists, strikethrough, etc.)
@@ -40299,9 +40440,7 @@ function renderMarkdown(raw, basePath) {
       // Add id to headings so #anchor links work (TOC, cross-refs)
       renderer.heading = function({ tokens, depth }) {
         const text = this.parser.parseInline(tokens);
-        const slug = text.replace(/<[^>]+>/g, '').toLowerCase().trim()
-          .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
-        return '<h' + depth + ' id="' + slug + '">' + text + '</h' + depth + '>\n';
+        return '<h' + depth + ' id="' + _mdSlug(text) + '">' + text + '</h' + depth + '>\n';
       };
       // A link to ANOTHER FILE opens IN the viewer (Ethan 2026-08-13: click a
       // link in a .md and go to that file — the tubescience master absorption
@@ -40334,6 +40473,23 @@ function renderMarkdown(raw, basePath) {
         if (/\.(mp3|m4a|wav|ogg)(\?|#|$)/i.test(href || ''))
           return '<audio controls preload="metadata" src="' + h + '"' + t + '></audio>';
         return '<img src="' + h + '" alt="' + esc(text || '') + '"' + t + ' loading="lazy">';
+      };
+      _mdUseWikiLinks();
+      _mdWikiBase = basePath || '';
+      // OBSIDIAN CALLOUTS: "> [!type] Title" is a coloured box, "[!type]-"
+      // and "[!type]+" fold (closed / open). Anything else stays a quote.
+      renderer.blockquote = function({ tokens }) {
+        const body = this.parser.parse(tokens);
+        const m = /^\s*<p>\[!([a-z][\w-]*)\]([+-]?)[ \t]*([^\n<]*(?:<(?!\/p>)[^\n<]*)*)(?:\n|(?=<\/p>))/i.exec(body);
+        if (!m) return '<blockquote>\n' + body + '</blockquote>\n';
+        const type = m[1].toLowerCase();
+        const title = m[3].trim() || type[0].toUpperCase() + type.slice(1);
+        let rest = body.slice(m[0].length).replace(/^\s*<\/p>/, '').trimStart();
+        if (rest && !rest.startsWith('<')) rest = '<p>' + rest;
+        const cls = 'md-callout md-callout-' + _mdCalloutFamily(type);
+        return m[2]
+          ? '<details class="' + cls + '"' + (m[2] === '+' ? ' open' : '') + ' data-callout="' + esc(type) + '"><summary class="md-callout-title">' + title + '</summary><div class="md-callout-body">' + rest + '</div></details>\n'
+          : '<div class="' + cls + '" data-callout="' + esc(type) + '"><div class="md-callout-title">' + title + '</div><div class="md-callout-body">' + rest + '</div></div>\n';
       };
       let html = marked.parse(raw, { gfm: true, breaks: false, renderer });
       html = html.replace(/<table>/g, '<div class="table-scroll"><table>').replace(/<\/table>/g, '</table></div>');
