@@ -22,8 +22,8 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Web Dashboard","item":"https://amux.io/features/web-dashboard/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Dashboard — amux Web Dashboard & iOS App (2026)","description":"amux's web dashboard shows all your running Claude Code agents in real time — live output, task plans, kanban board, CRM, scheduler, and more.","url":"https://amux.io/features/web-dashboard/","datePublished":"2026-07-11","dateModified":"2026-07-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Does amux have a native iOS app?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux – Agent Multiplexer is available on the App Store (id6760410435). It's a native SwiftUI app with push notifications. The same dashboard also works as a PWA — tap Share → Add to Home Screen in Safari on iOS, or Install in Chrome on Android."}},{"@type":"Question","name":"Can I monitor multiple Claude Code agents at the same time in the dashboard?","acceptedAnswer":{"@type":"Answer","text":"Yes. The Sessions tab shows all registered agents simultaneously with live status dots, last output snippets, and token spend. Tap or click any session card to open the Peek panel and see that agent's live terminal output stream."}},{"@type":"Question","name":"Is the amux dashboard real-time?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux uses Server-Sent Events (SSE) — all connected clients, including your phone and desktop, see changes within ~2 seconds of any agent update. A 10-second server ping keeps zombie connections from silently dying and triggering a reconnect delay."}},{"@type":"Question","name":"What is the peek panel?","acceptedAnswer":{"@type":"Answer","text":"The peek panel is a slide-out drawer showing live terminal output for a specific agent session. It includes the plan strip (Claude Code's active task list), subagent switcher (navigate between main agent and subagent transcripts), load-earlier-output bar (scroll back through the full session log), quick-action chips (compact, continue, status), saved messages, and a steering bar for sending instructions mid-run."}},{"@type":"Question","name":"Can I use the amux dashboard from my phone while my agents run on my laptop?","acceptedAnswer":{"@type":"Answer","text":"Yes. Connect over your home network via the iOS app or PWA at https://[your-laptop-ip]:8824. For remote access, use Tailscale (free, works over any network) or the amux tunnel cloud feature which gives you a stable public HTTPS URL without opening firewall ports."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Dashboard — amux Web Dashboard & iOS App (2026)","description":"amux's web dashboard shows all your running Claude Code agents in real time — live output, task plans, kanban board, CRM, scheduler, and more.","url":"https://amux.io/features/web-dashboard/","datePublished":"2026-07-11","dateModified":"2026-10-20","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Does amux have a native iOS app?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux – Agent Multiplexer is available on the App Store (id6760410435). It's a native SwiftUI app with push notifications. The same dashboard also works as a PWA — tap Share → Add to Home Screen in Safari on iOS, or Install in Chrome on Android."}}, {"@type": "Question", "name": "Is there an amux Mac app?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. The native Mac app (macOS 12 or later, Apple silicon and Intel) opens the dashboard in its own windows and tabs, shows a Dock badge when agents need you, keeps pinned notes floating above other apps, and toggles with Control-Option-Space. Download Amux-macOS.zip from the amux GitHub release. It connects to your own amux server or your amux Cloud address."}}, {"@type": "Question", "name": "Can I monitor multiple Claude Code agents at the same time in the dashboard?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. The Sessions tab shows all registered agents simultaneously with live status dots, last output snippets, and token spend. Tap or click any session card to open the Peek panel and see that agent's live terminal output stream."}}, {"@type": "Question", "name": "Is the amux dashboard real-time?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux uses Server-Sent Events (SSE) — all connected clients, including your phone and desktop, see changes within ~2 seconds of any agent update. A 10-second server ping keeps zombie connections from silently dying and triggering a reconnect delay."}}, {"@type": "Question", "name": "What is the peek panel?", "acceptedAnswer": {"@type": "Answer", "text": "The peek panel is a slide-out drawer showing live terminal output for a specific agent session. It includes the plan strip (Claude Code's active task list), subagent switcher (navigate between main agent and subagent transcripts), load-earlier-output bar (scroll back through the full session log), quick-action chips (compact, continue, status), saved messages, and a steering bar for sending instructions mid-run."}}, {"@type": "Question", "name": "Can I use the amux dashboard from my phone while my agents run on my laptop?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Connect over your home network via the iOS app or PWA at https://[your-laptop-ip]:8824. For remote access, use Tailscale (free, works over any network) or the amux tunnel cloud feature which gives you a stable public HTTPS URL without opening firewall ports."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
 </head>
 <body>
@@ -98,6 +98,16 @@
       <li><strong>Remote access:</strong> Use Tailscale for access from anywhere, or the amux tunnel cloud feature for a stable public HTTPS URL.</li>
     </ul>
 
+    <h2 id="mac-app">Native Mac app (October 2026)</h2>
+    <p>The same dashboard also runs as a native Mac app. It is a small native window on the system WebKit (about 1.5 MB), for macOS 12 or later on Apple silicon and Intel, and it connects to your own amux server or your amux Cloud address.</p>
+    <ul>
+      <li><strong>Windows and tabs:</strong> open several windows and tabs (Cmd-N, Cmd-T); each window is titled by the worker or tab it shows, and windows reopen where they were.</li>
+      <li><strong>Dock badge and notifications:</strong> the badge counts agents waiting on you, with a notification for each new one.</li>
+      <li><strong>Menu bar and pins:</strong> a CPU and memory readout in the menu bar, and pinned notes that float above other apps.</li>
+      <li><strong>Global shortcut:</strong> Control-Option-Space shows or hides amux.</li>
+    </ul>
+    <p>Download <a href="https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.zip">Amux-macOS.zip</a> from the GitHub release. It is not notarized yet, so the first open needs System Settings, Privacy &amp; Security, Open Anyway. In any window, Cmd-K (Ctrl-K elsewhere) opens a search box that finds any worker, group, card or tab by name.</p>
+
     <h2>Live updates — SSE backbone</h2>
     <p>Every open dashboard client (desktop + phone) receives updates via a persistent Server-Sent Events connection. The server sends a real <code>{type:"ping"}</code> event every 10 seconds — clients declare the connection stale after 18 seconds of silence and force-reconnect. On mobile, <code>visibilitychange</code>, <code>pageshow</code>, <code>focus</code>, and <code>online</code> events all trigger a resume that refetches if data is more than 4 seconds old.</p>
 
@@ -114,6 +124,7 @@
         <tr><td>Historical output scrollback</td><td>✓ v0.9.82+</td><td>✗</td><td>✗</td><td>✗</td></tr>
         <tr><td>Kanban board with atomic task claiming</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td></tr>
         <tr><td>Mobile app (iOS native + PWA)</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td></tr>
+        <tr><td>Native Mac app</td><td>✓ windows, tabs, Dock badge</td><td>✗</td><td>✗</td><td>✗</td></tr>
         <tr><td>CRM + email + notes + scheduler</td><td>✓ built-in</td><td>✗</td><td>✗</td><td>✗</td></tr>
         <tr><td>Real-time updates (&lt;2 s latency)</td><td>✓ SSE</td><td>✗</td><td>✗</td><td>✓ (cloud only)</td></tr>
         <tr><td>Self-hosted</td><td>✓</td><td>✓</td><td>✓</td><td>✗</td></tr>
@@ -123,6 +134,10 @@
     <h2>Frequently asked questions</h2>
 
     <div class="faq-list">
+      <details>
+        <summary><strong>Is there an amux Mac app?</strong></summary>
+        <p>Yes. The native Mac app (macOS 12 or later, Apple silicon and Intel) opens the dashboard in its own windows and tabs, shows a Dock badge when agents need you, keeps pinned notes floating above other apps, and toggles with Control-Option-Space. Download Amux-macOS.zip from the amux GitHub release. It connects to your own amux server or your amux Cloud address.</p>
+      </details>
       <details open>
         <summary><strong>Does amux have a native iOS app?</strong></summary>
         <p>Yes. <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux – Agent Multiplexer on the App Store</a> (id6760410435) is a native SwiftUI app with push notifications. The same dashboard also works as a PWA — tap Share → Add to Home Screen in Safari on iOS, or Install in Chrome on Android.</p>
@@ -197,7 +212,7 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
