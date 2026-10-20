@@ -645,6 +645,7 @@ async function runDaemon(targetId) {
   const lastSync = new Map();
   const boundNoted = new Set(), revokedNoted = new Set();
   let profCache = null, profCacheAt = 0, syncNote = '';
+  const rotatingNoted = new Set();
   let syncChain = Promise.resolve();
   async function autoSync(tag) {
     if (!AUTO_SYNC) return;
@@ -693,6 +694,12 @@ async function runDaemon(targetId) {
         syncNote = `[amux] saved ${site} logins to amux profile '${out.profile}' (${out.cookies_landed}/${out.cookies_sent} cookies` +
           `${out.local_storage_set ? `, ${out.local_storage_set} localStorage keys` : ''}, ${reason}). ` +
           `Next time: AMUX_PROFILE=${out.profile}`;
+      }
+      if (out.sign_in_instead && !rotatingNoted.has(site)) {
+        // Said once per site per daemon: the copy is refused every time, the advice need not repeat.
+        rotatingNoted.add(site);
+        syncNote = (syncNote ? syncNote + '\n' : '') + `[amux] ${out.sign_in_instead}`;
+        process.stderr.write(`[amux] WARN ${site}: rotating session token not copied into an amux profile (verdict=cdp_sync_rotating_session_not_copied)\n`);
       }
     } catch (e) {
       syncLog({ error: e.message, tag, target: targetId });
