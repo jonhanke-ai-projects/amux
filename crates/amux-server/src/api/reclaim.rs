@@ -430,7 +430,7 @@ fn snapshot_payload(snaps: Option<Vec<String>>, free: u64, total: u64) -> serde_
 
 /// Directory names that are build output or vendored dependencies: large,
 /// regenerable, and safe to reclaim at the cost of a rebuild.
-const BUILD_DIRS: &[&str] = &[
+pub(crate) const BUILD_DIRS: &[&str] = &[
     "node_modules",
     "target",
     ".venv",
@@ -1677,9 +1677,106 @@ async fn get_scan(
     Path(id): Path<String>,
     Query(q): Query<FindingsQuery>,
 ) -> Response {
+    // Read synchronously and drop the pooled connection before the ownership
+    // probes await (a live connection across an await is not Send).
+    let (scan, mut findings, totals, skipped) = match read_scan(&state, id, &q) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let ownership = annotate_protected(&mut findings).await;
+    Json(json!({
+        "scan": scan, "findings": findings, "totals": totals, "skipped": skipped,
+        "ownership": ownership,
+    }))
+    .into_response()
+}
+
+/// Total wall-clock the findings annotation may spend on ownership probes.
+/// A finding not reached in time is marked protected as unmeasured.
+const OWNERSHIP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Set `protected` on every returned finding: null when nothing owns the path,
+/// otherwise `{class, reason}`. Only the rows this response returns are
+/// checked, eight at a time, under one overall budget. Returns the summary
+/// the UI shows beside the list, with `measured` and `n_considered`.
+async fn annotate_protected(findings: &mut [serde_json::Value]) -> serde_json::Value {
+    use futures::StreamExt;
+    let owners = super::reclaim_owner::Owners::probe().await;
+    let deadline = tokio::time::Instant::now() + OWNERSHIP_BUDGET;
+    let paths: Vec<(usize, Option<String>)> = findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let path = f["path"].as_str().map(str::to_string);
+            // A snapshot row names an APFS snapshot, not a path.
+            let is_path = f["category"].as_str() != Some("snapshot");
+            (i, path.filter(|_| is_path))
+        })
+        .collect();
+    let owners_ref = &owners;
+    let verdicts: Vec<(usize, Option<super::reclaim_owner::Refusal>)> =
+        futures::stream::iter(paths)
+            .map(|(i, path)| async move {
+                let Some(path) = path else { return (i, None) };
+                let p = PathBuf::from(&path);
+                let r = match tokio::time::timeout_at(
+                    deadline,
+                    super::reclaim_owner::refusal(&p, owners_ref),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Some(super::reclaim_owner::Refusal::unmeasured(format!(
+                        "ownership check budget ({}s) ran out before this path",
+                        OWNERSHIP_BUDGET.as_secs()
+                    ))),
+                };
+                (i, r)
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+    let mut by_class: std::collections::BTreeMap<&'static str, usize> = Default::default();
+    for (i, r) in verdicts {
+        findings[i]["protected"] = match r {
+            Some(r) => {
+                *by_class.entry(r.class).or_default() += 1;
+                json!({"class": r.class, "reason": r.reason})
+            }
+            None => serde_json::Value::Null,
+        };
+    }
+    let n_protected: usize = by_class.values().sum();
+    if n_protected > 0 {
+        tracing::info!(
+            verdict = "reclaim_findings_protected", protected = n_protected,
+            considered = findings.len(), classes = ?by_class,
+            fleet_measured = owners.live.is_ok(),
+            "reclaim findings marked protected by ownership"
+        );
+    }
+    json!({
+        "measured": true,
+        "n_considered": findings.len(),
+        "protected": n_protected,
+        "by_class": by_class,
+        "fleet_measured": owners.live.is_ok(),
+        "fleet_why_unmeasured": owners.live.as_ref().err(),
+    })
+}
+
+type ScanParts = (
+    serde_json::Value,
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+);
+
+#[allow(clippy::result_large_err)]
+fn read_scan(state: &AppState, id: String, q: &FindingsQuery) -> Result<ScanParts, Response> {
     let conn = match state.store.read() {
         Ok(c) => c,
-        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
+        Err(e) => return Err((StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()),
     };
     // `latest` resolves to the newest scan so the UI has a stable entry point.
     let id = if id == "latest" {
@@ -1722,11 +1819,11 @@ async fn get_scan(
         },
     );
     let Ok(scan) = scan else {
-        return (
+        return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": "no such scan"})),
         )
-            .into_response();
+            .into_response());
     };
 
     let limit = q.limit.unwrap_or(300).clamp(1, 2000);
@@ -1744,7 +1841,7 @@ async fn get_scan(
     };
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()),
     };
     let rows = stmt.query_map(params.as_slice(), |r| {
         Ok(json!({
@@ -1786,8 +1883,7 @@ async fn get_scan(
     // total that silently omits a subtree is a confident wrong answer.
     let skipped = read_skips(&conn);
 
-    Json(json!({"scan": scan, "findings": findings, "totals": totals, "skipped": skipped}))
-        .into_response()
+    Ok((scan, findings, totals, skipped))
 }
 
 fn read_skips(conn: &rusqlite::Connection) -> Vec<serde_json::Value> {
@@ -2014,18 +2110,32 @@ async fn create_quarantine(
     let mut moved = Vec::new();
     let mut refused = Vec::new();
     let mut total: u64 = 0;
+    // Probed once per request: which workers are running right now.
+    let owners = super::reclaim_owner::Owners::probe().await;
 
     for raw in &body.paths {
         let p = PathBuf::from(shellexpand_home(raw));
         if let Err(reason) = guard_path(&p) {
             // Refusals are returned, not silently dropped: a caller that asked
             // for 10 paths and got 7 moved must be able to see which 3 and why.
-            tracing::warn!(path = %p.display(), reason = %reason, "quarantine refused by guard");
-            refused.push(json!({"path": raw, "reason": reason}));
+            tracing::warn!(path = %p.display(), reason = %reason, verdict = "reclaim_refused_guard", "quarantine refused by guard");
+            refused.push(json!({"path": raw, "reason": reason, "class": "guard"}));
             continue;
         }
         if !p.exists() {
-            refused.push(json!({"path": raw, "reason": "does not exist"}));
+            refused.push(json!({"path": raw, "reason": "does not exist", "class": "missing"}));
+            continue;
+        }
+        // The ownership gate (2026-10-20 incidents, see reclaim_owner.rs): a
+        // running worker's scratch, git-tracked files, a worktree holding
+        // uncommitted or unpushed work. A check that could not run refuses.
+        if let Some(r) = super::reclaim_owner::refusal(&p, &owners).await {
+            tracing::warn!(
+                path = %p.display(), class = r.class, reason = %r.reason,
+                session = %session, verdict = "reclaim_refused_owned",
+                "quarantine refused: path is owned"
+            );
+            refused.push(json!({"path": raw, "reason": r.reason, "class": r.class}));
             continue;
         }
         // Sizing one quarantine candidate, not a scan: no watchdog is reading

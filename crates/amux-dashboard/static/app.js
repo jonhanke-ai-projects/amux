@@ -52817,7 +52817,8 @@ const _RECLAIM_TOOLS = [
   { re: /\/go\/pkg\/mod(\/|$)/, key: 'gomod', label: 'Go module cache', cmd: 'go clean -modcache', safe: true },
   { re: /\/Library\/Caches\/go-build(\/|$)/, key: 'gobuild', label: 'Go build cache', cmd: 'go clean -cache', safe: true },
   { re: /\/Library\/Caches\/Homebrew(\/|$)/, key: 'brew', label: 'Homebrew downloads', cmd: 'brew cleanup -s', safe: true },
-  { re: /\/Library\/Developer\/Xcode\/DerivedData(\/|$)/, key: 'deriveddata', label: 'Xcode DerivedData', cmd: 'rm -rf ~/Library/Developer/Xcode/DerivedData/*', safe: true },
+  // No tool owns DerivedData, so it goes through quarantine like any path.
+  { re: /\/Library\/Developer\/Xcode\/DerivedData(\/|$)/, key: 'deriveddata', label: 'Xcode DerivedData', cmd: null, safe: true },
   { re: /\/Library\/Developer\/CoreSimulator(\/|$)/, key: 'simulators', label: 'Unavailable simulators', cmd: 'xcrun simctl delete unavailable', safe: true },
   { re: /\/\.cache\/huggingface(\/|$)/, key: 'hf', label: 'Hugging Face models', cmd: 'huggingface-cli delete-cache', safe: false },
   { re: /\/\.ollama\/models(\/|$)/, key: 'ollama', label: 'Ollama models', cmd: 'ollama list   # then: ollama rm <model>', safe: false },
@@ -52828,12 +52829,21 @@ const _RECLAIM_TOOLS = [
 // Rebuildable output that lives in many projects: one row for all of them.
 const _RECLAIM_BUILD_DIRS = new Set(['node_modules', '.next', 'target', '.venv', 'venv', '__pycache__', '.turbo', '.gradle', 'dist', '.parcel-cache', '.terraform']);
 
-function _reclaimShq(p) { return "'" + String(p).replace(/'/g, "'\\''") + "'"; }
+
+// A finding the server marked owned: a running worker's scratch, git-tracked
+// files, a worktree with uncommitted or unpushed work, or a check that could
+// not run. It is shown with its reason and can never be selected.
+function _reclaimProtected(f) { return !!(f && f.protected); }
+function _reclaimIsProtectedPath(path) {
+  return (_reclaimScan?.findings || []).some(f => f.path === path && _reclaimProtected(f));
+}
 
 function _reclaimRecs(findings) {
   const groups = new Map();
+  const prot = [];
   (findings || []).forEach(f => {
     if (!f || !f.path || f.category === 'snapshot' || !(f.bytes > 0)) return;
+    if (_reclaimProtected(f)) { prot.push(f); return; }
     const tool = _RECLAIM_TOOLS.find(t => t.re.test(f.path));
     const base = f.path.split('/').pop();
     let key, label, cmd = null, safe;
@@ -52848,7 +52858,7 @@ function _reclaimRecs(findings) {
     if (g.key.startsWith('build:') && g.paths.length > 1) g.label = `${g.label} in ${g.paths.length} projects`;
     return g;
   }).sort((a, b) => b.bytes - a.bytes);
-  return { safe: all.filter(g => g.safe), review: all.filter(g => !g.safe) };
+  return { safe: all.filter(g => g.safe), review: all.filter(g => !g.safe), protected: prot };
 }
 
 function _reclaimRecState(rec) {
@@ -52870,29 +52880,67 @@ function _reclaimSelectSafe() {
   _reclaimRender();
 }
 
-// The script for the current selection. A tool's own command when the whole
-// group is selected, otherwise one rm per selected path. Review items are
-// written commented out: selecting them puts them in front of you, not in a
-// script that runs on paste.
+// The script for the current selection. It NEVER emits `rm` for a path.
+//
+// 2026-10-20: a cleanup script built from these findings rm -rf'd a running
+// worker's ~/.amux/tmp/<name>, git-tracked customer test data, and every
+// "clean" worktree regardless of owner. Raw rm lines bypass every guard the
+// server has. So a tool's own command stays when its whole group is selected
+// (the tool knows what is still referenced), and every path becomes part of
+// ONE POST to /api/reclaim/quarantine. The server applies guard_path and the
+// ownership guard (reclaim_owner.rs) to each path, refuses what is owned with
+// a reason, and moves the rest aside where Disk Cleanup can restore it.
+// Review items are written commented out: selecting them puts them in front
+// of you, not in a script that runs on paste.
+function _reclaimQuarantineCall(paths, scanId) {
+  const body = JSON.stringify({ paths, scan_id: scanId || null }, null, 1).split('\n');
+  return [
+    'curl -sk -X POST "$(amux url)/api/reclaim/quarantine" \\',
+    "  -H 'Content-Type: application/json' \\",
+    '  -H "X-Amux-Session: ${AMUX_SESSION:-disk-cleanup-script}" \\',
+    "  --data-binary @- <<'JSON'",
+    ...body,
+    'JSON',
+    'echo',
+  ];
+}
+
 function _reclaimScript() {
   const recs = _reclaimRecs(_reclaimScan?.findings);
+  const scanId = _reclaimScan?.scan?.id;
   const lines = ['#!/bin/bash',
     `# amux disk cleanup, generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} from the latest Disk scan.`,
     '# Nothing has run. Read it, then run it yourself. Sizes are the scan\'s estimates.',
+    '#',
+    '# This script deletes no path with rm. Paths go to the amux quarantine API,',
+    '# which refuses anything a running worker, a git repo or an unpushed worktree',
+    '# still owns (the reply lists each refusal and why), and moves the rest to',
+    '# ~/.amux/quarantine. Restore or purge them in Metrics > Disk Cleanup.',
+    '# Space comes back when you purge. Tool commands below are the tools\' own.',
     'set -u', ''];
   let n = 0;
+  const safePaths = [], safeLabels = [], reviewPaths = [], reviewLabels = [];
   const emit = (rec, review) => {
-    const sel = rec.paths.filter(p => _reclaimSel.has(p));
+    const sel = rec.paths.filter(p => _reclaimSel.has(p) && !_reclaimIsProtectedPath(p));
     if (!sel.length) return;
     n++;
-    const pre = review ? '# ' : '';
-    lines.push(`# ${rec.label} (${_fmtBytes(rec.bytes)})${review ? ': review first, uncomment to run' : ''}`);
-    if (rec.cmd && sel.length === rec.paths.length) lines.push(pre + rec.cmd);
-    else sel.forEach(p => lines.push(pre + 'rm -rf -- ' + _reclaimShq(p)));
-    lines.push('');
+    const label = `#   ${rec.label} (${_fmtBytes(rec.bytes)})`;
+    if (rec.cmd && sel.length === rec.paths.length) {
+      lines.push(`# ${rec.label} (${_fmtBytes(rec.bytes)})${review ? ': review first, uncomment to run' : ''}`);
+      lines.push((review ? '# ' : '') + rec.cmd, '');
+    } else if (review) { reviewPaths.push(...sel); reviewLabels.push(label); }
+    else { safePaths.push(...sel); safeLabels.push(label); }
   };
   recs.safe.forEach(r => emit(r, false));
   recs.review.forEach(r => emit(r, true));
+  if (safePaths.length) {
+    lines.push(`# Move ${safePaths.length} path${safePaths.length === 1 ? '' : 's'} to quarantine:`, ...safeLabels);
+    lines.push(..._reclaimQuarantineCall(safePaths, scanId), '');
+  }
+  if (reviewPaths.length) {
+    lines.push(`# Review first, uncomment to run. Move ${reviewPaths.length} path${reviewPaths.length === 1 ? '' : 's'} to quarantine:`, ...reviewLabels);
+    lines.push(..._reclaimQuarantineCall(reviewPaths, scanId).map(l => '# ' + l), '');
+  }
   if (!n) lines.push('# Nothing selected. Tick items under Recommendations first.');
   return lines.join('\n');
 }
@@ -53159,7 +53207,8 @@ async function _reclaimLoadTree(path) {
 }
 
 function _reclaimToggle(path) {
-  if (_reclaimSel.has(path)) _reclaimSel.delete(path); else _reclaimSel.add(path);
+  if (_reclaimSel.has(path)) _reclaimSel.delete(path);
+  else if (!_reclaimIsProtectedPath(path)) _reclaimSel.add(path);
   _reclaimRender();
 }
 
@@ -53171,14 +53220,14 @@ function _reclaimSetCat(cat) {
 function _reclaimSelectCategory(cat) {
   // Only regenerable categories are bulk-selectable. Stale/duplicate/large are
   // judgment calls and stay one-at-a-time on purpose (ethos rule 8).
-  const rows = (_reclaimScan?.findings || []).filter(f => f.category === cat && f.regenerable);
+  const rows = (_reclaimScan?.findings || []).filter(f => f.category === cat && f.regenerable && !_reclaimProtected(f));
   const allOn = rows.length && rows.every(f => _reclaimSel.has(f.path));
   rows.forEach(f => allOn ? _reclaimSel.delete(f.path) : _reclaimSel.add(f.path));
   _reclaimRender();
 }
 
 async function _reclaimQuarantineSelected() {
-  const paths = [..._reclaimSel];
+  const paths = [..._reclaimSel].filter(p => !_reclaimIsProtectedPath(p));
   if (!paths.length) return;
   const est = (_reclaimScan?.findings || []).filter(f => _reclaimSel.has(f.path))
     .reduce((a, f) => a + (f.bytes || 0), 0);
@@ -53196,9 +53245,9 @@ async function _reclaimQuarantineSelected() {
   const d = await r.json().catch(() => ({}));
   if (d.refused && d.refused.length) {
     alert('Staged ' + (d.moved || 0) + ' item(s).\n\nRefused ' + d.refused.length + ':\n'
-      + d.refused.map(x => x.path + ' — ' + x.reason).join('\n'));
+      + d.refused.map(x => x.path + ': ' + x.reason).join('\n'));
   } else {
-    showToast('Staged ' + (d.moved || 0) + ' item(s) — ' + _fmtBytes(d.bytes || 0));
+    showToast('Staged ' + (d.moved || 0) + ' item(s) · ' + _fmtBytes(d.bytes || 0));
   }
   _reclaimSel = new Set();
   _reclaimLoad();
@@ -53236,6 +53285,46 @@ async function _reclaimPurge(batchId, bytes) {
   // Report the REAL delta, and say so when it disappoints.
   showToast('Purged · free space +' + _fmtBytes(d.actually_freed || 0));
   if (d.note) alert(d.note);
+  _reclaimLoad();
+}
+
+const _RECLAIM_PURGE_AGE_DAYS = 7;
+function _reclaimOldBatches() {
+  const cutoff = Date.now() / 1000 - _RECLAIM_PURGE_AGE_DAYS * 86400;
+  return (_reclaimQuarantine?.batches || []).filter(b => b.status === 'staged' && b.created_at < cutoff);
+}
+
+// Bulk purge of staged batches older than a week. One DELETE per batch, each
+// naming its own id in ?confirm=, so the server's per-batch gate still holds.
+// The total shown is the sum of the server's own df deltas, never file sizes.
+async function _reclaimPurgeOld() {
+  const old = _reclaimOldBatches();
+  if (!old.length) { showToast('No staged batches older than ' + _RECLAIM_PURGE_AGE_DAYS + ' days'); return; }
+  const est = old.reduce((a, b) => a + (b.bytes || 0), 0);
+  const msg = 'PERMANENTLY DELETE ' + old.length + ' quarantine batch' + (old.length === 1 ? '' : 'es')
+    + ' staged more than ' + _RECLAIM_PURGE_AGE_DAYS + ' days ago?\n\n'
+    + 'Staged size: ' + _fmtBytes(est) + '\n\n'
+    + 'This cannot be undone. Restore will no longer be possible for these batches.';
+  if (!confirm(msg)) return;
+  if (prompt('Type PURGE to confirm permanent deletion:') !== 'PURGE') { showToast('Cancelled'); return; }
+  let freed = 0, ok = 0;
+  const failed = [], notes = new Set();
+  for (const b of old) {
+    try {
+      const r = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(b.id)
+        + '?confirm=' + encodeURIComponent(b.id), { method: 'DELETE' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) { failed.push(b.id + ': ' + (d.error || ('HTTP ' + r.status))); continue; }
+      ok++;
+      freed += Math.max(0, d.actually_freed || 0);
+      if (d.note) notes.add(d.note);
+    } catch (e) { failed.push(b.id + ': ' + String(e)); }
+  }
+  showToast('Purged ' + ok + ' of ' + old.length + ' batches · free space +' + _fmtBytes(freed));
+  if (failed.length || notes.size) {
+    alert((failed.length ? 'Not purged (' + failed.length + '):\n' + failed.join('\n') + '\n\n' : '')
+      + [...notes].join('\n'));
+  }
   _reclaimLoad();
 }
 
@@ -53304,10 +53393,16 @@ function _reclaimRecsPanel(findings) {
     return `<label class="reclaim-rec${st !== 'none' ? ' on' : ''}" title="${esc(r.paths.length > 1 ? r.paths.length + ' paths' : r.paths[0])}">
       <input type="checkbox"${st === 'all' ? ' checked' : ''}${st === 'some' ? ' data-partial="1"' : ''} onchange="_reclaimToggleRec('${escJs(r.key)}')">
       <span class="reclaim-rec-main"><span class="reclaim-rec-label">${esc(r.label)}</span>
-        <code class="reclaim-rec-cmd">${esc(r.cmd || (r.paths.length > 1 ? 'rm -rf each path' : 'rm -rf -- ' + _reclaimShq(r.paths[0]).replace(/^'\/Users\/[^/]+/, "'~")))}</code></span>
+        <code class="reclaim-rec-cmd">${esc(r.cmd || (r.paths.length > 1 ? 'quarantine ' + r.paths.length + ' paths' : 'quarantine ' + r.paths[0].replace(/^\/Users\/[^/]+/, '~')))}</code></span>
       <span class="reclaim-rec-size">${_fmtBytes(r.bytes)}</span>
     </label>`;
   };
+  const protRow = f => `<div class="reclaim-rec reclaim-protected" title="${esc(f.path)}">
+      <input type="checkbox" disabled aria-label="Protected, cannot be selected">
+      <span class="reclaim-rec-main"><span class="reclaim-rec-label">${esc(f.path.replace(/^\/Users\/[^/]+/, '~'))}</span>
+        <span class="reclaim-protected-why">${esc(f.protected.reason || f.protected.class || 'protected')}</span></span>
+      <span class="reclaim-rec-size">${_fmtBytes(f.bytes)}</span>
+    </div>`;
   const list = (arr, cap) => arr.slice(0, cap).map(row).join('') +
     (arr.length > cap ? `<div class="reclaim-rec-more">${arr.length - cap} more in Findings below</div>` : '');
   const selBytes = (findings || []).filter(f => _reclaimSel.has(f.path)).reduce((a, f) => a + (f.bytes || 0), 0);
@@ -53319,6 +53414,8 @@ function _reclaimRecsPanel(findings) {
       ${recs.safe.length ? list(recs.safe, 12) : '<div class="reclaim-rec-more">Nothing regenerable found.</div>'}
       <div class="reclaim-recs-group"><span class="reclaim-chip review">Review first</span><span>${_fmtBytes(sum(recs.review))}</span></div>
       ${recs.review.length ? list(recs.review, 10) : '<div class="reclaim-rec-more">Nothing large needs review.</div>'}
+      ${recs.protected.length ? `<div class="reclaim-recs-group"><span class="reclaim-chip protected" title="Owned by a running worker, a git repo or a worktree with unsaved work. Never selectable.">Protected</span><span>${_fmtBytes(recs.protected.reduce((a, f) => a + (f.bytes || 0), 0))}</span></div>
+      ${recs.protected.slice(0, 8).map(protRow).join('')}${recs.protected.length > 8 ? `<div class="reclaim-rec-more">${recs.protected.length - 8} more in Findings below</div>` : ''}` : ''}
     </div>
     <div class="reclaim-recs-foot">
       <span class="reclaim-recs-sel"><b>${_fmtBytes(selBytes)}</b> selected · ${_reclaimSel.size} item${_reclaimSel.size === 1 ? '' : 's'}</span>
@@ -53337,6 +53434,9 @@ function _reclaimRender() {
   const scan = _reclaimScan?.scan;
   const findings = _reclaimScan?.findings || [];
   const totals = _reclaimScan?.totals || [];
+  // A path that became protected since it was ticked (its worker started, its
+  // worktree got a commit) leaves the selection rather than lingering in it.
+  findings.forEach(f => { if (_reclaimProtected(f)) _reclaimSel.delete(f.path); });
   let html = '';
 
   // Header + volume state
@@ -53554,9 +53654,13 @@ function _reclaimRender() {
     shown.slice(0, 400).forEach(f => {
       const meta = _RECLAIM_CATS[f.category] || { label: f.category };
       const checked = _reclaimSel.has(f.path) ? ' checked' : '';
-      html += `<tr class="${_reclaimSel.has(f.path) ? 'row-selected' : ''}">
-        <td><input type="checkbox"${checked} onchange="_reclaimToggle('${escJs(f.path)}')"></td>
-        <td style="font-family:var(--mono,monospace);font-size:0.74rem;word-break:break-all;">${esc(f.path)}</td>
+      const prot = _reclaimProtected(f);
+      html += `<tr class="${prot ? 'reclaim-row-protected' : (_reclaimSel.has(f.path) ? 'row-selected' : '')}"${prot ? ` data-protected="${esc(f.protected.class || '')}"` : ''}>
+        <td>${prot
+          ? `<input type="checkbox" disabled title="${esc(f.protected.reason || 'protected')}" aria-label="Protected, cannot be selected">`
+          : `<input type="checkbox"${checked} onchange="_reclaimToggle('${escJs(f.path)}')">`}</td>
+        <td style="font-family:var(--mono,monospace);font-size:0.74rem;word-break:break-all;">${esc(f.path)}${prot
+          ? `<div class="reclaim-protected-why"><span class="reclaim-chip protected">Protected</span> ${esc(f.protected.reason || f.protected.class || '')}</div>` : ''}</td>
         <td style="font-size:0.74rem;">${esc(meta.label)}${f.regenerable ? '' : ' <span style="color:var(--yellow,#e3b341);" title="Not regenerable. Review before removing.">⚠</span>'}</td>
         <td style="font-weight:600;">${_fmtBytes(f.bytes)}</td>
         <td style="font-size:0.74rem;color:var(--dim);">${(f.file_count||0).toLocaleString()}</td>
@@ -53572,7 +53676,10 @@ function _reclaimRender() {
   // Quarantine ledger
   const batches = (_reclaimQuarantine?.batches || []).filter(b => b.status !== 'purged' || b.item_count);
   if (batches.length) {
-    html += '<div class="metrics-section-title" style="margin-top:20px;">Quarantine</div>';
+    const old = _reclaimOldBatches();
+    html += `<div class="metrics-section-title" style="margin-top:20px;">Quarantine
+      ${old.length ? `<button class="btn reclaim-minibtn reclaim-danger" id="reclaim-purge-old" onclick="_reclaimPurgeOld()" title="Permanently delete every staged batch older than ${_RECLAIM_PURGE_AGE_DAYS} days, one confirmed batch at a time">Purge ${old.length} batch${old.length === 1 ? '' : 'es'} older than ${_RECLAIM_PURGE_AGE_DAYS} days (${_fmtBytes(old.reduce((a, b) => a + (b.bytes || 0), 0))})</button>` : ''}
+    </div>`;
     html += '<div class="metrics-table-wrap"><table class="metrics-table"><thead><tr>';
     html += '<th>Staged</th><th>Items</th><th>Size</th><th>Actually freed</th><th>Status</th><th></th>';
     html += '</tr></thead><tbody>';

@@ -3630,6 +3630,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_reclaimPurgeOld": {
+      "kind": "command._reclaimPurgeOld",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_reclaimQuarantineSelected": {
       "kind": "command._reclaimQuarantineSelected",
       "feedback_required": true,

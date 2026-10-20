@@ -6163,6 +6163,11 @@
   .reclaim-chip { font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
   .reclaim-chip.safe { color: var(--green, #3fb950); background: rgba(63,185,80,0.12); }
   .reclaim-chip.review { color: var(--yellow, #e3b341); background: rgba(227,179,65,0.14); }
+  .reclaim-chip.protected { color: var(--dim); background: rgba(110,118,129,0.18); }
+  .reclaim-rec.reclaim-protected { cursor: default; opacity: 0.6; }
+  .reclaim-rec.reclaim-protected:hover { background: none; }
+  .reclaim-protected-why { font-size: 0.7rem; color: var(--dim); white-space: normal; overflow-wrap: anywhere; margin-top: 2px; }
+  .metrics-table tr.reclaim-row-protected td { opacity: 0.6; }
   .reclaim-rec { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-radius: var(--radius-control, 8px); cursor: pointer; min-height: 44px; }
   .reclaim-rec:hover, .reclaim-rec.on { background: rgba(88,166,255,0.07); }
   .reclaim-rec input { flex: none; width: 16px; height: 16px; }

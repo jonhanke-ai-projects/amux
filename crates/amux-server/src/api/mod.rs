@@ -106,6 +106,7 @@ pub mod projects;
 pub mod proxies;
 pub mod py_proxy;
 pub mod reclaim;
+pub(crate) mod reclaim_owner;
 pub mod reconciliation;
 pub mod recordings;
 pub mod reports;
