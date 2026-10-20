@@ -3314,6 +3314,54 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/map/meta",
+        methods: &["PUT"],
+    },
+    RouteEntry {
+        path: "/api/map/pins/bulk",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/map/pins/merge",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/map/pins/{id}",
+        methods: &["PUT", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/map/pins/{id}/history",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/map/duplicates",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/map/visits/match",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/map/places/link",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/map/places/refresh",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/map/lists/{id}/share",
+        methods: &["GET", "POST", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/share/map/{token}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/s/map/{token}",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/map/location/points",
         methods: &["GET", "POST"],
     },

@@ -1052,6 +1052,12 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
     // they are the whole trap.
     ("_amux_invariant_incident", "resolved_at", false),
+    // Map store (0128): map_store::now() is epoch seconds as f64.
+    ("map_meta", "updated_at", false),
+    ("map_pins", "created_at", false),
+    ("map_pins", "updated_at", false),
+    ("map_shares", "created_at", false),
+    ("map_shares", "revoked_at", false),
     ("_amux_invariant_result", "ts", false),
     ("card_contracts", "deploy_at", false),
     ("land_queue", "done_at", false), // land_queue.rs: now_f64(); live 1791295108.5
