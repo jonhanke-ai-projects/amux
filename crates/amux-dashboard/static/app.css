@@ -9826,9 +9826,12 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .task-history-list li { overflow-wrap:anywhere; }
 
 /* Worker Board tab: one board switch (Ethan, 2026-10-17). */
-.pbc-one { display:flex; align-items:center; gap:12px; justify-content:space-between; }
-.pbc-one .pbc-text { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1 1 auto; }
-.board-one-switch { min-height:44px; min-width:72px; flex:0 0 auto; }
+/* Wraps: on a phone the two buttons took most of the row and squeezed the
+   description into a column a few words wide (Ethan, 2026-10-20 screenshot).
+   The text asks for 16rem; under that, the buttons drop below it, right-aligned. */
+.pbc-one { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; justify-content:space-between; }
+.pbc-one .pbc-text { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1 1 16rem; }
+.board-one-switch { min-height:44px; min-width:72px; flex:0 0 auto; margin-left:auto; }
 .board-one-inherit { min-height:44px; flex:0 0 auto; margin-left:6px; }
 /* MDAI chat: a composer docked under the node, and the conversation in the Chat tab. */
 .mdai-chatbar { display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; padding: 8px 18px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg); }
