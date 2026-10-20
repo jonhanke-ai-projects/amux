@@ -1,5 +1,127 @@
 [
   {
+    "hash": "5b9df03a8e0cd01ab2c47515ae2ec1b5f0c7e98e",
+    "short": "5b9df03a",
+    "title": "A faster dashboard on big fleets",
+    "date": "2026-10-20",
+    "type": "perf",
+    "tags": [
+      "dashboard",
+      "performance"
+    ],
+    "description": "The worker list the dashboard downloads dropped a quarter of its size, and board changes now arrive in one request instead of one per card. On a busy fleet the dashboard re-reads less and updates sooner."
+  },
+  {
+    "hash": "ed09c7cc1d199e6bf34ba29ef9dd378ec3216256",
+    "short": "ed09c7cc",
+    "title": "Cmd-K finds any worker, card or tab by name",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "search",
+      "navigation"
+    ],
+    "description": "Press Cmd-K (Ctrl-K, or the search button on phones and iPads) for a Spotlight-style box that finds workers, groups, projects, tabs, actions, pins, vault entry names, connectors and skills. Type, use the arrow keys, and Enter opens it."
+  },
+  {
+    "hash": "5961f572156a6acddd5af12d4da46200b8218c90",
+    "short": "5961f572",
+    "title": "A native Mac app for amux",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "desktop",
+      "macos"
+    ],
+    "description": "amux now has a native Mac app: several windows and tabs, a Dock badge and notifications when agents need you, a menu bar CPU and memory readout, pinned notes that float above other apps, and Control-Option-Space to show or hide it. Download Amux-macOS.zip from the GitHub release; it connects to your own server or your amux Cloud address."
+  },
+  {
+    "hash": "0250da1dbc7500c1dd8e88ff756797fb0c34e954",
+    "short": "0250da1d",
+    "title": "Mac app: Settings and saved window layouts",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "desktop",
+      "macos"
+    ],
+    "description": "The Mac app gains a Settings window (Cmd-,) and named window layouts that save every window, tab group and floating pin, then reopen them with one click. Choose what opens at launch: your last windows, one window, or a layout."
+  },
+  {
+    "hash": "ec93b1112b45413484dc9d05a73ad41942731408",
+    "short": "ec93b111",
+    "title": "Manage billing or delete your Cloud account from Settings",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "cloud",
+      "billing"
+    ],
+    "description": "amux Cloud owners now find \"Manage billing or delete account\" in their server's Settings, instead of having to know the amux.io billing page. Invited members never see it."
+  },
+  {
+    "hash": "175404226e120d9c649f9bcbae06ec06717a018f",
+    "short": "17540422",
+    "title": "Sign in with your Claude subscription on amux Cloud",
+    "date": "2026-10-19",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "claude-code",
+      "onboarding"
+    ],
+    "description": "A new amux Cloud server now offers Sign in with Claude, ChatGPT or Gemini on first load, and the \"No model connected\" banner opens the same window. Before, a Cloud customer could only paste an API key."
+  },
+  {
+    "hash": "73be7678bd29ba8fc3a0d90cb3f48174964d7e4e",
+    "short": "73be7678",
+    "title": "The dashboard no longer reloads itself on a first visit",
+    "date": "2026-10-19",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "onboarding"
+    ],
+    "description": "A fresh browser reloaded the dashboard about five seconds after opening it, which could wipe a sign-in window mid-flow on a new Cloud server. It now reloads only when newer dashboard code replaces older code."
+  },
+  {
+    "hash": "dffcf4870372de344d014e409f33eca792c32903",
+    "short": "dffcf487",
+    "title": "Workers can save notes to their own amux memory",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "memory",
+      "cli"
+    ],
+    "description": "`amux memory add` appends a note to a worker's amux memory, the one the Memory tab shows, without overwriting what the owner saved. `amux memory` prints it."
+  },
+  {
+    "hash": "a7afc64be7350bb77479e1fe84d7603d82ef827d",
+    "short": "a7afc64b",
+    "title": "Resubscribe within 30 days and get your Cloud server back",
+    "date": "2026-10-18",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "billing"
+    ],
+    "description": "When you cancel amux Cloud, your server is kept as a snapshot for 30 days. Resubscribing with the same email now restores that server with its data, and the ready email says it was restored."
+  },
+  {
+    "hash": "8e7804608d249b4f04522272a33e833d2a8a9ea8",
+    "short": "8e780460",
+    "title": "Cloud shows a restarting page instead of a blank error",
+    "date": "2026-10-18",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "reliability"
+    ],
+    "description": "If your amux Cloud server is restarting, you now see a page that says so, refreshes itself every 10 seconds, and gives hello@amux.io, instead of an empty 502."
+  },
+  {
     "hash": "f99e3d09a3e04cf651544ee57eb4e01be7f83d3c",
     "short": "f99e3d09",
     "title": "Claude workers skip the first-run screens when you add a key later",
