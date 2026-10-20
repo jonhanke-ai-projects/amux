@@ -25,7 +25,8 @@ test('the Split button shows its icon, label and caret without squeezing', async
     const r = b.getBoundingClientRect();
     return { vw: innerWidth, w: r.width, h: r.height, right: r.right,
       icon: box('.psp-ico-split'), label: box('.psp-btn-lbl'), caret: box('.psp-btn-caret'), folder: box('.psp-ico-folder'),
-      findLeft: document.getElementById('peek-find-toggle')!.getBoundingClientRect().left };
+      nextLeft: document.getElementById('peek-worker-menu-btn')!.getBoundingClientRect().left,
+      findHidden: getComputedStyle(document.getElementById('peek-find-toggle')!).display === 'none' };
   });
   expect(m.h).toBeGreaterThanOrEqual(44);
   if (m.vw > 600) {
@@ -39,6 +40,13 @@ test('the Split button shows its icon, label and caret without squeezing', async
     expect(m.label.shown).toBe(false);
     expect(m.folder.w).toBeGreaterThanOrEqual(17);
   }
-  expect(m.right).toBeLessThanOrEqual(m.findLeft + 0.5);
+  expect(m.right).toBeLessThanOrEqual(m.nextLeft + 0.5);
+  // The header's Find button is hidden (Ethan, 2026-10-20); Find lives in the worker menu.
+  expect(m.findHidden).toBe(true);
+  // ...and the menu item opens it.
+  await page.locator('#peek-worker-menu-btn').click();
+  await page.locator('#peek-find-menu-btn').click();
+  await expect(page.locator('#peek-search')).toBeVisible();
+  await expect(page.locator('#peek-search')).toBeFocused();
   await page.locator('.peek-toolbar').screenshot({ path: test.info().outputPath('peek-toolbar.png') });
 });

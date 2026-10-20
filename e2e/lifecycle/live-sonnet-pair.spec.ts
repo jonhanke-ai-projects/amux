@@ -180,7 +180,7 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
         await page.getByRole('button', { name: 'Filter messages', exact: true }).click();
         await page.locator('[name="peek-filter-source"][value="session"]').check();
         await page.getByRole('dialog', { name: 'Filter worker messages' }).getByRole('button', { name: 'Done', exact: true }).click();
-        await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
+        await page.locator('#peek-worker-menu-btn').click(); await page.locator('#peek-find-menu-btn').click();
         await page.locator('#peek-search').fill(marker);
         await expect(page.locator('#peek-body .peek-highlight').first(), 'real delivered message must be findable in terminal').toBeVisible({ timeout: 30_000 });
         await page.getByRole('button', { name: 'Next message', exact: true }).click();

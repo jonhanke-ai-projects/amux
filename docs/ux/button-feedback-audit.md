@@ -969,6 +969,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | ${esc(_mLabel(m))} | `toggleModelFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${esc(_mLabel(m))} | `toggleModelFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Notifications | `toggleNotifPanel` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | + | `togglePeekFind` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Find in terminal | `togglePeekFind` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | This worker | `togglePeekIssuesAll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Worker actions | `togglePeekMoreMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1523,6 +1524,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | All shown | `openVisibleWorkerActions` | onclick |
 | app.js | + | `peek-action:chat-toggle` | data-peek-action |
 | app.js | + | `peek-action:file-browser` | data-peek-action |
+| app.js | + | `peek-action:find` | data-peek-action |
 | index.html | PR ↗ | `peekGitOpenPR` | onclick |
 | app.js | button | `removeGridPane` | onclick |
 | app.js | button | `removeServer` | onclick |
