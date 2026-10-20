@@ -161,15 +161,33 @@ async fn serve_path(
     // `__AMUX_ASSET_VER__` placeholder, and the served bytes must hold the real
     // content hash so the SW cache name moves on every deploy and the SSE
     // ping's version (sse.rs) matches what this page will compare it with.
+    // Revalidate every dashboard file against the dashboard's content hash.
+    // These URLs carry no version, so a long max-age would pin stale code;
+    // with no validator at all, every load without the service worker sent
+    // app.js again in full (1MB gzipped, recompressed per request). The hash
+    // covers all of static/, so any change moves every file's ETag.
+    let etag = format!("\"d-{}\"", amux_dashboard::asset_version());
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
+    if fresh && amux_dashboard::asset(path).is_some() {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [(header::ETAG, etag), (header::CACHE_CONTROL, "no-cache".to_string())],
+        )
+            .into_response();
+    }
     match amux_dashboard::asset(path) {
         Some(content) => {
             let mime = mime_for(path);
             let mut resp =
                 ([(header::CONTENT_TYPE, mime)], content.into_owned()).into_response();
-            if path == "sw.js" {
-                resp.headers_mut()
-                    .insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+            if let Ok(v) = HeaderValue::from_str(&etag) {
+                resp.headers_mut().insert(header::ETAG, v);
             }
+            resp.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
             resp
         }
         // SPA fallback: unknown NON-API paths get the shell so client routing
