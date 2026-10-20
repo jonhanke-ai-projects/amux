@@ -14032,14 +14032,23 @@ async fn send_text_inner_bound(
     // before the idle branch's leading Escape, which is the auto-continue
     // banner's cancel key. See `rate_limit_delivery_hold`.
     if let Some(hold) = rate_limit_hold_for(name, &tmux_capture(name, 30).await) {
-        let owner_command =
-            origin == SendOrigin::Owner && !from_steering && text.trim_start().starts_with('/');
-        if owner_command {
-            // `/login`, `/extra-usage`, `/model`: the owner acting on the limit
-            // itself. Their call, so it goes through, and the log says so.
+        // The OWNER's direct send is always delivered. It was only slash
+        // commands (`/login`, `/extra-usage`, `/model`) until Ethan's
+        // "continue" to mixpeek-frustrations sat queued five days out, behind
+        // a weekly limit, with the dashboard showing nothing happening
+        // (2026-10-20: "sending continue to mixpeek-frustrations doesnt work
+        // or do anuthing"; "we should have messages sent to the worker").
+        // Typing may cancel Claude's auto-continue, which is the owner's call
+        // to make. Schedules, peers and the steering drain are still held.
+        if owner_passes_rate_limit_hold(origin, from_steering) {
+            let verdict = if text.trim_start().starts_with('/') {
+                "rate_limit_hold_owner_command_passed"
+            } else {
+                "rate_limit_hold_owner_message_passed"
+            };
             tracing::warn!(session = %name, source = hold.source(), reset_at = hold.reset_at(),
-                measured = true, n_considered = 1, verdict = "rate_limit_hold_owner_command_passed",
-                "owner slash command typed into a usage-limit wait; it may cancel Claude's auto-continue");
+                measured = true, n_considered = 1, verdict = verdict,
+                "owner input typed into a usage-limit wait; it may cancel Claude's auto-continue");
         } else {
             let message = rate_limit_hold_message(hold);
             if from_steering {
@@ -21485,6 +21494,12 @@ pub(crate) fn effective_rate_limit_reset(recorded: i64, parsed: i64, now: i64) -
 /// send response (`verdict`). Grep this to count holds.
 pub(crate) const RATE_LIMIT_HOLD_VERDICT: &str = "held_rate_limited";
 
+/// A person's direct send goes through a usage-limit hold; schedules, peers
+/// and the steering drain stay held until the reset (2026-10-20).
+pub(crate) fn owner_passes_rate_limit_hold(origin: SendOrigin, from_steering: bool) -> bool {
+    origin == SendOrigin::Owner && !from_steering
+}
+
 /// Why [`rate_limit_delivery_hold`] held a delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RateLimitHold {
@@ -21565,9 +21580,28 @@ pub(crate) fn is_rate_limit_hold(reason: &str) -> bool {
     reason.contains(RATE_LIMIT_HOLD_VERDICT)
 }
 
+/// Was the machine's Claude login switched after this lane hit its limit? Then
+/// the limit, and its reset clock, belong to the previous account, and holding
+/// the lane until that clock is a wait for nothing. Pure.
+pub(crate) fn account_switched_since_limit(limited_since: i64, account_changed_at: i64) -> bool {
+    limited_since > 0 && account_changed_at >= limited_since
+}
+
 /// [`rate_limit_delivery_hold`] against a live frame and the lane's meta.
 fn rate_limit_hold_for(name: &str, pane: &str) -> Option<RateLimitHold> {
     let meta = load_meta(name);
+    let since = meta_i64(&meta, "rate_limited_since");
+    let changed_at = observe_claude_account_change(chrono::Utc::now().timestamp());
+    if account_switched_since_limit(since, changed_at) {
+        // mixpeek-frustrations, 2026-10-20: limited on one account at 10:30Z,
+        // the rotator moved the login to an account with 97% left at 12:07Z,
+        // and the owner's "continue" was still held for the OLD account's
+        // Oct 25 reset.
+        tracing::info!(session = %name, rate_limited_since = since, account_changed_at = changed_at,
+            measured = true, n_considered = 1, verdict = "rate_limit_hold_cleared_account_switched",
+            "the usage limit belongs to the previous Claude account; delivery is not held");
+        return None;
+    }
     rate_limit_hold_in_frame(
         pane,
         meta_i64(&meta, "rate_limited_since"),
@@ -21682,6 +21716,26 @@ mod rate_limit_hold_tests {
         assert!(steer_skips().lock().unwrap().get(lane).is_none());
     }
 
+    /// A limit recorded before the login moved to another account does not hold.
+    #[test]
+    fn a_limit_from_the_previous_account_does_not_hold() {
+        assert!(account_switched_since_limit(1_792_492_215, 1_792_498_029), "switched after the limit");
+        assert!(!account_switched_since_limit(1_792_498_100, 1_792_498_029), "limited again on the new account");
+        assert!(!account_switched_since_limit(0, 1_792_498_029), "no limit recorded");
+        assert!(!account_switched_since_limit(1_792_492_215, 0), "no switch observed");
+    }
+
+    /// The owner's own message is typed in; nothing automated is.
+    #[test]
+    fn only_the_owners_direct_send_passes_a_usage_limit_hold() {
+        assert!(owner_passes_rate_limit_hold(SendOrigin::Owner, false));
+        assert!(!owner_passes_rate_limit_hold(SendOrigin::Owner, true), "the steering drain waits for the reset");
+        assert!(!owner_passes_rate_limit_hold(SendOrigin::Automation, false), "peers and schedules are held");
+        let src = include_str!("session_verbs.rs");
+        let body = &src[src.find("async fn send_text_inner_bound(").unwrap()..];
+        assert!(body.contains("if owner_passes_rate_limit_hold(origin, from_steering) {"), "the send path uses the rule");
+    }
+
     /// The hold must run before the idle branch's leading Escape, which is
     /// the banner's cancel key, and before the paste. A hold placed after
     /// either would pass every predicate test above and fix nothing.
@@ -21753,7 +21807,10 @@ pub(crate) async fn lane_block_reason(name: &str) -> Option<&'static str> {
             since > 0
         } else {
             rate_limit_still_blocks(since, reset_at, now_i64())
-        };
+        }
+        // A limit recorded on the account the login has since moved away
+        // from does not gate the queue either (same rule as the send path).
+        && !account_switched_since_limit(since, observe_claude_account_change(now_i64()));
     lane_block_reason_from(env_exists, archived, paused, running, rate_limited)
 }
 
