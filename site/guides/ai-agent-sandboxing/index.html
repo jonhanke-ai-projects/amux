@@ -39,7 +39,7 @@
     "author":{"@type":"Organization","name":"amux","url":"https://amux.io"},
     "publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "datePublished":"2026-05-13",
-    "dateModified":"2026-08-20",
+    "dateModified":"2026-10-20",
     "mainEntityOfPage":"https://amux.io/guides/ai-agent-sandboxing/"
   }</script>
   <script type="application/ld+json">{
@@ -62,6 +62,7 @@
     "@context":"https://schema.org",
     "@type":"FAQPage",
     "mainEntity":[
+      {"@type":"Question","name":"How do I sandbox a whole team of AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Use three layers. Give each agent its own git worktree so parallel agents never edit the same files. Run agents in containers (Docker, optionally with gVisor) or microVMs with networking restricted. Run the fleet on a machine that is not your laptop. amux covers the first and third layers: AMUX_WORKSPACE_ISOLATION=1 gives each worker its own worktree and temp directory, and amux Cloud runs the fleet on a dedicated server at yourname.amux.io from $39/mo. amux does not create containers itself."}},
       {"@type":"Question","name":"Why do AI coding agents need sandboxing?","acceptedAnswer":{"@type":"Answer","text":"AI coding agents execute arbitrary code on your machine — they run terminal commands, install packages, modify files, and make network requests. Without sandboxing, a prompt injection, hallucinated command, or malicious dependency can escalate to full system compromise. Microsoft disclosed CVE-2026-25592 in May 2026 showing how prompt injection in agent frameworks achieved host-level remote code execution. Sandboxing limits the blast radius: even if the agent runs dangerous code, the damage is confined to an isolated environment."}},
       {"@type":"Question","name":"What is the difference between a container and a microVM for AI agent sandboxing?","acceptedAnswer":{"@type":"Answer","text":"Containers (Docker, Podman) share the host kernel and use namespace isolation — they're fast to start (~1s) but have a larger attack surface because a kernel exploit can escape the container. MicroVMs (Firecracker, E2B) run a separate lightweight kernel inside a hardware-virtualized environment — they take slightly longer to start (~150ms for Firecracker, sub-100ms for E2B) but provide near-VM-level isolation. For most AI agent workloads, containers with gVisor (which intercepts syscalls in userspace) offer a strong middle ground: container-speed startup with VM-like isolation."}},
       {"@type":"Question","name":"Which sandboxing approach is best for running Claude Code or Codex CLI?","acceptedAnswer":{"@type":"Answer","text":"For Claude Code, the simplest approach is using its built-in permission modes (plan mode restricts file writes, auto mode requires approval for dangerous commands). For stronger isolation, run Claude Code inside a Docker container or E2B sandbox — Claude Code works in any Linux environment. Codex CLI has the strongest built-in sandboxing of any coding agent: OS-level isolation with filesystem restrictions and network disabled by default. For maximum security, run either agent inside a Firecracker microVM via E2B or a gVisor-sandboxed Docker container."}},
@@ -163,11 +164,13 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Sandboxing</span></div>
 
     <h1>AI Agent Sandboxing in 2026: How to Run Coding Agents Without Risking Your System</h1>
-    <p class="subtitle">AI coding agents execute arbitrary code on your machine &mdash; shell commands, package installs, file modifications, network requests. Without isolation, a prompt injection or hallucinated <code>rm -rf</code> can compromise your entire system. This guide compares 8 sandboxing technologies and the built-in safety models of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a> &mdash; so you can run agents autonomously without staying up all night watching them. <em style="font-size:.85rem;color:var(--muted);">Updated August 2026.</em></p>
+    <p class="subtitle">AI coding agents execute arbitrary code on your machine &mdash; shell commands, package installs, file modifications, network requests. Without isolation, a prompt injection or hallucinated <code>rm -rf</code> can compromise your entire system. This guide compares 8 sandboxing technologies and the built-in safety models of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a> &mdash; so you can run agents autonomously without staying up all night watching them. <em style="font-size:.85rem;color:var(--muted);">Updated October 2026.</em></p>
 
     <!-- EXP-049: sandboxing top-of-page CTA — updated Aug 2026 -->
 
     <!-- EXP-007 -->
+
+    <p data-cta-loc="exp142-answer"><strong>Short answer:</strong> to run AI coding agents safely, put each agent in a container or microVM with networking off and only its project directory mounted, and give each agent its own git worktree so parallel agents never edit the same files. Docker plus gVisor covers most teams; E2B or Firecracker is the choice for untrusted code. To keep a whole team of agents running overnight without touching your laptop, run them on a separate machine, such as an <a href="/start/">amux Cloud</a> server dedicated to you.</p>
 
     <!-- ───────── TL;DR ───────── -->
     <div class="tldr">
@@ -177,7 +180,7 @@
       <p><strong>Strongest isolation:</strong> <a href="https://github.com/firecracker-microvm/firecracker" target="_blank" rel="noopener">Firecracker</a> &mdash; hardware-virtualized microVMs, &lt;5MB overhead, powers AWS Lambda</p>
       <p><strong>Best for cloud workloads:</strong> <a href="https://modal.com/" target="_blank" rel="noopener">Modal</a> &mdash; serverless sandboxes with gVisor isolation, sub-second cold starts</p>
       <p><strong>Best built-in sandbox:</strong> <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a> &mdash; OS-level isolation with network disabled by default</p>
-      <p><strong>Best for agent fleets:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> + <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> &mdash; per-session containers with git worktree isolation and self-healing</p>
+      <p><strong>Best for agent fleets:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> + <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> &mdash; amux runs and self-heals the fleet with one git worktree per worker; Docker supplies the isolation</p>
     </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
@@ -654,16 +657,16 @@
       <h3><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> + Containerized Agents</h3>
       <div class="tool-meta">
         <span>By <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek</a></span>
-        <span>MIT License</span>
-        <span>Free &amp; open source &mdash; 360+ GitHub stars</span>
+        <span>MIT + Commons Clause</span>
+        <span>Free &amp; open source, 540+ GitHub stars</span>
       </div>
-      <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> sessions in <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> with built-in isolation. For sandboxing at fleet scale:</p>
+      <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> sessions in <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a>. It is one Rust binary plus SQLite. amux does not create containers itself; it handles the parts a container cannot:</p>
       <ul>
-        <li><strong>Git worktree isolation</strong> &mdash; each agent gets its own branch and working directory via <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktrees</a>, preventing merge conflicts between parallel agents</li>
+        <li><strong>Workspace isolation</strong>: set <code>AMUX_WORKSPACE_ISOLATION=1</code> for a worker, a group or everyone, and each worker gets its own <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktree</a> at <code>origin/main</code> and its own temp directory, so parallel agents never collide on files or scratch paths</li>
         <li><strong>Self-healing</strong> &mdash; auto-compacts context when near the limit, restarts on crash, and replays the last message so agents recover without human intervention</li>
         <li><strong>Atomic task claiming</strong> &mdash; SQLite-backed kanban board with atomic <code>CLAIM</code> operations ensures no two agents work on the same task</li>
         <li><strong>Token tracking</strong> &mdash; per-session daily spend monitoring catches cost runaways before they escalate</li>
-        <li><strong>Container integration</strong> &mdash; run each <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> session inside a <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> container for filesystem/network isolation</li>
+        <li><strong>A separate machine</strong>: <a href="/start/">amux Cloud</a> runs your whole fleet on its own server at <code>yourname.amux.io</code> (from $39/mo), so agents never run on your laptop. Self-hosters can run amux inside a VM or container for the same effect</li>
         <li><strong>REST API</strong> &mdash; programmatic control over session lifecycle, enabling automated sandbox provisioning and teardown</li>
         <li><strong>Mobile dashboard</strong> &mdash; monitor and control your agent fleet from the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a> while agents run unattended</li>
       </ul>
@@ -672,7 +675,7 @@
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.6rem;margin:2rem 0;">
       <h3 style="margin:0 0 0.6rem;">Get started with sandboxed agent fleets</h3>
-      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1.2rem;line-height:1.7;">Run an AI engineering team from one dashboard &mdash; dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> agents with self-healing, git isolation, and a web dashboard. Learn how to <a href="/guides/claude-code-headless/">run Claude Code headless</a> as part of an agent fleet. Free, open-source, MIT licensed.</p>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1.2rem;line-height:1.7;">Run an AI engineering team from one dashboard &mdash; dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> agents with self-healing, git isolation, and a web dashboard. Learn how to <a href="/guides/claude-code-headless/">run Claude Code headless</a> as part of an agent fleet. Free to self-host (MIT + Commons Clause), or <a href="/start/">run it on amux Cloud</a> on a server of its own.</p>
       <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1rem;font-size:0.82rem;overflow-x:auto;margin:0 0 1.2rem;">curl -fsSL https://amux.io/install.sh | bash && amux serve
 
 </pre>
@@ -685,6 +688,10 @@
     <h2 id="faq">Frequently Asked Questions</h2>
 
     <div class="compare-grid">
+      <div class="tool-card">
+        <h3>How do I sandbox a whole team of AI coding agents?</h3>
+        <p>Use three layers. Give each agent its own <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktree</a> so parallel agents never edit the same files. Run agents in containers (<a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a>, optionally with <a href="https://gvisor.dev/" target="_blank" rel="noopener">gVisor</a>) or microVMs with networking restricted. Run the fleet on a machine that is not your laptop. amux covers the first and third layers: <code>AMUX_WORKSPACE_ISOLATION=1</code> gives each worker its own worktree and temp directory, and <a href="/start/">amux Cloud</a> runs the fleet on a dedicated server. amux does not create containers itself.</p>
+      </div>
       <div class="tool-card">
         <h3>Why do AI coding agents need sandboxing?</h3>
         <p>AI agents execute arbitrary code &mdash; shell commands, package installs, file modifications, network requests. Without sandboxing, prompt injection, hallucinated commands, or malicious dependencies can escalate to full system compromise. <a href="https://www.microsoft.com/en-us/security/blog/2026/05/07/prompts-become-shells-rce-vulnerabilities-ai-agent-frameworks/" target="_blank" rel="noopener">Microsoft disclosed CVEs in May 2026</a> showing how prompt injection in <a href="https://github.com/microsoft/semantic-kernel" target="_blank" rel="noopener">Semantic Kernel</a> achieved host-level RCE. Sandboxing confines the blast radius.</p>
@@ -774,7 +781,7 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
