@@ -18,7 +18,7 @@ check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expec
 has() { printf '%s' "$1" | grep -q -- "$2" && echo yes || echo no; }
 alive() { kill -0 "$1" 2>/dev/null && echo alive || echo gone; }
 AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_SCOPE_FILE=/dev/null . "$TICK"
-STATE_DIR="$FIX/state"; HEALTH_PROBES=on
+STATE_DIR="$FIX/state"; CRASH_STATE="$FIX/state/state"; HEALTH_PROBES=on
 AGENT_VOLUME_CMD="echo agent-volume: TestVol exists=no"   # never the live diskutil from a test
 UTIL_CMD=true   # never the live server (scripts/test-mac-cleanup-utilization.sh tests it)
 SELF_DB="$FIX/no-self.db"   # the self-check must not read the live run history (scripts/test-mac-cleanup-self.sh tests it)
@@ -137,6 +137,23 @@ check "a rewritten old report does not revive an ended loop" no "$(has "$HEALTH_
 : > "$CRASH_DIR/git-$(stamp 30).ips"   # one fresh crash: the loop is live again
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
 check "a fresh crash makes it a constraint again"     yes   "$(has "$HEALTH_VERDICTS" '^crashes git crashed 13 times in 24h')"
+
+echo "4b2. a live loop with no crash since the last crashes escalation is not escalated again (RCA crashes 20261020-015312)"
+CRASH_DIR="$FIX/crash-handed"; mkdir -p "$CRASH_DIR" "$FIX/state"
+# 12 crashes 5h50m to 6h ago, all before an escalation 4h ago: the 00:02Z ChatGPT
+# loop at the 01:53 local tick, 10 minutes inside the 6h quiet window.
+for i in $(seq 1 12); do : > "$CRASH_DIR/browser_crashpad_handler-$(stamp $((21000 + i * 30))).ips"; done
+perl -e 'my $t = time - 21000; utime $t, $t, @ARGV' "$CRASH_DIR"/browser_crashpad_handler-*.ips
+printf 'esc_crashes=%s\n' "$(( $(date +%s) - 4 * 3600 ))" > "$CRASH_STATE"
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b2.out"; out=$(cat "$FIX/crash4b2.out")
+check "no constraint: every crash predates the last escalation" no "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler')"
+check "it says so, with a verdict"                    yes   "$(has "$out" 'browser_crashpad_handler crashed 12 times in 24h, the newest .* before the last crashes escalation .*verdict=crash_loop_already_escalated')"
+: > "$CRASH_DIR/browser_crashpad_handler-$(stamp 60).ips"   # a crash after the escalation
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b2.out"
+check "a crash after the escalation is a constraint again" yes "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler crashed 13 times in 24h')"
+rm -f "$CRASH_STATE"
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b2.out"
+check "control: never escalated, the live loop is a constraint" yes "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler')"
 
 echo "4c. an orphaned crash handler whose executable is gone is stopped (RCA crashes 20261019-195257)"
 # Real processes, each pid from $! (never a pattern match), each orphaned to

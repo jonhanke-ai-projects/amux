@@ -31,6 +31,36 @@ check "an arm past the reserve does not run"          1   "$rc2"
 check "the skipped arm is recorded by name"           late_arm "$skipped"
 check "and the skip is said, with its verdict"        yes "$(has "$out" 'late arm skipped: .*verdict=tick_out_of_time')"
 
+echo "1a. under load the last budgeted arm still runs (Mac self RCA 20261020-005306)"
+# Replays the 23:54 tick of 2026-10-19: 25s before the first arm, every budgeted
+# arm spending its whole cap, and the unbudgeted ones their measured seconds. A
+# cap of "whatever is left" let the first arms take it all and skipped worktrees.
+got=$(TICK_PATH="$TICK" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null
+  SECONDS=25; t=25
+  spend() { t=$(( t + $1 )); SECONDS=$t; }
+  tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S >/dev/null && spend $(( TARGET_SCAN_S + TARGET_BUDGET_S ))
+  c=$TICK_ARM_SHARE
+  tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S >/dev/null && spend $(( TARGET_SCAN_S + TARGET_BUDGET_S ))
+  tick_arm "vm images" >/dev/null && spend 2
+  tick_arm "vm trim" >/dev/null && spend 70
+  tick_arm "claude tmp" >/dev/null && spend "$TICK_ARM_SHARE"
+  ct=$TICK_ARM_SHARE
+  tick_arm "user tmp" >/dev/null && spend 4
+  tick_arm "lane tmp" LANE_TMP_BUDGET_S >/dev/null && spend "$LANE_TMP_BUDGET_S"
+  out=$(tick_arm "worktrees" WORKTREE_BUDGET_S); rc=$?
+  tick_arm "worktrees" WORKTREE_BUDGET_S >/dev/null
+  printf "%s|%s|%s|%s|%s|%s" "$rc" "${TICK_SKIPPED:-none}" "$WORKTREE_BUDGET_S" "$c" "$t" "$ct"')
+IFS='|' read -r rc skipped wt cargo used ct <<<"$got"
+check "the last budgeted arm runs"                    0    "$rc"
+check "no arm is skipped"                             none "$skipped"
+check "it keeps a working budget (its runs took 3-13s)" yes "$([ "$wt" -ge 8 ] && echo yes || echo no)"
+check "the first arm keeps its measured 54-95s"     yes "$([ "$cargo" -ge 70 ] && echo yes || echo no)"
+check "claude tmp is not squeezed below the arms after it" yes "$([ "$ct" -ge 45 ] && echo yes || echo no)"
+check "and the arms still end inside the verdict reserve" yes "$([ "$used" -le 330 ] && echo yes || echo no)"
+out=$(TICK_PATH="$TICK" bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; SECONDS=25; TARGET_SCAN_S=90; tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S')
+check "a binding share is said, with its verdict"     yes  "$(has "$out" 'cargo targets capped at [0-9]+s of the 305s left.*verdict=tick_arm_share')"
+
 echo "1b. the deadline sits under the warning, and the done line names the slowest section"
 got=$(TICK_PATH="$TICK" bash -c '
   AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"

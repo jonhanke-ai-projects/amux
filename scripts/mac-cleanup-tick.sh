@@ -411,6 +411,18 @@ STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 TICK_BUDGET_S=${AMUX_CLEANUP_TICK_BUDGET_S:-450}
 TICK_RESERVE_S=${AMUX_CLEANUP_TICK_RESERVE_S:-120}
 TICK_SKIPPED=""
+# The budgeted arms in the order they run, each with a weight (Mac self RCA
+# 20261020-005306). Capping an arm at "what the tick has left" let the first
+# arms take everything under load: whichever arm ran LAST got nothing. Before
+# 60cb904b1 that was claude tmp; after it, worktrees, skipped by 6 of the next 7
+# ticks while needing 3-13s. tick_arm now caps an arm in this list at its
+# weighted share of the time left, so every later arm keeps its share too. The
+# weights are what each arm took on the loaded ticks of 2026-10-19 (cargo 54-95s,
+# superseded 56-85s, claude tmp 63-110s, worktrees 3-13s); lane tmp resumes
+# from a cursor, so it gets less than the 90s it will always spend. The declared
+# budgets are ceilings and add up to ~800s, so they cannot be the weights.
+TICK_ARM_PLAN=${AMUX_CLEANUP_TICK_ARM_PLAN:-"cargo_targets:75 superseded_artifacts:75 claude_tmp:100 lane_tmp:30 worktrees:20"}
+TICK_ARM_SHARE=0     # the running arm's cap, for an arm that sizes its own phases
 
 # Claude Code session temp dirs (DESKT-77). Claude Code gives every session
 # /private/tmp/claude-<uid>/<project>/<session-uuid>/{scratchpad,tasks} and never
@@ -533,6 +545,8 @@ LIMITS_CMD=${AMUX_CLEANUP_LIMITS_CMD:-limits_reading}
 # and escalates. Reports older than CRASH_KEEP_DAYS are pruned (they are the
 # user's own diagnostic copies; macOS keeps its own submitted ones elsewhere).
 CRASH_DIR=${AMUX_CLEANUP_CRASH_DIR:-$HOME/Library/Logs/DiagnosticReports}
+# The escalation state, read by the crash verdict to tell a new crash from one already handed over.
+CRASH_STATE=${AMUX_CLEANUP_CRASH_STATE:-$STATE_DIR/state}
 CRASH_LOOP_N=${AMUX_CLEANUP_CRASH_LOOP_N:-10}
 CRASH_KEEP_DAYS=${AMUX_CLEANUP_CRASH_KEEP_DAYS:-30}
 # A loop with no crash in the last CRASH_RECENT_MIN has stopped: it is reported,
@@ -948,15 +962,32 @@ tick_mark() { # <label> (or "end")
 }
 
 tick_arm() { # <label> [budget var]...
-  local label=$1 v left; shift
+  local label=$1 key v left w=0 rest=0 seen=0 e sum=0 share; shift
+  key=${label// /_}
   tick_mark "$label"
   left=$(( TICK_BUDGET_S - TICK_RESERVE_S - SECONDS ))
   if [ "$left" -le 0 ]; then
     echo "mac-cleanup: $label skipped: the tick has used ${SECONDS}s of its ${TICK_BUDGET_S}s budget and keeps ${TICK_RESERVE_S}s for the verdicts (verdict=tick_out_of_time)"
-    TICK_SKIPPED="${TICK_SKIPPED:+$TICK_SKIPPED,}${label// /_}"
+    TICK_SKIPPED="${TICK_SKIPPED:+$TICK_SKIPPED,}$key"
     return 1
   fi
-  for v in "$@"; do if [ "${!v}" -gt "$left" ]; then printf -v "$v" '%s' "$left"; fi; done
+  for e in $TICK_ARM_PLAN; do
+    if [ "${e%%:*}" = "$key" ]; then seen=1; w=${e#*:}; fi
+    [ "$seen" = 1 ] && rest=$(( rest + ${e#*:} ))
+  done
+  share=$left
+  if [ "$w" -gt 0 ] && [ "$rest" -gt "$w" ]; then
+    share=$(( left * w / rest )); [ "$share" -ge 1 ] || share=1
+  fi
+  TICK_ARM_SHARE=$share
+  for v in "$@"; do sum=$(( sum + ${!v} )); done
+  if [ "$share" -lt "$left" ] && [ "$sum" -gt "$share" ]; then
+    # Phases run one after another, so they split the share in proportion.
+    for v in "$@"; do printf -v "$v" '%s' "$(( ${!v} * share / sum > 0 ? ${!v} * share / sum : 1 ))"; done
+    echo "mac-cleanup: $label capped at ${share}s of the ${left}s left, keeping the rest for the arms after it (verdict=tick_arm_share)"
+  else
+    for v in "$@"; do if [ "${!v}" -gt "$left" ]; then printf -v "$v" '%s' "$left"; fi; done
+  fi
   return 0
 }
 
@@ -1136,8 +1167,28 @@ for app, k in c.most_common():
 PY
 }
 
+crash_newest() { # <dir> <app>: epoch of the app's newest crash, dated as crash_counts dates it
+  python3 - "$1" "$2" <<'PY' 2>/dev/null
+import os, re, sys, time
+d, only, best = sys.argv[1], sys.argv[2], 0
+for n in os.listdir(d):
+    p = os.path.join(d, n)
+    if not os.path.isfile(p) or re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", n) != only:
+        continue
+    t = os.stat(p).st_mtime
+    m = re.search(r"[-_]([0-9]{4}-[0-9]{2}-[0-9]{2})-([0-9]{6})", n)
+    if m:
+        try:
+            t = min(t, time.mktime(time.strptime(m.group(1) + m.group(2), "%Y-%m-%d%H%M%S")))
+        except ValueError:
+            pass
+    best = max(best, t)
+print(int(best))
+PY
+}
+
 check_crash_reports() { # <dry:0|1>
-  local DRY=${1:-0} top name cnt pruned=0 old
+  local DRY=${1:-0} top name cnt pruned=0 old newest esc
   if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
   # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
   top=$(crash_counts "$CRASH_DIR" 1440 | head -3)
@@ -1146,7 +1197,15 @@ check_crash_reports() { # <dry:0|1>
     [ -n "${cnt:-}" ] || continue
     if [ "$cnt" -ge "$CRASH_LOOP_N" ]; then
       recent=$(crash_counts "$CRASH_DIR" "$CRASH_RECENT_MIN" "$name" | awk '{print $1}'); recent=${recent:-0}
-      if [ "$recent" -gt 0 ]; then
+      # A loop with no crash since the last crashes escalation was already
+      # handed over, with its card (Mac crashes RCA 20261020-015312): the 6h
+      # cooldown ran out 10 minutes before the 6h quiet window would have called
+      # the ChatGPT loop ended, and it re-escalated with zero new crashes.
+      newest=$(crash_newest "$CRASH_DIR" "$name"); newest=${newest:-0}
+      esc=$(state_get "$CRASH_STATE" esc_crashes 2>/dev/null || true); case "$esc" in ''|*[!0-9]*) esc=0 ;; esac
+      if [ "$recent" -gt 0 ] && [ "$esc" -gt 0 ] && [ "$newest" -le "$esc" ]; then
+        echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h, the newest $(( ($(date +%s) - newest) / 60 ))m ago, before the last crashes escalation $(( ($(date +%s) - esc) / 60 ))m ago; nothing new to hand over (verdict=crash_loop_already_escalated)"
+      elif [ "$recent" -gt 0 ]; then
         HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
       else
         echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h but none in the last $(( CRASH_RECENT_MIN / 60 ))h, so the loop has stopped; not a constraint (verdict=crash_loop_ended)"
@@ -2688,7 +2747,7 @@ ctmp_idle=$CLAUDE_TMP_IDLE_H
 if [ "$tgt_idle" != "$TARGET_IDLE_H" ] && [ "$ctmp_idle" -gt 0 ] && [ "$CLAUDE_TMP_TIGHT_IDLE_H" -lt "$ctmp_idle" ]; then ctmp_idle=$CLAUDE_TMP_TIGHT_IDLE_H; fi
 if tick_arm "claude tmp"; then
   # The quota pass is a share of the arm's budget, so shrink both in proportion.
-  ct_left=$(( TICK_BUDGET_S - TICK_RESERVE_S - SECONDS ))
+  ct_left=$TICK_ARM_SHARE
   if [ "$CLAUDE_TMP_BUDGET_S" -gt "$ct_left" ]; then
     CLAUDE_TMP_QUOTA_BUDGET_S=$(( CLAUDE_TMP_QUOTA_BUDGET_S * ct_left / CLAUDE_TMP_BUDGET_S )); CLAUDE_TMP_BUDGET_S=$ct_left
   fi
