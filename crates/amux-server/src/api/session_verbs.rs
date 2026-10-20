@@ -28916,6 +28916,16 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
     if owner_mention_grant_allows(origin, target) {
         return None;
     }
+    // CC_PEERS (09baa60a2): when both lanes name each other the group boundary
+    // does not apply. This sits after the receiver's explicit CC_RECEIVE_DENY,
+    // which stays the strongest rule, and before the shared-group check, which
+    // a bilateral pair by definition may not satisfy. send_post runs this gate
+    // BEFORE cross_group_policy_ok, so a bypass placed only there never ran.
+    if bilateral_peers(origin, target) {
+        tracing::info!(origin, target, verdict = "bilateral_peers_allowed", measured = true,
+            n_considered = 1, "worker input allowed outside a shared group: both lanes name each other in CC_PEERS");
+        return None;
+    }
     let target_groups = lane_groups(target);
     let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &target_groups);
     worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open)
@@ -28941,6 +28951,12 @@ pub(crate) fn cross_group_policy_ok(origin: &str, target: &str) -> Result<&'stat
         return Ok("admin-group");
     }
     if bilateral_peers(origin, target) {
+        // A bilateral pair bypasses isolation and the group check, but the
+        // receiver's explicit CC_RECEIVE_DENY still wins, the same order
+        // peer_input_refusal applies.
+        if let Some(reason) = peer_receive_refusal(origin, target) {
+            return Err(reason);
+        }
         return Ok("bilateral-peers");
     }
     // ISOLATED TARGET (AMUX-3232): a raw agent is not a peer/relay target. The
