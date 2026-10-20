@@ -11,7 +11,14 @@ test('a card created while the board read is in flight still reaches the board',
   await page.waitForFunction(() => typeof (window as any).fetchBoard === 'function');
   await page.evaluate(() => (window as any).switchView('board'));
   const headers = await page.evaluate(() => ({ Authorization: 'Bearer ' + (window as any)._AMUX_AUTH_TOKEN }));
-  await expect.poll(() => page.evaluate(() => (globalThis as any).eval('_cdcSeq')), { timeout: 20_000 }).toBeGreaterThan(0);
+  // A fresh server's change log is empty, and an empty log seeds no cursor
+  // (the board then re-reads in full). One write gives the log a head.
+  expect((await request.post('/api/board', { headers, data: { title: `seed race warmup ${Date.now()}`, status: 'todo' } })).ok()).toBeTruthy();
+  await expect.poll(() => page.evaluate(async () => {
+    const g = globalThis as any;
+    if (!(g.eval('_cdcSeq') > 0)) await g.fetchBoard();
+    return g.eval('_cdcSeq');
+  }), { timeout: 20_000 }).toBeGreaterThan(0);
   // No stream for the rest of the test, so only the two reads below can deliver the card.
   await page.evaluate(() => { const g = globalThis as any; g.eval('_sse && _sse.close()'); });
 
