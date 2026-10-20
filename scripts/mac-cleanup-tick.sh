@@ -126,6 +126,21 @@ CHURN_ROOTS=${AMUX_CLEANUP_CHURN_ROOTS:-/private/tmp/claude-$(id -u):$HOME/Dev:$
 CHURN_MIN=${AMUX_CLEANUP_CHURN_MIN:-5}
 CHURN_FILES=${AMUX_CLEANUP_CHURN_FILES:-2000}
 CHURN_BUDGET_S=${AMUX_CLEANUP_CHURN_BUDGET_S:-60}
+# The census walks files, and on 2026-10-20 it could not finish: ~/Dev holds run
+# directories of 40k-140k body files each, a directory-only walk of it ran past
+# 300s, and the 60s budget went to /private/tmp first. So the escalation said "no
+# directory over 2000 modified files (scan complete=no)" while one recorder wrote
+# 7,000 files a minute into a single directory there (RCA 20261020-095236). When
+# fswatch is installed the tick asks FSEvents itself instead: a CHURN_SAMPLE_S
+# subscription sees exactly the stream fseventsd is processing, deletions
+# included, in fixed time, whatever the size of the tree. The census stays as the
+# fallback. CHURN_SAMPLE_CMD prints one changed path per line for <seconds>;
+# AMUX_CLEANUP_CHURN_SAMPLE_CMD=off forces the census.
+CHURN_SAMPLE_S=${AMUX_CLEANUP_CHURN_SAMPLE_S:-20}
+CHURN_SAMPLE_ROOTS=${AMUX_CLEANUP_CHURN_SAMPLE_ROOTS:-$HOME:/private/tmp:/private/var/folders}
+CHURN_FSWATCH=$(command -v fswatch 2>/dev/null || { [ -x /opt/homebrew/bin/fswatch ] && echo /opt/homebrew/bin/fswatch; } || { [ -x /usr/local/bin/fswatch ] && echo /usr/local/bin/fswatch; } || true)
+CHURN_SAMPLE_CMD=${AMUX_CLEANUP_CHURN_SAMPLE_CMD:-${CHURN_FSWATCH:+churn_fswatch}}
+[ "$CHURN_SAMPLE_CMD" = off ] && CHURN_SAMPLE_CMD=""
 # Seam: prints "<gb> <cpu_pct>" for fseventsd, or nothing when it is not running.
 # The suites stub it so the live daemon cannot decide a test (as PRESSURE_CMD does).
 FSEVENTSD_CMD=${AMUX_CLEANUP_FSEVENTSD_CMD:-fseventsd_reading}
@@ -880,6 +895,23 @@ find_cargo_targets() { # <colon-roots> <maxdepth> <budget_s>
 # most three. Call it in the caller's shell with stdout redirected, never $(...):
 # it sets CHURN_COMPLETE=no when the budget cut a root short, so a short
 # list is not read as a quiet disk.
+churn_fswatch() { # <seconds>: every path FSEvents reports under CHURN_SAMPLE_ROOTS
+  local -a roots
+  IFS=':' read -r -a roots <<< "$CHURN_SAMPLE_ROOTS"
+  { perl -e 'alarm shift; exec @ARGV' "$1" "$CHURN_FSWATCH" -r -m fsevents_monitor ${roots[@]+"${roots[@]}"} 2>/dev/null; } 2>/dev/null || true
+}
+
+# Print "<count> <dir>" for the directories with at least <min_events> FSEvents in
+# a <seconds> sample, grouped by the changed path's parent, busiest first, at most
+# three. Same contract as churn_census; a sample always covers every root, so it
+# sets CHURN_COMPLETE=yes.
+churn_sample() { # <seconds> <min_events>
+  CHURN_COMPLETE=yes
+  $CHURN_SAMPLE_CMD "$1" 2>/dev/null \
+    | awk '{ sub(/\/[^\/]*$/, ""); if ($0 != "") c[$0]++ } END { for (k in c) print c[k], k }' \
+    | awk -v m="$2" '$1 >= m' | sort -rn | head -3
+}
+
 churn_census() { # <colon-roots> <minutes> <budget_s> <min_files>
   local roots=$1 mins=$2 budget=$3 minf=$4 deadline left r rc out
   local -a rootarr
@@ -2867,11 +2899,25 @@ if [ -n "$fse_reading" ]; then
     echo "mac-cleanup: fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU and is SIP-protected — a reboot is the only remedy (owner runs: sudo fdesetup authrestart)"
     # In this shell, not $(...): churn_census sets CHURN_COMPLETE, which a subshell would lose.
     churn_f=$(mktemp "${TMPDIR:-/tmp}/churn-out.XXXXXX")
-    if tick_arm "fseventsd churn census" CHURN_BUDGET_S; then churn_census "$CHURN_ROOTS" "$CHURN_MIN" "$CHURN_BUDGET_S" "$CHURN_FILES" > "$churn_f"; else CHURN_COMPLETE=no; : > "$churn_f"; fi
+    churn_unit="files modified in ${CHURN_MIN}m"; churn_top_unit="files in ${CHURN_MIN}m"; churn_floor=$CHURN_FILES
+    if ! tick_arm "fseventsd churn census" CHURN_BUDGET_S; then CHURN_COMPLETE=no; : > "$churn_f"
+    elif [ -n "$CHURN_SAMPLE_CMD" ]; then
+      churn_s=$CHURN_SAMPLE_S; [ "$churn_s" -le "$CHURN_BUDGET_S" ] 2>/dev/null || churn_s=$CHURN_BUDGET_S
+      # The census floor is per CHURN_MIN minutes; scale it to the sample window.
+      churn_floor=$(( (CHURN_FILES * churn_s + CHURN_MIN * 60 - 1) / (CHURN_MIN * 60) )); [ "$churn_floor" -ge 1 ] || churn_floor=1
+      churn_unit="FSEvents in ${churn_s}s"; churn_top_unit=$churn_unit
+      churn_sample "$churn_s" "$churn_floor" > "$churn_f"
+      echo "mac-cleanup:   fseventsd feed: sampled FSEvents for ${churn_s}s under $CHURN_SAMPLE_ROOTS, deletions included (verdict=fseventsd_churn_sampled)"
+    else
+      churn_census "$CHURN_ROOTS" "$CHURN_MIN" "$CHURN_BUDGET_S" "$CHURN_FILES" > "$churn_f"
+    fi
     churn=$(cat "$churn_f"); rm -f -- "${churn_f:?}"
     if [ -n "$churn" ]; then
-      printf '%s\n' "$churn" | while read -r n d; do echo "mac-cleanup:   fseventsd feed: $n files modified in ${CHURN_MIN}m under $d"; done
-      fse_top=$(printf '%s\n' "$churn" | head -1 | awk '{print $1" files in '"${CHURN_MIN}"'m under "$2}')
+      printf '%s\n' "$churn" | while read -r n d; do echo "mac-cleanup:   fseventsd feed: $n $churn_unit under $d"; done
+      fse_top=$(printf '%s\n' "$churn" | head -1 | { read -r n d; echo "$n $churn_top_unit under $d"; })
+    elif [ -n "$CHURN_SAMPLE_CMD" ]; then
+      fse_top="no directory over ${churn_floor} ${churn_unit} (FSEvents sample, deletions included)"
+      echo "mac-cleanup:   fseventsd feed: $fse_top"
     else
       fse_top="no directory over ${CHURN_FILES} modified files in ${CHURN_MIN}m (scan complete=${CHURN_COMPLETE}; deletions are not counted)"
       echo "mac-cleanup:   fseventsd feed: $fse_top"

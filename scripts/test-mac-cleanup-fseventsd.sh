@@ -11,6 +11,7 @@ export AMUX_CLEANUP_FSEVENTSD_CMD=true
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
 export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp"
+export AMUX_CLEANUP_CHURN_SAMPLE_CMD=off   # cells 1-2 pin the census; cell 3 drives the FSEvents sample
 trap 'rm -rf -- "${FIX:?}"' EXIT
 fails=0
 [ -x "$TICK" ] || { echo "FAIL: $TICK missing or not executable, no cell below ran"; exit 1; }
@@ -68,6 +69,31 @@ if [ "$(uname)" = Darwin ]; then
   out=$(tick "$SEQ")
   check "it is not suppressed by an earlier cell's cooldown" "no" "$(has "$out" 'escalation suppressed')"
   check "hot before and after still escalates"          "yes" "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
+else
+  echo "  skip (the end-to-end tick needs macOS)"
+fi
+
+echo "3. with an FSEvents sampler the feed is named whatever the tree's size, deletions included"
+SAMP="$FIX/samp.sh"
+{ echo '#!/bin/bash'; echo 'echo "$1" > '"$FIX"'/samp.secs'
+  echo 'for i in $(seq 1 60); do echo "/Users/x/Dev/cust/runs/eng-R-A/bodies/f$i.resp.txt"; done'
+  echo 'for i in $(seq 1 3); do echo "/Users/x/Library/Caches/c$i/f"; done'
+  echo 'echo "/Users/x/Library/Application Support/Chrome/Profile 17/a"; echo "/Users/x/Library/Application Support/Chrome/Profile 17/b"'; } > "$SAMP"; chmod +x "$SAMP"
+AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP"
+CHURN_SAMPLE_CMD="$SAMP" CHURN_COMPLETE=no
+churn_sample 20 2 > "$FIX/s.out"; out=$(cat "$FIX/s.out")
+check "the busiest directory is named with its event count" "60 /Users/x/Dev/cust/runs/eng-R-A/bodies" "$(head -1 "$FIX/s.out")"
+check "a path with spaces keeps its directory"           "yes" "$(has "$out" "2 /Users/x/Library/Application Support/Chrome/Profile 17")"
+check "a directory under the floor is not named"         "no"  "$(has "$out" "Library/Caches")"
+check "off forces the census"                            "" "$(AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_CHURN_SAMPLE_CMD=off bash -c '. "$0" && printf %s "$CHURN_SAMPLE_CMD"' "$TICK")"
+check "the sampler gets the window"                      "20"  "$(cat "$FIX/samp.secs")"
+check "a sample says complete"                           "yes" "$CHURN_COMPLETE"
+if [ "$(uname)" = Darwin ]; then
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  out=$(AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP" tick "echo 30 120")
+  check "the tick samples rather than walks"             "yes" "$(has "$out" 'verdict=fseventsd_churn_sampled')"
+  check "and names the sampled feed"                     "yes" "$(has "$out" "fseventsd feed: 60 FSEvents in 20s under /Users/x/Dev/cust/runs/eng-R-A/bodies")"
+  check "the escalation names it too"                    "yes" "$(grep -q "Top feed: 60 FSEvents in 20s under /Users/x/Dev/cust/runs/eng-R-A/bodies" "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
 else
   echo "  skip (the end-to-end tick needs macOS)"
 fi
