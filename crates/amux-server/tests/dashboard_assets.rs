@@ -2341,7 +2341,19 @@ fn every_cdn_asset_is_cors_and_precached_for_offline() {
         if !tag.contains("crossorigin") { problems.push(format!("no crossorigin: {url}")); }
         if !sw.contains(&format!("'{url}'")) { problems.push(format!("not in sw.js CDN_URLS: {url}")); }
     }
-    assert!(seen >= 10, "found only {seen} CDN tags in index.html; the scan is broken, not the page");
+    // View-only libraries load on first use through app.js's _LAZY_LIBS table
+    // rather than a tag, and an offline open needs them precached just the same.
+    let app = asset("app.js");
+    let start = app.find("const _LAZY_LIBS = {").expect("_LAZY_LIBS table in app.js");
+    let table = &app[start..start + app[start..].find("\n};").expect("end of _LAZY_LIBS")];
+    let mut lazy = 0;
+    for url in table.split('\'').filter(|s| s.starts_with("https://")) {
+        lazy += 1;
+        if !sw.contains(&format!("'{url}'")) { problems.push(format!("lazy lib not in sw.js CDN_URLS: {url}")); }
+    }
+    assert!(lazy >= 8, "found only {lazy} URLs in _LAZY_LIBS; the scan is broken, not the table");
+    seen += lazy;
+    assert!(seen >= 10, "found only {seen} CDN assets; the scan is broken, not the page");
     assert!(problems.is_empty(), "offline would lose these libraries:\n{}", problems.join("\n"));
 }
 

@@ -207,9 +207,18 @@ export const test = base.extend({
       // describe the encoded bytes.
       const headers = { ...response.headers() };
       for (const h of ['content-encoding', 'content-length', 'transfer-encoding']) delete headers[h];
-      const entry = { status: response.status(), headers, body: await response.body() };
+      // A library the page asks for on first use (_lazyLib) can still be in
+      // flight when the test ends and its context closes. The body is gone
+      // then, and nobody is waiting for it, so that is not a test failure.
+      let body: Buffer;
+      try { body = await response.body(); }
+      catch (e) {
+        console.log(`[e2e] cdn-disposed: ${url} finished after its page closed (test: ${testInfo.titlePath.join(' > ')})`);
+        return;
+      }
+      const entry = { status: response.status(), headers, body };
       if (response.ok()) cdnCache.set(url, entry);
-      return route.fulfill(entry);
+      return route.fulfill(entry).catch(() => {});
     });
     // A second tab must run the same candidate asset as the first. Page-only
     // overrides silently mixed the candidate outbox with the installed one.
