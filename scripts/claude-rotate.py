@@ -1162,9 +1162,14 @@ def _kc_write(service, account, value):
 ACCOUNTS_DIR = os.environ.get("CLAUDE_ROTATE_ACCOUNTS_DIR", os.path.join(HOME, ".amux", "claude-accounts"))
 
 
+# The CLI's own name, fixed: CRED_SVC is overridable (a sandbox points it at a
+# scratch item), and an override must not move where folder logins are read.
+CLI_CRED_SVC = "Claude Code-credentials"
+
+
 def _folder_service(folder):
     import hashlib
-    return CRED_SVC + "-" + hashlib.sha256(folder.encode()).hexdigest()[:8]
+    return CLI_CRED_SVC + "-" + hashlib.sha256(folder.encode()).hexdigest()[:8]
 
 
 def account_folders():
@@ -1362,7 +1367,7 @@ def browser_unreachable(target, reason, upstream):
         return 1
     current = current_email()
     msg = ("Claude account switching is stuck: %s is spent and %s has no saved login, so it needs a "
-           "browser sign-in, but Chrome is not connected to amux (relay: %s). %s." % (current, target, upstream, fix))
+           "browser sign-in, but Chrome is not connected to amux (relay: %s). To fix it, %s." % (current, target, upstream, fix))
     try:
         p = subprocess.run(["amux", "alert", msg, "workers are rate-limited until the switch lands"],
                            capture_output=True, text=True, timeout=30)

@@ -258,6 +258,13 @@ class Logins(unittest.TestCase):
         # stores its login as "Claude Code-credentials-02d1cc0b".
         self.assertEqual(cr._folder_service("/Users/ethan/.amux/claude-accounts/amux"),
                          "Claude Code-credentials-02d1cc0b")
+        real = cr.CRED_SVC
+        try:
+            cr.CRED_SVC = "Claude Code-credentials-sandbox"  # an override must not move folder logins
+            self.assertEqual(cr._folder_service("/Users/ethan/.amux/claude-accounts/amux"),
+                             "Claude Code-credentials-02d1cc0b")
+        finally:
+            cr.CRED_SVC = real
 
     def test_switch_uses_the_account_folder_when_nothing_is_stored(self):
         self.folder("usemixpeek", "fresh@x.com")
