@@ -5647,7 +5647,7 @@ for p in d.get("pins", []):
     if want_status and (p.get("status") or "") != want_status: continue
     if q and q not in (p.get("name", "") + " " + p.get("desc", "")).lower(): continue
     n += 1
-    stars = "*" * (p.get("rating") or 0)
+    stars = "*" * (p.get("myRating") or 0)
     print("%-28s %-9s %-5s %s  [%s]" % (p["id"], p.get("status") or "-", stars, p.get("name", ""), ", ".join(names)))
 print("%d pin(s)" % n, file=sys.stderr)' "$@"
       ;;
@@ -5670,7 +5670,7 @@ for a in sys.argv[1:]:
     if "=" not in a or a.startswith("="): name.append(a); continue
     k, v = a.split("=", 1)
     if k in ("lat", "lng"): pin[k] = float(v)
-    elif k == "rating": pin["rating"] = int(v)
+    elif k == "rating": pin["myRating"] = int(v)
     elif k == "status": pin["status"] = v
     elif k in ("group", "groups"):
         for g in [x.strip() for x in v.split(",") if x.strip()]:
@@ -5706,7 +5706,7 @@ p = next((x for x in m.get("pins", []) if x.get("id") == pid), None)
 if not p: sys.exit("amux map: no pin %s" % pid)
 for a in sys.argv[2:]:
     k, _, v = a.partition("=")
-    if k == "rating": p["rating"] = int(v) if v else None
+    if k == "rating": p["myRating"] = int(v) if v else None
     elif k in ("status", "desc", "name"): p[k] = v
     elif k in ("note", "notes"): p["notes"] = v
     elif k == "at": p["eventAt"] = v

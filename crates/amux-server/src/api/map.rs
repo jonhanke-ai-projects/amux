@@ -529,7 +529,7 @@ async fn shared_page(State(state): State<AppState>, Path(token): Path<String>) -
         let maps = p["mapsUri"].as_str().map(str::to_string).unwrap_or_else(|| {
             format!("https://www.google.com/maps/search/?api=1&query={},{}", p["lat"], p["lng"])
         });
-        let rating = p["rating"].as_i64().map(|r| format!(" · {}", "★".repeat(r as usize))).unwrap_or_default();
+        let rating = p["myRating"].as_i64().map(|r| format!(" · {}", "★".repeat(r as usize))).unwrap_or_default();
         items.push_str(&format!(
             "<li><b>{}</b>{}<div>{}</div><div class=d>{}</div><a href=\"{}\" target=_blank rel=noopener>Open in Google Maps</a></li>",
             esc(p["name"].as_str().unwrap_or("")), rating, tags, esc(p["desc"].as_str().unwrap_or("")), esc(&maps)

@@ -36535,7 +36535,7 @@ function _mapRenderPins() {
   } else if (sortBy === 'distance' && ref) {
     visible = visible.slice().sort(function(a,b){ return _mapDist(ref.lat,ref.lng,a.lat,a.lng) - _mapDist(ref.lat,ref.lng,b.lat,b.lng); });
   } else if (sortBy === 'rating') {
-    visible = visible.slice().sort(function(a,b){ return (b.rating||0) - (a.rating||0) || (a.name||'').localeCompare(b.name||''); });
+    visible = visible.slice().sort(function(a,b){ return (b.myRating||0) - (a.myRating||0) || (b.rating||0) - (a.rating||0) || (a.name||'').localeCompare(b.name||''); });
   } else if (sortBy === 'visited') {
     visible = visible.slice().sort(function(a,b){ return String((b.visits||{}).last||'').localeCompare(String((a.visits||{}).last||'')); });
   }
@@ -36945,7 +36945,7 @@ function _mapOpenPinModal(id, latlng) {
     }).join('');
   }
   document.getElementById('map-pin-status').value = pin ? (pin.status || '') : '';
-  document.getElementById('map-pin-rating').value = pin && pin.rating ? String(pin.rating) : '';
+  document.getElementById('map-pin-rating').value = pin && pin.myRating ? String(pin.myRating) : '';
   document.getElementById('map-pin-event').value = pin && pin.eventAt ? String(pin.eventAt).slice(0, 16) : '';
   document.getElementById('map-pin-facts').innerHTML = pin ? _mapPinFactsHtml(pin) : '';
   document.getElementById('map-pin-place-row').style.display = pin ? '' : 'none';
@@ -37004,7 +37004,7 @@ function _mapSavePin() {
     if (window._mapPendingPlace) { Object.assign(pin, window._mapPendingPlace); }
   }
   Object.assign(pin, { name: name, desc: desc, notes: notes, lat: lat, lng: lng, tags: tags, status: status,
-    rating: ratingV ? parseInt(ratingV, 10) : null, eventAt: eventAt });
+    myRating: ratingV ? parseInt(ratingV, 10) : null, eventAt: eventAt });   // `rating` is Google's; keep it
   if (status && pin.statusSource) delete pin.statusSource;   // set by hand now
   window._mapPendingPlace = null;
   _mapClosePinModal();
@@ -37079,7 +37079,7 @@ function _mapStars(n) { return n ? '★'.repeat(n) + '<span style="opacity:.3">'
 function _mapStatusLine(pin) {
   const bits = [];
   if (pin.status && _MAP_STATUS[pin.status]) bits.push('<span class="map-status-pill map-status-' + pin.status + '">' + _MAP_STATUS[pin.status] + '</span>');
-  if (pin.rating) bits.push('<span class="map-stars" aria-label="' + pin.rating + ' of 5">' + _mapStars(pin.rating) + '</span>');
+  if (pin.myRating) bits.push('<span class="map-stars" aria-label="' + pin.myRating + ' of 5">' + _mapStars(pin.myRating) + '</span>');
   const v = pin.visits || {};
   if (v.count) bits.push('<span class="map-visit-note">' + v.count + ' visit' + (v.count === 1 ? '' : 's') + (v.last ? ', last ' + escHtml(String(v.last).slice(0, 10)) : '') + '</span>');
   if (pin.place && pin.place.businessStatus === 'CLOSED_TEMPORARILY') bits.push('<span class="map-visit-note">temporarily closed</span>');
@@ -37227,7 +37227,7 @@ function _mapTableHtml(pins) {
         '<td><input type="checkbox" aria-label="Select ' + escHtml(p.name || '') + '" ' + (_mapSelected.has(p.id) ? 'checked ' : '') + 'onclick="_mapSelect(\x27' + p.id + '\x27,this.checked)"></td>' +
         '<td><a href="#" onclick="event.preventDefault();_mapFlyToPin(\x27' + p.id + '\x27)">' + escHtml(p.name || 'Unnamed') + '</a></td>' +
         '<td>' + (p.status ? _MAP_STATUS[p.status] || p.status : '') + '</td>' +
-        '<td class="map-stars">' + _mapStars(p.rating || 0) + '</td>' +
+        '<td class="map-stars">' + _mapStars(p.myRating || 0) + '</td>' +
         '<td>' + tags + '</td>' +
         '<td>' + escHtml(String((p.visits || {}).last || '').slice(0, 10)) + '</td></tr>';
     }).join('') + '</tbody></table>';

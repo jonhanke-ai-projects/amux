@@ -75,7 +75,9 @@ test.afterEach(async ({ page }) => {
 
 test('status, rating and a date set in the editor reach the server, the list and the calendar', async ({ page }) => {
   const request = await api(page);
-  const pin = await addPin(request, 'Gala');
+  // Added from search, so it carries Google's decimal rating (the 2026-10-20
+  // import refused a real pin like this one).
+  const pin = await addPin(request, 'Gala', 0, { rating: 4.7, ratingCount: 120 });
   await boot(page);
   await item(page, 'Gala').locator('.map-pin-edit-btn').click();
   await page.locator('#map-pin-status').selectOption('favorite');
@@ -87,7 +89,8 @@ test('status, rating and a date set in the editor reach the server, the list and
   await expect.poll(async () => (await serverPin(request, pin.id))?.rev).toBe(2);
   const saved = await serverPin(request, pin.id);
   expect(saved.status).toBe('favorite');
-  expect(saved.rating).toBe(4);
+  expect(saved.myRating).toBe(4);
+  expect(saved.rating).toBe(4.7);   // Google's rating survives the editor
   expect(saved.calEventId).toMatch(/^EVT-/);
   const events = await (await request.get('/api/cal-events')).json();
   const ev = (events.events || events).find((e: any) => e.id === saved.calEventId);

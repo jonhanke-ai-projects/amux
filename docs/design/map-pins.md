@@ -30,7 +30,8 @@ for older dashboards; it is applied pin by pin.
 | field | meaning |
 |---|---|
 | `status` | `want`, `been`, `favorite`, `closed`, or empty |
-| `rating` | the owner's own rating, 1 to 5 |
+| `myRating` | the owner's own rating, 1 to 5 |
+| `rating`, `ratingCount` | Google's rating, saved when a pin is added from search |
 | `visits` | `{count, first, last}` matched from location history |
 | `placeId`, `place` | the linked Google place: business status, rating, hours, last refresh |
 | `eventAt`, `calEventId` | a dated pin and the calendar event it owns |

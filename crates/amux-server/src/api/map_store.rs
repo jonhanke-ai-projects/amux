@@ -5,7 +5,9 @@
 //!
 //! A pin is a JSON document. Fields this module understands:
 //! - `status`: "" | "want" | "been" | "favorite" | "closed"
-//! - `rating`: null or 1..=5 (the owner's own rating)
+//! - `myRating`: null or 1..=5 (the owner's own rating). `rating` and
+//!   `ratingCount` are Google's, written by search since before this store,
+//!   and are kept as sent.
 //! - `visits`: {count, first, last} matched from location history
 //! - `placeId` + `place`: the linked Google place and its last refresh
 //! - `eventAt` + `calEventId`: a dated pin and its calendar event
@@ -206,7 +208,8 @@ fn new_id() -> String {
 }
 
 /// Check and fill a pin. Coordinates become numbers; an unknown status or a
-/// rating outside 1..=5 is refused rather than stored.
+/// `myRating` outside 1..=5 is refused rather than stored. Google's decimal
+/// `rating` is not checked: refusing it dropped a searched place on import.
 pub fn normalize(pin: &Value) -> R<Value> {
     let Some(obj) = pin.as_object() else { return Err(MapError::Bad("a pin must be an object".into())) };
     let mut p: Map<String, Value> = obj.clone();
@@ -235,13 +238,13 @@ pub fn normalize(pin: &Value) -> R<Value> {
             return Err(MapError::Bad(format!("status must be one of want, been, favorite, closed (got {st:?})")));
         }
     }
-    match p.get("rating") {
+    match p.get("myRating") {
         None | Some(Value::Null) => {}
         Some(v) => match v.as_f64() {
             Some(r) if (1.0..=5.0).contains(&r) && r.fract() == 0.0 => {
-                p.insert("rating".into(), json!(r as i64));
+                p.insert("myRating".into(), json!(r as i64));
             }
-            _ => return Err(MapError::Bad("rating must be a whole number from 1 to 5".into())),
+            _ => return Err(MapError::Bad("myRating must be a whole number from 1 to 5".into())),
         },
     }
     Ok(Value::Object(p))
@@ -396,7 +399,7 @@ pub fn bulk(c: &Connection, ids: &[String], op: &str, arg: &Value, actor: &str) 
                 continue;
             }
             "status" => p["status"] = json!(arg.as_str().unwrap_or("")),
-            "rating" => p["rating"] = arg.clone(),
+            "rating" => p["myRating"] = arg.clone(),
             "add_tags" | "remove_tags" => {
                 let want: Vec<String> = arg.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
                 let mut tags: Vec<String> = p["tags"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
@@ -454,8 +457,8 @@ pub fn merge(c: &Connection, keep_id: &str, drop_id: &str, actor: &str) -> R<Val
     if status_rank(s(&drop, "status")) > status_rank(s(&keep, "status")) {
         keep["status"] = drop["status"].clone();
     }
-    if drop["rating"].as_i64().unwrap_or(0) > keep["rating"].as_i64().unwrap_or(0) {
-        keep["rating"] = drop["rating"].clone();
+    if drop["myRating"].as_i64().unwrap_or(0) > keep["myRating"].as_i64().unwrap_or(0) {
+        keep["myRating"] = drop["myRating"].clone();
     }
     for k in ["placeId", "place", "photoName", "eventAt"] {
         if keep.get(k).is_none_or(Value::is_null) && drop.get(k).is_some_and(|v| !v.is_null()) {
@@ -720,7 +723,7 @@ pub fn shared_view(c: &Connection, token: &str) -> R<Option<Value>> {
                 .filter_map(|t| tags.iter().find(|x| x["id"] == *t).map(|x| json!({"name": x["name"], "color": x["color"]})))
                 .collect();
             json!({"name": p["name"], "lat": p["lat"], "lng": p["lng"], "desc": p["desc"], "status": p["status"],
-                   "rating": p["rating"], "tags": tag_list, "hours": p["place"]["hours"], "mapsUri": p["place"]["mapsUri"]})
+                   "myRating": p["myRating"], "tags": tag_list, "hours": p["place"]["hours"], "mapsUri": p["place"]["mapsUri"]})
         })
         .collect();
     Ok(Some(json!({"list": {"name": list["name"]}, "pins": pins})))
@@ -784,7 +787,10 @@ mod tests {
         assert_eq!(h.iter().map(|x| x["action"].as_str().unwrap()).collect::<Vec<_>>(), ["update", "create"]);
         assert_eq!(h[0]["actor"], "phone");
         assert!(matches!(normalize(&json!({"lat": 1, "lng": 1, "status": "visited"})), Err(MapError::Bad(_))));
-        assert!(matches!(normalize(&json!({"lat": 1, "lng": 1, "rating": 6})), Err(MapError::Bad(_))));
+        assert!(matches!(normalize(&json!({"lat": 1, "lng": 1, "myRating": 6})), Err(MapError::Bad(_))));
+        // Google's rating from a search result is a decimal and stays as sent.
+        let g = normalize(&json!({"lat": 1, "lng": 1, "rating": 4.7, "ratingCount": 12})).unwrap();
+        assert_eq!((g["rating"].as_f64(), g.get("myRating")), (Some(4.7), None));
     }
 
     #[test]
