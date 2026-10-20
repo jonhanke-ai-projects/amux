@@ -1703,6 +1703,11 @@ async fn get_contract(
                           you add done_limit=0 or all=1. Added for the dashboard's collapsed \
                           Archived (N) header, where shipping the set to render a number cost \
                           a measured +38% on the board poll (AMUX-3715)",
+                "ids": "A-1,B-2 = the same list restricted to these cards, under every other \
+                        filter, with no terminal cap. An id that does not come back has left \
+                        this view (archived, deleted, out of scope). x-amux-ids-asked says the \
+                        filter ran. The dashboard's change feed patches changed cards with it \
+                        in one read instead of one GET per card",
             },
             // NOT a filter — descriptive metadata about what `slim` DROPS, so it
             // lives outside `filters`. It sat inside `filters` from 64a9cb7d until
