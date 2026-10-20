@@ -39954,6 +39954,10 @@ async function fetchBoard() {
   // was in neither: missing from this data and behind the cursor, so no later
   // invalidation brought it back (golden_realtime_convergence, 2 of 5 cards).
   // Changes between the two reads are replayed instead, and a patch is idempotent.
+  // Statuses and gates do not depend on the cursor, so they start at once, in
+  // the order this read began; only the board list waits for the head.
+  const sideReads = [fetch(API + '/api/board/statuses'), fetch(API + '/api/board/session-gates')];
+  sideReads.forEach(p => p.catch(() => {}));
   let cdcHead = 0;
   try {
     const cr = await fetch(API + '/api/board/changes?since_seq=0&limit=1');
@@ -39979,8 +39983,7 @@ async function fetchBoard() {
       // textarea from the list item and saved that back, so flipping this line
       // first would have blanked the description of every card anyone opened.
       _stateQuery.response(['board', 'response', {archived:0, slim:1, quota:1}], () => fetch(API + '/api/board?archived=0&slim=1&quota=1', _boardEtag ? { headers: boardHeaders } : undefined)),
-      fetch(API + '/api/board/statuses'),
-      fetch(API + '/api/board/session-gates'),
+      ...sideReads,
     ]);
     for (const response of [r, rs, rsg]) {
       if (!response.ok && response.status !== 304) throw new Error(await _apiErrText(response));
