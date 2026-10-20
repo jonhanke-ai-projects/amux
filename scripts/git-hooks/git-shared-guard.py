@@ -1798,7 +1798,7 @@ def _expanding_remove_word(raw):
     return "".join(out)
 
 
-def _scan_remove_operands(command):
+def _scan_remove_operands(command, every=None):
     """Recognize unchecked variable prefixes and cd-relative globs in direct rm/rmdir calls.
 
     Returns (variable_operands, cd_glob_operands). The second list holds a relative
@@ -1860,6 +1860,8 @@ def _scan_remove_operands(command):
             continue
         if removing:
             operand = _expanding_remove_word(raw)
+            if every is not None and not operand.startswith("-"):
+                every.append(operand)
             match = _REMOVE_PREFIX.match(operand)
             # ${1:?} guards a positional the same way ${NAME:?} guards a name.
             if match and not re.match(r'^(?:[A-Za-z_][A-Za-z_0-9]*|[0-9]):\?', match.group(1) or ""):
@@ -1901,6 +1903,77 @@ def _worker_identity():
         if session.startswith("amux-"):
             return session[len("amux-"):]
     return "isolated" if os.environ.get("CC_ISOLATED") == "1" else ""
+
+
+def _live_workers():
+    """Names of running amux workers (tmux sessions amux-<name>), or None if unknown."""
+    forced = os.environ.get("AMUX_GUARD_LIVE_WORKERS")
+    if forced is not None:  # tests
+        return {w for w in forced.split(",") if w}
+    import subprocess
+    try:
+        out = subprocess.run(["tmux", "list-sessions", "-F", "#S"], capture_output=True,
+                             text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {s[len("amux-"):] for s in out.split() if s.startswith("amux-")}
+
+
+def _live_scratch_verdict(command):
+    """Refuse rm of a RUNNING worker's ~/.amux/tmp/<worker> (or the whole tmp root).
+
+    2026-10-20 18:45Z: a disk cleanup ("use the amux metrics to clean up my disk")
+    ran rm -rf ~/.amux/tmp/mxp-gs12 while mxp-gs12 was mid-run. 31.6 GB of its
+    scripts, state and clones went; amux-admin restored the 03:03 snapshot and the
+    rest was rebuilt by hand. Disk metrics name a big directory; nothing said its
+    owner was alive. The owner itself, or anyone once the worker is stopped, passes.
+    """
+    words = []
+    _scan_remove_operands(command, every=words)
+    home = str(pathlib.Path.home())
+    root = os.path.normpath(os.path.join(os.environ.get("AMUX_HOME") or os.path.join(home, ".amux"), "tmp"))
+    hits = []
+    for w in words:
+        w = w.replace("\0", "$")
+        if w.startswith("~/") or w == "~":
+            w = home + w[1:]
+        w = re.sub(r'^\$(?:HOME\b|\{HOME(?::\?[^}]*)?\})', lambda m: home, w)
+        if "$" in w or not w.startswith("/"):
+            continue
+        rel = os.path.relpath(os.path.normpath(w), root)
+        if rel.startswith(".."):
+            continue
+        hits.append(rel.split(os.sep)[0])  # "." = the root itself
+    if not hits:
+        return None
+    live = _live_workers()
+    if not live:
+        return None
+    me = _worker_identity()
+    import fnmatch
+    owners = set()
+    for first in hits:
+        owners |= {n for n in live if first in (".", "*") or fnmatch.fnmatchcase(n, first)}
+    owners.discard(me)
+    if not owners:
+        return None
+    names = ", ".join(sorted(owners)[:5]) + (" and %d more" % (len(owners) - 5) if len(owners) > 5 else "")
+    try:
+        log = pathlib.Path(os.environ.get("AMUX_HOME") or pathlib.Path.home() / ".amux") / "logs/tool-corrections.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as stream:
+            stream.write(json.dumps({"ts": time.time(), "event": "live_scratch_remove", "verdict": "deny",
+                                     "session": me or "unmanaged", "owners": sorted(owners),
+                                     "measured": True, "n_considered": len(words)}) + "\n")
+    except OSError:
+        pass
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            "amux: this rm deletes the scratch directory of running worker(s) %s under %s. "
+            "It holds their in-flight scripts, state and clones; deleting it mid-run broke mxp-gs12 on "
+            "2026-10-20. None of this Bash call ran. To free disk: ask the owner (amux send <worker>) to "
+            "delete what it no longer needs, or stop the worker first, then delete." % (names, root))}}
 
 
 _REMOVE_VAR_REASON = (
@@ -2026,7 +2099,7 @@ def main():
     cmd = (data.get("tool_input") or {}).get("command", "") or ""
     global _LAST_CMD
     _LAST_CMD = cmd
-    correction = _remove_correction(cmd)
+    correction = _remove_correction(cmd) or _live_scratch_verdict(cmd)
     if correction:
         print(json.dumps(correction))
         return 0  # hook JSON deny cancels the call and feeds the reason to Claude
