@@ -1450,7 +1450,10 @@
   mark.md-search-hit { background: rgba(255, 215, 0, 0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
   mark.md-search-hit.current { background: #ffb000; color: #000; }
   /* Unified markdown content styling — used everywhere renderMarkdown() output appears */
-  .md-content { font-family: var(--font-ui); font-size: 0.88rem; line-height: 1.6; }
+  /* Rendered markdown is HTML: the raw view's pre-wrap must not reach it, or
+     every newline between blocks paints as a blank line (Ethan, 2026-10-20:
+     "make the preview mode cleaner", Obsidian beside ours). */
+  .md-content { font-family: var(--font-ui); font-size: 0.88rem; line-height: 1.6; white-space: normal; }
   .md-content > *:first-child { margin-top: 0 !important; }
   .md-content > *:last-child { margin-bottom: 0 !important; }
   .md-content p { margin: 0 0 10px; }
@@ -7509,6 +7512,7 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .tts-overlay,
 .mdai-picker-overlay,
 .conn-picker-overlay,
+.file-overlay,
 #conn-hist-modal.conn-hist-overlay { zoom: calc(1 / var(--root-zoom, 1)); }
 
 .edit-overlay > .edit-box,
@@ -7522,6 +7526,7 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .tts-overlay > .tts-dialog,
 .mdai-picker-overlay > .mdai-picker,
 .conn-picker-overlay > .conn-picker,
+.file-overlay > *,
 #conn-hist-modal > .conn-hist-box { zoom: var(--root-zoom, 1); }
 
 .amux-dialog-backdrop,
@@ -9904,3 +9909,30 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   #eg-groups .be-tag-chip-remove { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; font-size: 1rem; }
   #eg-groups .be-tag-input { min-height: 36px; font-size: 1rem; }
 }
+
+/* The file viewer's markdown preview reads like a note (Obsidian as the
+   reference): body-sized text at a readable line length, headings without
+   rules, muted bullets, and a thin guide down nested lists. Every file view
+   shares it: Files, Scratchpad, the peek's file split and MDAI previews. */
+.file-overlay-body.md-content, #peek-split-files .file-overlay-body.md-content {
+  font-size: 1rem; line-height: 1.65; padding: 20px max(20px, calc((100% - 46rem) / 2));
+}
+.file-overlay-body.md-content h1 { font-size: 1.75em; line-height: 1.25; margin: 0.9em 0 0.35em; padding: 0; border: none; letter-spacing: -0.01em; }
+.file-overlay-body.md-content h2 { font-size: 1.4em; line-height: 1.3; margin: 1.1em 0 0.3em; padding: 0; border: none; }
+.file-overlay-body.md-content h3 { font-size: 1.18em; margin: 1em 0 0.25em; }
+.file-overlay-body.md-content h4, .file-overlay-body.md-content h5, .file-overlay-body.md-content h6 { font-size: 1em; margin: 0.9em 0 0.2em; }
+.file-overlay-body.md-content p { margin: 0 0 0.7em; }
+.file-overlay-body.md-content ul, .file-overlay-body.md-content ol { margin: 0.2em 0 0.7em; padding-left: 1.5em; }
+.file-overlay-body.md-content li { margin: 0.12em 0; }
+.file-overlay-body.md-content li > p { margin: 0; }
+.file-overlay-body.md-content li::marker { color: var(--dim); }
+.file-overlay-body.md-content li > ul, .file-overlay-body.md-content li > ol {
+  margin: 0.1em 0 0.2em -1.05em; padding-left: 2.05em; border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.file-overlay-body.md-content hr { margin: 1.4em 0; }
+.file-overlay-body.md-content a { text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.file-overlay-body.md-content blockquote { margin: 0.4em 0 0.8em; }
+@media (max-width: 600px) {
+  .file-overlay-body.md-content, #peek-split-files .file-overlay-body.md-content { font-size: 0.98rem; padding: 14px; }
+}
+.file-overlay-body.md-content ul ul { list-style-type: disc; }
