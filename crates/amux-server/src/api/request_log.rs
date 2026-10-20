@@ -1767,6 +1767,23 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/signals/{name}",
         methods: &["GET", "POST"],
     },
+    // Event subscriptions (api/signals.rs `subscription_routes`, migration 0130).
+    RouteEntry {
+        path: "/api/subscriptions",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/subscriptions/emit",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/subscriptions/fires",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/subscriptions/{id}",
+        methods: &["GET", "PATCH", "DELETE"],
+    },
     RouteEntry {
         path: "/api/verify/{id}",
         methods: &["GET", "POST"],

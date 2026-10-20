@@ -1136,6 +1136,11 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // SECONDS: api/signals.rs `raise_in_store` stamps chrono::Utc::now().timestamp()
     // (migration 0088, AMUX-5237).
     ("board_signals", "raised_at", false),
+    // SECONDS: api/signals.rs `create_subscription` and the fire path stamp
+    // chrono::Utc::now().timestamp() (migration 0130).
+    ("signal_fires", "fired_at", false),
+    ("signal_subscriptions", "created_at", false),
+    ("signal_subscriptions", "last_fired_at", false),
     // SECONDS: DEFAULT (unixepoch('subsec')) in migration 0061.
     ("board_change_log", "changed_at", false),
     ("chatgpt_oauth_requests", "decided_at", false), // chatgpt_app.rs, REAL epoch seconds
