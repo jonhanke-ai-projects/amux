@@ -80,6 +80,7 @@ pub mod log_search;
 pub mod lookup;
 pub mod location;
 pub mod map;
+pub mod map_store;
 pub mod mcp;
 pub mod mdai;
 pub mod measured;
@@ -393,6 +394,8 @@ pub fn router_with_connector_transport(
         .nest("/api/sql", sql::routes())
         .nest("/api/slash-commands", skills::slash_routes())
         .nest("/api/map", map::routes())
+        // Read-only shared map lists (/s/map/{token}, /api/share/map/{token}).
+        .merge(map::public_routes())
         // Map tab's graph mode: mind-map store + Obsidian import + the fleet
         // org-chart projection (AMUX-2886 — tables existed, routes did not).
         .nest("/api/graph", graph::routes())

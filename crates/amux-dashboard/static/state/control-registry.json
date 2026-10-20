@@ -2298,6 +2298,30 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mapBulk": {
+      "kind": "command._mapBulk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapBulkApply": {
+      "kind": "command._mapBulkApply",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapBulkDelete": {
+      "kind": "command._mapBulkDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapDeleteList": {
+      "kind": "command._mapDeleteList",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mapDeletePin": {
       "kind": "command._mapDeletePin",
       "feedback_required": true,
@@ -2306,6 +2330,18 @@
     },
     "_mapDeleteTag": {
       "kind": "command._mapDeleteTag",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapDupIgnore": {
+      "kind": "command._mapDupIgnore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapDupMerge": {
+      "kind": "command._mapDupMerge",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2328,14 +2364,62 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_mapLoad": {
-      "kind": "command._mapLoad",
+    "_mapLinkAllPlaces": {
+      "kind": "command._mapLinkAllPlaces",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapMerge": {
+      "kind": "command._mapMerge",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapMergeSelected": {
+      "kind": "command._mapMergeSelected",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapPlaceCall": {
+      "kind": "command._mapPlaceCall",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapPlaceLink": {
+      "kind": "command._mapPlaceLink",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapPlaceRefresh": {
+      "kind": "command._mapPlaceRefresh",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapPutPin": {
+      "kind": "command._mapPutPin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapRemovePin": {
+      "kind": "command._mapRemovePin",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
     "_mapSave": {
       "kind": "command._mapSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapSaveList": {
+      "kind": "command._mapSaveList",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2366,6 +2450,12 @@
     },
     "_mapSetSort": {
       "kind": "command._mapSetSort",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapShareToggle": {
+      "kind": "command._mapShareToggle",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

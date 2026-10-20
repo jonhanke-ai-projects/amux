@@ -36042,6 +36042,16 @@ let _mapMobileSidebarInited = false; // mobile: show the map (not the pin list) 
 let _mapServerLoaded = false; // true once we've synced from the server — guards against empty overwrites
 let _mapEditingPin = null;
 let _mapEditingTag = null;
+// Pins live in the server's database, one row each (map_store.rs, 2026-10-20):
+// a pin is saved alone (PUT /api/map/pins/{id}) and the rest of the map
+// (groups, settings, trials, lists, categories) through PUT /api/map/meta.
+let _mapTagGroups = [];          // categories of groups: [{id, name}]
+let _mapLists = [];              // saved filters: [{id, name, filter:{tags, status, q}}]
+let _mapStatusFilter = new Set();
+let _mapActiveList = '';
+let _mapView = localStorage.getItem('amux_map_view') === 'table' ? 'table' : 'list';
+let _mapSelected = new Set();
+const _MAP_STATUS = { want: 'Want to go', been: 'Been', favorite: 'Favorite', closed: 'Closed' };
 
 // STOPWATCH FOR TIME TRIALS (AMUX-6114; Ethan, 2026-10-16: "add a stopwatch
 // thing to the maps tab and that fulfills our time trial use case"). Elapsed
@@ -36170,13 +36180,11 @@ function _mapLoad() {
   fetch(API + '/api/map').then(function(r) { return r.ok ? r.json() : null; }).then(function(data) {
     if (!data) return;
     var firstLoad = _mapPins.length === 0;
-    var needsSave = false;
-    _mapPins = (data.pins || []).map(function(pin, i) {
-      if (!pin.id) { pin.id = 'pin_' + Date.now() + '_' + i; needsSave = true; }
-      return pin;
-    });
-    if (needsSave) _mapSave();
+    // The server gives every pin its id and rev (map_store.rs).
+    _mapPins = data.pins || [];
     _mapTags = data.tags || [];
+    _mapTagGroups = Array.isArray(data.tagGroups) ? data.tagGroups : [];
+    _mapLists = Array.isArray(data.lists) ? data.lists : [];
     _mapTrials = Array.isArray(data.trials) ? data.trials : [];
     _mapSwRenderPast();
     // Whether the sidebar is open is this device's state, not the document's:
@@ -36197,6 +36205,8 @@ function _mapLoad() {
       localStorage.setItem('amux_map_settings', JSON.stringify(_mapSettings));
     } catch(e) {}
     _mapRenderTags();
+    _mapRenderStatus();
+    _mapRenderLists();
     _mapRenderPins();
     _mapRenderMarkers();
     if (firstLoad && _map && _mapPins.length > 0) {
@@ -36223,14 +36233,70 @@ function _mapSave() {
   // an empty/stale client (e.g. fetch not finished) from wiping saved pins when
   // the map is merely panned or zoomed.
   if (!_mapServerLoaded) return;
-  var payload = { pins: _mapPins, tags: _mapTags, settings: _mapSettings, trials: _mapTrials };
-  // ?replace=1 — the dashboard holds the full set (guarded by _mapServerLoaded),
-  // so it's authorized to replace the whole document, including deletions.
-  apiCall(API + '/api/map?replace=1', {
-    method: 'POST',
+  // Pins are saved one at a time (_mapPutPin); this writes the rest of the map.
+  var meta = Object.assign({}, _mapSettings); delete meta.googleMapsKey;
+  apiCall(API + '/api/map/meta', {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ tags: _mapTags, settings: meta, trials: _mapTrials, lists: _mapLists, tagGroups: _mapTagGroups })
   });
+}
+
+function _mapCacheLocal() {
+  try { localStorage.setItem('amux_map_pins', JSON.stringify(_mapPins)); } catch(e) {}
+}
+
+function _mapRerender() { _mapRenderTags(); _mapRenderStatus(); _mapRenderLists(); _mapRenderPins(); _mapRenderMarkers(); }
+
+// Save one pin. It carries the rev it was loaded with, so an edit made on
+// another device since then comes back as 409 with the current pin instead of
+// being overwritten; the list then shows the server's copy.
+async function _mapPutPin(pin) {
+  var i = _mapPins.findIndex(function(p) { return p.id === pin.id; });
+  if (i >= 0) _mapPins[i] = pin; else _mapPins.push(pin);
+  _mapCacheLocal(); _mapRerender();
+  var r = await apiCall(API + '/api/map/pins/' + encodeURIComponent(pin.id), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pin),
+    _onRefused: function(status, body) {
+      if (status === 409 && body && body.pin) {
+        var j = _mapPins.findIndex(function(p) { return p.id === pin.id; });
+        if (j >= 0) _mapPins[j] = body.pin;
+        _mapCacheLocal(); _mapRerender();
+      }
+    }
+  });
+  if (!r) return null;
+  var d = await r.json().catch(function() { return null; });
+  if (d && d.pin) {
+    var k = _mapPins.findIndex(function(p) { return p.id === pin.id; });
+    if (k >= 0) _mapPins[k] = d.pin;
+    _mapCacheLocal(); _mapRerender();
+    return d.pin;
+  }
+  return null;
+}
+
+async function _mapRemovePin(id) {
+  _mapPins = _mapPins.filter(function(p) { return p.id !== id; });
+  _mapSelected.delete(id);
+  _mapCacheLocal(); _mapRerender();
+  await apiCall(API + '/api/map/pins/' + encodeURIComponent(id), { method: 'DELETE' });
+}
+
+// One change for many pins (status, rating, add_tags, remove_tags, delete),
+// then reload so every pin shows the server's copy.
+async function _mapBulk(ids, op, value) {
+  if (!ids.length) return;
+  var r = await apiCall(API + '/api/map/pins/bulk', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: ids, op: op, value: value })
+  });
+  if (r) {
+    var d = await r.json().catch(function() { return {}; });
+    showToast((op === 'delete' ? 'Deleted ' : 'Updated ') + (d.changed || 0) + ' pin' + (d.changed === 1 ? '' : 's'));
+  }
+  if (op === 'delete') ids.forEach(function(id) { _mapSelected.delete(id); });
+  _mapLoad();
 }
 
 function _mapInit() {
@@ -36248,9 +36314,11 @@ function _mapInit() {
     _mapSettings.sidebarOpen = false;
   }
   _mapApplySidebarState();
-  _mapRenderTags();
-  _mapRenderPins();
-  _mapRenderMarkers();
+  const tb = document.getElementById('map-table-btn');
+  if (tb) tb.setAttribute('aria-pressed', _mapView === 'table' ? 'true' : 'false');
+  const sb = document.getElementById('map-sidebar');
+  if (sb) sb.classList.toggle('map-sidebar-wide', _mapView === 'table');
+  _mapRerender();
   _mapMeAuto();
   // Location history (AMUX-5458): the tab may have been left open; draw it now
   // that the map exists.
@@ -36299,7 +36367,9 @@ function _mapPinColor(pin) {
 }
 
 function _mapMakeIcon(pin) {
-  const color = _mapPinColor(pin);
+  // A closed place is grey; a favorite gets a gold outline.
+  const color = pin.status === 'closed' ? '#6e7681' : _mapPinColor(pin);
+  const stroke = pin.status === 'favorite' ? '#f2b705' : '#fff';
   // Second tag (if any) colors the inner dot, so a Coffee+Girls pin reads as
   // two-tone instead of hiding its secondary tag (AMUX-1865 #3).
   const second = (pin.tags && pin.tags.length > 1) ? (_mapTagColor(pin.tags[1]) || '') : '';
@@ -36307,7 +36377,7 @@ function _mapMakeIcon(pin) {
     ? '<circle cx="12" cy="12" r="5" fill="' + second + '" stroke="#fff" stroke-width="1.5"/>'
     : '<circle cx="12" cy="12" r="4.5" fill="rgba(255,255,255,0.55)"/>';
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="32" viewBox="0 0 24 32">' +
-    '<path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 20 12 20s12-11 12-20C24 5.373 18.627 0 12 0z" fill="' + color + '" stroke="#fff" stroke-width="1.5"/>' +
+    '<path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 20 12 20s12-11 12-20C24 5.373 18.627 0 12 0z" fill="' + color + '" stroke="' + stroke + '" stroke-width="' + (pin.status === 'favorite' ? 2.5 : 1.5) + '"' + (pin.status === 'closed' ? ' opacity="0.6"' : '') + '/>' +
     inner +
   '</svg>';
   return L.divIcon({
@@ -36319,18 +36389,27 @@ function _mapMakeIcon(pin) {
   });
 }
 
+// With categories, a filter matches ANY selected group within a category and
+// EVERY category at once (Korean BBQ or Ramen, and Date spots). Without
+// categories the AND/OR switch decides. map_store::matches is the same rule
+// on the server, for shared lists.
+function _mapTagMatch(pt) {
+  if (_mapFilterTags.size === 0) return true;
+  const sel = Array.from(_mapFilterTags);
+  if (_mapTagGroups.length) {
+    const byCat = {};
+    sel.forEach(function(t) { const tag = _mapTags.find(function(x) { return x.id === t; }); const c = (tag && tag.category) || ''; (byCat[c] = byCat[c] || []).push(t); });
+    return Object.keys(byCat).every(function(c) { return byCat[c].some(function(t) { return pt.indexOf(t) !== -1; }); });
+  }
+  return _mapSettings.tagMode === 'and'
+    ? sel.every(function(t) { return pt.indexOf(t) !== -1; })
+    : pt.some(function(t) { return _mapFilterTags.has(t); });
+}
+
 function _mapVisiblePins() {
-  const andMode = _mapSettings.tagMode === 'and';
   return _mapPins.filter(function(pin) {
-    if (_mapFilterTags.size > 0) {
-      const pt = pin.tags || [];
-      // OR: pin has ANY selected tag. AND: pin has EVERY selected tag
-      // (intersection, e.g. Girls × Coffee).
-      const match = andMode
-        ? Array.from(_mapFilterTags).every(function(t) { return pt.indexOf(t) !== -1; })
-        : pt.some(function(t) { return _mapFilterTags.has(t); });
-      if (!match) return false;
-    }
+    if (!_mapTagMatch(pin.tags || [])) return false;
+    if (_mapStatusFilter.size > 0 && !_mapStatusFilter.has(pin.status || '')) return false;
     if (_mapSearchQ) {
       const q = _mapSearchQ;
       const nameMatch = (pin.name||'').toLowerCase().includes(q);
@@ -36351,15 +36430,27 @@ function _mapRenderTags() {
   if (!el) return;
   const allActive = _mapFilterTags.size === 0;
   let html = '<button class="map-tag-chip' + (allActive ? ' all-active' : '') + '" onclick="_mapFilterByTag(null)">All</button>';
-  _mapTags.forEach(function(tag) {
+  const chip = function(tag) {
     const active = _mapFilterTags.has(tag.id);
     const chipStyle = active
       ? 'background:' + tag.color + ';border-color:' + tag.color + ';color:#fff;'
       : 'color:' + tag.color + ';border-color:' + tag.color + '88;';
-    html += '<button class="map-tag-chip' + (active ? ' tag-active' : '') + '" style="' + chipStyle + '" onclick="_mapFilterByTag(\x27' + tag.id + '\x27)" oncontextmenu="event.preventDefault();_mapEditTag(\x27' + tag.id + '\x27)" title="Right-click to edit">' + escHtml(tag.name) + '</button>';
-  });
-  // AND/OR toggle — only meaningful (and only shown) with 2+ tags selected.
-  if (_mapFilterTags.size >= 2) {
+    return '<button class="map-tag-chip' + (active ? ' tag-active' : '') + '" style="' + chipStyle + '" onclick="_mapFilterByTag(\x27' + tag.id + '\x27)" oncontextmenu="event.preventDefault();_mapEditTag(\x27' + tag.id + '\x27)" title="Right-click to edit">' + escHtml(tag.name) + '</button>';
+  };
+  if (_mapTagGroups.length) {
+    // Grouped by category; a category label on each row.
+    const cats = _mapTagGroups.concat([{ id: '', name: 'Other' }]);
+    cats.forEach(function(c) {
+      const tags = _mapTags.filter(function(t) { return (t.category || '') === c.id; });
+      if (!tags.length) return;
+      html += '<div class="map-tag-cat" data-category="' + escHtml(c.id) + '"><span class="map-tag-cat-name">' + escHtml(c.name) + '</span>' + tags.map(chip).join('') + '</div>';
+    });
+  } else {
+    _mapTags.forEach(function(tag) { html += chip(tag); });
+  }
+  // AND/OR toggle — only meaningful (and only shown) with 2+ tags selected and
+  // no categories (categories decide the rule themselves).
+  if (_mapFilterTags.size >= 2 && !_mapTagGroups.length) {
     const andMode = _mapSettings.tagMode === 'and';
     html += '<button class="map-tag-chip map-tag-mode" onclick="_mapToggleTagMode()" title="' +
       (andMode ? 'Matching pins with ALL selected groups — click for ANY' : 'Matching pins with ANY selected group — click for ALL') +
@@ -36415,7 +36506,13 @@ function _mapRenderPins() {
     visible = visible.slice().sort(function(a,b){ return (b.createdAt||0) - (a.createdAt||0); });
   } else if (sortBy === 'distance' && ref) {
     visible = visible.slice().sort(function(a,b){ return _mapDist(ref.lat,ref.lng,a.lat,a.lng) - _mapDist(ref.lat,ref.lng,b.lat,b.lng); });
+  } else if (sortBy === 'rating') {
+    visible = visible.slice().sort(function(a,b){ return (b.rating||0) - (a.rating||0) || (a.name||'').localeCompare(b.name||''); });
+  } else if (sortBy === 'visited') {
+    visible = visible.slice().sort(function(a,b){ return String((b.visits||{}).last||'').localeCompare(String((a.visits||{}).last||'')); });
   }
+  _mapRenderBulkBar();
+  if (_mapView === 'table') { el.innerHTML = _mapTableHtml(visible); return; }
   el.innerHTML = visible.map(function(pin) {
     const color = _mapPinColor(pin);
     const tagChips = (pin.tags||[]).map(function(tid) {
@@ -36429,6 +36526,7 @@ function _mapRenderPins() {
       '<div class="map-pin-dot" style="background:' + color + '"></div>' +
       '<div class="map-pin-info">' +
         '<div class="map-pin-name">' + escHtml(pin.name||'Unnamed') + distLabel + (hasNotes ? ' <span style="font-size:0.68rem;color:var(--dim);font-weight:400;">\uD83D\uDCDD</span>' : '') + '</div>' +
+        _mapStatusLine(pin) +
         (tagChips ? '<div class="map-pin-tagrow">' + tagChips + '</div>' : '') +
         (preview ? '<div class="map-pin-desc">' + escHtml(preview.substring(0,80)) + (preview.length>80?'\u2026':'') + '</div>' : '') +
       '</div>' +
@@ -36526,6 +36624,7 @@ function _mapRenderMarkers() {
       '<div style="min-width:160px;max-width:280px;font-family:inherit;font-size:13px">' +
         (_photo ? '<img src="' + _photo + '" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:6px;margin-bottom:6px" onerror="this.style.display=\x27none\x27">' : '') +
         '<div style="font-weight:600;margin-bottom:4px">' + escHtml(pin.name||'Unnamed') + '</div>' +
+        _mapStatusLine(pin) +
         _mapMetaRow(pin) +
         (pin.desc ? '<div style="font-size:12px;color:#888;margin-bottom:4px">' + escHtml(pin.desc) + '</div>' : '') +
         (notesPreview ? '<div style="font-size:11.5px;color:#aaa;margin-bottom:4px;white-space:pre-wrap;line-height:1.4;border-left:2px solid #444;padding-left:6px;">' + escHtml(notesPreview) + '</div>' : '') +
@@ -36753,10 +36852,9 @@ function _mapImportFile(input) {
       if (typeof n.rating==='number') pin.rating=n.rating;
       if (typeof n.priceLevel==='number') pin.priceLevel=n.priceLevel;
       if (n.placeId) pin.placeId=n.placeId;
-      _mapPins.push(pin); added++;
+      _mapPutPin(pin); added++;
     });
     input.value='';
-    if (added){ _mapSave(); _mapRenderPins(); _mapRenderMarkers(); }
     showToast('Imported ' + added + ' pin' + (added===1?'':'s') + (skipped?(' · ' + skipped + ' skipped (dupe/invalid)'):''));
   };
   reader.readAsText(file);
@@ -36818,6 +36916,12 @@ function _mapOpenPinModal(id, latlng) {
         '<span>' + escHtml(tag.name) + '</span></label>';
     }).join('');
   }
+  document.getElementById('map-pin-status').value = pin ? (pin.status || '') : '';
+  document.getElementById('map-pin-rating').value = pin && pin.rating ? String(pin.rating) : '';
+  document.getElementById('map-pin-event').value = pin && pin.eventAt ? String(pin.eventAt).slice(0, 16) : '';
+  document.getElementById('map-pin-facts').innerHTML = pin ? _mapPinFactsHtml(pin) : '';
+  document.getElementById('map-pin-place-row').style.display = pin ? '' : 'none';
+  const hist = document.getElementById('map-pin-history'); hist.hidden = true; hist.innerHTML = '';
   document.getElementById('map-pin-delete-btn').style.display = pin ? '' : 'none';
   const modal = document.getElementById('map-pin-modal');
   modal.style.display = 'flex';
@@ -36859,22 +36963,31 @@ function _mapSavePin() {
   if (!name) { document.getElementById('map-pin-name').focus(); return; }
   if (isNaN(lat) || isNaN(lng)) { alert('Please enter valid coordinates.'); return; }
   const tags = Array.from(document.querySelectorAll('#map-pin-tags-row input[type=checkbox]:checked')).map(function(cb) { return cb.value; });
+  const status = document.getElementById('map-pin-status').value;
+  const ratingV = document.getElementById('map-pin-rating').value;
+  const eventAt = document.getElementById('map-pin-event').value;
+  var pin;
   if (_mapEditingPin) {
-    const pin = _mapPins.find(function(p) { return p.id === _mapEditingPin; });
-    if (pin) { pin.name=name; pin.desc=desc; pin.notes=notes; pin.lat=lat; pin.lng=lng; pin.tags=tags; }
+    const old = _mapPins.find(function(p) { return p.id === _mapEditingPin; });
+    if (!old) return;
+    pin = Object.assign({}, old);
   } else {
-    var np = { id: 'pin_'+Date.now(), name: name, desc: desc, notes: notes, lat: lat, lng: lng, tags: tags, createdAt: Date.now() };
-    if (window._mapPendingPlace) { Object.assign(np, window._mapPendingPlace); }
-    _mapPins.push(np);
+    pin = { id: 'pin_'+Date.now(), createdAt: Date.now() };
+    if (window._mapPendingPlace) { Object.assign(pin, window._mapPendingPlace); }
   }
+  Object.assign(pin, { name: name, desc: desc, notes: notes, lat: lat, lng: lng, tags: tags, status: status,
+    rating: ratingV ? parseInt(ratingV, 10) : null, eventAt: eventAt });
+  if (status && pin.statusSource) delete pin.statusSource;   // set by hand now
   window._mapPendingPlace = null;
-  _mapSave(); _mapClosePinModal(); _mapRenderPins(); _mapRenderMarkers();
+  _mapClosePinModal();
+  _mapPutPin(pin);
 }
 
 function _mapDeletePin() {
   if (!_mapEditingPin || !confirm('Delete this pin?')) return;
-  _mapPins = _mapPins.filter(function(p) { return p.id !== _mapEditingPin; });
-  _mapSave(); _mapClosePinModal(); _mapRenderPins(); _mapRenderMarkers();
+  const id = _mapEditingPin;
+  _mapClosePinModal();
+  _mapRemovePin(id);
 }
 
 function _mapAddTag() { _mapOpenTagModal(null); }
@@ -36886,6 +36999,10 @@ function _mapOpenTagModal(id) {
   document.getElementById('map-tag-modal-title').textContent = tag ? 'Edit Group' : 'New Group';
   document.getElementById('map-tag-name').value = tag ? tag.name : '';
   document.getElementById('map-tag-color').value = tag ? tag.color : '#' + Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0');
+  const catSel = document.getElementById('map-tag-category');
+  catSel.innerHTML = '<option value="">No category</option>' + _mapTagGroups.map(function(c) { return '<option value="' + escHtml(c.id) + '">' + escHtml(c.name) + '</option>'; }).join('');
+  catSel.value = tag ? (tag.category || '') : '';
+  document.getElementById('map-tag-category-new').value = '';
   document.getElementById('map-tag-delete-btn').style.display = tag ? '' : 'none';
   document.getElementById('map-tag-modal').style.display = 'flex';
   setTimeout(function() { document.getElementById('map-tag-name').focus(); }, 50);
@@ -36900,21 +37017,342 @@ function _mapSaveTag() {
   const name = document.getElementById('map-tag-name').value.trim();
   const color = document.getElementById('map-tag-color').value;
   if (!name) { document.getElementById('map-tag-name').focus(); return; }
+  // A new category typed in wins over the picker.
+  var category = document.getElementById('map-tag-category').value;
+  const newCat = document.getElementById('map-tag-category-new').value.trim();
+  if (newCat) {
+    const found = _mapTagGroups.find(function(c) { return c.name.toLowerCase() === newCat.toLowerCase(); });
+    if (found) category = found.id;
+    else { category = 'cat_' + Date.now(); _mapTagGroups.push({ id: category, name: newCat }); }
+  }
   if (_mapEditingTag) {
     const tag = _mapTags.find(function(t) { return t.id === _mapEditingTag; });
-    if (tag) { tag.name=name; tag.color=color; }
+    if (tag) { tag.name=name; tag.color=color; tag.category=category; }
   } else {
-    _mapTags.push({ id: 'tag_'+Date.now(), name: name, color: color });
+    _mapTags.push({ id: 'tag_'+Date.now(), name: name, color: color, category: category });
   }
   _mapSave(); _mapCloseTagModal(); _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers();
 }
 
 function _mapDeleteTag() {
   if (!_mapEditingTag || !confirm('Delete this group? It will be removed from all pins.')) return;
-  _mapPins.forEach(function(pin) { pin.tags = (pin.tags||[]).filter(function(t) { return t !== _mapEditingTag; }); });
-  _mapTags = _mapTags.filter(function(t) { return t.id !== _mapEditingTag; });
-  _mapFilterTags.delete(_mapEditingTag);
-  _mapSave(); _mapCloseTagModal(); _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers();
+  const tagId = _mapEditingTag;
+  const ids = _mapPins.filter(function(p) { return (p.tags||[]).indexOf(tagId) !== -1; }).map(function(p) { return p.id; });
+  _mapTags = _mapTags.filter(function(t) { return t.id !== tagId; });
+  _mapFilterTags.delete(tagId);
+  _mapSave(); _mapCloseTagModal();
+  if (ids.length) _mapBulk(ids, 'remove_tags', [tagId]); else _mapRerender();
+}
+
+// ── Map: status, lists, table + bulk edits, duplicates, places (2026-10-20) ──
+function _mapStars(n) { return n ? '★'.repeat(n) + '<span style="opacity:.3">' + '★'.repeat(5 - n) + '</span>' : ''; }
+
+// One line under a pin's name: status, your rating, visits, a closed warning.
+function _mapStatusLine(pin) {
+  const bits = [];
+  if (pin.status && _MAP_STATUS[pin.status]) bits.push('<span class="map-status-pill map-status-' + pin.status + '">' + _MAP_STATUS[pin.status] + '</span>');
+  if (pin.rating) bits.push('<span class="map-stars" aria-label="' + pin.rating + ' of 5">' + _mapStars(pin.rating) + '</span>');
+  const v = pin.visits || {};
+  if (v.count) bits.push('<span class="map-visit-note">' + v.count + ' visit' + (v.count === 1 ? '' : 's') + (v.last ? ', last ' + escHtml(String(v.last).slice(0, 10)) : '') + '</span>');
+  if (pin.place && pin.place.businessStatus === 'CLOSED_TEMPORARILY') bits.push('<span class="map-visit-note">temporarily closed</span>');
+  return bits.length ? '<div class="map-pin-statusline">' + bits.join(' ') + '</div>' : '';
+}
+
+function _mapRenderStatus() {
+  const el = document.getElementById('map-status-list');
+  if (!el) return;
+  const counts = {};
+  _mapPins.forEach(function(p) { counts[p.status || ''] = (counts[p.status || ''] || 0) + 1; });
+  el.innerHTML = Object.keys(_MAP_STATUS).map(function(k) {
+    const on = _mapStatusFilter.has(k);
+    return '<button type="button" class="map-tag-chip map-status-chip' + (on ? ' tag-active' : '') + '" data-status="' + k + '" aria-pressed="' + on + '" onclick="_mapToggleStatus(\x27' + k + '\x27)">' + _MAP_STATUS[k] + ' <span class="map-chip-n">' + (counts[k] || 0) + '</span></button>';
+  }).join('');
+}
+
+function _mapToggleStatus(k) {
+  if (_mapStatusFilter.has(k)) _mapStatusFilter.delete(k); else _mapStatusFilter.add(k);
+  _mapActiveList = '';
+  _mapRerender();
+}
+
+// Saved lists: a name for the groups, statuses and search selected now.
+function _mapCurrentFilter() {
+  return { tags: Array.from(_mapFilterTags), status: Array.from(_mapStatusFilter), q: _mapSearchQ || '' };
+}
+
+function _mapRenderLists() {
+  const sel = document.getElementById('map-list-select');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">All pins</option>' +
+    _mapLists.map(function(l) { return '<option value="' + escHtml(l.id) + '">' + escHtml(l.name) + '</option>'; }).join('') +
+    '<option value="__new">Save current filter as a list…</option>';
+  sel.value = _mapActiveList || '';
+  const bar = document.getElementById('map-list-bar');
+  if (bar) bar.hidden = !_mapActiveList;
+  const share = document.getElementById('map-list-share-status');
+  if (share && !_mapActiveList) share.textContent = '';
+}
+
+function _mapListPick(v) {
+  if (v === '__new') { _mapRenderLists(); return _mapOpenListModal(); }
+  _mapActiveList = v;
+  const l = _mapLists.find(function(x) { return x.id === v; });
+  _mapFilterTags = new Set(l ? (l.filter.tags || []) : []);
+  _mapStatusFilter = new Set(l ? (l.filter.status || []) : []);
+  _mapSearchQ = l ? (l.filter.q || '') : '';
+  const s = document.getElementById('map-search'); if (s) s.value = _mapSearchQ;
+  _mapRerender();
+  if (v) _mapShareStatus(v);
+}
+
+function _mapOpenListModal() {
+  document.getElementById('map-list-name').value = '';
+  const f = _mapCurrentFilter();
+  const parts = [];
+  if (f.tags.length) parts.push(f.tags.map(function(t) { const x = _mapTags.find(function(y) { return y.id === t; }); return x ? x.name : t; }).join(', '));
+  if (f.status.length) parts.push(f.status.map(function(k) { return _MAP_STATUS[k]; }).join(', '));
+  if (f.q) parts.push('“' + f.q + '”');
+  document.getElementById('map-list-summary').textContent = parts.length ? 'Saves: ' + parts.join(' · ') : 'Nothing is filtered, so this list will show every pin.';
+  document.getElementById('map-list-modal').style.display = 'flex';
+  setTimeout(function() { document.getElementById('map-list-name').focus(); }, 50);
+}
+
+function _mapSaveList() {
+  const name = document.getElementById('map-list-name').value.trim();
+  if (!name) { document.getElementById('map-list-name').focus(); return; }
+  const l = { id: 'list_' + Date.now(), name: name, filter: _mapCurrentFilter() };
+  _mapLists.push(l);
+  _mapActiveList = l.id;
+  _mapSave();
+  _mapCloseModal('map-list-modal');
+  _mapRenderLists();
+  showToast('Saved list “' + name + '”');
+}
+
+function _mapDeleteList() {
+  const l = _mapLists.find(function(x) { return x.id === _mapActiveList; });
+  if (!l || !confirm('Delete the list “' + l.name + '”? Its pins stay.')) return;
+  apiCall(API + '/api/map/lists/' + encodeURIComponent(l.id) + '/share', { method: 'DELETE' });
+  _mapLists = _mapLists.filter(function(x) { return x.id !== l.id; });
+  _mapActiveList = '';
+  _mapSave();
+  _mapListPick('');
+}
+
+async function _mapShareStatus(id) {
+  const el = document.getElementById('map-list-share-status');
+  const btn = document.getElementById('map-list-share-btn');
+  if (!el || !btn) return;
+  const r = await fetch(API + '/api/map/lists/' + encodeURIComponent(id) + '/share').then(function(x) { return x.ok ? x.json() : null; }).catch(function() { return null; });
+  if (id !== _mapActiveList) return;
+  if (r && r.shared) {
+    const url = location.origin + r.url;
+    el.innerHTML = 'Shared: <a href="' + escHtml(url) + '" target="_blank" rel="noopener" id="map-list-share-link">' + escHtml(url) + '</a>';
+    btn.textContent = 'Stop sharing';
+    btn.dataset.shared = '1';
+  } else {
+    el.textContent = 'Not shared';
+    btn.textContent = 'Share link';
+    btn.dataset.shared = '';
+  }
+}
+
+async function _mapShareToggle() {
+  const id = _mapActiveList; if (!id) return;
+  const btn = document.getElementById('map-list-share-btn');
+  if (btn.dataset.shared) {
+    await apiCall(API + '/api/map/lists/' + encodeURIComponent(id) + '/share', { method: 'DELETE' });
+    showToast('Link turned off');
+  } else {
+    if (!confirm('Anyone with the link will see this list’s pins: names, descriptions, groups, status and rating. Notes and visits stay private. Create the link?')) return;
+    const r = await apiCall(API + '/api/map/lists/' + encodeURIComponent(id) + '/share', { method: 'POST' });
+    const d = r ? await r.json().catch(function() { return null; }) : null;
+    if (d && d.url) {
+      const url = location.origin + d.url;
+      try { await navigator.clipboard.writeText(url); showToast('Link copied'); } catch (e) { showToast('Link created'); }
+    }
+  }
+  _mapShareStatus(id);
+}
+
+// Table view: every visible pin with a checkbox; the bar above edits the
+// selected pins together.
+function _mapToggleTable() {
+  _mapView = _mapView === 'table' ? 'list' : 'table';
+  try { localStorage.setItem('amux_map_view', _mapView); } catch (e) {}
+  const b = document.getElementById('map-table-btn');
+  if (b) b.setAttribute('aria-pressed', _mapView === 'table' ? 'true' : 'false');
+  const sb = document.getElementById('map-sidebar');
+  if (sb) sb.classList.toggle('map-sidebar-wide', _mapView === 'table');
+  _mapRenderPins();
+  if (_map) setTimeout(function() { _map.invalidateSize(); }, 310);
+}
+
+function _mapTableHtml(pins) {
+  const all = pins.length > 0 && pins.every(function(p) { return _mapSelected.has(p.id); });
+  return '<table class="map-table"><thead><tr>' +
+    '<th><input type="checkbox" aria-label="Select all shown" ' + (all ? 'checked ' : '') + 'onclick="_mapSelectAll(this.checked)"></th>' +
+    '<th>Name</th><th>Status</th><th>Rating</th><th>Groups</th><th>Last visit</th></tr></thead><tbody>' +
+    pins.map(function(p) {
+      const tags = (p.tags || []).map(function(t) { const x = _mapTags.find(function(y) { return y.id === t; }); return x ? '<span class="map-pin-tag" style="background:' + x.color + ';border-color:' + x.color + ';color:#fff">' + escHtml(x.name) + '</span>' : ''; }).join('');
+      return '<tr data-pin="' + escHtml(p.id) + '"' + (_mapSelected.has(p.id) ? ' class="selected"' : '') + '>' +
+        '<td><input type="checkbox" aria-label="Select ' + escHtml(p.name || '') + '" ' + (_mapSelected.has(p.id) ? 'checked ' : '') + 'onclick="_mapSelect(\x27' + p.id + '\x27,this.checked)"></td>' +
+        '<td><a href="#" onclick="event.preventDefault();_mapFlyToPin(\x27' + p.id + '\x27)">' + escHtml(p.name || 'Unnamed') + '</a></td>' +
+        '<td>' + (p.status ? _MAP_STATUS[p.status] || p.status : '') + '</td>' +
+        '<td class="map-stars">' + _mapStars(p.rating || 0) + '</td>' +
+        '<td>' + tags + '</td>' +
+        '<td>' + escHtml(String((p.visits || {}).last || '').slice(0, 10)) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function _mapSelect(id, on) { if (on) _mapSelected.add(id); else _mapSelected.delete(id); _mapRenderPins(); }
+function _mapSelectAll(on) {
+  _mapVisiblePins().forEach(function(p) { if (on) _mapSelected.add(p.id); else _mapSelected.delete(p.id); });
+  _mapRenderPins();
+}
+
+function _mapRenderBulkBar() {
+  const bar = document.getElementById('map-bulk-bar');
+  if (!bar) return;
+  // Selections survive filtering, but only pins that still exist count.
+  _mapSelected.forEach(function(id) { if (!_mapPins.some(function(p) { return p.id === id; })) _mapSelected.delete(id); });
+  const n = _mapSelected.size;
+  bar.hidden = _mapView !== 'table' || n === 0;
+  if (bar.hidden) return;
+  const tagOpts = _mapTags.map(function(t) { return '<option value="' + escHtml(t.id) + '">' + escHtml(t.name) + '</option>'; }).join('');
+  bar.innerHTML = '<span class="map-bulk-n">' + n + ' selected</span>' +
+    '<select class="input" aria-label="Set status" onchange="if(this.value){_mapBulkApply(\x27status\x27,this.value===\x27none\x27?\x27\x27:this.value)}"><option value="">Status…</option>' +
+      Object.keys(_MAP_STATUS).map(function(k) { return '<option value="' + k + '">' + _MAP_STATUS[k] + '</option>'; }).join('') + '<option value="none">No status</option></select>' +
+    '<select class="input" aria-label="Set rating" onchange="if(this.value){_mapBulkApply(\x27rating\x27,this.value===\x27none\x27?null:parseInt(this.value,10))}"><option value="">Rating…</option>' +
+      [5,4,3,2,1].map(function(r) { return '<option value="' + r + '">' + '★'.repeat(r) + '</option>'; }).join('') + '<option value="none">No rating</option></select>' +
+    '<select class="input" aria-label="Add group" onchange="if(this.value){_mapBulkApply(\x27add_tags\x27,[this.value])}"><option value="">Add group…</option>' + tagOpts + '</select>' +
+    '<select class="input" aria-label="Remove group" onchange="if(this.value){_mapBulkApply(\x27remove_tags\x27,[this.value])}"><option value="">Remove group…</option>' + tagOpts + '</select>' +
+    (n === 2 ? '<button type="button" class="btn" onclick="_mapMergeSelected()">Merge</button>' : '') +
+    '<button type="button" class="btn danger" onclick="_mapBulkDelete()">Delete</button>' +
+    '<button type="button" class="btn" onclick="_mapSelected.clear();_mapRenderPins()">Clear</button>';
+}
+
+function _mapBulkApply(op, value) { _mapBulk(Array.from(_mapSelected), op, value); }
+function _mapBulkDelete() {
+  const n = _mapSelected.size;
+  if (!n || !confirm('Delete ' + n + ' pin' + (n === 1 ? '' : 's') + '? Each one stays in the pin history.')) return;
+  _mapBulk(Array.from(_mapSelected), 'delete');
+}
+
+async function _mapMerge(keep, drop) {
+  const r = await apiCall(API + '/api/map/pins/merge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keep: keep, drop: drop }) });
+  if (r) showToast('Merged');
+  _mapSelected.delete(drop);
+  _mapLoad();
+  return !!r;
+}
+
+function _mapMergeSelected() {
+  const ids = Array.from(_mapSelected);
+  if (ids.length !== 2) return;
+  const a = _mapPins.find(function(p) { return p.id === ids[0]; }), b = _mapPins.find(function(p) { return p.id === ids[1]; });
+  if (!a || !b || !confirm('Merge “' + b.name + '” into “' + a.name + '”? Groups and notes are combined.')) return;
+  _mapMerge(a.id, b.id);
+}
+
+// Duplicates: pairs the server thinks are one place. Merge either way, or
+// mark "not a duplicate" so the pair stops showing.
+async function _mapOpenDuplicates() {
+  const el = document.getElementById('map-dup-list');
+  el.innerHTML = '<p class="ui-help">Checking…</p>';
+  document.getElementById('map-dup-modal').style.display = 'flex';
+  const d = await fetch(API + '/api/map/duplicates').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; });
+  if (!d) { el.innerHTML = '<p class="ui-help">Could not check for duplicates.</p>'; return; }
+  const ignored = new Set((_mapSettings.dupIgnored || []));
+  const pairs = (d.pairs || []).filter(function(x) { return !ignored.has([x.a.id, x.b.id].sort().join('|')); });
+  if (!pairs.length) { el.innerHTML = '<p class="ui-help">No likely duplicates among ' + (d.n_considered || 0) + ' pins.</p>'; return; }
+  el.innerHTML = pairs.map(function(x) {
+    const key = [x.a.id, x.b.id].sort().join('|');
+    return '<div class="map-dup-pair" data-pair="' + escHtml(key) + '">' +
+      '<div><b>' + escHtml(x.a.name || '') + '</b> and <b>' + escHtml(x.b.name || '') + '</b></div>' +
+      '<div class="ui-help">' + escHtml(x.reason) + ', ' + Math.round(x.distance_m) + ' m apart</div>' +
+      '<div class="map-dup-actions">' +
+        '<button type="button" class="btn" onclick="_mapDupMerge(\x27' + x.a.id + '\x27,\x27' + x.b.id + '\x27)">Keep first</button>' +
+        '<button type="button" class="btn" onclick="_mapDupMerge(\x27' + x.b.id + '\x27,\x27' + x.a.id + '\x27)">Keep second</button>' +
+        '<button type="button" class="btn" onclick="_mapDupIgnore(\x27' + escHtml(key) + '\x27)">Not a duplicate</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+async function _mapDupMerge(keep, drop) { if (await _mapMerge(keep, drop)) _mapOpenDuplicates(); }
+function _mapDupIgnore(key) {
+  _mapSettings.dupIgnored = (_mapSettings.dupIgnored || []).concat([key]);
+  _mapSave();
+  _mapOpenDuplicates();
+}
+
+function _mapCloseModal(id) { const m = document.getElementById(id); if (m) m.style.display = 'none'; }
+
+// What the pin editor shows that you did not type: visits from location
+// history and what Google last said about the place.
+function _mapPinFactsHtml(pin) {
+  const out = [];
+  const v = pin.visits || {};
+  if (v.count) out.push('Visited ' + v.count + ' time' + (v.count === 1 ? '' : 's') + (v.first ? ', first ' + escHtml(String(v.first).slice(0, 10)) : '') + (v.last ? ', last ' + escHtml(String(v.last).slice(0, 10)) : '') + ' (from location history)');
+  const pl = pin.place;
+  if (pl) {
+    const st = pl.businessStatus === 'CLOSED_PERMANENTLY' ? 'Permanently closed' : pl.businessStatus === 'CLOSED_TEMPORARILY' ? 'Temporarily closed' : 'Open for business';
+    out.push('Google: ' + st + (pl.rating ? ', ' + pl.rating + '★ (' + (pl.ratingCount || 0) + ')' : '') + (pl.refreshedAt ? ', checked ' + escHtml(String(pl.refreshedAt).slice(0, 10)) : ''));
+    if (pl.hours && pl.hours.length) out.push('<details><summary>Hours</summary>' + pl.hours.map(escHtml).join('<br>') + '</details>');
+  } else if (pin.placeLink && pin.placeLink.status === 'no_match') {
+    out.push('Google: no matching place found nearby');
+  } else if (!pin.placeId) {
+    out.push('Not linked to a Google place yet');
+  }
+  if (pin.calEventId) out.push('On your calendar (' + escHtml(pin.calEventId) + ')');
+  return out.map(function(x) { return '<div>' + x + '</div>'; }).join('');
+}
+
+async function _mapPlaceCall(kind) {
+  const id = _mapEditingPin; if (!id) return;
+  const r = await apiCall(API + '/api/map/places/' + kind, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id] }) });
+  const d = r ? await r.json().catch(function() { return null; }) : null;
+  if (d) showToast(kind === 'link' ? (d.linked ? 'Linked to Google' : 'No matching Google place nearby') : (d.refreshed ? 'Refreshed from Google' : 'Google did not answer'));
+  await new Promise(function(res) { _mapLoadThen(res); });
+  const pin = _mapPins.find(function(p) { return p.id === id; });
+  if (pin && _mapEditingPin === id) document.getElementById('map-pin-facts').innerHTML = _mapPinFactsHtml(pin);
+}
+function _mapPlaceLink() { _mapPlaceCall('link'); }
+function _mapPlaceRefresh() { _mapPlaceCall('refresh'); }
+
+// Reload the map, then run cb.
+function _mapLoadThen(cb) {
+  fetch(API + '/api/map').then(function(r) { return r.ok ? r.json() : null; }).then(function(d) {
+    if (d) { _mapPins = d.pins || []; _mapCacheLocal(); _mapRerender(); }
+    cb();
+  }).catch(function() { cb(); });
+}
+
+async function _mapPinHistory() {
+  const id = _mapEditingPin; if (!id) return;
+  const el = document.getElementById('map-pin-history');
+  el.hidden = false; el.innerHTML = 'Loading…';
+  const d = await fetch(API + '/api/map/pins/' + encodeURIComponent(id) + '/history').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; });
+  if (!d) { el.textContent = 'Could not load the history.'; return; }
+  el.innerHTML = (d.history || []).map(function(h) {
+    const changed = [];
+    if (h.before && h.after) Object.keys(Object.assign({}, h.before, h.after)).forEach(function(k) {
+      if (JSON.stringify(h.before[k]) !== JSON.stringify(h.after[k])) changed.push(k);
+    });
+    return '<div class="map-hist-row"><span>' + escHtml(String(h.at).replace('T', ' ').slice(0, 16)) + '</span> <b>' + escHtml(h.action) + '</b> by ' + escHtml(h.actor) + (changed.length ? ': ' + escHtml(changed.join(', ')) : '') + '</div>';
+  }).join('') || 'No changes recorded yet.';
+}
+
+// Link every unlinked pin to Google. Each pin is one billed Google request,
+// so the count goes in the question.
+async function _mapLinkAllPlaces() {
+  const n = _mapPins.filter(function(p) { return !p.placeId && !(p.placeLink && p.placeLink.status === 'no_match'); }).length;
+  if (!n) { showToast('Every pin is already linked or checked'); return; }
+  if (!confirm('Look up ' + n + ' pin' + (n === 1 ? '' : 's') + ' on Google? Each is one Google Places request on your API key.')) return;
+  const r = await apiCall(API + '/api/map/places/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: n }) });
+  const d = r ? await r.json().catch(function() { return null; }) : null;
+  if (d) showToast('Linked ' + d.linked + ', no match ' + d.no_match + (d.failed ? ', failed ' + d.failed : ''));
+  _mapLoad();
 }
 
 function _mapToggleSidebar() {
@@ -37582,10 +38020,7 @@ function _mapGeoQuickSave(idx) {
   var lat = parseFloat(r.lat), lng = parseFloat(r.lon);
   if (isNaN(lat) || isNaN(lng)) return;
   var pin = Object.assign({ id: 'pin_'+Date.now(), name: name, desc: r.display_name || '', lat: lat, lng: lng, tags: [], createdAt: Date.now() }, _mapPlaceFields(r));
-  _mapPins.push(pin);
-  _mapSave();
-  _mapRenderPins();
-  _mapRenderMarkers();
+  _mapPutPin(pin);
   var res = document.getElementById('map-geocoder-results');
   if (res) res.style.display = 'none';
   if (_map) _map.flyTo([lat, lng], Math.max(_map.getZoom(), 14), { duration: 0.8 });

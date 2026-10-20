@@ -316,12 +316,25 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Previous day | `_locShift` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Day by day | `_locShowDay` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Overview | `_locShowOverview` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Delete | `_mapBulkDelete` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Delete list | `_mapDeleteList` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Delete | `_mapDeletePin` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Delete | `_mapDeleteTag` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Not a duplicate | `_mapDupIgnore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Keep first | `_mapDupMerge` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Keep second | `_mapDupMerge` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | + Pin | `_mapGeoQuickSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Link pins to Google places | `_mapLinkAllPlaces` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Merge | `_mapMergeSelected` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Find duplicate pins | `_mapOpenDuplicates` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | History | `_mapPinHistory` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Find on Google | `_mapPlaceLink` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Refresh from Google | `_mapPlaceRefresh` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Save | `_mapSaveList` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Save | `_mapSavePin` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Save | `_mapSaveTag` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Save View | `_mapSetDefaultView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Share link | `_mapShareToggle` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Location history | `_mapSidebarTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Pins | `_mapSidebarTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Lap | `_mapSwLap` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1183,6 +1196,10 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Show  | `_locToggleMode` | onclick |
 | index.html | Drop a pin on the map | `_mapAddPin` | onclick |
 | index.html | + Group | `_mapAddTag` | onclick |
+| index.html | Cancel | `_mapCloseModal` | onclick |
+| index.html | Close | `_mapCloseModal` | onclick |
+| index.html | map-dup-modal | `_mapCloseModal` | onclick |
+| index.html | map-list-modal | `_mapCloseModal` | onclick |
 | index.html | Cancel | `_mapClosePinModal` | onclick |
 | index.html | map-pin-modal | `_mapClosePinModal` | onclick |
 | index.html | Cancel | `_mapCloseTagModal` | onclick |
@@ -1191,13 +1208,19 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | All | `_mapFilterByTag` | onclick |
 | app.js | … | `_mapFilterByTag` | onclick |
 | app.js | + | `_mapFlyToPin` | onclick |
+| app.js | … | `_mapFlyToPin` | onclick |
 | index.html | Clear | `_mapGeoClear` | onclick |
 | app.js | + Save as Pin | `_mapGeoSavePin` | onclick |
 | app.js | … | `_mapGeoSelect` | onclick |
 | index.html | Locate Me | `_mapLocateMe` | onclick |
 | app.js | Edit | `_mapOpenPinModal` | onclick |
 | app.js | Edit | `_mapOpenPinModal` | onclick |
+| app.js | Clear | `_mapRenderPins` | onclick |
+| app.js | Select  | `_mapSelect` | onclick |
+| app.js | Select all shown | `_mapSelectAll` | onclick |
 | index.html | Drop Pin | `_mapToggleDropMode` | onclick |
+| app.js | … | `_mapToggleStatus` | onclick |
+| index.html | Table view | `_mapToggleTable` | onclick |
 | app.js | + | `_mapToggleTagCheck` | onclick |
 | index.html | Close search | `_mdSearchClose` | onclick |
 | index.html | Next match | `_mdSearchStep` | onclick |

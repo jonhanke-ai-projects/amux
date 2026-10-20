@@ -1563,21 +1563,34 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="btn" style="padding:1px 7px;font-size:0.72rem;" onclick="_mapAddTag()">+ Group</button>
       </div>
       <div class="map-tag-chips" id="map-tag-list"></div>
+      <div class="map-tag-chips map-status-chips" id="map-status-list" aria-label="Filter by status"></div>
     </div>
     <div class="map-search-section">
       <input type="search" id="map-search" placeholder="Search pins, notes, groups&#x2026;" oninput="_mapSearch(this.value)" autocomplete="off">
+      <select id="map-list-select" class="map-sort-select map-list-select" onchange="_mapListPick(this.value)" title="Saved lists" aria-label="Saved lists"></select>
     </div>
     <div class="map-pinbar" id="map-pinbar">
       <select id="map-sort" class="map-sort-select" onchange="_mapSetSort(this.value)" title="Sort pin list">
         <option value="name">A&#x2013;Z</option>
         <option value="distance">Nearest</option>
         <option value="recent">Newest</option>
+        <option value="rating">Rating</option>
+        <option value="visited">Last visit</option>
       </select>
       <span class="map-pinbar-spacer"></span>
+      <button class="map-pinbar-btn" id="map-dup-btn" onclick="_mapOpenDuplicates()" title="Find duplicate pins" aria-label="Find duplicate pins">&#x29C9;</button>
+      <button class="map-pinbar-btn" id="map-table-btn" onclick="_mapToggleTable()" aria-pressed="false" title="Table view: select pins and edit them together" aria-label="Table view">&#x25A4;</button>
       <button class="map-pinbar-btn" onclick="_mapExportMenu(event)" title="Export / import pins">&#x21C5;</button>
       <input type="file" id="map-import-file" accept=".geojson,.json,.csv" style="display:none" onchange="_mapImportFile(this)">
     </div>
+    <div class="map-list-bar" id="map-list-bar" hidden>
+      <span id="map-list-share-status" class="map-list-share-status"></span>
+      <button type="button" class="btn" id="map-list-share-btn" onclick="_mapShareToggle()">Share link</button>
+      <button type="button" class="btn" onclick="_mapDeleteList()">Delete list</button>
+    </div>
+    <div class="map-bulk-bar" id="map-bulk-bar" hidden></div>
     <div id="map-pin-list" class="map-pin-list"></div>
+    <div class="map-pins-foot"><button type="button" class="btn" id="map-link-all-btn" onclick="_mapLinkAllPlaces()" title="Look up unlinked pins on Google for hours, ratings and closures">Link pins to Google places</button></div>
     </div>
   </div>
   <button class="map-open-btn" id="map-open-btn" onclick="_mapToggleSidebar()" title="Open sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
@@ -1627,8 +1640,23 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <input id="map-pin-lng" class="map-modal-input" placeholder="Longitude" type="number" step="any">
     </div>
     <div class="map-modal-hint" id="map-pin-coords-hint"></div>
+    <div class="map-modal-row">
+      <label class="map-modal-field"><span class="map-modal-label">Status</span>
+        <select id="map-pin-status" class="map-modal-input"><option value="">No status</option><option value="want">Want to go</option><option value="been">Been</option><option value="favorite">Favorite</option><option value="closed">Closed</option></select></label>
+      <label class="map-modal-field"><span class="map-modal-label">Your rating</span>
+        <select id="map-pin-rating" class="map-modal-input"><option value="">No rating</option><option value="5">&#x2605;&#x2605;&#x2605;&#x2605;&#x2605;</option><option value="4">&#x2605;&#x2605;&#x2605;&#x2605;</option><option value="3">&#x2605;&#x2605;&#x2605;</option><option value="2">&#x2605;&#x2605;</option><option value="1">&#x2605;</option></select></label>
+    </div>
+    <label class="map-modal-field"><span class="map-modal-label">Date (optional, adds it to your calendar)</span>
+      <input id="map-pin-event" class="map-modal-input" type="datetime-local"></label>
     <div class="map-modal-label">Groups</div>
     <div class="map-modal-tags-row" id="map-pin-tags-row"></div>
+    <div class="map-pin-facts" id="map-pin-facts"></div>
+    <div class="map-modal-row map-pin-place-row" id="map-pin-place-row">
+      <button type="button" class="btn" onclick="_mapPlaceLink()" title="Find this pin's place on Google (one Google request)">Find on Google</button>
+      <button type="button" class="btn" onclick="_mapPlaceRefresh()" title="Update hours, rating and open or closed from Google (one Google request)">Refresh from Google</button>
+      <button type="button" class="btn" onclick="_mapPinHistory()">History</button>
+    </div>
+    <div class="map-pin-history" id="map-pin-history" hidden></div>
     <div class="map-modal-actions">
       <button class="btn" onclick="_mapSavePin()">Save</button>
       <button class="btn" style="background:transparent;border:1px solid var(--border);" onclick="_mapClosePinModal()">Cancel</button>
@@ -1646,10 +1674,37 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <input type="color" id="map-tag-color" value="#58a6ff">
       <span id="map-tag-color-preview" style="font-size:0.82rem;color:var(--dim)"></span>
     </div>
+    <div class="map-modal-label">Category</div>
+    <div class="map-modal-row">
+      <select id="map-tag-category" class="map-modal-input" aria-label="Category"></select>
+      <input id="map-tag-category-new" class="map-modal-input" placeholder="or a new category" autocomplete="off" aria-label="New category">
+    </div>
+    <div class="map-modal-hint">Categories such as Cuisine or Vibe: a filter matches any group within a category and every category at once.</div>
     <div class="map-modal-actions">
       <button class="btn" onclick="_mapSaveTag()">Save</button>
       <button class="btn" style="background:transparent;border:1px solid var(--border);" onclick="_mapCloseTagModal()">Cancel</button>
       <button class="btn map-btn-danger" id="map-tag-delete-btn" onclick="_mapDeleteTag()" style="display:none;margin-left:auto;">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Map: possible duplicate pins -->
+<div class="map-modal" id="map-dup-modal" onclick="if(event.target===this)_mapCloseModal('map-dup-modal')">
+  <div class="map-modal-box">
+    <div class="map-modal-title">Possible duplicates</div>
+    <div id="map-dup-list" class="map-dup-list"></div>
+    <div class="map-modal-actions"><button type="button" class="btn" onclick="_mapCloseModal('map-dup-modal')">Close</button></div>
+  </div>
+</div>
+<!-- Map: save the current filter as a list -->
+<div class="map-modal" id="map-list-modal" onclick="if(event.target===this)_mapCloseModal('map-list-modal')">
+  <div class="map-modal-box">
+    <div class="map-modal-title">Save list</div>
+    <input id="map-list-name" class="map-modal-input" placeholder="List name, e.g. Coffee to try" autocomplete="off" onkeydown="if(event.key==='Enter')_mapSaveList()">
+    <div class="map-modal-hint" id="map-list-summary"></div>
+    <div class="map-modal-actions">
+      <button type="button" class="btn primary" onclick="_mapSaveList()">Save</button>
+      <button type="button" class="btn" onclick="_mapCloseModal('map-list-modal')">Cancel</button>
     </div>
   </div>
 </div>

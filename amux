@@ -5625,6 +5625,121 @@ if d.get("note"):
 PY
 }
 
+# Map pins from the command line (2026-10-20), so a worker can add and curate
+# places: `amux map add "Joe's Pizza" place="Joe's Pizza Greenwich Village"
+# group=Pizza status=want`. Pins are rows on the server (map_store.rs); a pin
+# with at=<date> also gets a calendar event.
+cmd_map() {
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
+  local sub="${1:-ls}"; shift 2>/dev/null || true
+  local hdr=(-H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}")
+  case "$sub" in
+    ls|list)
+      _curl -sk "$AMUX_API/api/map" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); args = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
+tags = {t["id"]: t["name"] for t in d.get("tags", [])}
+want_group = args.get("group", "").lower(); want_status = args.get("status", ""); q = args.get("q", "").lower()
+n = 0
+for p in d.get("pins", []):
+    names = [tags.get(t, t) for t in p.get("tags", [])]
+    if want_group and want_group not in [x.lower() for x in names]: continue
+    if want_status and (p.get("status") or "") != want_status: continue
+    if q and q not in (p.get("name", "") + " " + p.get("desc", "")).lower(): continue
+    n += 1
+    stars = "*" * (p.get("rating") or 0)
+    print("%-28s %-9s %-5s %s  [%s]" % (p["id"], p.get("status") or "-", stars, p.get("name", ""), ", ".join(names)))
+print("%d pin(s)" % n, file=sys.stderr)' "$@"
+      ;;
+    add)
+      [ $# -gt 0 ] || die "Usage: amux map add \"Name\" (lat=.. lng=.. | place=\"search text\") [group=A,B] [status=want|been|favorite|closed] [rating=1-5] [desc=..] [note=..] [at=YYYY-MM-DD[THH:MM]]"
+      local map_json; map_json=$(_curl -sk "$AMUX_API/api/map") || die "amux map: the server did not answer"
+      local place_q; place_q=$(python3 -c 'import sys
+for a in sys.argv[1:]:
+    if a.startswith("place="): print(a[6:])' "$@")
+      local search_json="[]"
+      if [ -n "$place_q" ]; then
+        search_json=$(_curl -sk "$AMUX_API/api/map/search?q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$place_q")")
+      fi
+      local json; json=$(MAP_JSON="$map_json" SEARCH_JSON="$search_json" python3 -c '
+import json, os, sys
+m = json.loads(os.environ["MAP_JSON"]); found = json.loads(os.environ["SEARCH_JSON"] or "[]")
+pin = {"tags": []}; name = []
+by_name = {t["name"].lower(): t["id"] for t in m.get("tags", [])}
+for a in sys.argv[1:]:
+    if "=" not in a or a.startswith("="): name.append(a); continue
+    k, v = a.split("=", 1)
+    if k in ("lat", "lng"): pin[k] = float(v)
+    elif k == "rating": pin["rating"] = int(v)
+    elif k == "status": pin["status"] = v
+    elif k in ("group", "groups"):
+        for g in [x.strip() for x in v.split(",") if x.strip()]:
+            if g.lower() not in by_name: sys.exit("amux map: no group called %r (groups: %s)" % (g, ", ".join(sorted(t["name"] for t in m.get("tags", [])))))
+            pin["tags"].append(by_name[g.lower()])
+    elif k in ("note", "notes"): pin["notes"] = v
+    elif k == "desc": pin["desc"] = v
+    elif k == "at": pin["eventAt"] = v
+    elif k == "place": pass
+    else: sys.exit("amux map: unknown field %r" % k)
+pin["name"] = " ".join(name)
+if "lat" not in pin:
+    if not found: sys.exit("amux map: give lat= and lng=, or place=\"...\" that the place search can find")
+    r = found[0]; pin["lat"] = float(r["lat"]); pin["lng"] = float(r["lon"])
+    if r.get("place_id"): pin["placeId"] = r["place_id"]
+    pin.setdefault("desc", r.get("display_name", ""))
+    if not pin["name"]: pin["name"] = r.get("name", "Pin")
+print(json.dumps(pin))' "$@") || exit 1
+      _curl -sk -X POST "${hdr[@]}" -d "$json" "$AMUX_API/api/map/pins" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): print("error:", d.get("error", d), file=sys.stderr); sys.exit(1)
+p = d["pin"]; print(p["id"], "added:", p.get("name"), "(%s, %s)" % (p["lat"], p["lng"]) + (" calendar " + p["calEventId"] if p.get("calEventId") else ""))'
+      ;;
+    set)
+      local pid="${1:-}"; [ -n "$pid" ] || die "Usage: amux map set PIN_ID status=been rating=5 [note=..] [desc=..] [at=..] [name=..]"
+      shift; [ $# -gt 0 ] || die "amux map set: nothing to set. Give key=value pairs."
+      local cur; cur=$(_curl -sk "$AMUX_API/api/map") || die "amux map: the server did not answer"
+      local json; json=$(MAP_JSON="$cur" python3 -c '
+import json, os, sys
+m = json.loads(os.environ["MAP_JSON"]); pid = sys.argv[1]
+p = next((x for x in m.get("pins", []) if x.get("id") == pid), None)
+if not p: sys.exit("amux map: no pin %s" % pid)
+for a in sys.argv[2:]:
+    k, _, v = a.partition("=")
+    if k == "rating": p["rating"] = int(v) if v else None
+    elif k in ("status", "desc", "name"): p[k] = v
+    elif k in ("note", "notes"): p["notes"] = v
+    elif k == "at": p["eventAt"] = v
+    else: sys.exit("amux map: unknown field %r" % k)
+print(json.dumps(p))' "$pid" "$@") || exit 1
+      _curl -sk -X PUT "${hdr[@]}" -d "$json" "$AMUX_API/api/map/pins/$pid" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): print("error:", d.get("error", d), file=sys.stderr); sys.exit(1)
+print(d["pin"]["id"], d.get("result"))'
+      ;;
+    visits)
+      _curl -sk -X POST "${hdr[@]}" "$AMUX_API/api/map/visits/match" | python3 -c '
+import json, sys; d = json.load(sys.stdin)
+print("%s pins have visits, %s updated, %s newly marked been (from %s visits)" % (d.get("pins_with_visits"), d.get("updated"), d.get("marked_been"), d.get("visits_considered")))'
+      ;;
+    dups|duplicates)
+      _curl -sk "$AMUX_API/api/map/duplicates" | python3 -c '
+import json, sys; d = json.load(sys.stdin)
+for x in d.get("pairs", []): print("%s | %s  (%s, %sm)  amux map merge %s %s" % (x["a"]["name"], x["b"]["name"], x["reason"], x["distance_m"], x["a"]["id"], x["b"]["id"]))
+print("%d pair(s) among %s pins" % (len(d.get("pairs", [])), d.get("n_considered")), file=sys.stderr)'
+      ;;
+    merge)
+      [ $# -eq 2 ] || die "Usage: amux map merge KEEP_ID DROP_ID"
+      _curl -sk -X POST "${hdr[@]}" -d "$(python3 -c 'import json,sys;print(json.dumps({"keep":sys.argv[1],"drop":sys.argv[2]}))' "$1" "$2")" "$AMUX_API/api/map/pins/merge" | python3 -c '
+import json, sys; d = json.load(sys.stdin)
+if not d.get("ok"): print("error:", d.get("error", d), file=sys.stderr); sys.exit(1)
+print("merged into", d["pin"]["id"])'
+      ;;
+    *) die "Usage: amux map ls [status=..] [group=..] [q=..] | add | set | visits | dups | merge" ;;
+  esac
+}
+
 # ── CRM ──────────────────────────────────────────────────────────────────────
 # AMUX-2932. Global ~/.claude/CLAUDE.md has documented `amux crm add` to every
 # session in every project for months; the verb did not exist and the HTTP API
@@ -6394,6 +6509,14 @@ ${BOLD}CRM:${RESET}
   amux crm update PPL-1 k=v      Update whitelisted fields
   amux crm log PPL-1 "notes"     Log an interaction (follow_up_date=YYYY-MM-DD)
   amux crm followups             Pending follow-ups, soonest first
+
+${BOLD}Map pins:${RESET}
+  amux map ls [status=want] [group=Coffee] [q=..]   List pins
+  amux map add "Name" place="search text"           Add a pin found by place search (or lat= lng=)
+                 [group=A,B] [status=want] [rating=4] [note=..] [at=2026-11-01T19:00 adds a calendar event]
+  amux map set PIN status=been rating=5             Change a pin
+  amux map visits                                   Mark pins "been" from location history
+  amux map dups | amux map merge KEEP DROP          Find and merge duplicate pins
 
 ${BOLD}Board:${RESET}
   amux board ls                  List all board issues
@@ -10596,6 +10719,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     delegate-job|dj) shift; cmd_delegate_job "$@" ;;
     get)              shift; cmd_get "$@" ;;
     crm)              shift; cmd_crm "$@" ;;
+    map)              shift; cmd_map "$@" ;;
     order)            shift; cmd_order "$@" ;;
     resources|res)   shift; cmd_resources "$@" ;;
     boundaries)       shift; cmd_boundaries "$@" ;;

@@ -5954,6 +5954,53 @@
   .map-modal-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; align-items: center; }
   .map-btn-danger { background: var(--red) !important; color: #fff !important; border-color: transparent !important; }
   .map-btn-danger:hover { opacity: 0.85; }
+  /* Status, lists, table + bulk edits, duplicates (2026-10-20) */
+  .map-status-chips { margin-top: 6px; }
+  .map-list-select { width: 100%; margin-top: 6px; }
+  .map-chip-n { opacity: 0.6; font-variant-numeric: tabular-nums; }
+  .map-tag-cat { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
+  .map-tag-cat-name { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); min-width: 52px; }
+  .map-pin-statusline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 0.7rem; margin: 2px 0; }
+  .map-status-pill { padding: 0 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--text); }
+  .map-status-want { border-color: var(--accent); color: var(--accent); }
+  .map-status-been { border-color: var(--green, #3fb950); color: var(--green, #3fb950); }
+  .map-status-favorite { border-color: #d4a106; color: #d4a106; }
+  .map-status-closed { border-color: var(--dim); color: var(--dim); text-decoration: line-through; }
+  .map-stars { color: #d4a106; letter-spacing: 1px; white-space: nowrap; }
+  .map-visit-note { color: var(--dim); }
+  .map-list-bar, .map-bulk-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 0.75rem; }
+  .map-list-bar[hidden], .map-bulk-bar[hidden] { display: none; }
+  .map-list-share-status { flex: 1 1 100%; color: var(--dim); overflow-wrap: anywhere; }
+  .map-bulk-bar .input { font-size: 0.75rem; padding: 2px 4px; max-width: 120px; }
+  .map-bulk-n { font-weight: 600; }
+  .map-pins-foot { padding: 8px 10px; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .map-pins-foot .btn { width: 100%; font-size: 0.75rem; }
+  .map-sidebar.map-sidebar-wide { width: 560px; }
+  .map-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+  .map-table th { text-align: left; font-weight: 600; color: var(--dim); position: sticky; top: 0; background: var(--card); padding: 4px; border-bottom: 1px solid var(--border); }
+  .map-table td { padding: 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .map-table tr.selected td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .map-table a { color: var(--text); text-decoration: none; }
+  .map-modal-field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+  .map-pin-facts { font-size: 0.75rem; color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
+  .map-pin-facts:empty { display: none; }
+  .map-pin-place-row .btn { font-size: 0.75rem; }
+  .map-pin-history { font-size: 0.72rem; max-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+  .map-hist-row { padding: 2px 0; }
+  .map-dup-list { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; }
+  .map-dup-pair { border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 0.82rem; }
+  .map-dup-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  @media (max-width: 600px) {
+    .map-pinbar-btn, .map-list-bar .btn, .map-bulk-bar .btn, .map-bulk-bar .input, .map-dup-actions .btn, .map-pin-place-row .btn, .map-pins-foot .btn { min-height: 44px; }
+    .map-sort-select { min-height: 44px; }
+    .map-table th:nth-child(6), .map-table td:nth-child(6) { display: none; }
+    .map-pin-place-row { flex-wrap: wrap; }
+    /* On a phone the bars above the list (search, lists, bulk edits) can fill
+       the screen; the pane scrolls as one so the list always gets its height. */
+    .map-pins-pane { overflow-y: auto; }
+    .map-pins-pane > * { flex-shrink: 0; }
+    .map-pin-list { flex: none; overflow: visible; min-height: 50vh; }
+  }
   /* Geocoder search — lives inside sidebar, absolutely positioned over map on desktop */
   .map-geocoder-wrap { position: absolute; top: 12px; left: calc(50% + 130px); transform: translateX(-50%); z-index: 1003; width: min(420px, calc(100% - 292px)); }
   #map-view.sidebar-collapsed .map-geocoder-wrap { left: 50%; width: min(420px, calc(100% - 32px)); }
