@@ -1100,7 +1100,14 @@ async function main() {
     const url = args[0] || 'about:blank';
     const cdp = new CDP();
     await cdp.connect(getWsUrl());
-    const { targetId } = await cdp.send('Target.createTarget', { url });
+    // A worker's tab goes in a new background window. A plain createTarget lands
+    // in whichever window Ethan last used, whatever Chrome profile that is, and
+    // pulls it forward: a social-activities lookup opened inside his Work window
+    // with the automation banner on top (2026-10-20). Run by hand (no
+    // AMUX_SESSION) it still opens where you are looking.
+    const worker = !!process.env.AMUX_SESSION;
+    const { targetId } = await cdp.send('Target.createTarget', worker ? { url, newWindow: true, background: true } : { url });
+    if (worker) process.stderr.write(`[amux] opened in a background window, not your active one (worker ${process.env.AMUX_SESSION})\n`);
     // Refresh cache; new tab may not appear in getTargets immediately, so add it manually
     const pages = await getPages(cdp);
     if (!pages.some(p => p.targetId === targetId)) {
