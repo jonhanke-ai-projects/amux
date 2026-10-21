@@ -28,6 +28,11 @@ export AMUX_CLEANUP_SESSIONS_CMD=false        # the VM-reference report must not
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
 export AMUX_CLEANUP_STATE_DIR="$FIX/assess-state" AMUX_CLEANUP_ESCALATE_CMD="true" AMUX_CLEANUP_HISTORY_CMD="true" AMUX_CLEANUP_CARD_CMD="true" AMUX_CLEANUP_VM_LIST_CMD="true"   # never page a real lane from a test (DESKT-57)
 DEFAULT_KEEP=$TARGET_KEEP; DEFAULT_ROOTS=$TARGET_ROOTS; DEFAULT_VM_PRUNE=$VM_PRUNE_CMD; DEFAULT_VM_CAP=$VM_PRUNE_CAP_CMD; DEFAULT_VM_IMAGE=$VM_IMAGE_PRUNE_CMD; DEFAULT_VM_MAX_USED=$VM_PRUNE_MAX_USED; DEFAULT_VM_STOP=$VM_STOP_CMD      # what the scheduler actually runs with, before this file overrides the knobs
+DEFAULT_VM_GUEST_DF=$VM_GUEST_DF_CMD
+# The guest's df is a fake: no cell may ssh into a real VM. "$FIX/guest.<profile>"
+# holds "<used_kb> <size_kb>"; without one, df prints nothing (unmeasured).
+printf '#!/bin/bash\nf=%s/guest.$1; [ -f "$f" ] || exit 1; read u t < "$f"\necho "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "/dev/vdb1 $t $u $((t-u)) x /mnt/lima-colima-$1"\n' "$FIX" > "$FIX/vmdf.sh"; chmod +x "$FIX/vmdf.sh"
+VM_GUEST_DF_CMD="$FIX/vmdf.sh PROFILE"
 
 # Knobs the arm reads. Small budgets: nothing here should ever wait on them.
 TARGET_DEPTH=8; TARGET_SCAN_S=30; TARGET_WALK_S=30; TARGET_BUDGET_S=120
@@ -418,6 +423,20 @@ check "each running VM is capped, then trimmed" "cap a 40gb|a|cap b 40gb|b" "$(t
 check "the cap logs its verdict on a normal tick" "2" "$(grep -c 'verdict=vm_build_cache_capped' "$FIX/out.txt" | tr -d ' ')"
 VM_PRUNE_MAX_USED=0; : > "$FIX/trims"; trim_vms 0 > "$FIX/out.txt"
 check "0 disables the cap on a normal tick" "a b" "$(tr '\n' ' ' < "$FIX/trims" | sed 's/ $//')"
+echo "12c4. a VM whose own filesystem is nearly full drops the cache cap to 0 and is a constraint (disk RCA 20261021-175921)"
+VM_PRUNE_MAX_USED=40gb; : > "$FIX/trims"
+echo "201326592 205520896" > "$FIX/guest.a"   # 98% (192 of 196 G)
+echo "104857600 205520896" > "$FIX/guest.b"   # 52% (df rounds up)
+HEALTH_VERDICTS=""; trim_vms 0 > "$FIX/out.txt"
+check "the full VM is capped at 0, the roomy one at 40gb" "cap a 0b|a|cap b 40gb|b" "$(tr '\n' '|' < "$FIX/trims" | sed 's/|$//')"
+check "the tight VM says so, with a verdict" "yes" "$(yn grep -q 'vm a data filesystem 98% full (4.0G free, over 85%).*verdict=vm_guest_disk_tight' "$FIX/out.txt")"
+check "the roomy VM reports its fullness" "yes" "$(yn grep -q 'vm b data filesystem 52% full' "$FIX/out.txt")"
+check "the full VM is a disk constraint naming it" "yes" "$(yn sh -c 'printf "%s" "$1" | grep -q "^disk VM a data filesystem 98% full (4.0G free, at or over 90%)"' _ "$HEALTH_VERDICTS")"
+check "the roomy VM is not" "no" "$(yn sh -c 'printf "%s" "$1" | grep -q "VM b data"' _ "$HEALTH_VERDICTS")"
+rm -f "$FIX/guest.a" "$FIX/guest.b"; : > "$FIX/trims"; HEALTH_VERDICTS=""; trim_vms 0 > "$FIX/out.txt"
+check "an unreadable guest keeps the normal cap and says unmeasured" "yes" "$(yn sh -c 'grep -q "cap a 40gb" "$1" && grep -q "verdict=vm_guest_disk_unmeasured" "$2"' _ "$FIX/trims" "$FIX/out.txt")"
+check "and raises nothing it could not measure" "" "$HEALTH_VERDICTS"
+check "the default guest reading is df on the colima data mount" "colima ssh -p PROFILE -- df -kP /mnt/lima-colima-PROFILE" "$DEFAULT_VM_GUEST_DF"
 VM_PRUNE_CAP_CMD=$_cc; VM_PRUNE_MAX_USED=$_mu
 check "the tick calls trim_vms when the disk is not tight" "yes" "$(grep -q 'then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi' "$TICK" && echo yes || echo no)"
 VM_LIST_CMD=$_lc; VM_TRIM_CMD=$_tc

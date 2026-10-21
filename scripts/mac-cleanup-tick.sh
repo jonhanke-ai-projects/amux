@@ -262,6 +262,16 @@ VM_PRUNE_MAX_USED=${AMUX_CLEANUP_VM_PRUNE_MAX_USED:-40gb}
 # prunes with the short window VM_PRUNE_CAP_AGE.
 VM_PRUNE_CAP_AGE=${AMUX_CLEANUP_VM_PRUNE_CAP_AGE:-1h}
 VM_PRUNE_CAP_CMD=${AMUX_CLEANUP_VM_PRUNE_CAP_CMD:-vm_build_cache_cap colima-PROFILE CAP}
+# How full the VM's OWN data filesystem is (Mac disk RCA 20261021-175921). The
+# host reads a VM's disk file as allocated bytes, so goal-shared at 98% inside
+# (178 of 196 G used, 5 G left beside 2.6 G MVS snapshot writes) escalated as a
+# host "disk burn" while the 40gb cache cap logged "26.1GB is within 40gb" and
+# freed nothing. Over VM_GUEST_TIGHT_PCT the cap drops to 0 and keeps only cache
+# used in the last VM_GUEST_TIGHT_AGE; at VM_GUEST_FULL_PCT it is a constraint.
+VM_GUEST_DF_CMD=${AMUX_CLEANUP_VM_GUEST_DF_CMD:-colima ssh -p PROFILE -- df -kP /mnt/lima-colima-PROFILE}
+VM_GUEST_TIGHT_PCT=${AMUX_CLEANUP_VM_GUEST_TIGHT_PCT:-85}
+VM_GUEST_FULL_PCT=${AMUX_CLEANUP_VM_GUEST_FULL_PCT:-90}
+VM_GUEST_TIGHT_AGE=${AMUX_CLEANUP_VM_GUEST_TIGHT_AGE:-10m}
 VM_TRIM_CMD=${AMUX_CLEANUP_VM_TRIM_CMD:-colima ssh -p PROFILE -- sudo fstrim -a}
 # Unused IMAGES in running colima VMs, past an age, every tick (MF-4043):
 # goal-shared reached 39 images / 148 GB (137 GB unused) on 2026-10-03 and the
@@ -2315,18 +2325,41 @@ for line in sys.stdin:
 # only when disk is tight (disk RCA 20261008-124643: the cap lived inside the
 # tight-disk branch, so a normal tick never ran it and goal-shared's cache
 # reached 64G against a 40G cap while the host burned 34G/h).
+vm_guest_used() { # <profile>: "<pct> <avail_gb>" for the VM's data filesystem, or nothing
+  local cmd=${VM_GUEST_DF_CMD//PROFILE/$1}
+  perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>/dev/null \
+    | awk 'NR>1 && $2+0>0 {printf "%d %.1f\n", ($3*100+$2-1)/$2, $4/1048576; exit}'
+}
+
 cap_vm_build_cache() { # <profile>
-  local p=$1 cmd out rc=0
+  local p=$1 cmd out rc=0 cap=$VM_PRUNE_MAX_USED age=$VM_PRUNE_CAP_AGE g pct avail
   [ "$VM_PRUNE_MAX_USED" != 0 ] || return 0
-  cmd=${VM_PRUNE_CAP_CMD//PROFILE/$p}; cmd=${cmd//CAP/$VM_PRUNE_MAX_USED}
+  g=$(vm_guest_used "$p" || true); pct=${g%% *}; avail=${g#* }
+  if [ -z "$g" ]; then
+    echo "mac-cleanup:   vm $p data filesystem: unmeasured (df in the guest gave nothing) (verdict=vm_guest_disk_unmeasured)"
+  elif [ "$pct" -ge "$VM_GUEST_TIGHT_PCT" ]; then
+    cap=0b; age=$VM_GUEST_TIGHT_AGE
+    echo "mac-cleanup:   vm $p data filesystem ${pct}% full (${avail}G free, over ${VM_GUEST_TIGHT_PCT}%): build cache unused for ${age} goes whatever its size (verdict=vm_guest_disk_tight)"
+  else
+    echo "mac-cleanup:   vm $p data filesystem ${pct}% full (${avail}G free)"
+  fi
+  cmd=${VM_PRUNE_CAP_CMD//PROFILE/$p}; cmd=${cmd//CAP/$cap}
   case "$cmd" in
     vm_build_cache_cap\ *)
-      export -f vm_build_cache_cap; export VM_DOCKER VM_PRUNE_CAP_AGE
-      out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" bash -c "$cmd" 2>&1) || rc=$? ;;
-    *) out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$? ;;
+      # The window rides on this one command: a tight VM must not shorten it for the next.
+      export -f vm_build_cache_cap; export VM_DOCKER
+      out=$(VM_PRUNE_CAP_AGE=$age perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" bash -c "$cmd" 2>&1) || rc=$? ;;
+    *) out=$(VM_PRUNE_CAP_AGE=$age perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$? ;;
   esac
+  if [ -n "$g" ]; then
+    # Read again after the prune: a cap that freed enough is not a constraint.
+    g=$(vm_guest_used "$p" || true); [ -z "$g" ] || { pct=${g%% *}; avail=${g#* }; }
+    if [ "$pct" -ge "$VM_GUEST_FULL_PCT" ]; then
+      HEALTH_VERDICTS=$(printf '%s\ndisk VM %s data filesystem %s%% full (%sG free, at or over %s%%): its containers fail on write when it fills; the owner frees images or volumes inside it\n' "$HEALTH_VERDICTS" "$p" "$pct" "$avail" "$VM_GUEST_FULL_PCT")
+    fi
+  fi
   if [ "$rc" = 0 ]; then
-    echo "mac-cleanup:   vm $p build cache capped at $VM_PRUNE_MAX_USED: $(printf '%s' "$out" | grep -iE 'total|build cache' | head -1 | tr -s ' \t' ' ' | cut -c1-60); $(printf '%s' "$out" | grep -i 'total' | tail -1 | tr -s ' \t' ' ' | cut -c1-60) (verdict=vm_build_cache_capped)"
+    echo "mac-cleanup:   vm $p build cache capped at $cap: $(printf '%s' "$out" | grep -iE 'total|build cache' | head -1 | tr -s ' \t' ' ' | cut -c1-60); $(printf '%s' "$out" | grep -i 'total' | tail -1 | tr -s ' \t' ' ' | cut -c1-60) (verdict=vm_build_cache_capped)"
   else
     echo "mac-cleanup:   vm $p build-cache cap FAILED (rc $rc): $(printf '%s' "$out" | tail -1 | cut -c1-120) (verdict=vm_build_cache_cap_failed)"
   fi
