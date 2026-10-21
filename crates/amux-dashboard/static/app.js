@@ -19550,8 +19550,12 @@ function applyPeekSearch(keepIndex, doScroll) {
   // frame changes every second (its status timer), so a new frame swaps only
   // #pk-live and keeps the scrollback DOM, exactly as an unsearched tick does.
   const hist = _peekAgents.selected ? null : _peekEarlierHTML() + _peekHistoryHTML;
+  // Only the standard composition (scrollback + live frame) is split; a
+  // cached paint, a selected subagent or any other writer of lastPeekHTML
+  // is rebuilt from lastPeekHTML exactly as before.
+  const standard = hist !== null && lastPeekHTML === hist + _lastLiveHTML;
   const liveEl = document.getElementById('pk-live');
-  const reuse = hist !== null && _peekSearchDom.hist === hist && !!liveEl
+  const reuse = standard && _peekSearchDom.hist === hist && !!liveEl
     && _peekSearchDom.first === body.firstChild && body.contains(liveEl);
   if (reuse) {
     _peekClearHighlights(body);
@@ -19560,9 +19564,13 @@ function applyPeekSearch(keepIndex, doScroll) {
       _peekReclassifyPrompts();
       _peekSearchDom.live = _lastLiveHTML;
     }
-  } else {
+  } else if (standard) {
     _paintPeekRegions(body);
     _peekSearchDom = { hist: document.getElementById('pk-live') ? hist : null, live: _lastLiveHTML, first: body.firstChild };
+  } else {
+    body.innerHTML = lastPeekHTML;
+    _peekReclassifyPrompts();
+    _peekSearchDom = { hist: null, live: null, first: null };
   }
   _peekSearchStats[reuse ? 'reused' : 'rebuilt']++;
   const roots = !_peekFiltersActive() ? [body]
@@ -19678,11 +19686,13 @@ function togglePeekFind(open) {
   else { clearPeekSearch(); btn.focus(); }
 }
 function peekSearchNext() {
+  _peekSearchFlush();
   if (!_peekMatches.length) return;
   peekSearchIndex = (peekSearchIndex + 1) % _peekMatches.length;
   _peekScrollTo(peekSearchIndex);
 }
 function peekSearchPrev() {
+  _peekSearchFlush();
   if (!_peekMatches.length) return;
   peekSearchIndex = (peekSearchIndex - 1 + _peekMatches.length) % _peekMatches.length;
   _peekScrollTo(peekSearchIndex);
@@ -20050,6 +20060,7 @@ async function _peekLoadEarlierUntil(found) {
   return verdict;
 }
 async function _peekMsgMove(direction, event) {
+  _peekSearchFlush();
   if (!_peekMsgNavIsExplicit(event)) {
     const prompts = _peekMsgPrompts();
     _peekNavBeacon('suppressed-scroll-gesture', prompts, null);
