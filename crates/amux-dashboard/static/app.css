@@ -9932,6 +9932,7 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .cmdk-foot { border-top: 1px solid var(--border); color: var(--dim); font-size: 0.7rem; padding: 8px 14px; flex-shrink: 0; }
 @media (max-width: 600px) { .cmdk-kind { flex-basis: 60px; } }
 .header-search-btn { min-width: 44px; min-height: 44px; }
+.header-search-btn[hidden] { display: none; }
 
 /* Worker groups editor (the edit modal's multiselect): a phone needs a real
    target to remove a group, not a 10px x. */

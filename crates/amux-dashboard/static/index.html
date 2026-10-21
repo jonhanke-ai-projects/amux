@@ -250,7 +250,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </button>
       <div class="active-dropdown" id="active-dropdown"></div>
     </div>
-    <button class="btn header-search-btn" id="cmdk-btn" onclick="event.stopPropagation();openCmdk()" aria-label="Search amux (Cmd-K)" title="Search amux (⌘K)">&#x1F50D;</button>
+    <!-- Hidden (Ethan, 2026-10-20: "hide the magnifying glass at the top"); search stays one tap away in the + menu and on Cmd-K. -->
+    <button class="btn header-search-btn" id="cmdk-btn" hidden onclick="event.stopPropagation();openCmdk()" aria-label="Search amux (Cmd-K)" title="Search amux (⌘K)">&#x1F50D;</button>
     <div class="header-add-wrap">
       <button class="header-add-btn" id="add-btn" onclick="event.stopPropagation();toggleAddMenu()" aria-label="Create or connect" title="Create or connect">+</button>
       <div class="header-add-menu" id="add-menu">
@@ -259,6 +260,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnect()"><span class="mi">&#x1F517;</span> Connect tmux</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnectIterm2()"><span class="mi">&#x1F5A5;</span> Connect iTerm2 pane</div>
         <div class="card-menu-sep"></div>
+        <div class="card-menu-item" id="add-menu-search" onclick="event.stopPropagation();closeAddMenu();openCmdk()"><span class="mi">&#x1F50D;</span> Search amux (&#x2318;K)</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openBulkActions()"><span class="mi">&#x26A1;</span> Bulk actions</div>
       </div>
     </div>
