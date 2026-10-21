@@ -928,7 +928,9 @@ test('identity arriving after settings opened refreshes billing without another 
   const calls=[];
   const ctx=vm.createContext({_cloudEmail:'',location:{hostname:'example.test'},document:{getElementById:id=>id==='settings-menu'?{classList:{contains:()=>true}}:null},
     fetch:async()=>({ok:true,status:200,json:async()=>({is_cloud:true,email:'owner@example.test',has_api_key:true})}),
-    _applyIdentityToSettings(){},loadTeamSection(){},_loadGatewayOrgs(){},
+    // _initIdentity calls these too (2aa72c6b6 added _cloudOfferInit); a missing
+    // one throws inside its try and the billing refresh this test pins never runs.
+    _applyIdentityToSettings(){},_cloudOfferInit(){},loadTeamSection(){},_loadGatewayOrgs(){},
     _loadCloudPlan(){calls.push('plan')},loadBillingSection(){calls.push('billing')}});
   vm.runInContext(code('_initIdentity'),ctx);await ctx._initIdentity();
   assert.deepEqual(calls,['plan','billing']);assert.equal(ctx._cloudEmail,'owner@example.test');
