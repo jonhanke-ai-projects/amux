@@ -87,10 +87,13 @@ test('Cmd-K opens a worker, a card, a tab and a group by name', async ({ page, r
   }
 });
 
-test('on a phone the header search button opens the palette and it fits the screen', async ({ page }, info) => {
+// The header magnifying glass is hidden (96e5b8e36); on a phone search opens
+// from the + menu.
+test('on a phone the + menu opens the palette and it fits the screen', async ({ page }, info) => {
   test.skip(info.project.name === 'desktop', 'phone layouts');
   await boot(page);
-  await page.locator('#cmdk-btn').click();
+  await page.locator('#add-btn').click();
+  await page.locator('#add-menu-search').click();
   await expect(page.locator('#cmdk-overlay')).toHaveClass(/active/);
   await expect(page.locator('#cmdk-input')).toBeFocused();
   await page.locator('#cmdk-input').fill('board');
