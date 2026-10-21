@@ -9970,6 +9970,55 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 }
 .file-overlay-body.md-content ul ul { list-style-type: disc; }
 
+/* Tables in a note: cells wrap between words, never inside one ("Acqui|re"
+   in Ethan's 2026-10-20 screenshot came from the body's break-word), and the
+   table scrolls sideways inside its frame instead of squeezing every column.
+   _mdFitTables gives prose columns a reading width. */
+.md-content th, .md-content td { word-break: normal; overflow-wrap: normal; hyphens: none; vertical-align: top; }
+.md-content .table-scroll { max-width: 100%; overscroll-behavior-x: contain; }
+.md-content .md-mermaid { overscroll-behavior-x: contain; }
+
+/* Diagrams open full screen on tap (_mdDiagramOpen). */
+.md-content .md-mermaid { cursor: zoom-in; position: relative; }
+@media (hover: none), (max-width: 600px) {
+  .md-content .md-mermaid::after { content: 'Tap to zoom'; position: absolute; right: 6px; bottom: 6px; font-size: 0.7rem; padding: 2px 8px;
+    border-radius: 10px; background: var(--card); border: 1px solid var(--border); color: var(--dim); pointer-events: none; }
+}
+.md-dv { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.md-dv-bar { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.md-dv-hint { flex: 1; min-width: 0; font-size: 0.78rem; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.md-dv-close { min-width: 44px; min-height: 44px; }
+.md-dv-wrap { flex: 1; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; touch-action: none; background: var(--bg); }
+.md-dv-img { transform-origin: center center; will-change: transform; line-height: 0; }
+
+/* Reading progress on touch screens: iOS hides a scrolling div's scrollbar,
+   so the file viewer draws its own (thumb + percentage), draggable. */
+.file-scroll-rail { display: none; position: absolute; right: 0; width: 22px; pointer-events: none; z-index: 5; }
+.file-scroll-thumb { position: absolute; top: 0; right: 0; width: 22px; pointer-events: auto; touch-action: none; cursor: grab; }
+.file-scroll-thumb::after { content: ''; position: absolute; top: 2px; bottom: 2px; right: 3px; width: 4px; border-radius: 3px;
+  background: color-mix(in srgb, var(--dim) 70%, transparent); transition: width 0.12s, background 0.12s; }
+.file-scroll-rail.drag .file-scroll-thumb::after { width: 7px; background: var(--accent); }
+.file-scroll-pct { position: absolute; right: 26px; padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-variant-numeric: tabular-nums;
+  background: var(--card); border: 1px solid var(--border); color: var(--dim); opacity: 0; transition: opacity 0.25s; pointer-events: none; z-index: 5; }
+.file-scroll-pct.on { opacity: 1; }
+@media (hover: none), (max-width: 600px) {
+  .file-scroll-rail.on { display: block; }
+}
+
+/* Phone: the note gets the screen (Obsidian as the reference). No frame
+   around the body, a one-row header, and Preview/Raw collapse to the one
+   button that switches to the other mode. */
+@media (max-width: 600px) {
+  #file-overlay { padding: max(2px, env(safe-area-inset-top)) 0 0; }
+  #file-overlay .file-overlay-header { margin: 0; padding: 0 6px 2px 12px; border-bottom: 1px solid var(--border); }
+  #file-overlay .file-overlay-body { border: none; border-radius: 0; padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  #file-overlay .file-overlay-body.md-content { padding-left: 16px; padding-right: 18px; }
+  #file-overlay .file-view-tab.active { display: none; }
+  #file-overlay .file-view-tabs .file-view-tab { min-height: 40px; padding: 6px 10px; color: var(--text); }
+  #file-overlay .file-subpath.clickable { min-height: 0; padding: 2px 0 4px; }
+}
+
 /* Host pressure dialog: each suggested fix with its command and actions. */
 .host-fix-list li p { margin: 0 0 6px; }
 .host-fix-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

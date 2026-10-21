@@ -26371,6 +26371,7 @@ function _attachImageZoom(wrap, img) {
     }
   }, { passive: false });
   wrap.addEventListener('touchend', e => { if (e.touches.length < 2) { lastDist = 0; lastMid = null; } });
+  return { zoomAt, reset };
 }
 
 // Mobile file-preview header: collapse all actions into a ⋮ dropdown so the title
@@ -40264,21 +40265,154 @@ async function _mermaidHydrate(root) {
     fig.className = 'md-mermaid';
     fig.setAttribute('data-mermaid-done', '1');
     fig.innerHTML = svg;   // Mermaid's own output, rendered with securityLevel strict
-    fig.title = 'Mermaid diagram';
+    fig.title = 'Mermaid diagram: tap to zoom';
+    fig.setAttribute('role', 'button');
+    fig.setAttribute('tabindex', '0');
+    fig.addEventListener('click', () => _mdDiagramOpen(fig));
+    fig.addEventListener('keydown', e => { if (e.key === 'Enter') _mdDiagramOpen(fig); });
     pre.replaceWith(fig);
   }
 }
-let _mermaidPending = false;
-new MutationObserver(records => {
-  if (_mermaidPending) return;
-  for (const r of records) for (const n of r.addedNodes) {
-    if (n.nodeType === 1 && (n.matches?.('code.language-mermaid') || n.querySelector?.('code.language-mermaid'))) {
-      _mermaidPending = true;
-      requestAnimationFrame(() => { _mermaidPending = false; _mermaidHydrate(document.body); });
-      return;
+// Full-screen diagram viewer. A wide Mermaid graph fitted to a phone column
+// draws its labels a few pixels tall (engine.md's funnel: ~2,170px natural,
+// 2.5px labels at 360px). Tapping opens it on its own screen at a readable
+// scale; pinch or double-tap zooms out to the whole graph, drag pans.
+function _mdDiagramOpen(fig) {
+  const src = fig.querySelector('svg');
+  if (!src) return;
+  _mdDiagramClose();
+  const ov = document.createElement('div');
+  ov.id = 'md-diagram-viewer';
+  ov.className = 'md-dv';
+  ov.setAttribute('role', 'dialog');
+  ov.setAttribute('aria-label', 'Diagram');
+  ov.innerHTML = '<div class="md-dv-bar"><span class="md-dv-hint">Pinch or double-tap to zoom, drag to pan</span>'
+    + '<button class="btn md-dv-close" aria-label="Close diagram">&#x2715;</button></div><div class="md-dv-wrap"><div class="md-dv-img"></div></div>';
+  // The clone keeps Mermaid's id: its <style> and arrow markers are scoped to it.
+  const svg = src.cloneNode(true);
+  const holder = ov.querySelector('.md-dv-img');
+  holder.append(svg);
+  ov.querySelector('.md-dv-close').addEventListener('click', _mdDiagramClose);
+  document.body.append(ov);
+  document.addEventListener('keydown', _mdDiagramKey);
+  const wrap = ov.querySelector('.md-dv-wrap');
+  const r = wrap.getBoundingClientRect();
+  const vb = svg.viewBox && svg.viewBox.baseVal;
+  const natW = parseFloat(src.style.maxWidth) || (vb && vb.width) || src.getBoundingClientRect().width;
+  const natH = vb && vb.width ? natW * vb.height / vb.width : src.getBoundingClientRect().height;
+  // Fit the whole graph on screen; that is zoom 1, the overview.
+  const fit = Math.min(r.width / natW, r.height / natH, 1);
+  svg.style.maxWidth = 'none';
+  svg.setAttribute('width', Math.round(natW * fit));
+  svg.setAttribute('height', Math.round(natH * fit));
+  const z = _attachImageZoom(wrap, holder);
+  // Open at 60% of natural size so labels read (~10-12px text),
+  // focused on the top of the graph where a flowchart starts.
+  const start = Math.min(8, 0.6 / fit);
+  if (z && start > 1.05) {
+    const top = holder.getBoundingClientRect().top;
+    z.zoomAt(start, r.left + r.width / 2, top);
+  }
+}
+function _mdDiagramKey(e) { if (e.key === 'Escape') { e.stopPropagation(); _mdDiagramClose(); } }
+function _mdDiagramClose() {
+  document.getElementById('md-diagram-viewer')?.remove();
+  document.removeEventListener('keydown', _mdDiagramKey);
+}
+
+// A markdown table's prose columns get a reading width so a phone scrolls the
+// table sideways rather than wrapping each cell to a word per line. Short
+// columns (#, stage names) keep their natural size.
+function _mdFitTables(root) {
+  for (const t of (root.querySelectorAll ? root.querySelectorAll('.md-content table:not([data-fit])') : [])) {
+    t.setAttribute('data-fit', '1');
+    const rows = [...t.rows];
+    const n = rows.reduce((m, r) => Math.max(m, r.cells.length), 0);
+    for (let c = 0; c < n; c++) {
+      let longest = 0;
+      for (const r of rows) if (r.cells[c]) longest = Math.max(longest, r.cells[c].textContent.trim().length);
+      const em = longest > 80 ? 15 : longest > 30 ? 10 : longest > 16 ? 7 : 0;
+      if (em) for (const r of rows) if (r.cells[c]) r.cells[c].style.minWidth = em + 'em';
     }
   }
+}
+let _mermaidPending = false, _mdTablePending = false;
+new MutationObserver(records => {
+  for (const r of records) for (const n of r.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    if (!_mermaidPending && (n.matches?.('code.language-mermaid') || n.querySelector?.('code.language-mermaid'))) {
+      _mermaidPending = true;
+      requestAnimationFrame(() => { _mermaidPending = false; _mermaidHydrate(document.body); });
+    }
+    if (!_mdTablePending && (n.matches?.('table') || n.querySelector?.('table'))) {
+      _mdTablePending = true;
+      requestAnimationFrame(() => { _mdTablePending = false; _mdFitTables(document.body); });
+    }
+    if (_mermaidPending && _mdTablePending) return;
+  }
 }).observe(document.documentElement, { childList: true, subtree: true });
+
+// Reading progress for the file viewer. iOS draws no scrollbar on a scrolling
+// div, so a long note gave no sense of where you were (Ethan, 2026-10-20). A
+// thumb sized to the visible fraction tracks the scroll, can be dragged, and a
+// percentage shows while it moves.
+function _fileRailInit() {
+  const ov = document.getElementById('file-overlay'), body = document.getElementById('file-body');
+  if (!ov || !body || ov.querySelector('.file-scroll-rail')) return;
+  const rail = document.createElement('div'); rail.className = 'file-scroll-rail'; rail.setAttribute('aria-hidden', 'true');
+  const thumb = document.createElement('div'); thumb.className = 'file-scroll-thumb';
+  const pct = document.createElement('div'); pct.className = 'file-scroll-pct';
+  rail.append(thumb); ov.append(rail, pct);
+  let raf = 0, hideT = 0, drag = null;
+  const geom = () => {
+    const view = body.clientHeight, max = body.scrollHeight - view;
+    return { view, max, h: Math.max(40, view * view / Math.max(1, body.scrollHeight)) };
+  };
+  const update = () => {
+    raf = 0;
+    const g = geom();
+    const show = g.max > 8 && body.offsetParent !== null;
+    rail.classList.toggle('on', show);
+    if (!show) { pct.classList.remove('on'); return; }
+    const frac = Math.min(1, Math.max(0, body.scrollTop / g.max));
+    rail.style.top = body.offsetTop + 'px';
+    rail.style.height = g.view + 'px';
+    thumb.style.height = g.h + 'px';
+    thumb.style.transform = 'translateY(' + Math.round(frac * (g.view - g.h)) + 'px)';
+    pct.textContent = Math.round(frac * 100) + '%';
+    pct.style.top = (body.offsetTop + g.view - 30) + 'px';
+  };
+  const schedule = () => { if (!raf) raf = requestAnimationFrame(update); };
+  body.addEventListener('scroll', () => {
+    schedule();
+    pct.classList.add('on');
+    clearTimeout(hideT);
+    hideT = setTimeout(() => { if (!drag) pct.classList.remove('on'); }, 1200);
+  }, { passive: true });
+  new ResizeObserver(schedule).observe(body);
+  new MutationObserver(schedule).observe(body, { childList: true, subtree: true });
+  new MutationObserver(schedule).observe(ov, { attributes: true, attributeFilter: ['class'] });
+  thumb.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    drag = { y: e.clientY, top: body.scrollTop };
+    rail.classList.add('drag'); pct.classList.add('on');
+    thumb.setPointerCapture(e.pointerId);
+  });
+  thumb.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const g = geom();
+    body.scrollTop = drag.top + (e.clientY - drag.y) * g.max / Math.max(1, g.view - g.h);
+  });
+  const end = () => {
+    if (!drag) return;
+    drag = null; rail.classList.remove('drag');
+    clearTimeout(hideT); hideT = setTimeout(() => pct.classList.remove('on'), 900);
+  };
+  thumb.addEventListener('pointerup', end);
+  thumb.addEventListener('pointercancel', end);
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _fileRailInit);
+else _fileRailInit();
 
 function _sanitizeHtml(html) {
   if (html == null) return '';
