@@ -18341,10 +18341,18 @@ function _peekUnechoedHtml(output, historyRaw) {
     if (row.type && row.type !== 'user') continue;
     rows.push({ text: canon(row.text), ts: Number(row.ts || row.time || 0), kind: row.kind || '' });
   }
+  // ONLY THIS PROCESS'S MESSAGES (Ethan, 2026-10-21 11:08, "this is buggy
+  // too"): after the 10:54 fleet kill amux-helper was relaunched at 10:55, and
+  // the pane's scrollback still held the dead process's output. Messages the
+  // old process took mid-turn (10:26-10:35) were listed as taken by the new
+  // one. A message sent before this worker's session was (re)created went to
+  // a process that no longer exists, so it is neither anchor nor candidate.
+  const w = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
+  const bornMs = w && Number(w.session_created) > 0 ? Number(w.session_created) * 1000 : 0;
   const now = Date.now(), seen = new Set(), recent = [];
   for (const row of rows.sort((a, b) => a.ts - b.ts)) {
     const key = squash(row.text).slice(0, 40);
-    if (!key || seen.has(key) || now - row.ts > 12 * 3600 * 1000) continue;
+    if (!key || seen.has(key) || now - row.ts > 12 * 3600 * 1000 || row.ts < bornMs) continue;
     seen.add(key);
     // A long paste draws as "[Pasted text ...]", so its absence proves nothing.
     if (row.text.length > 1000 || row.text.split('\n').length > 12) continue;
