@@ -780,6 +780,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_clipBeacon": {
+      "kind": "command._clipBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cloudBillingPortal": {
       "kind": "command._cloudBillingPortal",
       "feedback_required": true,
@@ -3008,6 +3014,12 @@
     },
     "_paintPeekRegions": {
       "kind": "command._paintPeekRegions",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pasteTextInto": {
+      "kind": "command._pasteTextInto",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

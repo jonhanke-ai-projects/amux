@@ -34688,7 +34688,15 @@ function _pasteTextInto(target) {
     target.selectionStart = target.selectionEnd = s + text.length;
     target.dispatchEvent(new Event('input', { bubbles: true }));
     if (typeof autoGrow === 'function') autoGrow(target);
-  }).catch(() => showToast('Paste failed — clipboard blocked?'));  // user action: never fail silently
+  }).catch(() => { showToast('Paste failed — clipboard blocked?'); _clipBeacon('paste', 'clipboard_read_refused'); });  // user action: never fail silently
+}
+// Clipboard failures used to reach only a toast, so a broken paste on one
+// engine was invisible to every sweep (2026-10-21).
+function _clipBeacon(op, verdict) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'clipboard', op, verdict, measured: true, n_considered: 1, ver: typeof APP_VER !== 'undefined' ? APP_VER : '' }) }).catch(() => {});
+  } catch (e) {}
 }
 function _pwaCb(e) {
   if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return false;
@@ -34729,7 +34737,13 @@ function _pwaCb(e) {
       const sel = window.getSelection()?.toString();
       if (sel) {
         e.preventDefault();
-        navigator.clipboard.writeText(sel).then(() => showToast('Copied'), () => showToast('Copy failed'));
+        // The native copy (the 'copy' listener below fills it from the
+        // selection) works without permission on every engine; writeText is
+        // refused in some WebKit contexts.
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch (err) {}
+        if (ok) { showToast('Copied'); return true; }
+        navigator.clipboard.writeText(sel).then(() => showToast('Copied'), () => { showToast('Copy failed'); _clipBeacon('copy', 'clipboard_write_refused'); });
         return true;
       }
     }
@@ -34752,6 +34766,25 @@ function _pwaCb(e) {
 
     // If the target is already focused, let the browser handle Cmd+V natively.
     if (target === document.activeElement) return false;
+    // Move focus to the target and let the NATIVE paste land there. It needs
+    // no clipboard permission. WebKit (the amux desktop app, Safari) refuses
+    // clipboard.readText() from a key handler, so the old path always toasted
+    // "Paste failed" when the terminal output had focus (Ethan, 2026-10-21:
+    // "i can't copy/paste it gets error"). readText stays as the fallback for
+    // a shell that fires no paste event at all.
+    target.focus({ preventScroll: true });
+    if (document.activeElement === target) {
+      let landed = false;
+      const seen = () => { landed = true; };
+      document.addEventListener('paste', seen, { capture: true, once: true });
+      setTimeout(() => {
+        document.removeEventListener('paste', seen, { capture: true });
+        if (landed) return;
+        _clipBeacon('paste', 'native_paste_missing');
+        if (navigator.clipboard?.readText) _pasteTextInto(target);
+      }, 120);
+      return true;
+    }
     if (!navigator.clipboard?.readText) return false;
     e.preventDefault();
     // Try clipboard.read() first for image/file paste support in peek
