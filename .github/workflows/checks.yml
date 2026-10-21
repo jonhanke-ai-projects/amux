@@ -387,6 +387,7 @@ jobs:
           ./scripts/test-mac-cleanup-user-tmp.sh
           ./scripts/test-mac-cleanup-lane-tmp.sh
           ./scripts/test-mac-cleanup-vmcpu.sh
+          ./scripts/test-mac-cleanup-vmhog.sh
       - name: orch-pace projects the proof rate to its checkpoint
         run: |
           ./scripts/test-orch-pace-proof.sh

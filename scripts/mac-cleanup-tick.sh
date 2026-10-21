@@ -310,6 +310,16 @@ VM_STEP_S=${AMUX_CLEANUP_VM_STEP_S:-120}
 # 0 turns the arm off; names in VM_CPU_CAP_EXEMPT (space separated) are skipped.
 VM_CPU_CAP=${AMUX_CLEANUP_VM_CPU_CAP:-4}
 VM_CPU_CAP_EXEMPT=${AMUX_CLEANUP_VM_CPU_CAP_EXEMPT:-}
+# A VM process is the sum of its guest's work, so the single-process hog line
+# does not fit it (Mac hog RCA 20261020-225151). With every container capped,
+# goal-shared read 380-530% while its only busy container sat at its 3-CPU cap:
+# granted work plus 90-230% of virtualization overhead, never under 300%. A VM
+# escalates as a hog only when its guest escapes the caps: a busy container
+# with no cap, or the VM over the busy containers' caps plus VM_HOG_OVERHEAD_PCT.
+# A container is busy at VM_BUSY_PCT or more of one CPU.
+VM_PROC_NAMES=${AMUX_CLEANUP_VM_PROC_NAMES:-com.apple.Virtualization.VirtualMachine qemu-system-aarch64 qemu-system-x86_64}
+VM_HOG_OVERHEAD_PCT=${AMUX_CLEANUP_VM_HOG_OVERHEAD_PCT:-250}
+VM_BUSY_PCT=${AMUX_CLEANUP_VM_BUSY_PCT:-25}
 # Idle colima VMs under pressure (DESKT-70). On 2026-10-01 eight goal-spec lanes
 # had each started a private VM (16-32G apiece); with five running the Mac hit
 # load 116 and memory pressure 2, and the one idle VM stopped by hand freed ~80G
@@ -1037,6 +1047,40 @@ in_list() { # <word> <space-separated list>
   case " $2 " in *" $1 "*) return 0 ;; esac; return 1
 }
 
+# What the running colima VMs' containers may use: "budget=<pct> uncapped=<n>
+# busy=<name>:<cpu%>/<cap>,..." over containers at VM_BUSY_PCT or more. budget
+# is the sum of the busy containers' caps; a busy uncapped container counts in
+# uncapped. "unmeasured" when no VM answered, which never clears a hog.
+vm_cpu_budget() {
+  local p profiles out="" ctx line
+  profiles=$(running_vm_profiles)
+  [ -n "$profiles" ] || { echo "unmeasured: no running colima VM"; return 0; }
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    ctx="colima-$p"
+    line=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" "$VM_DOCKER" --context "$ctx" stats --no-stream --format '{{.Name}} {{.CPUPerc}}' 2>/dev/null) || true
+    [ -n "$line" ] || continue
+    while read -r name cpu; do
+      [ -n "$name" ] || continue
+      out+="$name ${cpu%\%} $("$VM_DOCKER" --context "$ctx" inspect -f '{{.HostConfig.NanoCpus}}' "$name" 2>/dev/null || echo 0)"$'\n'
+    done <<< "$line"
+  done <<< "$profiles"
+  [ -n "$out" ] || { echo "unmeasured: docker stats answered for no VM"; return 0; }
+  printf '%s' "$out" | awk -v busy="$VM_BUSY_PCT" '
+    $2+0 >= busy+0 { cap=$3/1e9; if (cap > 0) budget += cap*100; else unc++;
+      list = list (list ? "," : "") $1 ":" int($2+0.5) "%/" (cap > 0 ? cap : "none") }
+    END { printf "budget=%d uncapped=%d busy=%s\n", budget, unc, (list ? list : "none") }'
+}
+# True when <pcpu> is within <budget line>'s caps plus the overhead allowance.
+vm_within_caps() { # <pcpu> <vm_cpu_budget output>
+  local budget unc
+  budget=$(printf '%s' "$2" | sed -n 's/^budget=\([0-9]*\).*/\1/p')
+  unc=$(printf '%s' "$2" | sed -n 's/.* uncapped=\([0-9]*\).*/\1/p')
+  [ "${unc:-1}" = 0 ] || return 1   # also "unmeasured", which has no uncapped= field
+  awk -v c="$1" -v b="${budget:-0}" -v o="$VM_HOG_OVERHEAD_PCT" 'BEGIN{exit !(c+0 < b+o)}'
+}
+VM_BUDGET=""
+
 check_cpu_hogs() { # <dry:0|1>
   local DRY=${1:-0} prev="$STATE_DIR/cpu-hogs.prev" cur pid ppid puid pcpu et comm name n=0 sus=0 cpu_restart=0 i
   cur=$(mktemp "${TMPDIR:-/tmp}/cpu-hogs.XXXXXX")
@@ -1058,7 +1102,16 @@ check_cpu_hogs() { # <dry:0|1>
     else
       echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% for two ticks, reported, not touched ($(owner_label_for_pid "$pid"))"
       if awk -v c="$pcpu" -v t="$CPU_HOG_ESCALATE_PCT" 'BEGIN{exit !(c+0 >= t+0)}'; then
-        HEALTH_VERDICTS=$(printf '%s\nhog %s pid %s at %s%% CPU on two ticks in a row (over %s%%)\n' "$HEALTH_VERDICTS" "$name" "$pid" "$pcpu" "$CPU_HOG_ESCALATE_PCT")
+        local guest=""
+        if in_list "$name" "$VM_PROC_NAMES"; then
+          [ -n "$VM_BUDGET" ] || VM_BUDGET=$(vm_cpu_budget)
+          guest=" (guest: $VM_BUDGET)"
+          if vm_within_caps "$pcpu" "$VM_BUDGET"; then
+            echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% is its guest's capped work, not escalated: $VM_BUDGET, line = budget + ${VM_HOG_OVERHEAD_PCT}% overhead (verdict=vm_hog_within_caps)"
+            continue
+          fi
+        fi
+        HEALTH_VERDICTS=$(printf '%s\nhog %s pid %s at %s%% CPU on two ticks in a row (over %s%%)%s\n' "$HEALTH_VERDICTS" "$name" "$pid" "$pcpu" "$CPU_HOG_ESCALATE_PCT" "$guest")
       fi
     fi
   done < <($HEALTH_PS_CMD 2>/dev/null)
