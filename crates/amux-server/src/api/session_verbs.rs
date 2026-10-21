@@ -29520,6 +29520,29 @@ pub(crate) fn admin_origin(headers: &HeaderMap, gate: &str) -> Option<String> {
 
 /// Owner-equivalent worker input: a chat (see [`chat_speaks_for_owner`]) or an
 /// admin-group worker. Every gate that exempts the owner's own send reads this.
+/// How the send path treats a message from `origin` to `name`.
+///
+/// Owner input: a person (empty origin), a chat or an admin-group worker, and,
+/// into an ISOLATED worker, a lane the owner paired with it in CC_PEERS on both
+/// sides. The pairing is owner configuration, like admin membership.
+/// 2026-10-20/21: mxp-gs12 and tubescience-parity name each other and both are
+/// isolated; the group gate (`peer_input_refusal`) and the route's isolation
+/// gate (`isolated_peer_refusal`) already let the pair through, but the send
+/// was still classified as automation here and refused 403 at the layer that
+/// types ("amux automation is not delivered into it"), so every message went
+/// through the owner by hand. The sender stays stamped on the text.
+pub(crate) fn send_origin_for(origin: &str, name: &str) -> SendOrigin {
+    if origin.is_empty() || speaks_for_owner(origin) {
+        return SendOrigin::Owner;
+    }
+    if origin != name && session_is_isolated(name) && bilateral_peers(origin, name) {
+        tracing::info!(origin, target = name, verdict = "isolated_send_from_bilateral_peer", measured = true,
+            n_considered = 1, "an isolated worker took a send from a lane both name in CC_PEERS (owner-configured pairing)");
+        return SendOrigin::Owner;
+    }
+    SendOrigin::Automation
+}
+
 pub(crate) fn speaks_for_owner(origin: &str) -> bool {
     if chat_speaks_for_owner(origin) { return true; }
     let admin = is_admin_worker(origin);
@@ -29879,11 +29902,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     // works" — a peer lane addressing it through amux's messaging is amux
     // mediation, which is what "raw LLM pass through" excludes.
     // A chat or an admin-group worker speaks for the owner (speaks_for_owner).
-    let send_origin = if origin.is_empty() || speaks_for_owner(&origin) {
-        SendOrigin::Owner
-    } else {
-        SendOrigin::Automation
-    };
+    let send_origin = send_origin_for(&origin, name);
     // A blocked session is on a permission/approval dialog. Automated sends
     // could accidentally answer it, so peer/automation sends are refused.
     // Owner sends (dashboard, human) pass through so the human can answer the
@@ -38385,6 +38404,36 @@ mod tests {
             assert_eq!(crate::api::needs_input::refuse_worker(&h, "snooze").is_none(), admin, "triage: {who}");
         }
         assert!(admin_origin(&HeaderMap::new(), "test").is_none(), "the owner is not an admin worker");
+    }
+
+    /// Ethan, 2026-10-21: "those two should be peers". A bilateral CC_PEERS pair
+    /// reaches an isolated partner as owner input at the layer that types; a
+    /// one-sided or unpaired lane still does not, and a non-isolated target is
+    /// unaffected.
+    #[tokio::test]
+    async fn a_bilateral_peer_reaches_an_isolated_partner_and_others_do_not() {
+        let (st, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("parity.env"), "CC_TAGS=customers\nCC_ISOLATED=1\nCC_PEERS=\"helper,gs12\"\n").unwrap();
+        std::fs::write(sessions.join("gs12.env"), "CC_TAGS=gs12\nCC_ISOLATED=1\nCC_PEERS=\"helper,parity\"\n").unwrap();
+        std::fs::write(sessions.join("onesided.env"), "CC_TAGS=gs12\nCC_PEERS=parity\n").unwrap();
+        std::fs::write(sessions.join("stranger.env"), "CC_TAGS=gs12\n").unwrap();
+        std::fs::write(sessions.join("open.env"), "CC_TAGS=gs12\nCC_PEERS=gs12\n").unwrap();
+        assert_eq!(send_origin_for("gs12", "parity"), SendOrigin::Owner, "paired, isolated target");
+        assert_eq!(send_origin_for("parity", "gs12"), SendOrigin::Owner, "and the other direction");
+        assert_eq!(send_origin_for("onesided", "parity"), SendOrigin::Automation, "parity does not name onesided");
+        assert_eq!(send_origin_for("stranger", "parity"), SendOrigin::Automation);
+        assert_eq!(send_origin_for("", "parity"), SendOrigin::Owner, "a person");
+        assert_eq!(send_origin_for("gs12", "open"), SendOrigin::Automation, "only an isolated target changes");
+        // The other two gates agree, so the pair is not refused one layer up.
+        assert!(peer_input_refusal("gs12", "parity").is_none());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amux-worker", "gs12".parse().unwrap());
+        assert!(isolated_peer_refusal(&st, "parity", &headers).await.is_none());
+        assert!(isolation_refusal("parity", send_origin_for("gs12", "parity")).is_none());
+        assert!(isolation_refusal("parity", send_origin_for("stranger", "parity")).is_some());
     }
 
     /// Ethan, 2026-10-17: an `admin` group member can do anything a chat can:
