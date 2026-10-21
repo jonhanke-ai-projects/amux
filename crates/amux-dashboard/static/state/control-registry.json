@@ -3006,6 +3006,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pagesWorker": {
+      "kind": "command._pagesWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_paintCachedPeek": {
       "kind": "command._paintCachedPeek",
       "feedback_required": true,

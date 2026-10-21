@@ -97,6 +97,7 @@ pub mod orchestrate;
 pub mod orchestrations;
 pub mod org;
 pub(crate) mod pane_prompts;
+pub mod pages;
 pub mod palette;
 pub mod pinned;
 pub mod planning;
@@ -395,6 +396,7 @@ pub fn router_with_connector_transport(
         .nest("/api/skills", skills::routes())
         .nest("/api/mcp", mcp::routes())
         .nest("/api/sql", sql::routes())
+        .nest("/api/pages", pages::api_routes())
         .nest("/api/slash-commands", skills::slash_routes())
         .nest("/api/map", map::routes())
         // Read-only shared map lists (/s/map/{token}, /api/share/map/{token}).
@@ -678,6 +680,9 @@ pub fn router_with_connector_transport(
             "/api/_clear_sw",
             axum::routing::get(static_files::clear_sw_landing),
         )
+        // Standalone pages (/pages/<name>) check owner access in the handler,
+        // the same check the dashboard shell's bootstrap uses.
+        .merge(pages::view_routes())
         .merge(static_files::routes())
         .merge(protected)
         .with_state(state);
