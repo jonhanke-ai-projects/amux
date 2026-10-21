@@ -152,9 +152,15 @@ printf 'esc_crashes=%s\n' "$(( $(date +%s) - 4 * 3600 ))" > "$CRASH_STATE"
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b2.out"; out=$(cat "$FIX/crash4b2.out")
 check "no constraint: every crash predates the last escalation" no "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler')"
 check "it says so, with a verdict"                    yes   "$(has "$out" 'browser_crashpad_handler crashed 12 times in 24h, the newest .* before the last crashes escalation .*verdict=crash_loop_already_escalated')"
-: > "$CRASH_DIR/browser_crashpad_handler-$(stamp 60).ips"   # a crash after the escalation
+: > "$CRASH_DIR/browser_crashpad_handler-$(stamp 60).ips"   # one crash after the escalation
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b2.out"; out=$(cat "$FIX/crash4b2.out")
+# RCA crashes 20261021-165921: Muse's handler crashed once 8 minutes after the
+# escalation of the 10:54 burst, and that one crash re-escalated all 25.
+check "one crash after the escalation does not re-raise the burst" no "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler')"
+check "it says how many are new, with a verdict"     yes   "$(has "$out" 'crashed 13 times in 24h, 1 since the last crashes escalation .*verdict=crash_loop_already_escalated_new_under_threshold')"
+for i in $(seq 2 10); do : > "$CRASH_DIR/browser_crashpad_handler-$(stamp $((60 + i * 20))).ips"; done   # a new loop of 10 since
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b2.out"
-check "a crash after the escalation is a constraint again" yes "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler crashed 13 times in 24h')"
+check "a new loop of 10 after the escalation is a constraint again" yes "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler crashed 22 times in 24h')"
 rm -f "$CRASH_STATE"
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b2.out"
 check "control: never escalated, the live loop is a constraint" yes "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler')"

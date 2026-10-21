@@ -1307,8 +1307,29 @@ print(k)
 PY
 }
 
+crash_since() { # <dir> <app> <epoch>: the app's crashes dated after <epoch>, dated as crash_counts dates them
+  python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null
+import os, re, sys, time
+d, only, since, n_after = sys.argv[1], sys.argv[2], float(sys.argv[3]), 0
+for n in os.listdir(d):
+    p = os.path.join(d, n)
+    if not os.path.isfile(p) or re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", n) != only:
+        continue
+    t = os.stat(p).st_mtime
+    m = re.search(r"[-_]([0-9]{4}-[0-9]{2}-[0-9]{2})-([0-9]{6})", n)
+    if m:
+        try:
+            t = min(t, time.mktime(time.strptime(m.group(1) + m.group(2), "%Y-%m-%d%H%M%S")))
+        except ValueError:
+            pass
+    if t > since:
+        n_after += 1
+print(n_after)
+PY
+}
+
 check_crash_reports() { # <dry:0|1>
-  local DRY=${1:-0} top name cnt pruned=0 old newest esc episode
+  local DRY=${1:-0} top name cnt pruned=0 old newest esc episode since_esc
   if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
   # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
   top=$(crash_counts "$CRASH_DIR" 1440 | head -3)
@@ -1325,6 +1346,13 @@ check_crash_reports() { # <dry:0|1>
       esc=$(state_get "$CRASH_STATE" esc_crashes 2>/dev/null || true); case "$esc" in ''|*[!0-9]*) esc=0 ;; esac
       if [ "$recent" -gt 0 ] && [ "$esc" -gt 0 ] && [ "$newest" -le "$esc" ]; then
         echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h, the newest $(( ($(date +%s) - newest) / 60 ))m ago, before the last crashes escalation $(( ($(date +%s) - esc) / 60 ))m ago; nothing new to hand over (verdict=crash_loop_already_escalated)"
+      elif [ "$recent" -gt 0 ] && [ "$esc" -gt 0 ] && since_esc=$(crash_since "$CRASH_DIR" "$name" "$esc") \
+           && [ "${since_esc:-0}" -lt "$CRASH_LOOP_N" ]; then
+        # One crash after the escalation must not hand the whole answered burst
+        # over again (Mac crashes RCA 20261021-165921: Muse's crash handler
+        # crashed once at 11:07, 8 minutes after the 10:59 escalation of the
+        # 10:54 pkill burst, and the 25 crashes re-escalated 6h later).
+        echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h, $since_esc since the last crashes escalation $(( ($(date +%s) - esc) / 60 ))m ago (under ${CRASH_LOOP_N}); the rest were already handed over (verdict=crash_loop_already_escalated_new_under_threshold)"
       elif [ "$recent" -gt 0 ] && episode=$(crash_episode "$CRASH_DIR" "$name" "$CRASH_RECENT_MIN") && [ "${episode:-0}" -lt "$CRASH_LOOP_N" ]; then
         # Crashes from before a quiet gap belong to a loop that already ended.
         # Mac crashes RCA 20261020-085229: one Chrome relaunch onto an update
