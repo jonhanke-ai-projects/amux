@@ -36313,7 +36313,7 @@ function switchView(view) {
     ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
-    ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
+    ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
   ];
@@ -54856,7 +54856,13 @@ function _termLayout() {
   if (activeView !== 'terminal') return;
   const view = document.getElementById('terminal-view');
   if (!view) return;
-  const top = view.getBoundingClientRect().top;
+  // The view's offset from the top of the DOCUMENT. Its viewport top shrinks
+  // as the page scrolls, and sizing from that made each resize taller than the
+  // last: the page grew by ~96px a step (Ethan, 2026-10-21, "weird infinite
+  // height thing"). The view was also shown as display:block, so the
+  // container's flex:1 never applied and xterm's fit read back its own
+  // content height; it is a flex column now (the _svViews row above).
+  const top = view.getBoundingClientRect().top + window.scrollY;
   view.style.height = Math.max(240, Math.round(window.innerHeight - top - 12)) + 'px';
   if (_term && _termFit) { try { _termFit.fit(); } catch (e) {} }
 }
