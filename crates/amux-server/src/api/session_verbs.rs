@@ -10782,9 +10782,22 @@ impl ComposerState {
 /// True while SGR 2 is in effect at each character. Per line: tmux's `-e`
 /// output re-emits the attribute context at the start of every line, and the
 /// composer's own placeholder closes with `\x1b[0m` on the same line.
+///
+/// THE CURSOR CELL BELONGS TO WHAT FOLLOWS IT (2026-10-21). Claude Code
+/// v2.1.306 draws its block cursor ON the placeholder's first letter, in
+/// reverse video and not dim: `ESC[7mT ESC[0;2mry "edit <filepath> to..."`.
+/// That one undimmed `T` read the whole suggestion as typed, so every new
+/// Claude worker's first task was held as "existing composer draft retained"
+/// and never delivered (live on a fresh amux Cloud server). A reverse-video
+/// character is the cursor; it counts as dim when the next character is dim,
+/// and as typed otherwise (a cursor inside real input is followed by more of
+/// it).
 fn dim_mask(line: &str) -> (String, String) {
     let (mut plain, mut dim) = (String::new(), String::new());
     let mut is_dim = false;
+    let mut is_inverse = false;
+    // A reverse-video (cursor) character waiting to learn what follows it.
+    let mut cursor: Option<char> = None;
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\u{1b}' {
@@ -10832,7 +10845,20 @@ fn dim_mask(line: &str) -> (String, String) {
                                         is_dim = true;
                                         i += 1;
                                     }
-                                    "0" | "" | "22" => {
+                                    "7" => {
+                                        is_inverse = true;
+                                        i += 1;
+                                    }
+                                    "27" => {
+                                        is_inverse = false;
+                                        i += 1;
+                                    }
+                                    "0" | "" => {
+                                        is_dim = false;
+                                        is_inverse = false;
+                                        i += 1;
+                                    }
+                                    "22" => {
                                         is_dim = false;
                                         i += 1;
                                     }
@@ -10854,11 +10880,19 @@ fn dim_mask(line: &str) -> (String, String) {
             }
             continue;
         }
-        if is_dim {
+        if let Some(cur) = cursor.take() {
+            if is_dim { dim.push(cur) } else { plain.push(cur) }
+        }
+        if is_inverse && !is_dim {
+            cursor = Some(c);
+        } else if is_dim {
             dim.push(c);
         } else {
             plain.push(c);
         }
+    }
+    if let Some(cur) = cursor {
+        plain.push(cur);
     }
     (plain, dim)
 }
@@ -50642,6 +50676,28 @@ mod composer_state_tests {
         let (plain, dim) = dim_mask("\u{1b}[38;2;1;2;3m\u{1b}[2mhint\u{1b}[0m done");
         assert_eq!(dim, "hint");
         assert_eq!(plain.trim(), "done");
+    }
+
+    /// Claude Code v2.1.306 on a fresh amux Cloud server, 2026-10-21: the block
+    /// cursor sits on the placeholder's first letter in reverse video. These
+    /// are the captured bytes (`tmux capture-pane -e`). Reading the `T` as
+    /// typed held every new worker's first task as a composer draft.
+    #[test]
+    fn the_cursor_on_a_placeholder_does_not_make_it_typed() {
+        let live = "\u{1b}[39m\u{276f}\u{a0}\u{1b}[7mT\u{1b}[0;2mry\u{1b}[0m \u{1b}[2m\"edit\u{1b}[0m \u{1b}[2m<filepath>\u{1b}[0m \u{1b}[2mto...\"\u{1b}[0m";
+        let (plain, dim) = dim_mask(live);
+        assert_eq!(plain.replace(['\u{276f}', '\u{a0}'], "").trim(), "", "only the prompt glyph is plain, got {plain:?}");
+        assert!(dim.starts_with("Try"), "the cursor letter joins the hint, got {dim:?}");
+        assert!(matches!(composer_state(live), ComposerState::Placeholder(_)), "{:?}", composer_state(live));
+
+        // A cursor inside real input is still real input.
+        let typed = "\u{1b}[39m\u{276f}\u{a0}hel\u{1b}[7ml\u{1b}[27mo world";
+        let (plain, _) = dim_mask(typed);
+        assert!(plain.contains("hello world"), "got {plain:?}");
+        assert!(matches!(composer_state(typed), ComposerState::Typed(_)), "{:?}", composer_state(typed));
+        // And a cursor at the end of a typed word (nothing after it) stays typed.
+        let (plain, _) = dim_mask("\u{1b}[39m\u{276f}\u{a0}go\u{1b}[7m \u{1b}[0m");
+        assert!(plain.contains("go"), "got {plain:?}");
     }
 
     #[test]
