@@ -11690,6 +11690,9 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
         ("target is paused", "resume the worker first (amux resume); the owner's own send still works"),
         ("worker is paused", "resume the worker first (amux resume)"),
         ("session is paused", "resume the worker first (amux resume)"),
+        // The owner stopped this worker; automated starters hold until an
+        // explicit start (9370acf06, owner_stop_held).
+        ("stopped by its owner", "start it explicitly (amux start); automation will not restart a worker its owner stopped"),
         (
             "worker is held for human artifact review",
             "inspect the retained terminal and artifacts in Projects, then approve or reject the current review",
