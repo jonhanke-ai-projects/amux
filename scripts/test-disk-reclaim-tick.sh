@@ -2,7 +2,7 @@
 # Tests for scripts/disk-reclaim-tick.sh against a fake /api/reclaim.
 # The fake records every quarantine POST and purge DELETE, so each cell asserts
 # what the tick ASKED the server to move, which is the only thing it decides.
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.."
 TICK=scripts/disk-reclaim-tick.sh
 T=$(mktemp -d "${TMPDIR:-/tmp}/test-reclaim.XXXXXX")
@@ -109,7 +109,7 @@ run() { : > "$T/posts.log"; : > "$T/deletes.log"; rm -f -- "$T/status.json"
   HOME="$H" RECLAIM_API=$API RECLAIM_ROOTS="$T/dev" RECLAIM_TOOLS=0 RECLAIM_LOG="$T/tick.log" \
     RECLAIM_STATUS_FILE="$T/status.json" RECLAIM_SCOPE_FILE="${SCOPE:-$T/no-scope}" \
     RECLAIM_MDLS="$T/mdls" RECLAIM_LSOF="$T/lsof" \
-    bash "$TICK" "$@" > "$T/out.txt" 2>&1; echo $? > "$T/rc"; }
+    bash "$TICK" "$@" > "$T/out.txt" 2>&1 && echo 0 > "$T/rc" || echo $? > "$T/rc"; }
 stale_posted() { grep '^disk-reclaim-stale' "$T/posts.log" | grep -c -F "$1"; }
 status() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c={x["key"]:x for x in d["classes"]}; print(eval(sys.argv[2]))' "$T/status.json" "$1" 2>/dev/null; }
 posted() { grep -c -F "\"$1\"" "$T/posts.log"; }
@@ -169,7 +169,7 @@ mkscan false; run
 [ ! -s "$T/posts.log" ] && grep -q 'verdict=reclaim_tick_unmeasured' "$T/out.txt" && ok "unmeasured ownership moves nothing and says so" || bad "unmeasured ownership"
 
 # ── no rm on a candidate, ever ──
-grep -nE '(^|[^a-z_])rm ' "$TICK" | grep -v -- '"${WORK:?}"' | grep -v '^[0-9]*:#' > "$T/rm.txt"
+grep -nE '(^|[^a-z_])rm ' "$TICK" | grep -v -- '"${WORK:?}"' | grep -v '^[0-9]*:#' > "$T/rm.txt" || true
 [ ! -s "$T/rm.txt" ] && ok "the tick has no rm except its own scratch dir" || { bad "rm found"; cat "$T/rm.txt"; }
 
 echo "disk-reclaim-tick: $pass passed, $fail failed"
