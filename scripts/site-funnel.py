@@ -9,7 +9,7 @@ see which pages and channels convert and which do not.
 
 Events it reads (emitted by site/site.js and site/start/):
   $pageview                         visitors, landing page, referrer
-  cta_click {goal, spot, href}      goal = github | cloud | pricing | walkthrough | ios
+  cta_click {goal, spot, href}      goal = github | cloud | pricing | walkthrough | ios | concierge
   install_copy                      copied the install command
   signup_form_start, signup_submit, checkout_redirect, signup_paid, server_ready
 
@@ -123,7 +123,8 @@ select person_id,
   countIf(event = 'signup_paid') > 0 as paid,
   countIf(event = 'server_ready') > 0 as ready,
   countIf(event = 'install_copy') > 0 as install_copy,
-  countIf(event = '$pageview' and properties.$pathname like '/walkthrough%') > 0 as walkthrough
+  countIf(event = '$pageview' and properties.$pathname like '/walkthrough%') > 0 as walkthrough,
+  countIf(event = 'cta_click' and properties.goal = 'concierge') > 0 as concierge
 from events
 where timestamp >= toDateTime('{start:%Y-%m-%d %H:%M:%S}') and timestamp < toDateTime('{end:%Y-%m-%d %H:%M:%S}')
   and {LIVE}
@@ -131,7 +132,7 @@ group by person_id
 having pv > 0
 limit 100000"""
     cols = ["person", "landing", "ref", "utm", "device", "pv", "github", "cloud_click", "start_view",
-            "form_start", "submit", "checkout", "paid", "ready", "install_copy", "walkthrough"]
+            "form_start", "submit", "checkout", "paid", "ready", "install_copy", "walkthrough", "concierge"]
     rows = [dict(zip(cols, r)) for r in hogql(key, sql)]
     for r in rows:
         r["source"] = source_of(r["ref"], r["utm"])
@@ -199,6 +200,7 @@ STEPS = [
     ("ready", "Server ready"),
     ("install_copy", "Copied the install command"),
     ("walkthrough", "Viewed the walkthrough"),
+    ("concierge", "Clicked Schedule a meeting (concierge)"),
 ]
 
 
@@ -260,7 +262,7 @@ def render(days, start, end, now, prior, by_source, by_landing, events, spots, s
     top = sorted(by_landing.items(), key=lambda kv: -kv[1]["visitors"])
     for k, s in top[:20]:
         L.append("| %s | %d | %s | %s | %d |" % (k, s["visitors"], pct(s["github"], s["visitors"]), pct(s["start_view"], s["visitors"]), s["paid"]))
-    gaps = [(k, s) for k, s in top if s["visitors"] >= 10 and not (s["github"] or s["start_view"] or s["install_copy"])]
+    gaps = [(k, s) for k, s in top if s["visitors"] >= 10 and not (s["github"] or s["start_view"] or s["install_copy"] or s["concierge"])]
     L.append("")
     L.append("## Gaps: landing pages with 10+ visitors and no goal action")
     L.append("")

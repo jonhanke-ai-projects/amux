@@ -163,6 +163,7 @@
       if (/^\/walkthrough\/?$/.test(u.pathname)) return 'walkthrough';
     }
     if (u.hostname === 'apps.apple.com') return 'ios';
+    if (a.classList.contains('js-schedule') || u.hostname === 'calendly.com') return 'concierge';
     return null;
   }
   function spotOf(el) {

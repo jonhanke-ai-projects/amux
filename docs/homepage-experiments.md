@@ -8,6 +8,7 @@
 | Cloud signup | `cta_click` goal=cloud → `/start/` view → `signup_form_start` → `signup_submit` → `checkout_redirect` → `signup_paid` → `server_ready` | Stripe order (`source` metadata = first touch) |
 | Local install | `install_copy` | |
 | iOS | `cta_click` goal=ios | |
+| Concierge meeting | `cta_click` goal=concierge (Schedule a meeting, from 2026-10-21) | Calendly booking |
 
 **Read it with one command:** `python3 scripts/site-funnel.py --days 7`. It prints both funnels against the prior window, split by traffic source (ai, search, direct, github, social) and landing page, plus the gaps: pages with traffic and no goal action. `--json` gives the same numbers to a script.
 
@@ -868,6 +869,21 @@
 - **Status:** `queued`. Do not start before 2026-10-24, so the 2026-10-17 enrichment gets its own 7-day read first.
 - **Effort:** XS
 
+### EXP-144: Short answer with self-host vs Cloud pricing on /blog/ai-coding-tools-pricing-2026/
+- **Hypothesis:** The pricing blog (31 landing visitors in 7 days, zero goal actions, the top gap on 2026-10-21) converts once its first paragraph gives the price range per tool type and names amux self-host ($0) vs amux Cloud ($39/mo), and its table stops listing amux as $0 everywhere. Target: 3%+ of landing visitors clicking GitHub or Cloud.
+- **Page:** /blog/ai-coding-tools-pricing-2026/
+- **KPI:** `cta_click` goal=github and goal=cloud on that path per landing visitor; the short answer carries `data-cta-loc="exp144-answer"`, and the closing box's clicks read as spot `body`
+- **Status:** `running`, started 2026-10-21, score 2026-10-28. Baseline (2026-10-14 to 10-21): 0 GitHub clicks, 0 /start/ views from 31 landing visitors.
+- **Implementation:** Job 2 enrichment the same day (1302de9b4): short answer, amux Cloud row and bullet, Claude Code subscription fact fixed, three-question FAQ with FAQPage JSON-LD, closing box on the curl installer plus a Cloud link. Still one CTA block.
+- **Effort:** XS
+
+### EXP-145: One-line amux answer near the top of /guides/best-self-hosted-ai-coding-tools-2026/
+- **Hypothesis:** The third-largest landing guide (54 visitors in 7 days, 3.7% GitHub clicks, 0 /start/ views) answers "best self-hosted AI coding tools" without saying early that amux is self-hosted for free and has a hosted option. One sentence in the opening answer, with the repo and /start/ linked, lifts GitHub clicks to 7%+.
+- **Page:** /guides/best-self-hosted-ai-coding-tools-2026/
+- **KPI:** `cta_click` goal=github and goal=cloud on that path per landing visitor, `data-cta-loc="exp145-answer"`
+- **Status:** `queued`. Start after EXP-142 scores (2026-10-27), so two answer-first tests are not read in the same week on overlapping traffic.
+- **Effort:** XS
+
 ## Concluded Experiments
 
 | Experiment | Started | Concluded | Result | Verdict |
@@ -994,6 +1010,7 @@ _Updated by SCHED-149 Job 9 after each run with PostHog data and experiment resu
 
 | Date | Finding | Action taken |
 |------|---------|--------------|
+| 2026-10-21 | Funnel report (7 days to 10-21): 854 visitors (flat), GitHub clicks 10.4% (89 people, -17%), new stars 12 (prior 16), /start/ views 21, Cloud funnel form start 2, submit 1, checkout 1, paid 1, server ready 1 (the same 2026-10-19 signup; direct landing on /start/, Los Angeles, Mac, done in 73 seconds; internal or external is unverified from PostHog alone). Source: ai 25 visitors at 20.0% GitHub and 0 /start/, search 339 at 15.6%, direct 442 at 6.1%, github 15 at 20.0% GitHub and 26.7% /start/. Gaps: pricing blog (31), sandboxing (28, EXP-142 running), concierge (16), legacy-code-modernization (14), background-agents-compared (13). Concierge was a false gap: its goal (Schedule a meeting, Calendly) was not instrumented. | Job 2 pricing blog short answer + Cloud pricing (EXP-144 running). Concierge meetings now send `cta_click` goal=concierge and the report counts them. EXP-145 queued (self-hosted guide). Nothing to score: EXP-140 scores 10-25, EXP-141 10-26, EXP-142 10-27; EXP-143 waits for 10-24. |
 | 2026-10-20 | Funnel report (scripts/site-funnel.py, first full run): 831 visitors (-7%), GitHub clicks 10.6% (88 people, -20%), new stars 12 (prior 18), /start/ views 18, and the first instrumented Cloud signup end to end (form start 2, submit 1, checkout 1, paid 1, server ready 1). Source: search 15.7% GitHub vs direct 5.8%; ai 23 visitors at 17.4%. Gaps: /guides/ai-agent-sandboxing/ (29, no goal action), /guides/background-agents-compared/ (14). cta_click has only 1.5 days of data (24 events), mostly header clicks. Stars 544 (press page 525+, 3.5% off, J8 skipped); lists all under 30 days, J7 skipped. | **EXP-142 started** (sandboxing short answer + Cloud link, data-cta-loc exp142-answer). **EXP-143 queued** (harness-engineering, start after 10-24). **EXP-130 scored inconclusive**: /compare/amux-vs-openai-agents-sdk/ had 0 pageviews in its 7 days. **18 stale running experiments concluded no_effect** (19 entries, EXP-076 is listed twice) (EXP-057, EXP-058, EXP-059, EXP-060, EXP-061, EXP-062, EXP-063, EXP-064, EXP-065, EXP-066, EXP-067, EXP-077, EXP-080, EXP-079, EXP-078, EXP-076, EXP-075, EXP-076, EXP-055): 16 lost their CTA block in the 10-17 KISS pass, EXP-075 and EXP-077 still have one that fired 0 times; only EXP-076 had a readable count (35 clicks). |
 | 2026-10-19 | Stars **544** (press page 525+, 3.6% off, J8 skipped). Lists all under 30 days (oldest 2026-09-26), J7 skipped. PostHog project 378145: 1430 PVs / 814 users over 7 days; top pages /, harness-engineering 97, docs 72, best-ai-agent-multiplexers-2026 68, claude-code-headless 58. AI referrers stay small (gemini 10, perplexity 6, chatgpt 3 in 14 days); Google 964, Bing 179. EXP-130/135 not yet due (10-20, 10-22). EXP-140 interim: 3 theme_set events, dark sessions read 1.72 pages vs light 1.58 (too early). Found /guides/getting-started/ still taught a git-clone install with a python3 prerequisite; fixed to the curl installer. | EXP-141 SHIPPED (install copy button on getting-started and docs, `install_copy`, score 2026-10-26). EXP-140 kept running. No CTA experiment added (one CTA per page). |
 | 2026-10-18 | Stars **541** (press page says 525+, 3% off, J8 skipped). PostHog project 378145 (amux; @current resolves to Mixpeek 329187, so queries must name the project): 5246 events, 1446 pageviews Oct 11-17. EXP-124 scored: 84 PVs, 2 midpage clicks (2.4%). EXP-125/126/128 had 0 PVs and EXP-127 had 1 PV in window (indexing lag). KISS redesign 2026-10-17: EXP-002 sticky iOS bar retired, nav unified to one site-header on every page, theme picker shipped (system/light/dark) emitting PostHog event `theme_set` and super properties `theme_preference` / `theme`. One CTA per page from now on. | EXP-124..128 concluded. 14 running CTA experiments whose markup was removed marked skipped (KISS redesign 2026-10-17: one CTA per page). No non-CTA queued experiment to ship; EXP-140 (theme preference baseline, no code change) started, EXP-141 queued. Rescore EXP-130/135 on 10-20/10-22 (markup still live). |

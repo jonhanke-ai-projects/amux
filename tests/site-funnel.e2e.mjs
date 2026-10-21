@@ -65,6 +65,15 @@ await p.goto(B + '/pricing/', { referer: B + '/' });
 c = await calls(p);
 ok(!c.some(x => x[0] === 'register_once'), 'internal referrer registers no first touch');
 
+// Concierge: "Schedule a meeting" is that page's goal
+p = await page();
+await p.goto(B + '/concierge/');
+await p.evaluate(() => document.addEventListener('click', e => e.preventDefault()));
+await p.click('a.js-schedule >> nth=0');
+cta = await evs(p, 'cta_click');
+ok(cta.length === 1 && cta[0].goal === 'concierge', 'Schedule a meeting -> goal concierge ' + JSON.stringify(cta));
+ok(p.errs.length === 0, 'no JS errors on concierge ' + p.errs.join('|'));
+
 // Signup page
 p = await page();
 await p.goto(B + '/start/?plan=solo');
