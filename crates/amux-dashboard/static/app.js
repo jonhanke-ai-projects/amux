@@ -50550,21 +50550,31 @@ async function loadUsage() {
       // provider with no readable quota (muse) must not borrow ollama's "Unlimited" or
       // the "No active limits" that means "we looked and there were none". It means we
       // could not look.
-      const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account')
+      // A signed-in provider whose usage reply was empty (codex: cause
+      // unexpected_shape) is not an account to connect.
+      const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported'
+          : provider.cause === 'unexpected_shape' ? 'Usage not reported' : 'Connect account')
         : provider.metered === false ? 'Unlimited'
         : provider.usage_unknown ? 'Usage unknown'
         : minimum === null ? 'No active limits' : (provider.stale ? 'Last known · ' : '') + usagePercent(minimum) + '% left';
       const meta = usageProviderMeta(provider);
       // "Connect account" used to be a label with nothing behind it (2026-10-21): the row said
       // to connect and offered no way to. Providers with a CLI sign-in get the button here.
+      // Every provider with a CLI sign-in offers it on its row, in every state
+      // (Ethan, 2026-10-21: "the same cli login flow for each"): "Sign in" while
+      // it has no account, "Switch account" once it reports one. Gemini on an
+      // API key reads "Not reported" and used to get no button at all.
       const login = window.AmuxState && window.AmuxState.cliLogin && window.AmuxState.cliLogin.CLI_LOGINS[provider.id];
-      const connect = !provider.available && !pending && provider.cause !== 'account_quota_not_reported' && login
-        ? '<button type="button" class="btn primary usage-connect" data-provider="' + esc(provider.id) + '" onclick="event.stopPropagation();usageConnect(this.dataset.provider)">Sign in with ' + esc(login.label) + '</button>'
-        : '';
-      const detail = !provider.available
-        ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>' + connect
+      const signedIn = provider.available || provider.cause === 'unexpected_shape';
+      const connect = login && !pending
+        ? '<button type="button" class="btn' + (signedIn ? '' : ' primary') + ' usage-connect" data-provider="' + esc(provider.id) + '" onclick="event.stopPropagation();usageConnect(this.dataset.provider)">'
+          + (signedIn ? 'Switch ' + esc(login.label) + ' account' : 'Sign in with ' + esc(login.label)) + '</button>'
+        : provider.metered === false || login ? ''
+        : '<div class="usage-reset usage-no-login">No dashboard sign-in for ' + esc(provider.label || provider.id) + ' yet: sign in with its own CLI on this server.</div>';
+      const detail = (!provider.available
+        ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>'
         : windows.length ? windows.map(w => usageWindowRow(w, provider.stale === true)).join('')
-        : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>';
+        : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>') + connect;
       return '<details class="usage-provider" data-provider="' + esc(provider.id || '') + '"'
         + ((openProviders.length ? openProviders.includes(provider.id) : constrained && constrained.id === provider.id) ? ' open' : '') + '>'
         + '<summary><span class="usage-provider-name">' + esc(provider.label || provider.id || 'Provider') + '</span>'
