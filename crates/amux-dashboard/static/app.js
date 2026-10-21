@@ -56276,7 +56276,20 @@ async function _pagesOpen(name) {
     onChange: () => _pagesAskCount(),
     onPageError: e => { document.getElementById('pages-status').textContent = 'Page script error: ' + (e && e.message || ''); },
   });
+  _pagesFit();
 }
+// The page frame fills the window below it. The views sit in a block body, so
+// flex:1 never stretched it and an open page got its 320px minimum (MTP page,
+// 2026-10-21). The root zoom on Chromium scales rects, not the height we set.
+function _pagesFit() {
+  const el = document.getElementById('pages-frame');
+  if (!el || !_pagesCur) return;
+  const zoom = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const bottom = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  const h = Math.max(320, (bottom - el.getBoundingClientRect().top) / zoom - 12);
+  el.style.height = Math.round(h) + 'px';
+}
+window.addEventListener('resize', () => { if (_pagesCur) _pagesFit(); });
 function _pagesClose() {
   _pagesLeave();
   _pagesList();

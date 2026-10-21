@@ -10126,7 +10126,7 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pages-title { font-size:0.95rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:40ch; }
 .pages-status { flex:1; min-width:0; }
 .pages-bar-actions { display:flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
-.pages-frame { flex:1; min-height:320px; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:#fff; }
+.pages-frame { flex:none; min-height:320px; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:#fff; }
 .pages-frame iframe { width:100%; height:100%; border:0; display:block; }
 .pages-asks { display:flex; flex-direction:column; gap:8px; max-height:60vh; overflow:auto; }
 .pages-ask { border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:0.84rem; }
