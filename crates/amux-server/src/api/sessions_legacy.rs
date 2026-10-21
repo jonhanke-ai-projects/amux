@@ -5383,7 +5383,7 @@ pub async fn create_session_legacy(
                         "the create-time prompt was not accepted into durable delivery");
                 }
             }
-            let (ok, detail) = crate::api::session_verbs::start_session(&st, &n, "", false).await;
+            let (ok, detail) = crate::api::session_verbs::start_session_as("api-create", &st, &n, "", false).await;
             if ok {
                 tracing::info!(session = %n, measured = true, n_considered = 1,
                     verdict = "created_worker_autostarted", "worker started on create");

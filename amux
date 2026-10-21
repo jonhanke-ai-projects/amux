@@ -2113,15 +2113,29 @@ cmd_stop() {
   local tname
   tname=$(tmux_name "$name")
   if is_running "$name"; then
-    tmux kill-session -t "=$tname"
-    echo "${RED}stopped${RESET} $name"
+    # The server's stop records session.stopped/api-stop, which is what
+    # board-drive, auto-resume and the watchdog read as "stopped on purpose".
+    # A bare tmux kill left no record, so board-drive read the dead lane as
+    # idle with eligible work and restarted it 13s later (SCHED-776, MF-4369).
+    # Kill tmux directly only when the server cannot be reached.
+    if _stop_via_api "$name"; then
+      local waited=0
+      while is_running "$name" && (( waited < 30 )); do
+        sleep 1; waited=$((waited + 1))
+      done
+    else
+      tmux kill-session -t "=$tname"
+      echo "${RED}stopped${RESET} $name (tmux killed: server unreachable, the stop is not recorded and board automation may restart it)" >&2
+    fi
   else
     echo "${DIM}$name is not running${RESET}"
   fi
 
   # Clean up worktree if one exists for this session
   local wt_dir="$CC_HOME/worktrees/$name"
-  if [[ -d "$wt_dir" ]]; then
+  if [[ -d "$wt_dir" ]] && is_running "$name"; then
+    echo "  ${DIM}worktree kept: $name is still stopping ($wt_dir)${RESET}"
+  elif [[ -d "$wt_dir" ]]; then
     # Resolve the repo that owns this worktree from the .git file
     local repo_dir=""
     if [[ -f "$wt_dir/.git" ]]; then

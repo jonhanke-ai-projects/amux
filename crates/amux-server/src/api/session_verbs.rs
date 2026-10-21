@@ -13696,7 +13696,7 @@ async fn send_text_inner_bound(
         if !queued.0 {
             return queued;
         }
-        let (ok, error) = start_session(state, name, "", false).await;
+        let (ok, error) = start_session_as("send-boot", state, name, "", false).await;
         if !ok {
             tracing::warn!(session=name,%error,measured=true,n_considered=1,verdict="boot_delivery_start_failed","start failed; accepted prompt remains queued for explicit recovery");
         }
@@ -15285,7 +15285,7 @@ async fn run_recycle(state: &AppState, n: &str) {
     kill_tmux_session(n).await;
     // skip_conv_id=true AND the meta already cleared: belt and braces,
     // because either one alone still leaves a path that could resume.
-    let (ok, msg) = start_session(state, n, "", true).await;
+    let (ok, msg) = start_session_as("recycle", state, n, "", true).await;
     update_meta(n, &[(RECYCLE_IN_PROGRESS_KEY, Value::Null), ("recycle_resume_attempts", Value::Null)]);
     if !ok {
         tracing::warn!(session = %n, reason = %chars_truncate(&msg, 200),
@@ -15360,7 +15360,7 @@ pub(crate) async fn resume_interrupted_starts(state: &AppState) -> usize {
         resumed += 1;
         let st = state.clone();
         crate::db::interactions::spawn(async move {
-            let (ok, msg) = start_session(&st, &name, "", false).await;
+            let (ok, msg) = start_session_as("boot-resume", &st, &name, "", false).await;
             if !ok {
                 tracing::warn!(session = %name, reason = %chars_truncate(&msg, 200),
                     verdict = "interrupted_start_resume_failed", "resumed start did not launch");
@@ -15754,6 +15754,32 @@ fn gemini_session_flag(meta: &mut Map<String, Value>, fresh: bool) -> String {
     format!("--session-id {}", sh_quote(&id))
 }
 
+tokio::task_local! {
+    /// Who asked for the start in progress: recorded on session.started and
+    /// logged, so an unexpected restart names its cause. A stopped worker came
+    /// back 13s after SCHED-776 stopped it (MF-4369) and nothing said who.
+    pub(crate) static START_CALLER: &'static str;
+}
+
+/// Starters that run without a human asking for this start. They hold for an
+/// owner's explicit stop (session.stopped from api-stop, no start since), so a
+/// worker stopped on purpose stays stopped until somebody starts it.
+const AUTOMATED_START_CALLERS: &[&str] = &["board-dispatch", "boot-resume"];
+
+/// `start_session` with its caller named. Every internal start goes through
+/// here; a bare `start_session` call logs `session_start_unattributed`.
+pub(crate) async fn start_session_as(
+    caller: &'static str,
+    state: &AppState,
+    name: &str,
+    extra_flags: &str,
+    skip_conv_id: bool,
+) -> (bool, String) {
+    START_CALLER
+        .scope(caller, start_session(state, name, extra_flags, skip_conv_id))
+        .await
+}
+
 pub(crate) async fn start_session(
     state: &AppState,
     name: &str,
@@ -15762,6 +15788,19 @@ pub(crate) async fn start_session(
 ) -> (bool, String) {
     if !valid_session_name(name) {
         return (false, "invalid session name".into());
+    }
+    let caller = START_CALLER.try_with(|c| *c).unwrap_or("unattributed");
+    if AUTOMATED_START_CALLERS.contains(&caller)
+        && state
+            .store
+            .read()
+            .ok()
+            .is_some_and(|conn| crate::runtime_jobs::board_drive::owner_stopped(&conn, name))
+    {
+        tracing::info!(session = name, caller, measured = true, n_considered = 1,
+            verdict = "owner_stop_held",
+            "automated start refused: the owner stopped this worker and nobody has started it since");
+        return (false, "stopped by its owner; start it explicitly".into());
     }
     // Serialize with any concurrent start/stop on this session — see
     // session_op_lock for the incident this prevents. Held for the whole
@@ -17493,11 +17532,20 @@ pub(crate) async fn start_session(
         Some(json!({
             "resumed": !meta_str(&meta, "cc_conversation_id").is_empty(),
             "resume_context": context, "resume_token": token, "resume_reason": reason,
+            "caller": caller,
         })),
         Some(started_key.clone()),
         "start_session",
     )
     .await;
+    if caller == "unattributed" {
+        tracing::warn!(session = name, caller, measured = true, n_considered = 1,
+            verdict = "session_start_unattributed",
+            "a worker started through a bare start_session call; use start_session_as to name the caller");
+    } else {
+        tracing::info!(session = name, caller, measured = true, n_considered = 1,
+            verdict = "session_started_by", "worker started");
+    }
     let generation = state.store.read().ok().and_then(|conn| {
         conn.query_row(
             "SELECT id FROM session_events WHERE idem=?1",
@@ -17725,7 +17773,7 @@ pub(crate) async fn start_for_board_dispatch(state: &AppState, name: &str) -> Re
             meta.remove("pending_structured_resume_token");
             save_meta(name, &meta);
         }
-        let (started, detail) = start_session(state, name, "", fresh).await;
+        let (started, detail) = start_session_as("board-dispatch", state, name, "", fresh).await;
         if !started {
             return Err(detail);
         }
@@ -19068,7 +19116,7 @@ async fn reset_session(state: &AppState, name: &str) -> (bool, String) {
     meta.remove("cc_conversation_id");
     meta.remove("cc_session_name");
     save_meta(name, &meta);
-    let (ok, msg) = start_session(state, name, "", false).await;
+    let (ok, msg) = start_session_as("api-reset", state, name, "", false).await;
     if ok {
         (true, "reset — fresh conversation, lane intact".into())
     } else {
@@ -19120,7 +19168,7 @@ async fn wake_session(state: &AppState, name: &str) -> (bool, String) {
             (false, format!("un-archived, but resuming it was refused: {body}"))
         };
     }
-    start_session(state, name, "", false).await
+    start_session_as("api-wake", state, name, "", false).await
 }
 
 /// py:25832 _resize_pane — refuse when a real client is attached.
@@ -28263,7 +28311,7 @@ async fn post_dispatch(
             let st2 = state.clone();
             let n = name.to_string();
             crate::db::interactions::spawn(async move {
-                let (ok, msg) = start_session(&st2, &n, "", false).await;
+                let (ok, msg) = start_session_as("api-start", &st2, &n, "", false).await;
                 if !ok {
                     // A background failure must still be SEEN (ethos rule 4).
                     // The event stream alone was not enough (AMUX-3364): a
@@ -32087,7 +32135,8 @@ async fn clone_post(state: &AppState, name: &str, body: &Value) -> Response {
         }
     };
     let (ok, msg, method_used) = if !session_id.is_empty() {
-        let (ok, msg) = start_session(
+        let (ok, msg) = start_session_as(
+            "api-clone",
             state,
             &new_name,
             &format!("--resume {session_id} --fork-session"),
@@ -32096,7 +32145,7 @@ async fn clone_post(state: &AppState, name: &str, body: &Value) -> Response {
         .await;
         (ok, msg, "resume")
     } else {
-        let (ok, msg) = start_session(state, &new_name, "", false).await;
+        let (ok, msg) = start_session_as("api-clone", state, &new_name, "", false).await;
         (ok, msg, "scrollback")
     };
     if !ok {
@@ -33693,7 +33742,7 @@ async fn restart_for_swap(state: &AppState, name: &str, provider: &str) -> bool 
     }
     let _ = stop_session(state, name).await;
     kill_tmux_session(name).await;
-    let (ok, _msg) = start_session(state, name, "", false).await;
+    let (ok, _msg) = start_session_as("provider-swap", state, name, "", false).await;
     ok
 }
 
@@ -34950,7 +34999,7 @@ async fn config_patch_with_liveness(
             );
         }
         crate::api::sessions_legacy::invalidate_sessions_cache();
-        let restarted = running && start_session(state, name, "", false).await.0;
+        let restarted = running && start_session_as("config-restart", state, name, "", false).await.0;
         emit_event(
             state,
             name,
@@ -35388,7 +35437,7 @@ async fn config_patch_with_liveness(
                 let _ = stop_session(&st2, &n).await;
                 kill_tmux_session(&n).await;
                 sleep_ms(2000).await;
-                let _ = start_session(&st2, &n, "", false).await;
+                let _ = start_session_as("config-restart", &st2, &n, "", false).await;
             });
             return j200(json!({"ok": true, "message": "directory updated — restarting session"}));
         }
@@ -46916,6 +46965,38 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             !live.contains("amux-4724-guard-probe"),
             "the guard returned a refusal but a tmux session exists anyway:\n{live}"
         );
+    }
+
+    /// An owner's `amux stop` holds against automated starters until someone
+    /// starts the worker explicitly (MF-4369: board-drive restarted a worker
+    /// 13s after SCHED-776 stopped it). Paused lane, so an explicit start
+    /// stops at the pause refusal and never reaches a spawn.
+    #[tokio::test]
+    async fn owner_stop_holds_automated_starts_only() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(
+            home.path().join("sessions/probe.env"),
+            "CC_PAUSED=1\nCC_DIR=/tmp\n",
+        )
+        .unwrap();
+        let (state, _dir) = state();
+        emit_event(&state, "probe", "session.stopped", None, None, "api-stop").await;
+        for caller in ["board-dispatch", "boot-resume"] {
+            let (ok, detail) = start_session_as(caller, &state, "probe", "", false).await;
+            assert!(!ok);
+            assert!(detail.contains("stopped by its owner"), "{caller}: {detail}");
+        }
+        let (ok, detail) = start_session_as("api-start", &state, "probe", "", false).await;
+        assert!(!ok);
+        assert!(
+            detail.contains("paused"),
+            "an explicit start must get past the owner-stop hold: {detail}"
+        );
+        emit_event(&state, "probe", "session.started", None, None, "start_session").await;
+        let (_, detail) = start_session_as("board-dispatch", &state, "probe", "", false).await;
+        assert!(detail.contains("paused"), "a start since the stop clears the hold: {detail}");
     }
 
     #[tokio::test]
