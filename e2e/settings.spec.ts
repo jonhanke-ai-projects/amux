@@ -847,7 +847,10 @@ test('settings_usage_meter', async ({ page, request }) => {
     await expect(row, `missing ${provider.id} summary`).toHaveCount(1);
     const summary = row.locator('summary');
     await expect(summary).toContainText(provider.label);
-    if (!provider.available) await expect(summary).toContainText(provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause) ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account');
+    // A signed-in provider whose usage reply was empty (cause unexpected_shape)
+    // reads "Usage not reported", never "Connect account" (MSG-92525).
+    if (!provider.available) await expect(summary).toContainText(provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause) ? 'Checking…'
+      : provider.cause === 'account_quota_not_reported' ? 'Not reported' : provider.cause === 'unexpected_shape' ? 'Usage not reported' : 'Connect account');
     if (provider.metered === false) await expect(summary).toContainText('Unlimited');
 
     if (!(await row.evaluate((element) => element.hasAttribute('open')))) await summary.click();
