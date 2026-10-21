@@ -4512,6 +4512,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_syncLockRequest": {
+      "kind": "command._syncLockRequest",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_syncOneDraft": {
       "kind": "command._syncOneDraft",
       "feedback_required": true,
@@ -4730,6 +4736,12 @@
     },
     "_upqDrain": {
       "kind": "command._upqDrain",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqListBounded": {
+      "kind": "command._upqListBounded",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

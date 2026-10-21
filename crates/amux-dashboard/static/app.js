@@ -3739,6 +3739,17 @@ async function _upqList() {
   return [...current, ...legacy.map(row => ({...row,
     blob:row.bytes ? new Blob([row.bytes], {type:row.mime}) : row.blob}))];
 }
+// The outbox reads pending uploads before delivering any message, so an
+// IndexedDB request that never completes (WebKit, after its storage process
+// restarts) must not hold the messages behind it. Past 5s this pass treats the
+// list as empty and says so; the uploads stay stored for the next pass.
+function _upqListBounded(ms = 5000) {
+  let timer;
+  return Promise.race([
+    _upqList().catch(() => []),
+    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms}); resolve([]); }, ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 function _uploadStorageError(action, error) {
   const reason = error?.name || 'StorageError';
   console.warn('[amux] upload-storage', action, reason);
@@ -3920,15 +3931,57 @@ function _scheduleSyncRetry() {
   _syncBackoffMs = _syncBackoffMs ? Math.min(_syncBackoffMs * 2, _SYNC_MAX_MS) : _SYNC_MIN_MS;
   _syncRetryTimer = setTimeout(() => { runSyncBanner(true); }, _syncBackoffMs);
 }
+// A SYNC PASS THAT NEVER SETTLES FREEZES THE OUTBOX (Ethan, 2026-10-21, the
+// Mac app: a message sat "Saved on this device · waiting to sync" for 9 to 67
+// minutes and went out only when he sent another). Every retry tick returned
+// the same pending _syncFlight, and nothing said which await it was on: the
+// cross-window replay lock, IndexedDB, or a delivery lock. Each pass records
+// its phase; one stuck in a phase past _SYNC_STALL_MS is beaconed with that
+// phase (verdict=outbox_flight_stalled) and abandoned so the next tick starts
+// a fresh pass. That is safe: every delivery re-reads the queue under its own
+// per-operation lock, and the server de-duplicates sends by msg_id.
+const _SYNC_STALL_MS = 45000, _SYNC_LOCK_WAIT_MS = 20000;
+let _syncPhase = 'idle', _syncPhaseAt = 0, _syncFlightToken = null;
+function _syncSetPhase(phase) { _syncPhase = phase; _syncPhaseAt = Date.now(); }
+function _syncLockRequest(run) {
+  if (!navigator.locks) return run();
+  _syncSetPhase('replay_lock_wait');
+  const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_SYNC_LOCK_WAIT_MS) : undefined;
+  return navigator.locks.request('amux-outbox-replay', signal ? {signal} : {}, run).catch(async e => {
+    if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
+    // Another window holds the replay lock and is not finishing (a suspended
+    // WebKit window keeps it). Per-operation locks still serialise each write.
+    let held = -1, pending = -1;
+    try { const q = await navigator.locks.query(); held = (q.held || []).filter(l => l.name === 'amux-outbox-replay').length; pending = (q.pending || []).filter(l => l.name === 'amux-outbox-replay').length; } catch (_) {}
+    _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:_SYNC_LOCK_WAIT_MS, held, pending, hidden:document.hidden ? 1 : 0});
+    return run();
+  });
+}
 function runSyncBanner(quiet = false) {
   if (_syncFlight) return _syncFlight;
   const before = offlineQueue.length, draftsBefore = drafts.length;
   const queuedAtStart = new Set(offlineQueue.map(q => q.id));
-  const run = async () => { await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
-  _syncFlight = (navigator.locks
-    ? navigator.locks.request('amux-outbox-replay', run) : run())
+  const run = async () => { _syncSetPhase('queue_read'); await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
+  const token = {};
+  _syncFlightToken = token;
+  const watch = setInterval(() => {
+    if (_syncFlightToken !== token) return clearInterval(watch);
+    // Uploads report progress as they go; a long upload is not a stall.
+    if (/^upload/.test(_syncPhase) || Date.now() - _syncPhaseAt < _SYNC_STALL_MS) return;
+    clearInterval(watch);
+    _outboxDiagnostic('outbox_flight_stalled', {phase:_syncPhase, stalled_ms:Date.now() - _syncPhaseAt,
+      queued:offlineQueue.length, hidden:document.hidden ? 1 : 0});
+    _syncFlightToken = null; _syncFlight = null; _syncSetPhase('idle');
+    _scheduleSyncRetry();
+  }, 5000);
+  _syncFlight = _syncLockRequest(run)
     .catch(e => { _writeError = String(e.message || e); showToast('Sync failed: ' + _writeError); })
     .finally(() => {
+      clearInterval(watch);
+      // An abandoned pass that wakes later must not clear or reschedule the
+      // pass that replaced it.
+      if (_syncFlightToken !== token) return;
+      _syncFlightToken = null; _syncSetPhase('idle');
       _syncFlight = null;
       _syncPillText = '';   // nothing in flight; the pill falls back to "N pending"
       // Progress resets the backoff: an interval earned during an outage must
@@ -4004,6 +4057,7 @@ async function _runSyncBanner(quiet = false) {
   const draftCount = drafts.length;
   // Keep every operation durable until its individual acknowledgement. A
   // reload, timeout, or second replay must never erase an in-flight write.
+  _syncSetPhase('queue_settle');
   await _mutateQueue(current => { _outboxSettleDecisions(current); });
   const blockedResources = new Set();
   const queue = offlineQueue.filter(q => {
@@ -4017,7 +4071,8 @@ async function _runSyncBanner(quiet = false) {
     return !blockedResources.has(q.url) && !_outboxActive.has(q.id) && !_outboxManualAction(q.url);
   });
   let skipped = 0;
-  const uploads = await _upqList();
+  _syncSetPhase('read_upload_list');
+  const uploads = await _upqListBounded();
   _uploadSyncPending = uploads.length > 0;
   const totalOps = draftCount + queue.length + uploads.length;
   if (!totalOps) return;
@@ -4077,6 +4132,7 @@ async function _runSyncBanner(quiet = false) {
   // prompt identity across failure/reload; never call a failed start "synced".
   for (const item of items.filter(i => i.type === 'draft' && i.replay !== false)) {
     item.status = 'running'; renderBanner();
+    _syncSetPhase('draft');
     try {
       await _syncOneDraft(item.draft);
       removeDraft(item.draft.name); render();
@@ -4101,6 +4157,7 @@ async function _runSyncBanner(quiet = false) {
     if (failedResources.has(q.url)) { item.status = 'waiting'; item.label += ' — waiting for the previous message'; renderBanner(); continue; }
     item.status = 'running';
     renderBanner();
+    _syncSetPhase('deliver');
     await _outboxLock('amux-outbox-delivery:' + q.id, async () => {
     const fresh = _readQueue().find(entry => entry.id === q.id);
     if (!fresh) { offlineQueue = _readQueue(); item.status = 'skipped'; item.label += ' — no longer queued in this tab'; skipped++; return; }
@@ -4221,6 +4278,7 @@ async function _runSyncBanner(quiet = false) {
       item.pct = typeof _uploadPct === 'function' ? _uploadPct(f) : 0;
       if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderBanner(); });
     };
+    _syncSetPhase('upload');
     try { await _syncOneUpload(item.file, progress); item.status = 'done'; item.progress = ''; }
     catch (error) {
       item.status = 'failed'; item.label += ' — ' + String(error.message || error);
@@ -4232,7 +4290,7 @@ async function _runSyncBanner(quiet = false) {
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
     renderBanner();
   }
-  _uploadSyncPending = (await _upqList()).length > 0;
+  _uploadSyncPending = (await _upqListBounded()).length > 0;
   if (uploads.length) {
     _upqRenderBadge();
     if (typeof loadFiles === 'function' && typeof _filesPath !== 'undefined') loadFiles(_filesPath);
