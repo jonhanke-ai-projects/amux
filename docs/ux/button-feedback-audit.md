@@ -778,6 +778,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | + | `openChipPicker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Message history | `openCmdHistoryModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Search amux (Cmd-K) | `openCmdk` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | add-menu-search | `openCmdk` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | div | `openConnect` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | div | `openConnectIterm2` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
 | index.html | div | `openCreate` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -970,7 +971,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | ${esc(_mLabel(m))} | `toggleModelFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${esc(_mLabel(m))} | `toggleModelFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Notifications | `toggleNotifPanel` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js | + | `togglePeekFind` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Find in terminal | `togglePeekFind` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | This worker | `togglePeekIssuesAll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Worker actions | `togglePeekMoreMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1225,6 +1225,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | … | `_mapToggleStatus` | onclick |
 | index.html | Table view | `_mapToggleTable` | onclick |
 | app.js | + | `_mapToggleTagCheck` | onclick |
+| app.js | ov.querySelector('.md-dv-close') | `_mdDiagramClose` | addEventListener |
+| app.js | fig | `_mdDiagramOpen` | addEventListener |
 | index.html | Close search | `_mdSearchClose` | onclick |
 | index.html | Next match | `_mdSearchStep` | onclick |
 | index.html | Previous match | `_mdSearchStep` | onclick |
@@ -1526,7 +1528,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | All shown | `openVisibleWorkerActions` | onclick |
 | app.js | + | `peek-action:chat-toggle` | data-peek-action |
 | app.js | + | `peek-action:file-browser` | data-peek-action |
-| app.js | + | `peek-action:find` | data-peek-action |
 | index.html | PR ↗ | `peekGitOpenPR` | onclick |
 | app.js | button | `removeGridPane` | onclick |
 | app.js | button | `removeServer` | onclick |

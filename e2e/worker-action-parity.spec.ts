@@ -105,7 +105,7 @@ test('worker card and peek share all worker actions, plus both peek-only actions
   expect(state.peek).toEqual(state.card);
   // 64f864c6 made the peek item toggle the split file browser, and the
   // Chat tab's on/off moved into this menu (AMUX-5350).
-  expect(state.peekOnly).toEqual(['Focus mode', 'Find in terminal', 'File browser (split)', 'Turn on chat']);
+  expect(state.peekOnly).toEqual(['Focus mode', 'File browser (split)', 'Turn on chat']);
   expect(state.focusFirst).toBe(true);
   expect(state.overflowY).toBe('auto');
   expect(state.maxHeight).not.toBe('none');

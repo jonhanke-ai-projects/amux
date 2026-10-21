@@ -93,7 +93,7 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
         await page.getByRole('button', { name: 'Filter messages', exact: true }).click();
         await page.locator('[name="peek-filter-source"][value="session"]').check();
         await page.getByRole('dialog', { name: 'Filter worker messages' }).getByRole('button', { name: 'Done', exact: true }).click();
-        await page.locator('#peek-worker-menu-btn').click(); await page.locator('#peek-find-menu-btn').click();
+        await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
         await page.locator('#peek-search').fill(marker);
         await expect(page.locator('#peek-body .peek-highlight').first()).toBeVisible({ timeout: 30_000 });
         await page.waitForFunction(() => getComputedStyle(document.querySelector('#peek-overlay')!).opacity === '1');

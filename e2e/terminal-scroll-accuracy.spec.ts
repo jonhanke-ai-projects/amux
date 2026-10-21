@@ -90,7 +90,7 @@ for (const sample of [
 ]) {
   test(`Find navigates rendered text: ${sample.query}`, async ({ page }) => {
     await render(page, 'before\n'.repeat(45) + sample.text + '\n' + 'between\n'.repeat(50) + sample.text + '\n' + 'after\n'.repeat(50));
-    await page.evaluate(() => (window as any).togglePeekFind(true))  // no worker behind this peek, so no worker menu;
+    await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
     await page.getByRole('searchbox', { name: 'Find in terminal', exact: true }).fill(sample.query);
     await expect(page.locator('#peek-msg-count')).toHaveText('1/2');
     await readable(page, '.peek-highlight.current');
@@ -108,7 +108,7 @@ for (const sample of [
 
 test('Find reveals text inside a wide terminal table', async ({ page }) => {
   await render(page, 'before\n'.repeat(40) + '│ ' + 'wide column '.repeat(100) + 'far-token │\n' + 'after\n'.repeat(40));
-  await page.evaluate(() => (window as any).togglePeekFind(true))  // no worker behind this peek, so no worker menu;
+  await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
   await page.getByRole('searchbox', { name: 'Find in terminal', exact: true }).fill('far-token');
   await expect(page.locator('#peek-msg-count')).toHaveText('1/1');
   await readable(page, '.peek-highlight.current');
@@ -120,7 +120,7 @@ for (const mode of ['message', 'search']) for (const tail of [50, 0]) {
     const raw = 'before\n'.repeat(45) + '› selected original text\nAssistant\n' + 'after\n'.repeat(tail);
     await render(page, raw);
     if (mode === 'search') {
-      await page.evaluate(() => (window as any).togglePeekFind(true))  // no worker behind this peek, so no worker menu;
+      await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
       await page.getByRole('searchbox', { name: 'Find in terminal', exact: true }).fill('selected original text');
     } else await page.getByRole('button', { name: 'Next message', exact: true }).click();
     const selector = mode === 'search' ? '.peek-highlight.current' : '.peek-msg-current';

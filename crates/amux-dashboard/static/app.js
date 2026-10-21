@@ -7609,11 +7609,6 @@ function _renderPeekWorkerActions(s) {
   const html = '<div class="peek-more-item" id="peek-focus-btn" role="menuitem" '
     + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
     + '<span class="mi">&#x25B4;</span>Focus mode</div>'
-    // Find moved here from the header (Ethan, 2026-10-20: hide the magnifying
-    // glass at the top); the header button stays in the DOM, hidden.
-    + '<div class="peek-more-item" id="peek-find-menu-btn" data-peek-action="find" role="menuitem" '
-    + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFind(true)">'
-    + '<span class="mi">&#x1F50D;</span>Find in terminal</div>'
     + '<div class="peek-more-sep"></div>'
     + _renderWorkerActionMenu(s, 'peek')
     + '<div class="peek-more-sep"></div>'
@@ -19569,7 +19564,7 @@ function togglePeekFind(open) {
   wrap.hidden = !open;
   btn.setAttribute('aria-expanded', String(open));
   if (open) document.getElementById('peek-search').focus();
-  else { clearPeekSearch(); (btn.hidden ? document.getElementById('peek-worker-menu-btn') : btn)?.focus(); }
+  else { clearPeekSearch(); btn.focus(); }
 }
 function peekSearchNext() {
   if (!_peekMatches.length) return;

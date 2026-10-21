@@ -144,7 +144,7 @@ test('search navigation shares real matches and reports an empty filter', async 
   await page.evaluate(() => {
     eval('lastPeekHTML = "needle\\n" + "output\\n".repeat(60) + "needle";');
   });
-  await page.locator('#peek-worker-menu-btn').click(); await page.locator('#peek-find-menu-btn').click();
+  await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
   await page.getByRole('searchbox', { name: 'Find in terminal', exact: true }).fill('needle');
   await expect(page.locator('[name="peek-filter-source"][value="all"]')).toBeChecked();
   await expect(page.getByRole('button', {name:'Filter messages', exact:true})).toBeEnabled();
@@ -187,7 +187,7 @@ test('Find stays visible when full history arrives, but respects scrolling away'
     eval('_lastLiveHTML = _peekHtml(' + JSON.stringify(raw) + '); lastPeekHTML = _lastLiveHTML;');
     w.applyPeekSearch(false, false);
   }, live);
-  await page.locator('#peek-worker-menu-btn').click(); await page.locator('#peek-find-menu-btn').click();
+  await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
   await page.locator('#peek-search').fill('needle');
   await expect(page.locator('.peek-highlight.current')).toBeInViewport();
   await page.evaluate(() => (window as any).refreshPeek(false));
@@ -216,7 +216,7 @@ test('search retains the selected message type and filters matches when it chang
     (window as any).applyPeekSearch(false, false);
   });
   await sourceFilter(page, 'human');
-  await page.locator('#peek-worker-menu-btn').click(); await page.locator('#peek-find-menu-btn').click();
+  await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
   await page.locator('#peek-search').fill('needle');
   await expect(page.locator('[name="peek-filter-source"][value="human"]')).toBeChecked();
   await expect(page.getByRole('button', {name:'Filter messages', exact:true})).toBeEnabled();
@@ -636,7 +636,7 @@ test('filter button combines source and content with Find, then resets both with
   await panel.getByRole('button', {name:'Done',exact:true}).click();
   await page.getByRole('button', {name:'Next message',exact:true}).click();
   await expect(page.locator('.peek-msg-current')).toContainText('Review AMUX-4242');
-  await page.locator('#peek-worker-menu-btn').click(); await page.locator('#peek-find-menu-btn').click();
+  await page.getByRole('button', {name:'Find in terminal',exact:true}).click();
   await page.locator('#peek-search').fill('needle');
   await expect(page.locator('.peek-highlight')).toHaveCount(1);
   await expect(page.locator('#peek-msg-count')).toHaveText('1/1');
@@ -786,7 +786,7 @@ test('Gemini peer messages remain searchable with the Workers terminal filter', 
   expect(classified[0].text).toContain('REVIEW_APPROVED');
   expect(classified.some(row => row.text?.includes('Report ready'))).toBe(false);
   await sourceFilter(page, 'session');
-  await page.locator('#peek-worker-menu-btn').click(); await page.locator('#peek-find-menu-btn').click();
+  await page.getByRole('button', {name:'Find in terminal',exact:true}).click();
   await page.locator('#peek-search').fill('REVIEW_APPROVED');
   await expect(page.locator('#peek-body .peek-highlight.current')).toBeInViewport();
   expect(await page.locator('#peek-body .peek-highlight.current').evaluate(el => el.closest('.peek-prompt')?.getAttribute('data-msg-kind'))).toBe('session');
