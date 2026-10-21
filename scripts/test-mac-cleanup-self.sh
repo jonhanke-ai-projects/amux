@@ -64,6 +64,16 @@ check "four in 24h is a constraint"                   yes "$(has "$out" '^self 4
 check "a newest ok means no streak"                   no  "$(has "$out" 'in a row of SCHED-T')"
 check "a row over 24h old is not read"                no  "$(has "$out" 'old')"
 
+echo "3a. failed runs already escalated are not raised again (RCA self 20261021-125823)"
+mkdir -p "$FIX/state"; printf 'esc_self=%s\n' "$((NOW-3000))" > "$FIX/state/state"
+out=$(probe)
+check "every failure predates the last escalation: no constraint" no "$(has "$out" '^self 4 of 6 runs')"
+check "it says so, with a verdict"                    yes "$(has "$out" 'all 4 failed runs of SCHED-T in 24h predate the last self escalation.*verdict=self_failures_already_escalated')"
+printf 'esc_self=%s\n' "$((NOW-5000))" > "$FIX/state/state"
+out=$(probe)
+check "a failure after the escalation raises it again" yes "$(has "$out" '^self 4 of 6 runs of SCHED-T in 24h did not finish ok')"
+rm -f "$FIX/state/state"
+
 echo "4. the run logs: slow, skipped, killed and blocked runs"
 newdb 1 <<<"600|ok|"; newlogs
 addlog slow 900 "mac-cleanup: done elapsed=500s purge=no skipped=none constraints=0"

@@ -1408,7 +1408,7 @@ self_verdict() { HEALTH_VERDICTS=$(printf '%s\nself %s\n' "$HEALTH_VERDICTS" "$1
 # schedule is still enabled. Each failing rule adds a "self ..." constraint, so it
 # escalates like any other class, with its own cooldown.
 check_self_runs() {
-  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 n_coll=0 since fb sum
+  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 n_coll=0 bad_new=0 ran since fb sum
   if ! en=$(sqlite3 -readonly -cmd '.timeout 5000' "$SELF_DB" \
       "SELECT enabled FROM schedules WHERE id='$SELF_SCHED_ID' AND deleted IS NULL" 2>/dev/null); then
     echo "mac-cleanup: self: run history UNMEASURED ($SELF_DB unreadable), judged nothing about this check (verdict=self_unmeasured)"
@@ -1418,11 +1418,13 @@ check_self_runs() {
     self_verdict "$SELF_SCHED_ID is $([ -z "$en" ] && echo missing || echo disabled): only the 15-minute launchd fallback runs this check now"
   fi
   rows=$(sqlite3 -readonly -separator '|' -cmd '.timeout 5000' "$SELF_DB" \
-    "SELECT status, replace(replace(COALESCE(note,''),'|',' '),char(10),' ') FROM schedule_runs WHERE schedule_id='$SELF_SCHED_ID' AND status NOT IN ('running','pending') AND ran_at >= CAST(strftime('%s','now') AS INTEGER) - 86400 ORDER BY ran_at DESC" 2>/dev/null)
-  while IFS='|' read -r st note; do
+    "SELECT ran_at, status, replace(replace(COALESCE(note,''),'|',' '),char(10),' ') FROM schedule_runs WHERE schedule_id='$SELF_SCHED_ID' AND status NOT IN ('running','pending') AND ran_at >= CAST(strftime('%s','now') AS INTEGER) - 86400 ORDER BY ran_at DESC" 2>/dev/null)
+  skip_esc=$(state_get "$STATE_DIR/state" esc_self 2>/dev/null || true); case "$skip_esc" in ''|*[!0-9]*) skip_esc=0 ;; esac
+  while IFS='|' read -r ran st note; do
     [ -n "$st" ] || continue
     if [ "$st" = ok ]; then ok=$((ok+1)); instreak=0; continue; fi
     bad=$((bad+1)); [ "$instreak" = 1 ] && streak=$((streak+1))
+    case "$ran" in ''|*[!0-9]*) bad_new=$((bad_new+1)) ;; *) [ "$ran" -gt "$skip_esc" ] && bad_new=$((bad_new+1)) ;; esac
     case "$note" in
       *"timed out"*) note="killed at the scheduler's time limit" ;;
       *"server restarted"*) note="killed by an amux server restart" ;;
@@ -1431,7 +1433,6 @@ check_self_runs() {
     causes=$(printf '%s\n%s' "$causes" "$note")
   done <<< "$rows"
   sum=$(printf '%s\n' "$causes" | grep . | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s%s x%d", s, $0, c; s="; "}')
-  skip_esc=$(state_get "$STATE_DIR/state" esc_self 2>/dev/null || true); case "$skip_esc" in ''|*[!0-9]*) skip_esc=0 ;; esac
   # A log still being written belongs to this run (or a live one): skip the last 10 minutes.
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -1454,7 +1455,14 @@ check_self_runs() {
   fb=$(awk -v s="$since" '/so launchd is$/ { if ($2" "$3 >= s) n++ } END { print n+0 }' "$SELF_FALLBACK_LOG" 2>/dev/null); fb=${fb:-0}
   echo "mac-cleanup: self: $SELF_SCHED_ID last 24h: $((ok+bad)) finished runs, $ok ok, $bad not ok${sum:+ ($sum)}; newest $streak in a row not ok; $n_logs run log(s), $n_unfin killed before the done line, $n_coll found another tick running and did nothing, slowest ${slowest}s $(( slowest_age / 3600 ))h ago, slowest in the last $(( SELF_SLOW_RECENT_MIN / 60 ))h ${slow_recent}s (warn ${TICK_WARN_S}s, killed at 600s), $n_skip skipped arms for lack of time; the launchd fallback ran it ${fb}x"
   [ "$streak" -ge "$SELF_FAIL_STREAK" ] && self_verdict "$streak runs in a row of $SELF_SCHED_ID did not finish ok ($sum)"
-  [ "$bad" -ge "$SELF_FAIL_24H" ] && self_verdict "$bad of $((ok+bad)) runs of $SELF_SCHED_ID in 24h did not finish ok ($sum)"
+  # Raised again only when a failed run is NEWER than the last self escalation
+  # (Mac self RCA 20261021-125823): the 06:52-09:54Z restart-loop failures, already
+  # answered with 666533ab0 at 06:58Z, re-escalated at 12:58Z with 8 ok runs since.
+  if [ "$bad" -ge "$SELF_FAIL_24H" ] && [ "$bad_new" -gt 0 ]; then
+    self_verdict "$bad of $((ok+bad)) runs of $SELF_SCHED_ID in 24h did not finish ok ($sum)"
+  elif [ "$bad" -ge "$SELF_FAIL_24H" ]; then
+    echo "mac-cleanup: self: all $bad failed runs of $SELF_SCHED_ID in 24h predate the last self escalation, which already answered them; not raised again until a new one (verdict=self_failures_already_escalated)"
+  fi
   [ "$slow_recent" -ge "$TICK_WARN_S" ] && self_verdict "the slowest run of $SELF_SCHED_ID in the last $(( SELF_SLOW_RECENT_MIN / 60 ))h took ${slow_recent}s, over the ${TICK_WARN_S}s warning (the scheduler kills it at 600s)"
   if [ "$slowest" -ge "$TICK_WARN_S" ] && [ "$slow_recent" -lt "$TICK_WARN_S" ]; then
     echo "mac-cleanup: self: the ${slowest}s run is $(( slowest_age / 3600 ))h old, outside the last $(( SELF_SLOW_RECENT_MIN / 60 ))h; recent runs are under the ${TICK_WARN_S}s warning, so it is not a constraint (verdict=self_slow_run_aged_out)"
