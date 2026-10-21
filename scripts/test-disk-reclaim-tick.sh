@@ -13,12 +13,19 @@ bad() { fail=$((fail+1)); echo "FAIL $1"; }
 
 now=$(date +%s); old=$((now - 5*86400)); recent=$((now - 3600))
 mkdir -p "$T/dev/a/target" "$T/dev/b/target" "$T/dev/c/target" "$T/dev/d/node_modules" \
-         "$T/dev/e/target" "$T/dev/f/.venv" "$T/global/node_modules"
+         "$T/dev/e/target" "$T/dev/f/.venv" "$T/global/node_modules" \
+         "$T/dev/g/.venv" "$T/dev/h/sub/target" "$T/dev/i/.venv" "$T/agents"
 oldstamp=$(python3 -c 'import sys,time; print(time.strftime("%Y%m%d%H%M.%S", time.localtime(int(sys.argv[1]))))' "$old")  # BSD and GNU date disagree on -r
 # A dir's own mtime moves when an entry is created in it, so age the file AND
 # its dir: the recheck reads both, which is what makes a fresh target stay.
-for d in "$T"/dev/{a,b,c,e}/target "$T/dev/d/node_modules" "$T/dev/f/.venv" "$T/global/node_modules"; do echo x > "$d/f"; touch -t "$oldstamp" "$d/f" "$d"; done
+for d in "$T"/dev/{a,b,c,e}/target "$T/dev/d/node_modules" "$T/dev/f/.venv" "$T/global/node_modules" \
+         "$T/dev/g/.venv" "$T/dev/h/sub/target" "$T/dev/i/.venv"; do echo x > "$d/f"; touch -t "$oldstamp" "$d/f" "$d"; done
 echo fresh > "$T/dev/e/target/new.o"   # scan says idle, disk says written now
+# In use without being written (momentbench-oss, 2026-10-21): a schedule runs
+# from g's folder, h's project carries a keep marker, a LaunchAgent runs i's venv.
+touch "$T/dev/h/.amux-keep"
+printf '{"schedules":[{"enabled":1,"command":"cd %s && .venv/bin/python job.py"},{"enabled":0,"command":"%s"}]}' "$T/dev/g" "$T/dev/a/target" > "$T/schedules.json"
+printf '<string>%s/bin/python</string>\n' "$T/dev/i/.venv" > "$T/agents/x.plist"
 
 # Stale-data fixtures: a fake $HOME with big files in every shape the class must judge.
 H="$T/home"; ancient=$((now - 200*86400)); young=$((now - 10*86400))
@@ -38,6 +45,8 @@ cat > "$T/lsof" <<'SH'
 case "$3" in *open.mov) echo 4242 ;; esac
 SH
 chmod +x "$T/mdls" "$T/lsof"
+echo x > "$H/Downloads/cron-input.tar"; touch -t "$ancstamp" "$H/Downloads/cron-input.tar"
+printf '0 * * * * cat "%s"\n' "$H/Downloads/cron-input.tar" > "$T/crontab"
 
 finding() { # path category regenerable mtime protected
   printf '{"path":"%s","category":"%s","regenerable":%s,"bytes":1073741824,"mtime":%s,"protected":%s}' "$@"; }
@@ -51,6 +60,9 @@ $(finding "$T/global/node_modules" build true $old null),
 $(finding "$T/dev/d/node_modules" large false $old null),
 $(finding "$T/dev/e/target" build true $old null),
 $(finding "$T/dev/f/.venv" build true $old null),
+$(finding "$T/dev/g/.venv" build true $old null),
+$(finding "$T/dev/h/sub/target" build true $old null),
+$(finding "$T/dev/i/.venv" build true $old null),
 $(finding "$H/Downloads/old installer.dmg" stale false $ancient null),
 $(finding "$H/Downloads/opened.iso" stale false $ancient null),
 $(finding "$H/Downloads/atime.zip" stale false $ancient null),
@@ -59,7 +71,8 @@ $(finding "$H/.ollama/models/blob" stale false $ancient null),
 $(finding "$H/Pictures/Photos Library.photoslibrary/originals/x.heic" stale false $ancient null),
 $(finding "$H/Movies/open.mov" stale false $ancient null),
 $(finding "$H/Music/iTunes/iTunes Media/Music/track.mp3" stale false $ancient null),
-$(finding "$H/Documents/young.mov" large false $young null)]}
+$(finding "$H/Documents/young.mov" large false $young null),
+$(finding "$H/Downloads/cron-input.tar" stale false $ancient null)]}
 EOF
 }
 cat > "$T/batches.json" <<EOF
@@ -89,6 +102,9 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(json.load(open(T + "/scan.json")))
         if u.path == "/api/reclaim/quarantine":
             return self.send(json.load(open(T + "/batches.json")))
+        if u.path == "/api/schedules":
+            try: return self.send(json.load(open(T + "/schedules.json")))
+            except FileNotFoundError: return self.send({"error": "down"}, 503)
         self.send({"error": "nf"}, 404)
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0); body = self.rfile.read(n).decode()
@@ -109,6 +125,7 @@ run() { : > "$T/posts.log"; : > "$T/deletes.log"; rm -f -- "$T/status.json"
   HOME="$H" RECLAIM_API=$API RECLAIM_ROOTS="$T/dev" RECLAIM_TOOLS=0 RECLAIM_LOG="$T/tick.log" \
     RECLAIM_STATUS_FILE="$T/status.json" RECLAIM_SCOPE_FILE="${SCOPE:-$T/no-scope}" \
     RECLAIM_MDLS="$T/mdls" RECLAIM_LSOF="$T/lsof" \
+    RECLAIM_LAUNCH_AGENTS="$T/agents" RECLAIM_CRONTAB="cat $T/crontab" \
     bash "$TICK" "$@" > "$T/out.txt" 2>&1 && echo 0 > "$T/rc" || echo $? > "$T/rc"; }
 stale_posted() { grep '^disk-reclaim-stale' "$T/posts.log" | grep -c -F "$1"; }
 status() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c={x["key"]:x for x in d["classes"]}; print(eval(sys.argv[2]))' "$T/status.json" "$1" 2>/dev/null; }
@@ -132,7 +149,14 @@ grep -q 'OWNOLD?confirm=OWNOLD' "$T/deletes.log" && ok "own expired batch purged
 grep -q 'OWNNEW' "$T/deletes.log" && bad "own recent batch must stay restorable" || ok "own recent batch stays restorable"
 grep -q 'PEEROLD' "$T/deletes.log" && bad "peer batch must never be purged" || ok "peer's batch is never purged"
 grep -q 'OWNGONE' "$T/deletes.log" && bad "already purged batch re-purged" || ok "already-purged batch is skipped"
-grep -q 'done dry=0 picked=2 moved=1 refused=1 stale_picked=1 stale_moved=0 purged=2' "$T/out.txt" && ok "summary line is computed from the run" || { bad "summary line"; tail -2 "$T/out.txt"; }
+grep -q 'done dry=0 picked=2 moved=1 refused=1 stale_picked=1 stale_moved=0 kept_in_use=4 purged=2' "$T/out.txt" && ok "summary line is computed from the run" || { bad "summary line"; tail -2 "$T/out.txt"; }
+
+# ── in use without being written ──
+[ "$(posted "$T/dev/g/.venv")" = 0 ] && grep -q "dev/g/.venv (in use: its folder" "$T/out.txt" && ok "in use: a venv whose folder a schedule cds into stays" || bad "in use: scheduled venv"
+[ "$(posted "$T/dev/h/sub/target")" = 0 ] && grep -q '.amux-keep in' "$T/out.txt" && ok "in use: a .amux-keep in an ancestor keeps it" || bad "in use: keep marker"
+[ "$(posted "$T/dev/i/.venv")" = 0 ] && ok "in use: a venv a LaunchAgent runs stays" || bad "in use: LaunchAgent"
+[ "$(posted "$T/dev/a/target")" = 1 ] && ok "in use: a DISABLED schedule naming a path does not keep it" || bad "in use: disabled schedule"
+[ "$(stale_posted cron-input.tar)" = 0 ] && ok "in use: a crontab line naming a stale file keeps it" || bad "in use: crontab"
 
 # ── stale data ──
 [ "$(stale_posted "$H/Downloads/old installer.dmg")" = 1 ] && ok "stale: a file unopened 200d is quarantined under disk-reclaim-stale" || bad "stale: unopened file quarantined"
@@ -158,6 +182,10 @@ SCOPE="$T/scope.env" RECLAIM_STALE_DAYS=90 run
 [ "$(stale_posted "old installer.dmg")" = 1 ] && ok "scope: an explicit env value beats the scope file" || bad "env beats scope"
 RECLAIM_STALE=0 run
 [ "$(grep -c '^disk-reclaim-stale' "$T/posts.log")" = 0 ] && [ "$(status 'c["stale"]["enabled"]')" = False ] && ok "RECLAIM_STALE=0 turns the class off and says so" || bad "stale off switch"
+
+# ── schedule list unreadable: nothing moves ──
+mv "$T/schedules.json" "$T/schedules.off"; run; mv "$T/schedules.off" "$T/schedules.json"
+[ ! -s "$T/posts.log" ] && grep -q 'verdict=reclaim_tick_refs_unmeasured' "$T/out.txt" && ok "in use: no readable schedule list moves nothing and says so" || bad "in use: refs unmeasured"
 
 # ── dry run ──
 run --dry-run

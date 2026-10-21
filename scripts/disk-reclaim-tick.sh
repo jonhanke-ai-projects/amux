@@ -145,7 +145,7 @@ fi
 
 # ── 2. selection ──────────────────────────────────────────────────────────
 moved=0; refused=0; picked=0
-s_picked=0; s_moved=0; s_refused=0; s_kept_used=0; s_kept_open=0; s_batch=-
+s_picked=0; s_moved=0; s_refused=0; s_kept_used=0; s_kept_open=0; s_batch=-; n_inuse=0
 if [ -z "$scan_id" ]; then
   say "verdict=reclaim_tick_no_scan quarantine step skipped: no usable scan"
 else
@@ -175,6 +175,67 @@ PY
     say "verdict=reclaim_tick_unmeasured scan ownership was not measured; nothing moved"
     : > "$WORK/candidates.tsv"
   fi
+
+  # IN USE WITHOUT BEING WRITTEN. A venv a schedule runs from every 3 hours is
+  # only read, and reading moves no mtime; APFS does not advance atime either
+  # once it is past mtime. So on 2026-10-21 the idle test quarantined
+  # momentbench's scheduled .venv (momentbench-oss). A path stays when an
+  # enabled amux schedule, a LaunchAgent or a crontab line names it or its
+  # parent, or when it or an ancestor holds a .amux-keep marker. No readable
+  # schedule list means no moves at all: a reference we cannot see is exactly
+  # the case this guards.
+  : > "$WORK/refs.txt"
+  if api /api/schedules 60 > "$WORK/schedules.json" && python3 - "$WORK/schedules.json" >> "$WORK/refs.txt" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d = d if isinstance(d, list) else d.get("schedules")
+if not isinstance(d, list): sys.exit(1)
+for s in d:
+    if s.get("enabled"): print(s.get("command") or "")
+EOF
+  then
+    cat "${RECLAIM_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"/*.plist >> "$WORK/refs.txt" 2>/dev/null || true
+    ${RECLAIM_CRONTAB:-crontab -l} >> "$WORK/refs.txt" 2>/dev/null || true
+    refs_ok=1
+  else
+    refs_ok=0
+    say "verdict=reclaim_tick_refs_unmeasured could not read /api/schedules; nothing moves this run"
+  fi
+  cat > "$WORK/inuse.py" <<'EOF'
+import os, re, sys
+# <refs> <home> <tsv>: rewrite the tsv without paths in use, print why each stayed
+refs, home, tsv = open(sys.argv[1], errors="ignore").read(), sys.argv[2].rstrip("/"), sys.argv[3]
+for t in ("${HOME}/", "$HOME/", "~/"):
+    refs = refs.replace(t, home + "/")
+keep, out = [], []
+for line in open(tsv):
+    b, _, p = line.rstrip("\n").partition("\t")
+    if not p: continue
+    d, why = os.path.dirname(p), None
+    if p in refs: why = "named by a schedule, LaunchAgent or crontab"
+    # The folder rule is for directories (a venv beside the script a schedule
+    # runs). A single file is kept only when named: a crontab reading one file
+    # in ~/Downloads says nothing about the rest of ~/Downloads.
+    elif os.path.isdir(p) and d != home and re.search(re.escape(d) + r"""(?:[/\s"';&|)]|$)""", refs):
+        why = f"its folder {d} is named by a schedule, LaunchAgent or crontab"
+    else:
+        a = p
+        while a not in ("/", ""):
+            if os.path.exists(os.path.join(a, ".amux-keep")): why = f".amux-keep in {a}"; break
+            a = os.path.dirname(a)
+    (keep if why else out).append((p, why, line))
+open(tsv, "w").writelines(l for _, _, l in out)
+for p, why, _ in keep: print(f"  keep {p} (in use: {why})")
+print(f"INUSE {len(keep)}")
+EOF
+  in_use() { # <tsv>: drop paths in use; sets n_inuse
+    local r
+    if [ "$refs_ok" != 1 ]; then : > "$1"; return 0; fi
+    r=$(python3 "$WORK/inuse.py" "$WORK/refs.txt" "$HOME" "$1") || { say "verdict=reclaim_tick_refs_unmeasured in-use check failed; nothing moves"; : > "$1"; return 0; }
+    printf '%s\n' "$r" | grep -v '^INUSE ' | while IFS= read -r l; do say "$l"; done
+    n_inuse=$(( ${n_inuse:-0} + $(printf '%s\n' "$r" | sed -n 's/^INUSE //p') ))
+  }
+  in_use "$WORK/candidates.tsv"
   # The scan is up to SCAN_MAX_AGE_H old. Re-check on disk now: any file written
   # inside the idle window keeps the path. A recheck that runs out of time keeps
   # it too, since the expensive direction to be wrong in is the move.
@@ -260,6 +321,7 @@ EOF
       say "verdict=reclaim_stale_unmeasured scan ownership was not measured; no stale data moved"
       : > "$WORK/stale.tsv"
     fi
+    in_use "$WORK/stale.tsv"
     # Last use is the newest of mtime, atime and Spotlight's last-used date,
     # read NOW, since the scan can be hours old. Unreadable means keep.
     cat > "$WORK/lastuse.py" <<'EOF'
@@ -348,7 +410,7 @@ if [ "$TOOLS" = 1 ]; then
 fi
 
 free1=$(free_kb)
-say "done dry=$DRY picked=$picked moved=$moved refused=$refused stale_picked=$s_picked stale_moved=$s_moved purged=$purged free $(gb "$free0") -> $(gb "$free1") (df delta $(gb $((free1 - free0))))"
+say "done dry=$DRY picked=$picked moved=$moved refused=$refused stale_picked=$s_picked stale_moved=$s_moved kept_in_use=$n_inuse purged=$purged free $(gb "$free0") -> $(gb "$free1") (df delta $(gb $((free1 - free0))))"
 
 # The run, for Metrics > Disk Cleanup (served as "scheduled" by GET
 # /api/reclaim/quarantine). Every value is this run's; written to a temp file
@@ -359,6 +421,7 @@ a = dict(x.split("=", 1) for x in sys.argv[2:])
 n = lambda k: int(a[k]) if a.get(k, "").lstrip("-").isdigit() else 0
 st = {"at": int(time.time()), "dry": a["dry"] == "1", "scan_id": a["scan_id"] or None,
       "free_kb_before": n("free0"), "free_kb_after": n("free1"), "purged": n("purged"),
+      "kept_in_use": n("n_inuse"),
       "classes": [
         {"key": "build", "label": "Idle build output and orphaned tmp", "session": a["session"],
          "enabled": True, "retain_s": int(float(a["retain_h"]) * 3600),
@@ -374,7 +437,7 @@ os.makedirs(os.path.dirname(sys.argv[1]) or ".", exist_ok=True)
 with open(tmp, "w") as fh: json.dump(st, fh)
 os.replace(tmp, sys.argv[1])
 EOF
-python3 "$WORK/status.py" "$STATUS" dry="$DRY" scan_id="${scan_id:-}" free0="$free0" free1="$free1" purged="$purged" \
+python3 "$WORK/status.py" "$STATUS" n_inuse="$n_inuse" dry="$DRY" scan_id="${scan_id:-}" free0="$free0" free1="$free1" purged="$purged" \
   session="$SESSION" retain_h="$RETAIN_H" idle_h="$IDLE_H" min_mb="$MIN_MB" roots="$ROOTS" \
   picked="$picked" moved="$moved" refused="$refused" \
   stale="$STALE" stale_session="$STALE_SESSION" stale_days="$STALE_DAYS" stale_retain_d="$STALE_RETAIN_D" \
