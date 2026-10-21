@@ -1,5 +1,122 @@
 [
   {
+    "hash": "2ab7254c3e754e8ad1bd0e89015fdac36e82a0e6",
+    "short": "2ab7254c",
+    "title": "Mermaid diagrams draw wherever markdown shows",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "markdown",
+      "diagrams",
+      "files"
+    ],
+    "description": "A mermaid code block in a note, a card, chat or the file viewer now draws as a diagram, in light or dark to match the theme. Mermaid loads only on pages that have a diagram. If a block does not parse, its source stays on screen with the reason."
+  },
+  {
+    "hash": "ac4f22aca780dd2897e70e0880cf71aa97578071",
+    "short": "ac4f22ac",
+    "title": "Obsidian notes open in full, with working links",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "files",
+      "obsidian",
+      "markdown"
+    ],
+    "description": "The file viewer renders Obsidian notes the way Obsidian does: wikilinks open the note or jump to the heading, and math and callouts render. Large notes no longer stop at 200,000 characters; text files open up to 5 million characters, and a cut says so."
+  },
+  {
+    "hash": "9a5beacbacb992aef45cdabd4d7b7028614b2c36",
+    "short": "9a5beacb",
+    "title": "Subscribe workers to events",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "automation",
+      "api",
+      "workers"
+    ],
+    "description": "Workers can subscribe to event patterns and act on a match: message a worker, create a board card, run a schedule or run a command. Match by event type, source and worker, with a dedupe window so one burst fires once. Manage subscriptions at /api/subscriptions and read the fire history at /api/subscriptions/fires."
+  },
+  {
+    "hash": "d3024f863ddae4596e4e6c8528f8d367fd43eda4",
+    "short": "d3024f86",
+    "title": "Drag the message box taller",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "mobile",
+      "composer"
+    ],
+    "description": "A grip on the message box's top-left corner lets you drag it taller, up to 70% of the screen, for long prompts. The size is kept per device, and a double-click resets it."
+  },
+  {
+    "hash": "6c649f6739557829f3efa04e1716c2a6e6c19db7",
+    "short": "6c649f67",
+    "title": "The Host strained dialog tells you what to do",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "host",
+      "resources"
+    ],
+    "description": "When your machine is under load, the Host dialog now lists the biggest consumers first with one suggested step each: pause a busy worker with one button, or copy a command for a VM or another app. amux only pauses its own workers; for everything else it gives you the command to run."
+  },
+  {
+    "hash": "e98ebbbdb8af78590562d7971d26fa91b9d63a6c",
+    "short": "e98ebbbd",
+    "title": "Notifications open the card they are about",
+    "date": "2026-10-20",
+    "type": "fix",
+    "tags": [
+      "notifications",
+      "board",
+      "mobile"
+    ],
+    "description": "Tapping a needs-you notification on the Mac app, the PWA or in the dashboard now opens the board card it names, in the window you already have open. With work pending, tapping the status pill opens the status details too."
+  },
+  {
+    "hash": "21ead245e3c3038a34ef53fb338483a541a8fc8f",
+    "short": "21ead245",
+    "title": "Markdown reads well on a phone",
+    "date": "2026-10-20",
+    "type": "fix",
+    "tags": [
+      "files",
+      "mobile",
+      "markdown"
+    ],
+    "description": "Tables in the file viewer wrap only between words and scroll sideways inside their frame, so cells no longer break mid-word. iPhone gets a draggable scroll thumb with a percentage, and diagrams open full screen."
+  },
+  {
+    "hash": "be509590b5f08efcda6f0957feb67d6e2c2861af",
+    "short": "be509590",
+    "title": "Workers resume right after an account switch",
+    "date": "2026-10-20",
+    "type": "fix",
+    "tags": [
+      "claude",
+      "usage limits",
+      "self-healing"
+    ],
+    "description": "When a worker hits a usage limit and amux switches to another Claude account, the worker now resumes at once even if a background shell from the old turn is still running. It also reads Claude Code's new Continuing shortly banner."
+  },
+  {
+    "hash": "9370acf06d335b6193c994a06f2f4f74e3b8c0cb",
+    "short": "9370acf0",
+    "title": "amux stop now stays stopped",
+    "date": "2026-10-20",
+    "type": "fix",
+    "tags": [
+      "cli",
+      "workers",
+      "board"
+    ],
+    "description": "Stopping a worker with amux stop is now recorded by the server, so the board's dispatcher no longer restarts it seconds later to pick up queued work. Every start also records who started it."
+  },
+  {
     "hash": "5b9df03a8e0cd01ab2c47515ae2ec1b5f0c7e98e",
     "short": "5b9df03a",
     "title": "A faster dashboard on big fleets",
