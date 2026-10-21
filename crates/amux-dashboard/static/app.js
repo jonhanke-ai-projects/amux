@@ -6307,7 +6307,7 @@ async function _niSend(worker, text, key, action) {
 
 // Record the decision on the card and move it out of needsyou, then READ IT
 // BACK: a 2xx is not proof the board stored what we asked for.
-async function _niCard(card, note, marker, unblock) {
+async function _niCard(card, note, marker, unblock, toStatus = 'todo') {
   const url = API + '/api/board/' + encodeURIComponent(card);
   const g = await fetch(url, { headers: _authHeaders() });
   if (!g.ok) return { ok: false, error: 'could not read ' + card + ': HTTP ' + g.status };
@@ -6317,7 +6317,7 @@ async function _niCard(card, note, marker, unblock) {
   const patch = {};
   if (!already) patch.desc_append = note + ' ' + marker;
   const moving = unblock && before.status === 'needsyou';
-  if (moving) { patch.status = 'todo'; patch.authorized_by = 'owner (needs-input triage)'; }
+  if (moving) { patch.status = toStatus; patch.authorized_by = 'owner (needs-input triage)'; }
   if (!Object.keys(patch).length) return { ok: true, already: true, status: before.status };
   // _skipOutbox: this PATCH is read back and any refusal is shown on the spot,
   // so it must not also linger in the outbox as a blocked change to review.
@@ -6328,7 +6328,7 @@ async function _niCard(card, note, marker, unblock) {
   // only mvs-infra's 20/20 and amux's 78/20 todo queues turned the card away,
   // so the answered cards kept flagging their workers). Retry into backlog:
   // the worker already has the answer.
-  if (!r.ok && moving && d && d.code === 'todo_wip_limit_reached') {
+  if (!r.ok && moving && toStatus === 'todo' && d && d.code === 'todo_wip_limit_reached') {
     patch.status = 'backlog';
     r = await fetch(url, { method: 'PATCH', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(patch), _skipOutbox: true });
     d = await _niJson(r);
@@ -6381,10 +6381,13 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
       let text;
       if (action === 'approve' && _niOwnerMustAct(it)) text = 'Done' + ref + ': ' + q + ' I have provided it. Verify it works, then continue.' + (typed ? ' ' + typed : '');
       else if (action === 'approve' || action === 'approve_always') text = 'Approved' + ref + ': ' + q + '. Proceed.' + (typed ? ' ' + typed : '');
-      else if (action === 'dismiss') text = 'Dismissed' + ref + ': ' + q + ' The owner closed this ask without answering. Stop waiting on it and do not ask again; carry on with other work.';
+      // DISMISS SENDS NOTHING (Ethan, 2026-10-21: "when i press X here it
+      // shuld just dismiss it and it shouldnt send anything to the worker").
+      // It is a note on the card and a permanent server-side snooze below.
+      else if (action === 'dismiss') text = '';
       else if (action === 'decline') text = 'Declined' + ref + ': ' + q + '. Do not proceed' + (typed ? '; ' + typed : '') + '.';
       else text = 'Re' + ref + ': ' + typed;
-      if (it.worker) {
+      if (it.worker && text) {
         const s = await _niSend(it.worker, text, it.key, action);
         // A plain send returns on durable local acceptance (the outbox owns
         // delivery and its failures), so say "queued", never "delivered".
@@ -6394,12 +6397,26 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
       if (it.card) {
         const verb = action === 'approve' && _niOwnerMustAct(it) ? 'Provided'
           : { approve: 'Approved', approve_always: 'Approved (standing rule)', decline: 'Declined', reply: 'Owner reply', dismiss: 'Dismissed without an answer' }[action];
-        const note = '[' + stamp + '] ' + verb + ' by owner in ' + surface + (action === 'reply' || (action === 'decline' && typed) ? ': ' + typed : '.');
+        const note = '[' + stamp + '] ' + verb + ' by owner in ' + surface + (action === 'reply' || (action === 'decline' && typed) ? ': ' + typed
+          : action === 'dismiss' ? ' (nothing sent to the worker).' : '.');
         const marker = '#triage-' + _niHash(it.key + '|' + action + '|' + typed);
-        const c = await _niCard(it.card, note, marker, true);
-        if (c.ok) done.push(c.already ? it.card + ' already recorded' : it.card + ' ' + (c.status === 'todo' ? 'moved to todo' : c.status === 'backlog' ? 'moved to backlog (todo full)' : 'noted'));
+        // A dismissed card leaves needsyou for backlog, not todo: todo is
+        // dispatched, which would hand the ask straight back to the worker.
+        const c = await _niCard(it.card, note, marker, true, action === 'dismiss' ? 'backlog' : 'todo');
+        if (c.ok) done.push(c.already ? it.card + ' already recorded' : it.card + ' ' + (c.status === 'todo' ? 'moved to todo' : c.status === 'backlog' ? (action === 'dismiss' ? 'moved to backlog' : 'moved to backlog (todo full)') : 'noted'));
         else errs.push(c.error);
       }
+    }
+    if (action === 'dismiss' && !errs.length) {
+      // Stays dismissed on every device: a snooze with no end, the same store
+      // the triage queue's Snooze uses. Keyed card:<ID> for a card, so the
+      // worker's other asks still come through.
+      const until = Date.now() / 1000 + 10 * 365 * 86400;
+      const r = await fetch(API + '/api/needs-input/snooze', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: it.key, until }) });
+      const d = await _niJson(r);
+      if (r.ok) { _niServerSnoozed.add(it.key); if (_niQueue) _niQueue = _niQueue.filter(x => x.key !== it.key); done.push('dismissed, nothing sent to ' + (it.worker || 'the worker')); }
+      else errs.push('dismiss: ' + _niErr(d, r));
     }
     if (rule && !errs.length) {
       const r = await fetch(API + '/api/approvals/standing', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
@@ -44634,7 +44651,7 @@ async function _bdAnswerCancel() {
   const card = boardDetailId;
   const it = _bdAnswerItem(card);
   const ok = await showConfirm('Dismiss this ask for good? ' + card + ' stops waiting on you'
-    + (it.worker ? ' and ' + it.worker + ' is told to carry on without an answer.' : '.'), 'Dismiss', true);
+    + (it.worker ? '. Nothing is sent to ' + it.worker + '.' : '.'), 'Dismiss', true);
   if (!ok || boardDetailId !== card) return;
   await _bdAnswer('dismiss');
 }
