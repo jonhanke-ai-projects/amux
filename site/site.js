@@ -188,6 +188,7 @@
   function goalOf(a) {
     var u;
     try { u = new URL(a.getAttribute('href'), location.href); } catch (e) { return null; }
+    if (u.hostname === 'github.com' && /^\/mixpeek\/amux\/releases\/(tag|download)\/desktop-latest/.test(u.pathname)) return 'mac';
     if (u.hostname === 'github.com' && /^\/mixpeek\/amux(\/|$)/.test(u.pathname)) return 'github';
     if (u.hostname === location.hostname) {
       if (/^\/start\/(welcome|billing|delete)\//.test(u.pathname)) return null;
