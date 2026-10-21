@@ -27,6 +27,7 @@ Needs POSTHOG_PERSONAL_API_KEY (read from the environment or ~/.amux/server.env)
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import re
 import subprocess
@@ -102,7 +103,10 @@ def hogql(key, sql):
 
 
 GH_LINK = "(event = '$autocapture' and elements_chain_href like '%github.com/mixpeek/amux%')"
-LIVE = "properties.$host = 'amux.io' and coalesce(toString(properties.test), '') != 'true'"
+# Site events come from amux.io; cloud_paid / cloud_ready / cloud_canceled come from the Cloud
+# function (cloud/start/worker.mjs) and carry server_side instead of a host.
+LIVE = ("(properties.$host = 'amux.io' or toString(properties.server_side) = 'true') "
+        "and coalesce(toString(properties.test), '') != 'true'")
 
 
 def people(key, start, end):
@@ -120,8 +124,9 @@ select person_id,
   countIf(event = 'signup_form_start') > 0 as form_start,
   countIf(event = 'signup_submit') > 0 as submit,
   countIf(event = 'checkout_redirect') > 0 as checkout,
-  countIf(event = 'signup_paid') > 0 as paid,
-  countIf(event = 'server_ready') > 0 as ready,
+  countIf(event in ('signup_paid', 'cloud_paid')) > 0 as paid,
+  countIf(event in ('server_ready', 'cloud_ready')) > 0 as ready,
+  countIf(event = 'cloud_canceled') > 0 as canceled,
   countIf(event = 'install_copy') > 0 as install_copy,
   countIf(event = '$pageview' and properties.$pathname like '/walkthrough%') > 0 as walkthrough,
   countIf(event = 'cta_click' and properties.goal = 'concierge') > 0 as concierge
@@ -132,7 +137,7 @@ group by person_id
 having pv > 0
 limit 100000"""
     cols = ["person", "landing", "ref", "utm", "device", "pv", "github", "cloud_click", "start_view",
-            "form_start", "submit", "checkout", "paid", "ready", "install_copy", "walkthrough", "concierge"]
+            "form_start", "submit", "checkout", "paid", "ready", "canceled", "install_copy", "walkthrough", "concierge"]
     rows = [dict(zip(cols, r)) for r in hogql(key, sql)]
     for r in rows:
         r["source"] = source_of(r["ref"], r["utm"])
@@ -145,7 +150,7 @@ def event_counts(key, start, end):
     sql = f"""
 select event, count() from events
 where timestamp >= toDateTime('{start:%Y-%m-%d %H:%M:%S}') and timestamp < toDateTime('{end:%Y-%m-%d %H:%M:%S}')
-  and {LIVE} and event in ('cta_click', 'install_copy', 'signup_form_start', 'signup_submit', 'checkout_redirect', 'signup_paid', 'server_ready')
+  and {LIVE} and event in ('cta_click', 'install_copy', 'signup_form_start', 'signup_submit', 'checkout_redirect', 'signup_paid', 'server_ready', 'cloud_paid', 'cloud_ready', 'cloud_canceled', 'ab_exposure')
 group by event"""
     return dict(hogql(key, sql))
 
@@ -159,11 +164,10 @@ group by 1, 2, 3 order by 4 desc limit 40"""
     return hogql(key, sql)
 
 
-def new_stars(start, end, prior_start):
-    """New stargazers per window from the GitHub API. None when it cannot be read."""
-    hdr = {"Accept": "application/vnd.github.star+json", "User-Agent": "amux-site-funnel"}
-    # The stargazer list needs auth (anonymous calls 401). Use a token from the
-    # environment, else the gh CLI's.
+def gh_headers(accept="application/vnd.github+json"):
+    """GitHub API headers. The stargazer list and traffic need auth (anonymous calls 401), so use a
+    token from the environment, else the gh CLI's."""
+    hdr = {"Accept": accept, "User-Agent": "amux-site-funnel"}
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if not tok:
         try:
@@ -172,6 +176,129 @@ def new_stars(start, end, prior_start):
             tok = ""
     if tok:
         hdr["Authorization"] = "Bearer " + tok
+    return hdr
+
+
+def gh_get(path, hdr):
+    with urllib.request.urlopen(urllib.request.Request("https://api.github.com" + path, headers=hdr), timeout=30) as r:
+        return json.load(r)
+
+
+def github_traffic():
+    """Open-source reach, from GitHub's own traffic API (last 14 days, needs push access): repo
+    views, clones (the installer clones the repo, so clones are the closest count of installs),
+    referrers and the most-read paths. None of it identifies a person."""
+    hdr = gh_headers()
+    try:
+        views = gh_get("/repos/%s/traffic/views" % REPO, hdr)
+        clones = gh_get("/repos/%s/traffic/clones" % REPO, hdr)
+        refs = gh_get("/repos/%s/traffic/popular/referrers" % REPO, hdr)
+        paths = gh_get("/repos/%s/traffic/popular/paths" % REPO, hdr)
+        repo = gh_get("/repos/" + REPO, hdr)
+    except Exception as e:
+        return {"measured": False, "why": str(e)[:120]}
+    return {"measured": True, "views": views["count"], "view_uniques": views["uniques"],
+            "clones": clones["count"], "clone_uniques": clones["uniques"],
+            "stars": repo["stargazers_count"], "forks": repo["forks_count"],
+            "referrers": [(r["referrer"], r["count"], r["uniques"]) for r in refs[:8]],
+            "paths": [(p["path"], p["count"], p["uniques"]) for p in paths[:5]]}
+
+
+def z_test(x1, n1, x2, n2):
+    """Two-sided p-value for a difference in two proportions."""
+    if not n1 or not n2:
+        return None
+    p = (x1 + x2) / (n1 + n2)
+    se = math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+    if not se:
+        return None
+    return math.erfc(abs(x1 / n1 - x2 / n2) / se / math.sqrt(2))
+
+
+def n_per_arm(base, lift=0.3):
+    """Visitors per variant to detect a relative lift with 80% power at p < 0.05."""
+    p1, p2 = base, base * (1 + lift)
+    if not 0 < p1 < 1 or not 0 < p2 < 1:
+        return None
+    return math.ceil((1.96 + 0.84) ** 2 * (p1 * (1 - p1) + p2 * (1 - p2)) / (p1 - p2) ** 2)
+
+
+AB_METRICS = [("github", "GitHub click"), ("cloud", "Cloud intent (/start/ view or Cloud click)"), ("paid", "Paid"),
+              ("install_copy", "Install copy")]
+
+
+def ab_results(key, start, end, rows):
+    """Per test and variant: exposed visitors and their goal rates, each variant against the first
+    (control). Exposure is the ab_exposure event site.js sends; rows are people() over the window."""
+    sql = f"""
+select person_id, properties.experiment, argMin(properties.variant, timestamp), min(timestamp)
+from events where event = 'ab_exposure' and {LIVE}
+  and timestamp >= toDateTime('{start:%Y-%m-%d %H:%M:%S}') and timestamp < toDateTime('{end:%Y-%m-%d %H:%M:%S}')
+group by 1, 2 limit 100000"""
+    by_person = {r["person"]: r for r in rows}
+    tests = {}
+    for person, test, variant, _ in hogql(key, sql):
+        r = by_person.get(person)
+        if not r:
+            continue
+        arm = tests.setdefault(test, {}).setdefault(variant, {"n": 0, "github": 0, "cloud": 0, "paid": 0, "install_copy": 0})
+        arm["n"] += 1
+        arm["github"] += r["github"]
+        arm["cloud"] += r["start_view"] or r["cloud_click"]
+        arm["paid"] += r["paid"]
+        arm["install_copy"] += r["install_copy"]
+    out = {}
+    for test, arms in tests.items():
+        names = sorted(arms, key=lambda v: (v != "control", v))
+        ctrl = arms[names[0]]
+        out[test] = {"control": names[0], "arms": arms, "vs_control": {}}
+        for v in names[1:]:
+            a = arms[v]
+            out[test]["vs_control"][v] = {
+                m: {"p": z_test(a[m], a["n"], ctrl[m], ctrl["n"]),
+                    "lift": (a[m] / a["n"]) / (ctrl[m] / ctrl["n"]) - 1 if a["n"] and ctrl["n"] and ctrl[m] else None}
+                for m, _ in AB_METRICS}
+        base = (ctrl["github"] / ctrl["n"]) if ctrl["n"] else 0
+        out[test]["needed_per_arm_for_30pct_github_lift"] = n_per_arm(base)
+    return out
+
+
+def render_ab(ab, days):
+    L = ["## A/B tests (randomized, last %d days of exposure)" % days, ""]
+    if not ab:
+        L.append("No ab_exposure events: no test is running (tests are listed in AB_TESTS in site/site.js).")
+        return L + [""]
+    for test, t in sorted(ab.items()):
+        L.append("### %s" % test)
+        L.append("")
+        L.append("| variant | visitors | " + " | ".join(lbl for _, lbl in AB_METRICS) + " |")
+        L.append("|---|---|" + "---|" * len(AB_METRICS))
+        for v, a in sorted(t["arms"].items(), key=lambda kv: (kv[0] != t["control"], kv[0])):
+            cells = []
+            for m, _ in AB_METRICS:
+                cell = "%s (%d)" % (pct(a[m], a["n"]), a[m])
+                cmp = t["vs_control"].get(v, {}).get(m)
+                if cmp and cmp["p"] is not None:
+                    cell += ", %s, p=%.3f" % ("%+.0f%%" % (100 * cmp["lift"]) if cmp["lift"] is not None else "n/a", cmp["p"])
+                cells.append(cell)
+            L.append("| %s%s | %d | %s |" % (v, " (control)" if v == t["control"] else "", a["n"], " | ".join(cells)))
+        need = t["needed_per_arm_for_30pct_github_lift"]
+        smallest = min(a["n"] for a in t["arms"].values())
+        win = [v for v, c in t["vs_control"].items() if any(x["p"] is not None and x["p"] < 0.05 for x in c.values())]
+        L.append("")
+        if win and (need is None or smallest >= need):
+            L.append("Verdict: %s differs from control at p < 0.05 with enough visitors. Decide and end the test." % ", ".join(win))
+        elif need:
+            L.append("Verdict: keep running. Spotting a 30%% change in GitHub clicks needs about %d visitors per variant; the smallest has %d." % (need, smallest))
+        else:
+            L.append("Verdict: keep running. Control has no GitHub clicks yet, so the needed sample cannot be estimated.")
+        L.append("")
+    return L
+
+
+def new_stars(start, end, prior_start):
+    """New stargazers per window from the GitHub API. None when it cannot be read."""
+    hdr = gh_headers("application/vnd.github.star+json")
     try:
         with urllib.request.urlopen(urllib.request.Request("https://api.github.com/repos/" + REPO, headers=hdr), timeout=30) as r:
             total = json.load(r)["stargazers_count"]
@@ -196,8 +323,9 @@ STEPS = [
     ("form_start", "Started the signup form"),
     ("submit", "Submitted the form"),
     ("checkout", "Reached Stripe checkout"),
-    ("paid", "Paid (reached /start/welcome/)"),
+    ("paid", "Paid (Stripe webhook, or reached /start/welcome/)"),
     ("ready", "Server ready"),
+    ("canceled", "Canceled (subscription ended)"),
     ("install_copy", "Copied the install command"),
     ("walkthrough", "Viewed the walkthrough"),
     ("concierge", "Clicked Schedule a meeting (concierge)"),
@@ -228,7 +356,7 @@ def split(rows, key):
     return {k: summarize(v) for k, v in groups.items()}
 
 
-def render(days, start, end, now, prior, by_source, by_landing, events, spots, stars):
+def render(days, start, end, now, prior, by_source, by_landing, events, spots, stars, ab=None, ab_days=28, gh=None):
     L = []
     L.append("# amux.io funnel: %s to %s (%d days, vs the %d before)" % (start.date(), (end - dt.timedelta(seconds=1)).date(), days, days))
     L.append("")
@@ -276,6 +404,19 @@ def render(days, start, end, now, prior, by_source, by_landing, events, spots, s
         L.extend("| %s | %s | %s | %d |" % tuple(r) for r in spots)
     else:
         L.append("No cta_click events in this window.")
+    L.append("")
+    L.extend(render_ab(ab or {}, ab_days))
+    L.append("## Open source reach (GitHub traffic API, last 14 days)")
+    L.append("")
+    if gh and gh.get("measured"):
+        L.append("Repo views %d (%d unique). Clones %d (%d unique); the installer clones the repo, so unique clones are the nearest count of installs, though CI runners and mirrors clone too. Stars %d, forks %d." % (
+            gh["views"], gh["view_uniques"], gh["clones"], gh["clone_uniques"], gh["stars"], gh["forks"]))
+        L.append("")
+        L.append("Referrers to the repo: " + ", ".join("%s %d (%d unique)" % r for r in gh["referrers"]))
+        L.append("")
+        L.append("Most-read repo paths: " + ", ".join("%s %d" % (p, c) for p, c, _ in gh["paths"]))
+    else:
+        L.append("Not measured: %s" % (gh or {}).get("why", "not run"))
     return "\n".join(L)
 
 
@@ -283,6 +424,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--ab-days", type=int, default=28, help="exposure window for the A/B section")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     if a.self_test:
@@ -299,12 +441,15 @@ def main():
     by_source, by_landing = split(rows, "source"), split(rows, "landing")
     events, spots = event_counts(key, start, end), cta_spots(key, start, end)
     stars = new_stars(start, end, prior_start)
+    ab_start = end - dt.timedelta(days=a.ab_days)
+    ab = ab_results(key, ab_start, end, rows if a.ab_days == a.days else people(key, ab_start, end))
+    gh = github_traffic()
     if a.json:
         print(json.dumps({"window": {"start": start.isoformat(), "end": end.isoformat(), "days": a.days},
                           "now": now, "prior": prior, "by_source": by_source, "by_landing": by_landing,
-                          "events": events, "cta_spots": spots, "stars": stars}, indent=1, default=str))
+                          "events": events, "cta_spots": spots, "stars": stars, "ab": ab, "github": gh}, indent=1, default=str))
     else:
-        print(render(a.days, start, end, now, prior, by_source, by_landing, events, spots, stars))
+        print(render(a.days, start, end, now, prior, by_source, by_landing, events, spots, stars, ab, a.ab_days, gh))
     return 0
 
 

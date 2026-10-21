@@ -155,6 +155,10 @@ const $ = id => document.getElementById(id);
 const track = (ev, props, opts) => window.posthog && posthog.capture(ev, { plan: (document.querySelector('input[name=plan]:checked') || {}).value, test: !!(TK || Q.get('api')), ...props }, opts);
 // Where the buyer first came from, for the order's Stripe metadata (40 chars max there).
 const firstTouch = () => { try { return [posthog.get_property('first_source'), posthog.get_property('first_landing')].filter(Boolean).join(':').slice(0, 40) || 'start'; } catch (e) { return 'start'; } };
+// The order carries the PostHog visitor id and A/B variants, so the paid, ready and canceled steps
+// the Cloud function records server-side join this visitor's site events (cloud/start/worker.mjs).
+const visitorId = () => { try { const id = posthog.get_distinct_id(); return typeof id === 'string' ? id : ''; } catch (e) { return ''; } };   // the stub, before PostHog loads, returns a number
+const abVariants = () => { try { return Object.entries(JSON.parse(localStorage.getItem('amux-ab') || '{}')).map(([k, v]) => k + '=' + v).join(','); } catch (e) { return ''; } };
 $('f').addEventListener('focusin', () => track('signup_form_start'), { once: true });
 let slugTimer, slugOk = false;
 $('slug').addEventListener('input', () => {
@@ -191,7 +195,7 @@ $('f').addEventListener('submit', async ev => {
     const pw_hash = await hash(pw);
     $('go').textContent = 'Opening checkout...';
     const r = await fetch(API + '/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json', ...(TK ? { 'x-test-key': TK } : {}) },
-      body: JSON.stringify({ plan, slug, email, pw_hash, source: Q.get('source') || firstTouch() }) });
+      body: JSON.stringify({ plan, slug, email, pw_hash, source: Q.get('source') || firstTouch(), ph: visitorId(), ab: abVariants() }) });
     const d = await r.json();
     if (!r.ok || !d.url) throw new Error(d.error || 'Checkout could not start.');
     track('checkout_redirect', {}, { transport: 'sendBeacon' });

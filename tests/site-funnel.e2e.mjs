@@ -76,6 +76,8 @@ ok(p.errs.length === 0, 'no JS errors on concierge ' + p.errs.join('|'));
 
 // Signup page
 p = await page();
+let checkoutBody = null;
+await p.route('**/api/checkout', r => { checkoutBody = JSON.parse(r.request().postData()); r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"test"}' }); });
 await p.goto(B + '/start/?plan=solo');
 await p.focus('#slug');
 ok((await evs(p, 'signup_form_start')).length === 1, 'focusing the form -> signup_form_start');
@@ -87,7 +89,8 @@ await p.waitForFunction(() => !document.getElementById('go').disabled, null, { t
 const sub = await evs(p, 'signup_submit');
 ok(sub.length === 1 && sub[0].plan === 'solo' && sub[0].test === false, 'submit -> signup_submit plan solo ' + JSON.stringify(sub));
 const er = await evs(p, 'signup_error');
-ok(er.length === 1, 'blocked checkout API -> signup_error ' + JSON.stringify(er));
+ok(er.length === 1, 'failed checkout API -> signup_error ' + JSON.stringify(er));
+ok(checkoutBody && 'ph' in checkoutBody && 'ab' in checkoutBody && checkoutBody.plan === 'solo', 'checkout body carries ph and ab for server-side attribution ' + JSON.stringify(checkoutBody && { ph: checkoutBody.ph, ab: checkoutBody.ab }));
 ok(p.errs.length === 0, 'no JS errors on /start/ ' + p.errs.join('|'));
 
 // Welcome page: paid once per order
@@ -100,6 +103,48 @@ p = await page();
 await p.goto(B + '/start/welcome/?session_id=cs_test_2&tk=x');
 const tp = await evs(p, 'signup_paid');
 ok(tp.length === 1 && tp[0].test === true, 'test checkout is flagged test:true');
+// A/B: a test registered in site.js splits visitors at random, hides the other variant before
+// paint, keeps the visitor in their variant, reports exposure, and rides into the checkout.
+async function abPage(ctx) {
+  const p = ctx ? await ctx.newPage() : await page();
+  if (!ctx) await p.route(/posthog\.com|cloud\.amux\.io/, r => r.abort());
+  await p.route('**/site.js', async r => {
+    const body = (await (await r.fetch()).text()).replace('var AB_TESTS = {', "var AB_TESTS = { exptest: { variants: ['control', 'b'], pages: /^\\/$/ },");
+    r.fulfill({ contentType: 'application/javascript', body });
+  });
+  await p.route(B + '/', async r => {
+    const body = (await (await r.fetch()).text()).replace('<div class="hero" data-cta-loc="hero">',
+      '<div class="hero" data-cta-loc="hero"><span id="ab-c" data-ab="exptest:control">C</span><span id="ab-b" data-ab="exptest:b">B</span>');
+    r.fulfill({ contentType: 'text/html', body });
+  });
+  return p;
+}
+const seen = new Set();
+for (let i = 0; i < 12; i++) {
+  p = await abPage();
+  await p.goto(B + '/');
+  const v = await p.evaluate(() => document.documentElement.getAttribute('data-ab-exptest'));
+  const shown = await p.evaluate(() => ['ab-c', 'ab-b'].filter(id => getComputedStyle(document.getElementById(id)).display !== 'none'));
+  if (i === 0) {
+    ok(shown.length === 1 && shown[0] === (v === 'control' ? 'ab-c' : 'ab-b'), 'only the assigned variant is visible (' + v + ')');
+    const ex = await evs(p, 'ab_exposure');
+    ok(ex.length === 1 && ex[0].experiment === 'exptest' && ex[0].variant === v, 'ab_exposure sent with the variant');
+    const reg = (await calls(p)).find(c => c[0] === 'register' && c[1] && c[1].ab_exptest);
+    ok(reg && reg[1].ab_exptest === v && reg[1]['$feature/exptest'] === v, 'ab_exptest registered on every later event');
+    await p.reload();
+    ok(await p.evaluate(() => document.documentElement.getAttribute('data-ab-exptest')) === v, 'variant sticks across reloads');
+  }
+  seen.add(v);
+  await p.context().close();
+}
+ok(seen.size === 2, 'twelve new visitors land in both variants ' + [...seen].join(','));
+p = await abPage();
+await p.goto(B + '/pricing/');
+ok((await evs(p, 'ab_exposure')).length === 0, 'a page outside the test sends no exposure');
+const stale = await p.evaluate(() => { localStorage.setItem('amux-ab', JSON.stringify({ exptest: 'b', oldtest: 'x' })); return 1; });
+await p.reload();
+ok(await p.evaluate(() => !('oldtest' in JSON.parse(localStorage.getItem('amux-ab')))), 'ended tests are dropped from storage');
+
 await b.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -28,6 +28,36 @@
   var pref = getPref();
   var theme = resolve(pref);
   apply(pref);
+
+  // A/B tests. Each visitor is put at random into one variant of every running
+  // test and stays there (localStorage). Markup marks a variant's elements with
+  // data-ab="<test>:<variant>"; the other variants are hidden before first paint.
+  // CSS can also branch on html[data-ab-<test>="<variant>"]. To start a test, add
+  // it here; to end one, delete it here and keep the winning markup.
+  // `python3 scripts/site-funnel.py --ab` compares goal rates per variant.
+  var AB_TESTS = {
+    // exp146: { variants: ['control', 'b'], pages: /^\/$/ },
+  };
+  var ab = {};
+  try { ab = JSON.parse(localStorage.getItem('amux-ab') || '{}') || {}; } catch (e) {}
+  var abHide = [];
+  Object.keys(AB_TESTS).forEach(function (t) {
+    var vs = AB_TESTS[t].variants;
+    if (vs.indexOf(ab[t]) < 0) {
+      var r = new Uint32Array(1);
+      (window.crypto || window.msCrypto).getRandomValues(r);
+      ab[t] = vs[r[0] % vs.length];
+    }
+    root.setAttribute('data-ab-' + t, ab[t]);
+    vs.forEach(function (v) { if (v !== ab[t]) abHide.push('[data-ab="' + t + ':' + v + '"]'); });
+  });
+  Object.keys(ab).forEach(function (t) { if (!AB_TESTS[t]) delete ab[t]; });
+  try { localStorage.setItem('amux-ab', JSON.stringify(ab)); } catch (e) {}
+  if (abHide.length) {
+    var abStyle = document.createElement('style');
+    abStyle.textContent = abHide.join(',') + '{display:none!important}';
+    document.head.appendChild(abStyle);
+  }
   if (mq) {
     var onOs = function () { if (getPref() === 'system') apply('system'); };
     if (mq.addEventListener) mq.addEventListener('change', onOs); else if (mq.addListener) mq.addListener(onOs);
@@ -148,7 +178,10 @@
   var utm = new URLSearchParams(location.search).get('utm_source') || '';
   var src = sourceOf(ref, utm);
   if (src !== 'internal') {
-    posthog.register_once({ first_source: src, first_landing: location.pathname, first_referrer_host: ref || '$direct' });
+    var q = new URLSearchParams(location.search);
+    posthog.register_once({ first_source: src, first_landing: location.pathname, first_referrer_host: ref || '$direct',
+      first_utm_source: utm, first_utm_medium: q.get('utm_medium') || '', first_utm_campaign: q.get('utm_campaign') || '',
+      first_utm_content: q.get('utm_content') || '', first_seen: new Date().toISOString().slice(0, 10) });
     posthog.register_for_session({ session_source: src, session_landing: location.pathname });
   }
 
@@ -174,6 +207,20 @@
     var sec = el.closest('section[id], [id].hero, main [id]');
     return sec ? sec.id : 'body';
   }
+  // A test is exposed on a page that matches its `pages` or carries its markup.
+  // From then on every event this visitor sends carries ab_<test>.
+  document.addEventListener('DOMContentLoaded', function () {
+    Object.keys(AB_TESTS).forEach(function (t) {
+      var cfg = AB_TESTS[t];
+      if (!(cfg.pages && cfg.pages.test(location.pathname)) && !document.querySelector('[data-ab^="' + t + ':"]')) return;
+      var props = {};
+      props['ab_' + t] = ab[t];
+      props['$feature/' + t] = ab[t];
+      posthog.register(props);
+      posthog.capture('ab_exposure', { experiment: t, variant: ab[t] });
+    });
+  });
+
   document.addEventListener('click', function (ev) {
     var a = ev.target.closest && ev.target.closest('a[href]');
     if (!a) return;

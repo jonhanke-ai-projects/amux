@@ -59,6 +59,7 @@ function world() {
       }
       if (m === 'DELETE') { const id = p.split('/').pop(); w.dns = w.dns.filter(r => r.id !== id); return ok({ success: true, result: {} }); }
     }
+    if (u.host === 'us.i.posthog.com') { (w.events ||= []).push(JSON.parse(o.body)); return ok({ status: 1 }); }
     if (u.host === 'appleid.apple.com') return ok({ keys: w.appleKeys || [] });
     if (u.host === 'api.stripe.com') {
       const f = new URLSearchParams(o.body || u.search.slice(1));
@@ -520,6 +521,31 @@ await test('C9 a certificate that is not renewing reaches the operator before it
   w.up = { tls_days_left: 60 }; w.mail = [];
   await cron(w);
   eq(w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).some(t => /recovered/.test(t)), true, 'recovery email');
+});
+
+await test('funnel: paid, ready and canceled reach PostHog under the visitor id, once per order', async () => {
+  const w = world();
+  const r = await api(w, '/api/checkout', { plan: 'team', slug: 'phtrack', email: 'a@example.com', pw_hash: 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44),
+                                           ph: '0192-visitor', ab: 'exp146=b', source: 'ai:/guides/x/' }, { 'x-test-key': 'k' });
+  eq(r.status, 200, 'checkout');
+  const meta = w.sessions.at(-1).metadata;
+  eq([meta.ph, meta.ab, meta.source], ['0192-visitor', 'exp146=b', 'ai:/guides/x/'], 'visitor id, variants and source kept on the order');
+  const bad = await api(w, '/api/checkout', { plan: 'team', slug: 'phtrack2', email: 'a@example.com', pw_hash: 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44),
+                                             ph: 'x y<script>', ab: 'a=b;c' }, { 'x-test-key': 'k' });
+  eq([bad.status, 'ph' in w.sessions.at(-1).metadata, 'ab' in w.sessions.at(-1).metadata], [200, false, false], 'malformed ph/ab dropped');
+  const sub = paid(w, 'phtrack'); Object.assign(w.subs[sub].metadata, { ph: '0192-visitor', ab: 'exp146=b' });
+  const sent = { ...w.subs[sub].metadata };
+  await webhook(w, sub); w.subs[sub].metadata = { ...sent }; await webhook(w, sub);   // Stripe redelivers the same event
+  const paidEv = w.events.filter(e => e.event === 'cloud_paid');
+  eq([paidEv.length, paidEv[0].distinct_id, paidEv[0].properties.ab_exp146, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(paidEv[0].uuid) && paidEv[0].uuid === paidEv[1].uuid], [2, '0192-visitor', 'b', true],
+     'cloud_paid under the visitor, a redelivery reuses the event id');
+  w.up = true; await cron(w); await cron(w);
+  eq(w.events.filter(e => e.event === 'cloud_ready').length, 1, 'cloud_ready once');
+  await ended(w, sub);
+  eq(w.events.filter(e => e.event === 'cloud_canceled').map(e => e.distinct_id), ['0192-visitor'], 'cloud_canceled');
+  const w2 = world(); w2.fetch = (orig => async (url, o) => new URL(String(url)).host === 'us.i.posthog.com' ? Promise.reject(new Error('blocked')) : orig(url, o))(w2.fetch);
+  const sub2 = paid(w2, 'phdown'); await webhook(w2, sub2);
+  eq([w2.servers.length, w2.logs.some(l => l.event === 'track.failed')], [1, true], 'PostHog down: the server is still created, the failure is logged');
 });
 
 process.exitCode = failures;

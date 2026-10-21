@@ -3,7 +3,7 @@
 // a customer's server is standalone, and what links it to its subscription lives in Hetzner
 // labels (amux-sub, amux-slug) and Stripe metadata.
 //
-//   POST /api/checkout       {plan, slug, email, pw_hash}  -> {url} of a Stripe Checkout session
+//   POST /api/checkout       {plan, slug, email, pw_hash, source, ph, ab}  -> {url} of a Stripe Checkout session
 //   GET  /api/slug?name=     -> {available, reason}
 //   GET  /api/status?session_id=cs_...  -> {state: paying|creating|booting|ready|failed, url}
 //   POST /api/billing        {email} -> emails a Stripe billing-portal link
@@ -93,6 +93,30 @@ async function gone(f) {
 const plans = env => JSON.parse(env.PLANS).plans;
 const host = slug => `${slug}.${DOMAIN}`;
 const log = (event, fields = {}) => console.log(JSON.stringify({ event, ...fields }));
+
+// ------------------------------------------------------------------ funnel events
+// The signup page puts its PostHog visitor id (ph) and A/B variants (ab) in the order's metadata, so
+// the paid, ready and canceled steps are recorded from here, under the same visitor as the site's
+// events and out of reach of ad blockers (scripts/site-funnel.py reads them). The id is derived from
+// the Stripe event, so a redelivered webhook is the same event to PostHog. Never fails an order.
+const PH_PROJECT_KEY = 'phc_Ckeacj8y8X8YiLkwHBcpBsJVSnsFKohch2vMv9sJYmE6';   // public, the same one site.js sends
+async function eventUuid(seed) {
+  const h = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(seed)))].slice(0, 16);
+  h[6] = (h[6] & 0x0f) | 0x40; h[8] = (h[8] & 0x3f) | 0x80;
+  const x = h.map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+}
+async function track(env, event, seed, meta, props = {}) {
+  try {
+    const ab = {};
+    for (const kv of (meta?.ab || '').split(',')) { const [k, v] = kv.split('='); if (k && v) ab['ab_' + k] = v; }
+    const r = await fetch('https://us.i.posthog.com/i/v0/e/', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ api_key: PH_PROJECT_KEY, event, uuid: await eventUuid(seed), distinct_id: meta?.ph || `cloud:${meta?.slug}`,
+        properties: { plan: meta?.plan, source: meta?.source, test: env.MODE !== 'live', server_side: true,
+                      $process_person_profile: false, ...ab, ...props } }) });
+    log(r.ok ? 'track.sent' : 'track.failed', { name: event, status: r.status });
+  } catch (e) { log('track.failed', { name: event, error: String(e.message || e).slice(0, 120) }); }
+}
 
 function slugProblem(slug) {
   if (!/^[a-z][a-z0-9-]{2,29}$/.test(slug || '') || slug.endsWith('-')) return 'Use 3 to 30 lowercase letters, digits or dashes, starting with a letter.';
@@ -438,6 +462,8 @@ async function tick(env) {
           `Billing and cancellation: ${SITE}/start/billing/`);
       }
       await hetzner(env, 'PUT', `/servers/${s.id}`, { labels: { ...s.labels, 'amux-ready': '1' } });
+      await track(env, 'cloud_ready', 'ready:' + s.labels['amux-sub'], sub.metadata,
+                  { minutes_to_ready: Math.round((Date.now() - Date.parse(s.created)) / 60000) });
       // The data is live again, so the snapshot it came from is no longer the customer's only copy.
       if (s.labels['amux-restored-from']) {
         await gone(() => hetzner(env, 'DELETE', `/images/${s.labels['amux-restored-from']}`));
@@ -718,7 +744,9 @@ async function route(req, env) {
         : 'That name is taken.' }, 409, cors(req));
     }
     const price = (await stripe(env, 'GET', '/prices', { lookup_keys: [plan.stripe_lookup_key], active: 'true' })).data[0];
-    const meta = { slug, plan: plan.id, email, pw_hash: b.pw_hash, source: (b.source || 'start').slice(0, 40) };
+    const meta = { slug, plan: plan.id, email, pw_hash: b.pw_hash, source: (b.source || 'start').slice(0, 40),
+                   ...(/^[A-Za-z0-9._:-]{1,100}$/.test(b.ph || '') ? { ph: b.ph } : {}),
+                   ...(/^[a-z0-9_]+=[a-z0-9_-]+(,[a-z0-9_]+=[a-z0-9_-]+)*$/.test(b.ab || '') ? { ab: b.ab.slice(0, 200) } : {}) };
     const api = env.MODE === 'test' ? `&api=${encodeURIComponent(url.origin)}` : '';
     const s = await stripe(env, 'POST', '/checkout/sessions', {
       mode: 'subscription', line_items: [{ price: price.id, quantity: 1 }], customer_email: email,
@@ -840,8 +868,11 @@ async function route(req, env) {
     if (ev.type === 'checkout.session.completed' && o.mode === 'subscription' && o.metadata?.pw_hash &&
         ['paid', 'no_payment_required'].includes(o.payment_status)) {
       const sub = typeof o.subscription === 'string' ? o.subscription : o.subscription?.id;
+      await track(env, 'cloud_paid', 'paid:' + sub, o.metadata, { amount_usd: (o.amount_total || 0) / 100 });
       await provision(env, { sub, meta: o.metadata, email: (o.customer_details?.email || o.metadata?.email || '').toLowerCase() });
     } else if (ev.type === 'customer.subscription.deleted' && o.metadata?.slug) {
+      await track(env, 'cloud_canceled', 'canceled:' + o.id, o.metadata,
+                  { days_active: Math.round((Date.now() / 1000 - (o.created || Date.now() / 1000)) / 86400), erase: o.metadata?.erase === '1' });
       await deprovision(env, o.id, o.metadata?.erase === '1', o.metadata?.slug);
     }
     return json({ received: true });
