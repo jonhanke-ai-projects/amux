@@ -383,7 +383,16 @@ async fn oauth_token() -> Option<OauthToken> {
     if let Some(t) = keychain_token().await {
         return Some(t);
     }
-    file_token()
+    file_token().or_else(|| env_token(crate::api::settings::effective_env(&crate::config::amux_home(), "CLAUDE_CODE_OAUTH_TOKEN")))
+}
+
+/// The subscription token the dashboard's "Sign in with Claude" saves
+/// (`claude setup-token`, CLAUDE_CODE_OAUTH_TOKEN in server.env). Without this
+/// a server signed in that way read "No Claude subscription token on this host"
+/// in Settings forever. Its expiry is not stored, so 0 (the endpoint decides).
+fn env_token(value: Option<String>) -> Option<OauthToken> {
+    let v = value?.trim().to_string();
+    (!v.is_empty()).then_some(OauthToken { access_token: v, expires_at_ms: 0 })
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +490,14 @@ fn window_from_percent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_subscription_token_is_a_usage_credential() {
+        let t = env_token(Some(" sk-ant-oat01-fake-token \n".into())).expect("token");
+        assert_eq!((t.access_token.as_str(), t.expires_at_ms), ("sk-ant-oat01-fake-token", 0));
+        assert!(env_token(Some("  ".into())).is_none());
+        assert!(env_token(None).is_none());
+    }
 
     // -- response mapping (the network-free contract) ----------------------
 

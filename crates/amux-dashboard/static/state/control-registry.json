@@ -6552,6 +6552,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "usageConnect": {
+      "kind": "command.usageConnect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "wakeSession": {
       "kind": "command.wakeSession",
       "feedback_required": true,

@@ -425,7 +425,8 @@ pub(crate) fn headless_turn_prelude(name: &str, provider: &str, work_dir: &str) 
         )
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .is_some_and(|v| !v["oauthAccount"].is_null() && v["oauthAccount"] != json!({}));
+        .is_some_and(|v| !v["oauthAccount"].is_null() && v["oauthAccount"] != json!({}))
+            || claude_subscription_token_saved();
         if has_oauth {
             rc.push_str("unset ANTHROPIC_API_KEY; ");
         }
@@ -16676,6 +16677,9 @@ pub(crate) async fn start_session(
                 has_oauth = py_truthy(&v["oauthAccount"]);
             }
         }
+        // A subscription token saved by the dashboard's "Sign in with Claude"
+        // is a subscription sign-in too: the worker uses it, not an API key.
+        has_oauth = has_oauth || claude_subscription_token_saved();
         if has_oauth {
             shell_rc.push_str("unset ANTHROPIC_API_KEY; ");
         }
@@ -16837,7 +16841,7 @@ pub(crate) async fn start_session(
             .flatten();
         seed_claude_first_run(key.as_deref());
     }
-    for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"] {
+    for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
         if let Some(v) = provider_value(k) {
             deferred_secrets.push((k.to_string(), v));
         }
@@ -57548,3 +57552,10 @@ mod codex_saved_key_login_tests {
     }
 }
 
+
+/// True when the dashboard's "Sign in with Claude" saved a subscription token
+/// (CLAUDE_CODE_OAUTH_TOKEN in server.env). Such a worker runs on the
+/// subscription, so an API key must not be offered to it as well.
+fn claude_subscription_token_saved() -> bool {
+    super::settings::effective_env(&home(), "CLAUDE_CODE_OAUTH_TOKEN").is_some_and(|v| !v.trim().is_empty())
+}

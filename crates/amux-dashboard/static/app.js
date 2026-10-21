@@ -1974,11 +1974,20 @@ async function _mlPollIdentity(run) {
         const m = _mlEl('apikey-setup-modal'); if (m) m.style.display = 'none';
         const banner = _mlEl('no-apikey-banner'); if (banner) banner.style.display = 'none';
         showToast(a.label + ' is connected. Your workers can use it now.');
+        if (document.getElementById('settings-usage-body')) loadUsage();   // the row stops saying "Connect account"
         return;
       }
     } catch (e) {}
   }
   if (_modelLogin === run) _mlShow({ status: a.label + ' sign-in did not finish.', error: 'Try again, or use an API key below.' });
+}
+
+// Settings > Account > usage: "Sign in with <provider>" runs the same sign-in as the
+// first-run "Connect a model" window, in that window.
+function usageConnect(provider) {
+  const m = document.getElementById('apikey-setup-modal');
+  if (m) m.style.display = 'flex';
+  modelLogin(provider);
 }
 
 async function modelLoginSubmitCode() {
@@ -50488,8 +50497,14 @@ async function loadUsage() {
         : provider.usage_unknown ? 'Usage unknown'
         : minimum === null ? 'No active limits' : (provider.stale ? 'Last known · ' : '') + usagePercent(minimum) + '% left';
       const meta = usageProviderMeta(provider);
+      // "Connect account" used to be a label with nothing behind it (2026-10-21): the row said
+      // to connect and offered no way to. Providers with a CLI sign-in get the button here.
+      const login = window.AmuxState && window.AmuxState.cliLogin && window.AmuxState.cliLogin.CLI_LOGINS[provider.id];
+      const connect = !provider.available && !pending && provider.cause !== 'account_quota_not_reported' && login
+        ? '<button type="button" class="btn primary usage-connect" data-provider="' + esc(provider.id) + '" onclick="event.stopPropagation();usageConnect(this.dataset.provider)">Sign in with ' + esc(login.label) + '</button>'
+        : '';
       const detail = !provider.available
-        ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>'
+        ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>' + connect
         : windows.length ? windows.map(w => usageWindowRow(w, provider.stale === true)).join('')
         : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>';
       return '<details class="usage-provider" data-provider="' + esc(provider.id || '') + '"'

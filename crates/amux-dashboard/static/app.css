@@ -2461,6 +2461,8 @@
   .usage-bar > span { display: block; height: 100%; border-radius: inherit; }
   .usage-reset { color: var(--dim); font-size: 0.62rem; margin-top: 2px; white-space: normal; }
   .usage-unavailable { color: var(--dim); font-size: 0.68rem; line-height: 1.35; padding-top: 4px; }
+  .usage-connect { margin-top: 8px; min-height: 36px; font-size: 0.78rem; }
+  @media (max-width: 600px) { .usage-connect { min-height: 44px; width: 100%; justify-content: center; } }
   .usage-provider-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .usage-provider-meta > span {
     color: var(--dim); background: var(--card); border: 1px solid var(--border);
