@@ -1237,6 +1237,153 @@ pub async fn task_links(
         "requests": requests, "handoff": handoff.and_then(|h| serde_json::from_str::<Value>(&h).ok())})).into_response()
 }
 
+/// Where the single sessions builder is, so a stalled build names itself and
+/// can be shed (2026-10-21: the builder took the flight lock at ~05:59Z and
+/// never published; every reader was refused for 25 minutes, then the restart
+/// loop began, and no log line ever said which step it was stuck in).
+pub(crate) struct BuildWatch {
+    started_ms: std::sync::atomic::AtomicI64,
+    phase: std::sync::atomic::AtomicUsize,
+    shed_for: std::sync::atomic::AtomicI64,
+}
+
+pub(crate) const BUILD_PHASES: [&str; 6] =
+    ["idle", "open_read", "build_array", "record_task_changes", "serialize", "publish"];
+
+impl BuildWatch {
+    pub(crate) const fn new() -> Self {
+        Self {
+            started_ms: std::sync::atomic::AtomicI64::new(0),
+            phase: std::sync::atomic::AtomicUsize::new(0),
+            shed_for: std::sync::atomic::AtomicI64::new(0),
+        }
+    }
+    pub(crate) fn begin(&self, now_ms: i64) {
+        self.phase.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.started_ms.store(now_ms.max(1), std::sync::atomic::Ordering::SeqCst);
+    }
+    pub(crate) fn phase(&self, i: usize) {
+        self.phase.store(i.min(BUILD_PHASES.len() - 1), std::sync::atomic::Ordering::SeqCst);
+    }
+    pub(crate) fn end(&self) {
+        self.started_ms.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.phase.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// (start, held_ms, phase) when the build in flight is older than `stall`.
+    fn stalled(&self, now_ms: i64, stall: std::time::Duration) -> Option<(i64, u64, &'static str)> {
+        let started = self.started_ms.load(std::sync::atomic::Ordering::SeqCst);
+        if started == 0 {
+            return None;
+        }
+        let held = now_ms.saturating_sub(started).max(0) as u64;
+        (held >= stall.as_millis() as u64).then(|| {
+            (started, held, BUILD_PHASES[self.phase.load(std::sync::atomic::Ordering::SeqCst).min(BUILD_PHASES.len() - 1)])
+        })
+    }
+}
+
+/// Clears the watch when the flight holder's build ends, however it ends.
+struct BuildWatchGuard(&'static BuildWatch);
+impl Drop for BuildWatchGuard {
+    fn drop(&mut self) {
+        self.0.end();
+    }
+}
+
+pub(crate) static BUILD_WATCH: BuildWatch = BuildWatch::new();
+
+pub(crate) enum FlightWait<'a> {
+    /// This caller holds the single-flight lock and builds.
+    Held(std::sync::MutexGuard<'a, ()>),
+    /// A structurally safe snapshot was published while waiting.
+    Served(String),
+    /// The holder's build is past the stall line and nobody has been shed for
+    /// it yet: this caller builds without the lock. One per stuck build, so a
+    /// stuck substrate gets one extra scan, never N.
+    Shed { held_ms: u64, phase: &'static str },
+    /// The wait ran out. `stalled` is set when the holder is past the stall
+    /// line and its one shed build was already spent.
+    Busy { stalled: Option<(u64, &'static str)> },
+}
+
+/// Wait for the single sessions builder. Production passes the static flight
+/// lock and watch; the test passes its own and a holder that never finishes.
+pub(crate) fn wait_for_flight<'a>(
+    flight: &'a std::sync::Mutex<()>,
+    watch: &BuildWatch,
+    wait: std::time::Duration,
+    stall: std::time::Duration,
+    mut served: impl FnMut() -> Option<String>,
+) -> FlightWait<'a> {
+    let take = || match flight.try_lock() {
+        Ok(g) => Some(g),
+        Err(std::sync::TryLockError::Poisoned(p)) => {
+            tracing::error!(
+                target: "amux::sessions",
+                verdict = "sessions_flight_poison_recovered",
+                "the prior sessions builder panicked; recovering its single-flight lock"
+            );
+            flight.clear_poison();
+            Some(p.into_inner())
+        }
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    };
+    if let Some(g) = take() {
+        return FlightWait::Held(g);
+    }
+    let deadline = std::time::Instant::now() + wait;
+    let mut stalled = None;
+    loop {
+        if let Some(json) = served() {
+            return FlightWait::Served(json);
+        }
+        if let Some((started, held_ms, phase)) = watch.stalled(chrono::Utc::now().timestamp_millis(), stall) {
+            let prev = watch.shed_for.load(std::sync::atomic::Ordering::SeqCst);
+            if prev != started
+                && watch
+                    .shed_for
+                    .compare_exchange(prev, started, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
+                    .is_ok()
+            {
+                return FlightWait::Shed { held_ms, phase };
+            }
+            stalled = Some((held_ms, phase));
+        }
+        if let Some(g) = take() {
+            return FlightWait::Held(g);
+        }
+        if std::time::Instant::now() >= deadline {
+            return FlightWait::Busy { stalled };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Sample this process's threads once a build is shed, so the stuck frame is
+/// on disk before anyone restarts the server (macOS `sample`; elsewhere none).
+fn capture_stall_stack(held_ms: u64, phase: &'static str) {
+    if !cfg!(target_os = "macos") || cfg!(test) {
+        return;
+    }
+    let path = crate::config::amux_home()
+        .join("logs")
+        .join(format!("sessions-stall-{}.txt", chrono::Utc::now().format("%Y%m%dT%H%M%SZ")));
+    let pid = std::process::id().to_string();
+    let _ = std::thread::Builder::new().name("sessions-stall-sample".into()).spawn(move || {
+        let ok = std::process::Command::new("/usr/bin/sample")
+            .args([pid.as_str(), "3", "-file"])
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        tracing::warn!(target: "amux::sessions", verdict = "sessions_stall_stack_captured", captured = ok,
+            measured = ok, n_considered = 1, held_ms, phase, path = %path.display(),
+            "stack of the stalled sessions builder's process, taken while it was stuck");
+    });
+}
+
 fn snapshot_fresh(now: f64, published: f64, build_s: f64, ttl: f64) -> bool {
     now - published < ttl.max(build_s)
 }
@@ -4336,66 +4483,71 @@ fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result
     // its status epoch is old. Structural/config changes still clear it, so a
     // peer can never see a worker that was just isolated or deleted.
     static FLIGHT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let take_flight = || match FLIGHT.try_lock() {
-        Ok(g) => Some(g),
-        Err(std::sync::TryLockError::Poisoned(p)) => {
+    let wait_s = env_secs("AMUX_SESSIONS_BUILD_WAIT_S", 30.0);
+    let stall_s = env_secs("AMUX_SESSIONS_BUILDER_STALL_S", 120.0);
+    let served = || {
+        let c = build_array_cache().lock().ok()?;
+        (c.store.ptr_eq(&store_key)
+            && !c.json.is_empty()
+            && c.epoch == epoch_now
+            && registry_fingerprint().is_some_and(|f| c.registry == f))
+        .then(|| c.json.clone())
+    };
+    let (_flight, _watch) = match wait_for_flight(
+        &FLIGHT,
+        &BUILD_WATCH,
+        std::time::Duration::from_secs_f64(wait_s),
+        std::time::Duration::from_secs_f64(stall_s),
+        served,
+    ) {
+        FlightWait::Held(g) => {
+            BUILD_WATCH.begin(chrono::Utc::now().timestamp_millis());
+            (Some(g), Some(BuildWatchGuard(&BUILD_WATCH)))
+        }
+        FlightWait::Served(json) => return Ok(json),
+        FlightWait::Shed { held_ms, phase } => {
+            // The holder is stuck (a hung subprocess, a lock it never gets).
+            // One extra build may finish where it cannot; if it sticks too,
+            // the substrate is what is stuck and the stack below says where.
             tracing::error!(
                 target: "amux::sessions",
-                verdict = "sessions_flight_poison_recovered",
-                "the prior sessions builder panicked; recovering its single-flight lock"
+                verdict = "sessions_builder_shed", measured = true, n_considered = 1,
+                held_ms, phase, stall_s,
+                "the single sessions builder is stalled past the stall line; shedding it: \
+                 this reader builds without its lock (once per stuck build)"
             );
-            FLIGHT.clear_poison();
-            Some(p.into_inner())
+            capture_stall_stack(held_ms, phase);
+            (None, None)
         }
-        Err(std::sync::TryLockError::WouldBlock) => None,
-    };
-    let _flight = if let Some(g) = take_flight() {
-        g
-    } else {
-        if let Ok(c) = build_array_cache().lock() {
-            if c.store.ptr_eq(&store_key)
-                && !c.json.is_empty()
-                && c.epoch == epoch_now
-                && registry_fingerprint().is_some_and(|f| c.registry == f)
-            {
-                return Ok(c.json.clone());
-            }
-        }
-        let wait_s = env_secs("AMUX_SESSIONS_BUILD_WAIT_S", 30.0);
-        let overall_deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs_f64(wait_s);
-        let mut acquired = None;
-        loop {
-            if let Some(g) = take_flight() {
-                acquired = Some(g);
-                break;
-            }
-            if let Ok(c) = build_array_cache().lock() {
-                if c.store.ptr_eq(&store_key)
-                    && !c.json.is_empty()
-                    && c.epoch == epoch_now
-                    && registry_fingerprint().is_some_and(|f| c.registry == f)
-                {
-                    return Ok(c.json.clone());
-                }
-            }
-            if std::time::Instant::now() >= overall_deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        match acquired {
-            Some(g) => g,
-            None => {
+        FlightWait::Busy { stalled: Some((held_ms, phase)) } => {
+            static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+            let now_s = chrono::Utc::now().timestamp();
+            if now_s - LAST.swap(now_s, std::sync::atomic::Ordering::Relaxed) >= 60 {
                 tracing::error!(
                     target: "amux::sessions",
-                    verdict = "sessions_cache_stuck",
-                    waited_ms = (wait_s * 1000.0) as u64,
-                    "the single sessions builder did not publish a structurally safe snapshot \
-                     before the wait deadline; refusing duplicate fleet work"
+                    verdict = "sessions_builder_stalled", measured = true, n_considered = 1,
+                    held_ms, phase, stall_s, shed_used = true,
+                    "the sessions builder is still stalled and its one shed build was spent; \
+                     the substrate it scans is stuck, see sessions_stall_stack_captured"
                 );
-                return Err(BuilderBusy { waited_s: wait_s }.into());
             }
+            return Err(BuilderBusy { waited_s: wait_s }.into());
+        }
+        FlightWait::Busy { stalled: None } => {
+            tracing::error!(
+                target: "amux::sessions",
+                verdict = "sessions_cache_stuck",
+                waited_ms = (wait_s * 1000.0) as u64,
+                "the single sessions builder did not publish a structurally safe snapshot \
+                 before the wait deadline; refusing duplicate fleet work"
+            );
+            return Err(BuilderBusy { waited_s: wait_s }.into());
+        }
+    };
+    let holder = _watch.is_some();
+    let phase = |i: usize| {
+        if holder {
+            BUILD_WATCH.phase(i);
         }
     };
     // Double-check under the flight lock: the previous holder may have just
@@ -4421,10 +4573,15 @@ fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result
     let registry_start = registry_fingerprint();
     // Never reserve one of the request pool's readers while external probes
     // run. Cheap board/status requests remain independent of fleet discovery.
+    phase(1);
     let conn = store.dedicated_read()?;
+    phase(2);
     let arr = build_array(&conn)?;
+    phase(3);
     record_task_changes(store, &conn, &arr);
+    phase(4);
     let json = serde_json::to_string(&arr)?;
+    phase(5);
     match race_verdict(
         epoch_start,
         SESSIONS_EPOCH.load(std::sync::atomic::Ordering::SeqCst),
@@ -7267,6 +7424,50 @@ mod status_authority_tests {
 pub(crate) mod tests {
     use super::*;
     static PROBE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The 2026-10-21 stall: a builder takes the flight lock and never
+    /// publishes. Readers are refused while it is young, exactly one is shed
+    /// once it is past the stall line (naming the phase it is stuck in), the
+    /// rest are refused with the stall named, and the lock is usable the
+    /// moment the stuck builder returns.
+    #[test]
+    fn a_stalled_builder_is_shed_once_then_refused_with_its_phase() {
+        static FLIGHT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        static WATCH: BuildWatch = BuildWatch::new();
+        let ms = std::time::Duration::from_millis;
+        let (release, wait_release) = std::sync::mpsc::channel::<()>();
+        let (held, wait_held) = std::sync::mpsc::channel::<()>();
+        let stuck = std::thread::spawn(move || {
+            let _g = FLIGHT.lock().unwrap();
+            WATCH.begin(chrono::Utc::now().timestamp_millis());
+            WATCH.phase(2);
+            held.send(()).unwrap();
+            wait_release.recv().ok();
+            WATCH.end();
+        });
+        wait_held.recv().unwrap();
+
+        assert!(matches!(wait_for_flight(&FLIGHT, &WATCH, ms(60), ms(60_000), || None),
+            FlightWait::Busy { stalled: None }), "a young build is waited on, never shed");
+        std::thread::sleep(ms(80));
+        match wait_for_flight(&FLIGHT, &WATCH, ms(60), ms(50), || None) {
+            FlightWait::Shed { phase, held_ms } => {
+                assert_eq!(phase, "build_array");
+                assert!(held_ms >= 50);
+            }
+            _ => panic!("a build past the stall line must be shed"),
+        }
+        match wait_for_flight(&FLIGHT, &WATCH, ms(60), ms(50), || None) {
+            FlightWait::Busy { stalled: Some((_, phase)) } => assert_eq!(phase, "build_array"),
+            _ => panic!("one shed per stuck build; the next reader is refused with the stall named"),
+        }
+        assert!(matches!(wait_for_flight(&FLIGHT, &WATCH, ms(60), ms(50), || Some("[]".into())),
+            FlightWait::Served(_)), "a published snapshot is still served while stalled");
+
+        release.send(()).unwrap();
+        stuck.join().unwrap();
+        assert!(matches!(wait_for_flight(&FLIGHT, &WATCH, ms(60), ms(50), || None), FlightWait::Held(_)));
+    }
 
     /// AMUX-5277: "Needs input · TP-37" on the lane that is blocked on it.
     #[test]

@@ -10,6 +10,7 @@ pub mod backend;
 mod cargo_target_guard;
 pub mod config;
 mod fanout_retirement;
+mod boot_watch;
 mod parent_watch;
 pub mod fanout_workspace;
 pub mod legacy_port;
@@ -380,6 +381,8 @@ async fn async_main() {
     // The outage length needs no new state: the request log's newest row is
     // when the fleet last got an answer. `env::var` is read BEFORE the runtime
     // starts so nothing can have cleared it.
+    boot_watch::start();
+    boot_watch::step("store_open");
     let self_adopted = std::env::var("AMUX_SELF_ADOPTED").is_ok();
     // Read before Store::open creates the database. An absent store means
     // there cannot have been a predecessor to die; filesystem uncertainty
@@ -480,6 +483,7 @@ async fn async_main() {
         tracing::info!(dir = %dir.display(), locks = ?removed, "cleaned stale Chrome profile locks");
     }
 
+    boot_watch::step("app_state");
     let reconciled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let state = api::AppState {
         store: store.clone(),
@@ -498,6 +502,7 @@ async fn async_main() {
     // fails if a bare `tokio::spawn` of a background loop reappears in this
     // file. The whole set is readable at `GET /api/system-jobs` and in the
     // dashboard's Scheduler tab under "System".
+    boot_watch::step("spawn_jobs");
     use runtime_jobs::registry as jobs;
     let secs = std::time::Duration::from_secs;
 
@@ -637,7 +642,9 @@ async fn async_main() {
     // and wait. Noticing is infrastructure; fixing is work.
     drop(runtime_jobs::autofix::spawn(state.clone()));
     // MDAI runs cut off by the restart that started this process resume here.
+    boot_watch::step("mdai_resume");
     crate::api::mdai::resume_interrupted(state.store.clone());
+    boot_watch::step("spawn_jobs_2");
     // AMUX-3579: enrol /api/board/commit-mentions, which had zero consumers.
     drop(runtime_jobs::commit_mention_notes::spawn(state.clone()));
     // AMUX-5238: close auto-captured intake cards on cited evidence and tag
@@ -792,11 +799,13 @@ async fn async_main() {
     let reaper_store = state.store.clone();
     api::board_intake::initialize();
     api::history_ask::initialize();
+    boot_watch::step("router");
     let app = api::router(state);
 
     // SNI dual-cert: Tailscale LE cert for the tailnet hostname, self-signed
     // for localhost/IPs — Python-server parity (its _sni_cb), so the PWA's
     // service worker registers over https://<host>.ts.net:<port>.
+    boot_watch::step("tls");
     let server_config = tls::build_server_config(&cfg.tls_dir()).expect("tls material");
     let rustls_cfg =
         axum_server::tls_rustls::RustlsConfig::from_config(std::sync::Arc::new(server_config));
@@ -805,6 +814,7 @@ async fn async_main() {
     // AMUX_HERDR_SESSION names the herdr session hosting amux workspaces
     // (backend::backends_from_env — constructing it against a missing herdr
     // server would make every probe a failure report).
+    boot_watch::step("backends");
     let backends = backend::backends_from_env(&cfg.env);
     // Publish the backend set for API handlers (worker peek, AMUX-2613
     // gap 4): AppState is constructed at 40+ sites, so the accessor is a
@@ -846,6 +856,7 @@ async fn async_main() {
         })
         .unwrap_or(amux_core::circuit::FleetState::Normal)
     };
+    boot_watch::step("orchestrator_runtime");
     let runtime = Arc::new(orchestrator::runtime::Runtime {
         store: store.clone(),
         backends: backends.clone(),
@@ -1138,6 +1149,7 @@ async fn async_main() {
     // RELEASE IDLE BROWSERS (AMUX-3829, Ethan: "it should clean up
     // automatically after idle use"). Nothing reaped one before, which is how a
     // browser sat 18.1h with zero tabs and blocked him.
+    boot_watch::step("reapers");
     runtime_jobs::browser_reaper::spawn(reaper_store);
 
     // STOP IDLE COMPUTER-USE SANDBOXES (AMUX-5300). Each is a 4 GB Docker
@@ -1192,6 +1204,7 @@ async fn async_main() {
     //
     // tests/legacy_port_guard.rs fails the build if the retired address
     // reappears in code, scripts or e2e.
+    boot_watch::step("publish_endpoint");
     legacy_port::publish_endpoint(&cfg.amux_home, cfg.port, None);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port));
@@ -1221,6 +1234,7 @@ async fn async_main() {
     // closes across a rebuild; bound fresh on a cold start.
     let (listener, listener_source) =
         listener_handoff::adopt_or_bind(addr).expect("bind listener");
+    boot_watch::bound();
     tracing::info!(%addr, listener_source, verdict = if listener_source == "inherited" {
         "listener_inherited"
     } else {
