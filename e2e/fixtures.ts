@@ -184,6 +184,15 @@ export const test = base.extend({
         try { if (!localStorage.getItem('amux_walkthrough_done')) localStorage.setItem('amux_walkthrough_done', '1'); } catch (_) {}
       });
     }
+    // amux CLOUD OFFER OFF unless a test asks for it, for the walkthrough's
+    // reason: every e2e server is self-hosted and owned, so the first phone-width
+    // page would get a fixed card over the bottom of the screen. Opt in with
+    // {annotation:{type:'cloud-offer'}} (e2e/cloud-offer.spec.ts).
+    if (!testInfo.annotations.some(a => a.type === 'cloud-offer')) {
+      await context.addInitScript(() => {
+        try { if (!localStorage.getItem('amux_cloud_offer')) localStorage.setItem('amux_cloud_offer', '{"dismissed":1}'); } catch (_) {}
+      });
+    }
     await context.route(CDN_URL, async route => {
       const url = route.request().url();
       const hit = cdnCache.get(url);

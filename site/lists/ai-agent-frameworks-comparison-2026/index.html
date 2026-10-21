@@ -19,10 +19,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Lists","item":"https://amux.io/lists/"},{"@type":"ListItem","position":3,"name":"AI Agent Frameworks Comparison 2026","item":"https://amux.io/lists/ai-agent-frameworks-comparison-2026/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Which AI agent framework should I use in 2026?","acceptedAnswer":{"@type":"Answer","text":"It depends on your use case. For coding-specific agent fleets (Claude Code, Codex, Gemini CLI), amux requires no framework code — you configure sessions and tasks via a web UI. For custom multi-agent pipelines in Python, LangGraph is the most mature framework with the best persistence and streaming support. For role-based workflows (researcher-writer-reviewer teams), CrewAI has the most intuitive API. For Microsoft Azure environments, AutoGen integrates natively. For production enterprise agents, Semantic Kernel has the strongest enterprise tooling."}},{"@type":"Question","name":"What is the difference between LangGraph and CrewAI?","acceptedAnswer":{"@type":"Answer","text":"LangGraph models agents as a directed graph — nodes are steps, edges are transitions, and you have full control over state flow including cycles and branching. CrewAI abstracts this into roles and tasks — you define agents with roles (researcher, writer) and tasks, and CrewAI handles the orchestration. LangGraph is more flexible and powerful; CrewAI is easier to get started with for standard patterns."}},{"@type":"Question","name":"Can I use LangGraph with Claude?","acceptedAnswer":{"@type":"Answer","text":"Yes. LangGraph is model-agnostic — it supports Claude via the LangChain Anthropic integration, as well as GPT-4, Gemini, and local models. The same graph definition works with any LLM provider by swapping the model object."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -30,6 +30,7 @@
     <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">
@@ -161,6 +162,7 @@
       <div class="footer-bottom">
         <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
+          <a href="/demos/">Demos</a>
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
           <a href="/security/">Security</a>

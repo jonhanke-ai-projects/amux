@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Blog","item":"https://amux.io/blog/"},{"@type":"ListItem","position":3,"name":"Claude Code Agent View: What It Shows and What It Misses at Scale","item":"https://amux.io/blog/claude-code-agent-view-2026/"}]}</script>
 
@@ -28,6 +27,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Claude Code Agent View?","acceptedAnswer":{"@type":"Answer","text":"Claude Code Agent View is a feature inside the Claude Code terminal that shows the sub-agents spawned by the current session. It gives visibility into what each sub-agent is doing within the scope of one Claude Code parent process. It does not show independent Claude Code sessions running in other terminal windows or tmux panes."}},{"@type":"Question","name":"Can Claude Code manage multiple independent sessions from one interface?","acceptedAnswer":{"@type":"Answer","text":"No. Claude Code Agent View only shows sub-agents spawned by the current session via the Task tool. Independent Claude Code sessions running in separate terminals or tmux panes are not visible to each other. Managing a fleet of independent sessions requires an external control plane like amux."}},{"@type":"Question","name":"How do I monitor multiple Claude Code agents at once?","acceptedAnswer":{"@type":"Answer","text":"Install amux (curl -fsSL https://amux.io/install.sh | bash), then launch your Claude Code workers under amux supervision. The amux web dashboard shows every session's live status, output, and kanban tasks on one screen. You can also use the mobile PWA to check in from your phone."}},{"@type":"Question","name":"Does amux replace Claude Code Agent View?","acceptedAnswer":{"@type":"Answer","text":"No. They operate at different layers. Claude Code Agent View shows intra-session sub-agents within one Claude Code process. amux shows and coordinates inter-session agents across many independent Claude Code, Codex, or Gemini CLI processes. You can use both simultaneously."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -35,6 +35,7 @@
     <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">
@@ -280,6 +281,7 @@ amux serve  <span class="dim"># https://localhost:8824</span></code></pre>
       <div class="footer-bottom">
         <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
+          <a href="/demos/">Demos</a>
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
           <a href="/security/">Security</a>

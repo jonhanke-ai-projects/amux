@@ -268,7 +268,8 @@ export default defineConfig({
         cookies: [],
         origins: [{
           origin: `https://localhost:${t.port}`,
-          localStorage: [{ name: 'amux_walkthrough_done', value: '1' }],
+          // amux_cloud_offer: the self-hosted Cloud offer stays off too (fixtures.ts).
+          localStorage: [{ name: 'amux_walkthrough_done', value: '1' }, { name: 'amux_cloud_offer', value: '{"dismissed":1}' }],
         }],
       },
     },

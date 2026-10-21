@@ -114,6 +114,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Disconnect | `_chatgptRevoke` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | + (_chipEditing ? | `_chipAction` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Manage billing | `_cloudBillingPortal` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | No thanks | `_cloudOfferDismiss` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_cmdHistMore` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … … | `_cmdHistSetCtx` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … … | `_cmdHistSetKind` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1119,6 +1120,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | .edit-actions,:scope &gt; .board-edit-actions,:scop | `_closeVideo` | onclick |
 | index.html | Close video | `_closeVideo` | onclick |
 | index.html | video-overlay | `_closeVideo` | onclick |
+| app.js | See amux Cloud | `_cloudOfferHide` | onclick |
 | app.js | Column actions | `_colMenu` | onclick |
 | index.html | Commits | `_commitsBack` | onclick |
 | index.html | Add connector | `_connAddToggle` | onclick |

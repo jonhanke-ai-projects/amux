@@ -18,7 +18,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Glossary","item":"https://amux.io/glossary/"},{"@type":"ListItem","position":3,"name":"Reverse Tunnel","item":"https://amux.io/glossary/reverse-tunnel/"}]}</script>
 
@@ -29,6 +28,7 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a reverse tunnel?","acceptedAnswer":{"@type":"Answer","text":"A reverse tunnel is a technique where a machine inside a private network initiates an outbound connection to a public relay server. The relay then forwards inbound traffic back to the private machine through that connection. The private machine never opens a firewall port — it dials out, the relay dials in through the established connection. The client sees a public URL; the relay server handles the NAT traversal."}},{"@type":"Question","name":"How is a reverse tunnel different from port forwarding?","acceptedAnswer":{"@type":"Answer","text":"Port forwarding requires you to control the router or firewall — you map an external port to an internal IP. A reverse tunnel requires no router access. The tunneled machine connects outbound to a relay it trusts, and the relay accepts inbound traffic on your behalf. This makes reverse tunnels useful in environments where you cannot change network settings: corporate networks, cloud VMs, shared hosting, or a developer's laptop on a coffee shop WiFi."}},{"@type":"Question","name":"What is a reverse tunnel used for?","acceptedAnswer":{"@type":"Answer","text":"Common uses: receiving webhooks from external services (Stripe, GitHub, Twilio) during local development without deploying; sharing a local development server with a client for feedback; giving a remote team member access to a service running on your machine; testing an IoT device's API from a cloud dashboard; and exposing a localhost AI agent's API endpoint for external tools during development."}},{"@type":"Question","name":"What are the best open-source reverse tunnel tools?","acceptedAnswer":{"@type":"Answer","text":"Four widely used open-source options: ngrok (freemium, largest ecosystem, best inspection UI and custom domain support), localtunnel (free Node.js tool, no auth required, unstable URLs), Cloudflare Tunnel (free, production-grade, requires Cloudflare account), and amux tunnel (built into amux, stable token-derived HTTPS URL, zero extra install for amux users, gated on amux cloud). Each has different trade-offs on URL stability, authentication, custom domains, and protocol support."}},{"@type":"Question","name":"Does amux have a built-in reverse tunnel?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux tunnel publishes any localhost port at a stable HTTPS URL derived from your account token. The URL stays consistent across restarts (unlike localtunnel). It is the only explicitly paid feature in amux — gated on amux cloud. Start it with: amux tunnel start 3000. No extra install needed if you are already running amux."}},{"@type":"Question","name":"Is a reverse tunneled service secure?","acceptedAnswer":{"@type":"Answer","text":"The URL is unguessable (derived from a token), not authenticated. Anyone who knows the URL can reach your service. Do not tunnel services with sensitive data without adding authentication at the application layer. For production use, Cloudflare Tunnel with access policies is more appropriate. For local development and webhook testing, the token-derived URL is sufficient."}}]}</script>
 
   <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -36,6 +36,7 @@
     <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">

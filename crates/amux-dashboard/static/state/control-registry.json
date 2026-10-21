@@ -786,6 +786,36 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cloudOfferCheckLongJob": {
+      "kind": "command._cloudOfferCheckLongJob",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cloudOfferDismiss": {
+      "kind": "command._cloudOfferDismiss",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cloudOfferInit": {
+      "kind": "command._cloudOfferInit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cloudOfferMark": {
+      "kind": "command._cloudOfferMark",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cloudOfferTry": {
+      "kind": "command._cloudOfferTry",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cmdkActions": {
       "kind": "command._cmdkActions",
       "feedback_required": true,
