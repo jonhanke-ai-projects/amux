@@ -48,8 +48,8 @@ function fixture(names = [], shared = {}) {
   };
   const ctx = vm.createContext(sandbox);
   // Load production dependencies too: replay must execute, not fail on a stale fixture.
-  for (const name of ['_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS']) vm.runInContext(declaration(name), ctx);
-  for (const name of ['_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
+  for (const name of ['_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_syncPhase']) vm.runInContext(declaration(name), ctx);
+  for (const name of ['_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -207,7 +207,9 @@ test('connection status follows reads while pending write errors remain visible 
 
 function sharedStorage() {
   const flights = new Map();
-  return {stored: new Map(), locks: {request(name, work) {
+  // The Web Locks signature: request(name, [options,] callback).
+  return {stored: new Map(), locks: {request(name, options, work) {
+    if (typeof options === 'function') work = options;
     const flight = (flights.get(name) || Promise.resolve()).then(work);
     flights.set(name, flight.catch(() => {}));
     return flight;

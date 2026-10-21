@@ -3739,17 +3739,6 @@ async function _upqList() {
   return [...current, ...legacy.map(row => ({...row,
     blob:row.bytes ? new Blob([row.bytes], {type:row.mime}) : row.blob}))];
 }
-// The outbox reads pending uploads before delivering any message, so an
-// IndexedDB request that never completes (WebKit, after its storage process
-// restarts) must not hold the messages behind it. Past 5s this pass treats the
-// list as empty and says so; the uploads stay stored for the next pass.
-function _upqListBounded(ms = 5000) {
-  let timer;
-  return Promise.race([
-    _upqList().catch(() => []),
-    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms}); resolve([]); }, ms); }),
-  ]).finally(() => clearTimeout(timer));
-}
 function _uploadStorageError(action, error) {
   const reason = error?.name || 'StorageError';
   console.warn('[amux] upload-storage', action, reason);
@@ -3943,6 +3932,17 @@ function _scheduleSyncRetry() {
 const _SYNC_STALL_MS = 45000, _SYNC_LOCK_WAIT_MS = 20000;
 let _syncPhase = 'idle', _syncPhaseAt = 0, _syncFlightToken = null;
 function _syncSetPhase(phase) { _syncPhase = phase; _syncPhaseAt = Date.now(); }
+// The outbox reads pending uploads before delivering any message, so an
+// IndexedDB request that never completes (WebKit, after its storage process
+// restarts) must not hold the messages behind it. Past 5s this pass treats the
+// list as empty and says so; the uploads stay stored for the next pass.
+function _upqListBounded(ms = 5000) {
+  let timer;
+  return Promise.race([
+    _upqList().catch(() => []),
+    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms}); resolve([]); }, ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 function _syncLockRequest(run) {
   if (!navigator.locks) return run();
   _syncSetPhase('replay_lock_wait');
@@ -3964,20 +3964,24 @@ function runSyncBanner(quiet = false) {
   const run = async () => { _syncSetPhase('queue_read'); await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
   const token = {};
   _syncFlightToken = token;
-  const watch = setInterval(() => {
-    if (_syncFlightToken !== token) return clearInterval(watch);
+  // A re-arming timeout, not setInterval: the outbox unit sandboxes provide
+  // only setTimeout (tests/dashboard-outage-recovery.mjs).
+  let watch = null;
+  const check = () => {
+    watch = null;
+    if (_syncFlightToken !== token) return;
     // Uploads report progress as they go; a long upload is not a stall.
-    if (/^upload/.test(_syncPhase) || Date.now() - _syncPhaseAt < _SYNC_STALL_MS) return;
-    clearInterval(watch);
+    if (/^upload/.test(_syncPhase) || Date.now() - _syncPhaseAt < _SYNC_STALL_MS) { watch = setTimeout(check, 5000); return; }
     _outboxDiagnostic('outbox_flight_stalled', {phase:_syncPhase, stalled_ms:Date.now() - _syncPhaseAt,
       queued:offlineQueue.length, hidden:document.hidden ? 1 : 0});
     _syncFlightToken = null; _syncFlight = null; _syncSetPhase('idle');
     _scheduleSyncRetry();
-  }, 5000);
+  };
+  watch = setTimeout(check, 5000);
   _syncFlight = _syncLockRequest(run)
     .catch(e => { _writeError = String(e.message || e); showToast('Sync failed: ' + _writeError); })
     .finally(() => {
-      clearInterval(watch);
+      clearTimeout(watch);
       // An abandoned pass that wakes later must not clear or reschedule the
       // pass that replaced it.
       if (_syncFlightToken !== token) return;

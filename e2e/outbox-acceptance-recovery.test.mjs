@@ -91,7 +91,9 @@ test('wrong acknowledgement and read failure keep uncertainty durable and retrie
 });
 test('unkeyed uncertain message and unrelated refused edits stay blocked',async()=>{
  const h=harness([pending({state:'blocked',error:'delivery unconfirmed',options:{method:'POST',body:'{"text":"continue"}'}}),pending({id:'board',url:'/api/board/AF-1',state:'blocked',error:'acceptance is uncertain'})],[]);
- await h.drain();h.schedule();assert.equal(h.queue.length,2);assert.equal(h.requests.length,0);assert.equal(h.timers.length,0);
+ await h.drain();h.schedule();assert.equal(h.queue.length,2);assert.equal(h.requests.length,0);
+ // No retry is scheduled. The sync pass's own 5s stall check (runSyncBanner's watchdog) is not a retry.
+ assert.equal(h.timers.filter(ms=>ms!==5000).length,0);
 });
 test('steering confirmations use the server transport namespace',async()=>{
  const h=harness([pending({url:'/api/sessions/test-worker/steer',delivery_uncertain:true})],[{status:200,body:{accepted:true,msg_id:'steer:same-identity',id:'steering-row'}}]);
