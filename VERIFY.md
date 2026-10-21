@@ -121,6 +121,19 @@ Pass: the spec name and `N passed`. If e2e infra is genuinely unavailable, say
 so in the evidence and why — that is a legitimate `verified` note, not a failure
 to hide.
 
+## Mac app (`desktop/`)
+
+```bash
+AMUX_DESKTOP_NO_INSTALL=1 desktop/build-desktop.sh
+desktop/test/workspace-e2e.py
+```
+
+Pass: `Compiled successfully`, then `N passed, 0 failed`. The script runs a
+second copy of the app on this Mac's real window server: windows across three
+Desktops, autosave, `kill -9`, SIGTERM, workspaces, and a virtual monitor
+unplugged and plugged back in. It needs a running amux server and three
+Desktops on the main display; CI cannot run it (no Desktops, no WindowServer).
+
 ## Vault secrets (`api/vault_secrets.rs`)
 
 ```bash

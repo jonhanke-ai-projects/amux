@@ -2718,7 +2718,7 @@ function openStyleGuide() {
     <div class="modal-body">
       <section class="ui-guide-section"><h4>One shared visual language</h4><p class="ui-help">Original icons. Clear actions. Compact layouts with room to tap. These examples use the same CSS as the app; preview changes here before applying them across screens.</p><div class="ui-guide-row"><button id="ui-guide-theme" class="btn" onclick="_uiGuideTheme()">Preview other theme</button><span class="ui-help">Theme preview is restored when you close this guide.</span></div></section>
       <section class="ui-guide-section"><h4>Color and surfaces</h4><div class="ui-guide-grid">${['bg','card','text','dim','accent','green','red','yellow'].map(token=>`<div class="ui-guide-swatch"><i style="background:var(--${token})" aria-hidden="true"></i><code>--${token}</code></div>`).join('')}</div><p class="ui-help">Use surface and text tokens in both themes. Pair accent fills with <code>--on-accent</code>. Status colors always have a text label.</p></section>
-      <section class="ui-guide-section"><h4>Actions</h4><div class="ui-guide-row"><button id="ui-guide-primary" class="btn primary" onclick="_uiGuideAction(this)">Primary action</button><button class="btn" onclick="_uiGuideAction(this)">Secondary action</button><button class="btn danger" onclick="_uiGuideAction(this)">Destructive example</button><button class="btn" disabled>Unavailable</button><button class="btn" aria-busy="true" disabled>Working…</button></div><p class="ui-help">Use one primary action per group. Destructive actions keep a clear label and require confirmation when they affect real data. Examples here change no account or worker data.</p><output id="ui-guide-feedback" class="ui-help" role="status" aria-live="polite">Try an action to preview feedback.</output></section>
+      <section class="ui-guide-section"><h4>Actions</h4><div class="ui-guide-row"><button id="ui-guide-primary" class="btn primary" onclick="_uiGuideAction(this)">Primary action</button><button class="btn" onclick="_uiGuideAction(this)">Secondary action</button><button class="btn danger" onclick="_uiGuideAction(this)">Destructive example</button><button class="btn" disabled>Unavailable</button><button class="btn" aria-busy="true" disabled>Working…</button></div><div class="ui-guide-row"><button class="btn" role="switch" aria-checked="true" onclick="this.setAttribute('aria-checked', String(this.getAttribute('aria-checked') !== 'true'));this.textContent=this.getAttribute('aria-checked') === 'true' ? 'On' : 'Off'">On</button><button class="btn" role="switch" aria-checked="false" onclick="this.setAttribute('aria-checked', String(this.getAttribute('aria-checked') !== 'true'));this.textContent=this.getAttribute('aria-checked') === 'true' ? 'On' : 'Off'">Off</button><button class="btn" role="switch" aria-checked="mixed">Partly on</button><span class="ui-help">A setting that is on or off is a switch: <code>.btn role="switch"</code> with <code>aria-checked</code>.</span></div><p class="ui-help">Use one primary action per group. Destructive actions keep a clear label and require confirmation when they affect real data. Examples here change no account or worker data.</p><output id="ui-guide-feedback" class="ui-help" role="status" aria-live="polite">Try an action to preview feedback.</output></section>
       <section class="ui-guide-section"><h4>Fields and validation</h4><div class="ui-guide-grid"><label class="ui-field">Name<input class="input" placeholder="Example name" autocomplete="off"><span class="ui-help">A label stays visible after typing.</span></label><label class="ui-field">Choice<select class="input"><option>First option</option><option>Second option</option></select><span class="ui-help">Use the native picker on mobile.</span></label><label class="ui-field">Invalid example<input class="input" value="Example" aria-invalid="true" aria-describedby="ui-guide-error"><span id="ui-guide-error" class="ui-error">Explain what to change, beside the field.</span></label><label class="ui-field">Notes<textarea class="input" rows="3" placeholder="An example draft"></textarea><span class="ui-help">Long content scrolls without hiding actions.</span></label></div></section>
       <section class="ui-guide-section"><h4>Icons and status</h4><div class="ui-guide-row"><button class="settings-btn" aria-label="Example settings" onclick="_uiGuideAction(this)">&#x2699;</button><button class="btn" aria-label="Example notifications" onclick="_uiGuideAction(this)">&#x1F514;</button><span class="status-badge active">Working</span><span class="status-badge idle">Idle</span><span class="ui-help"><span style="color:var(--red)">18</span> limited</span></div><p class="ui-help">Keep the original toolbar symbols. Icon-only controls need an accessible label and a 44-pixel touch target. The compact mobile header uses a, a live dot, and counts.</p></section>
       <section class="ui-guide-section"><h4>Dialogs and menus</h4><div class="ui-guide-rule">Use a heading, an obvious Close control, a scrolling body, and an action row that stays reachable above the keyboard. Menus anchor to their trigger and fit inside the viewport.</div><div class="ui-guide-row"><button class="btn" onclick="_uiGuideDialog()">Try confirmation dialog</button><code>.modal-overlay → .modal → .modal-header / .modal-body / .modal-footer</code></div></section>
@@ -6722,7 +6722,7 @@ function _niAutoHtml(d, level, name) {
         + ' onchange="_niAutoSet(\'' + q + '\',\'' + n + '\',\'money_cap_usd\',Number(this.value))">';
     } else {
       const on = !!cur.value;
-      ctl = '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '" aria-label="' + esc(row.label) + '"'
+      ctl = '<button class="btn" role="switch" aria-checked="' + on + '" aria-label="' + esc(row.label) + '"'
         + ' onclick="_niAutoSet(\'' + q + '\',\'' + n + '\',\'' + row.f + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>';
     }
     if (own && (level === 'worker' || cur.source === 'global')) {
@@ -12429,7 +12429,7 @@ const _BOARD_ONE_NOTE = 'On: the board starts this worker\u2019s To Do cards whe
 function _boardOneSwitchHTML(name, s, cls) {
   const b = _boardOneState(s);
   const dis = s && s.isolated ? ' disabled' : '';
-  return '<button type="button" class="btn board-one-switch' + (b.on ? ' primary' : '') + (cls ? ' ' + cls : '') + '" role="switch"'
+  return '<button type="button" class="btn board-one-switch' + (cls ? ' ' + cls : '') + '" role="switch"'
     + ' aria-checked="' + (b.mode === 'partial' ? 'mixed' : String(b.on)) + '" data-board-mode="' + b.mode + '"' + dis
     + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',' + (!b.on) + ')"'
     + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>'
@@ -12552,8 +12552,8 @@ function _workerPrimaryConfigurationsHTML(name) {
   const edit = (field, current, extra) => '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;"'
     + ' onclick="event.stopPropagation();editField(\'' + q + '\',\'' + field + '\',\''
     + escJs(current || '') + '\'' + (extra ? ',\'' + escJs(extra) + '\'' : '') + ')">Edit</button>';
-  const sw = (on, fn, label) => '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="'
-    + !!on + '" style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
+  const sw = (on, fn, label) => '<button class="btn" role="switch" aria-checked="'
+    + !!on + '" style="font-size:0.68rem;min-height:32px;"'
     + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')" aria-label="' + esc(label) + '">'
     + (on ? 'On' : 'Off') + '</button>';
   const identity = [
@@ -12619,8 +12619,8 @@ async function _workerTypeSet(name, id) {
 function _workerEmailPermissionControls(name, s) {
   const on = !!s.external_email_allowed;
   const own = !!s.external_email_allowed_own;
-  const set = '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
-    + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
+  const set = '<button class="btn" role="switch" aria-checked="' + on + '"'
+    + ' style="font-size:0.68rem;min-height:32px;"'
     + ' onclick="event.stopPropagation();_workerExternalEmailSet(\'' + escJs(name) + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>';
   const inherit = own ? '<button class="btn" style="font-size:0.65rem;min-height:32px;padding:4px 7px;"'
     + ' onclick="event.stopPropagation();_workerExternalEmailSet(\'' + escJs(name) + '\',null)">Inherit</button>' : '';
@@ -18478,10 +18478,19 @@ function _peekUnechoedHtml(output, historyRaw) {
   // a process that no longer exists, so it is neither anchor nor candidate.
   const w = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
   const bornMs = w && Number(w.session_created) > 0 ? Number(w.session_created) * 1000 : 0;
+  // STILL QUEUED IS NOT DELIVERED (Ethan, 2026-10-21, amux-homepage: "put
+  // the demos link in the header and footer too" sat in Steering as 1 queued
+  // while this banner said Claude Code had taken it). A queued send writes its
+  // ledger row at enqueue, so the row alone cannot say it reached the worker;
+  // whatever the worker's queue still holds is excluded.
+  let pending = new Set();
+  try { pending = new Set(_steerQueueFor(w).map(m => squash(canon(m.text || '')).slice(0, 40)).filter(Boolean)); } catch (_) {}
   const now = Date.now(), seen = new Set(), recent = [];
+  let held = 0;
   for (const row of rows.sort((a, b) => a.ts - b.ts)) {
     const key = squash(row.text).slice(0, 40);
     if (!key || seen.has(key) || now - row.ts > 12 * 3600 * 1000 || row.ts < bornMs) continue;
+    if (pending.has(key)) { seen.add(key); held++; continue; }
     seen.add(key);
     // A long paste draws as "[Pasted text ...]", so its absence proves nothing.
     if (row.text.length > 1000 || row.text.split('\n').length > 12) continue;
@@ -18495,7 +18504,7 @@ function _peekUnechoedHtml(output, historyRaw) {
   if (_peekUnechoedReported !== tag) {
     _peekUnechoedReported = tag;
     try { window._clientDebug && window._clientDebug('peek-unechoed-messages', { session: peekSession, shown: out.length,
-      verdict: 'delivered_message_not_in_terminal', measured: true, n_considered: rows.length }); } catch (_) {}
+      verdict: 'delivered_message_not_in_terminal', still_queued: held, measured: true, n_considered: rows.length }); } catch (_) {}
   }
   return '<div class="peek-unechoed"><div class="peek-unechoed-head">Delivered while the worker was busy. Claude Code took '
     + (out.length === 1 ? 'it' : 'them') + ' into the running turn without printing a prompt:</div>'
@@ -51664,7 +51673,7 @@ async function _handleDeeplink(hash) {
 // any open session peek. Bounded to 24h so a days-later open still lands on a
 // sane default rather than a stale heavy tab.
 const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
-function _restoreScreen() {
+function _restoreScreen(bootHash) {
   // Must run AFTER the DOM is parsed: switchView touches #grid-view, which is
   // defined later in the HTML than this inline script — calling it during boot
   // (setTimeout 0) null-derefs and throws. The app never calls switchView on
@@ -51673,7 +51682,14 @@ function _restoreScreen() {
   // (#view= / ?view=, the rig entry). The saved-tab restore silently beat the
   // view deeplink on 2026-08-08 — the rig asked for ?view=groups, got last
   // session's Workers tab, and the deeplink looked broken while working fine.
-  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)
+  // Decide from the hash the page BOOTED with. The deeplink handler runs
+  // first and may already have rewritten it: on WebKit #view=files opens the
+  // Files view synchronously, loadFiles replaces the hash with the folder (or
+  // clears it), and this check then saw no deeplink and reopened the last
+  // peek over the view the link named. In the Mac app, where every window
+  // shares localStorage, that peek was another window's worker (2026-10-21).
+  const _bootHash = typeof bootHash === 'string' ? bootHash : location.hash;
+  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(_bootHash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -51698,7 +51714,10 @@ function _restoreScreen() {
   //    it made the rig land on whichever session was peeked before (verified
   //    2026-08-08: #peek=amux opened amux-frustrations), and a shared link
   //    would misdirect the same way.
-  if (/^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)) return;
+  if (_hasDeeplink) {
+    amuxTrack('peek_restore_skipped_deeplink', {kind:(_bootHash.match(/^#(\w+)=/) || [,'view'])[1], measured:true, n_considered:1});
+    return;
+  }
   // The split side panel opens only what its URL names. Restoring the outer
   // page's peek here (split included) is how it nested itself.
   if (window._peekSplitChild) return;
@@ -51748,8 +51767,9 @@ function _restoreScreen() {
   }
 }
 function _restoreAppScreen() {
-  _handleDeeplink(location.hash);
-  _restoreScreen();
+  const bootHash = location.hash;
+  _handleDeeplink(bootHash);
+  _restoreScreen(bootHash);
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _restoreAppScreen, {once:true});
 else queueMicrotask(_restoreAppScreen);

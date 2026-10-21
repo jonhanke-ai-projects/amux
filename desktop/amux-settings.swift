@@ -1,12 +1,14 @@
 import Cocoa
 import WebKit
 
-// Settings (amux > Settings…, Cmd-,) and saved window layouts.
+// Settings (amux > Settings…, Cmd-,) and saved workspaces.
 //
-// A layout is the set of dashboard windows (what each shows, where it sits,
-// which ones are tabs together) plus the floating pins, under a name. Opening
-// one replaces the current windows, so a "morning triage" or "two workers side
-// by side" arrangement comes back exactly as it was saved.
+// A workspace (stored as a "layout") is the set of dashboard windows (what
+// each shows, where it sits, on which display and Desktop, which ones are tabs
+// together) plus the floating pins, under a name. Opening one replaces the
+// current windows, reusing any already showing the same page. The open
+// workspace keeps where you left it, so switching away and back returns to it
+// as it was.
 
 struct SavedPin: Codable {
     var paths: [String]
@@ -49,12 +51,22 @@ extension AppDelegate {
         }
     }
 
-    /// Replace the open windows and pins with the layout's.
+    /// Replace the open windows and pins with the workspace's.
     func openLayout(named name: String) {
-        guard let l = (loadConfig().layouts ?? []).first(where: { $0.name == name }) else { return }
-        for c in controllers { c.window?.close() }
+        var cfg = loadConfig()
+        if let cur = cfg.activeWorkspace, cur != name, var ls = cfg.layouts, let i = ls.firstIndex(where: { $0.name == cur }) {
+            ls[i].windows = snapshotNow()
+            ls[i].pins = snapshotPins()
+            cfg.layouts = ls
+        }
+        guard let l = (cfg.layouts ?? []).first(where: { $0.name == name }) else { return }
+        cfg.activeWorkspace = name
+        saveConfig(cfg)
+        config = cfg
+        saveWork?.cancel()
         closeAllPins()
-        openWindows(l.windows)
+        openWindows(l.windows, reuse: controllers)
+        rebuildLayoutsMenu()
         for p in l.pins ?? [] where !p.paths.isEmpty {
             let f = NSRectFromString(p.frame)
             let o = OverlayController(filePaths: p.paths, x: Int(f.minX), y: Int(f.minY),
@@ -65,29 +77,11 @@ extension AppDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func openWindows(_ saved: [SavedWindow]) {
-        guard serverURL != nil, !saved.isEmpty else {
-            openWindow(url: nil, frame: nil)
-            return
-        }
-        var groups: [Int: DashboardWindowController] = [:]
-        for s in saved {
-            let frame = NSRectFromString(s.frame)
-            let c = openWindow(url: URL(string: s.url), frame: frame.width > 100 ? frame : nil)
-            if let g = s.tabGroup {
-                if let lead = groups[g], let lw = lead.window, let cw = c.window {
-                    lw.addTabbedWindow(cw, ordered: .above)
-                } else {
-                    groups[g] = c
-                }
-            }
-        }
-    }
-
     func deleteLayout(named name: String) {
         var c = loadConfig()
         c.layouts = (c.layouts ?? []).filter { $0.name != name }
         if c.launch == "layout:" + name { c.launch = nil }
+        if c.activeWorkspace == name { c.activeWorkspace = nil }
         saveConfig(c)
         config = c
         rebuildLayoutsMenu()
@@ -101,6 +95,7 @@ extension AppDelegate {
         if let i = layouts.firstIndex(where: { $0.name == old }) { layouts[i].name = n }
         c.layouts = layouts
         if c.launch == "layout:" + old { c.launch = "layout:" + n }
+        if c.activeWorkspace == old { c.activeWorkspace = n }
         saveConfig(c)
         config = c
         rebuildLayoutsMenu()
@@ -116,15 +111,16 @@ extension AppDelegate {
         } else {
             openWindows(config.windows ?? [])
         }
+        lastSignature = placementSignature()
     }
 
     @objc func saveLayoutPrompt(_ sender: Any?) {
         let existing = (loadConfig().layouts ?? []).map { $0.name }
         var n = existing.count + 1
-        while existing.contains("Layout \(n)") { n += 1 }
-        guard let name = askText(title: "Save Window Layout",
-                                 message: "Saves every open amux window (what it shows and where it sits) and the floating pins. A name that already exists is replaced.",
-                                 value: "Layout \(n)", ok: "Save") else { return }
+        while existing.contains("Workspace \(n)") { n += 1 }
+        guard let name = askText(title: "Save Workspace",
+                                 message: "Saves every open amux window (what it shows, where it sits, its display and Desktop) and the floating pins. A name that already exists is replaced.",
+                                 value: "Workspace \(n)", ok: "Save") else { return }
         saveLayout(named: name)
     }
 
@@ -148,23 +144,40 @@ extension AppDelegate {
 
     func rebuildLayoutsMenu() {
         layoutsMenu.removeAllItems()
-        let save = NSMenuItem(title: "Save Window Layout…", action: #selector(saveLayoutPrompt(_:)), keyEquivalent: "s")
+        let save = NSMenuItem(title: "Save Workspace…", action: #selector(saveLayoutPrompt(_:)), keyEquivalent: "s")
         save.keyEquivalentModifierMask = [.command, .option]
         save.target = self
         layoutsMenu.addItem(save)
         let layouts = loadConfig().layouts ?? []
         if !layouts.isEmpty { layoutsMenu.addItem(.separator()) }
-        for l in layouts {
-            let item = NSMenuItem(title: l.name, action: #selector(openLayoutItem(_:)), keyEquivalent: "")
+        let active = loadConfig().activeWorkspace
+        for (i, l) in layouts.enumerated() {
+            // ⌃⌘1 to ⌃⌘9 switch to the first nine.
+            let item = NSMenuItem(title: l.name, action: #selector(openLayoutItem(_:)), keyEquivalent: i < 9 ? String(i + 1) : "")
+            item.keyEquivalentModifierMask = [.control, .command]
             item.representedObject = l.name
             item.target = self
-            item.toolTip = "\(l.windows.count) window\(l.windows.count == 1 ? "" : "s"), \(l.pins?.count ?? 0) pin\((l.pins?.count ?? 0) == 1 ? "" : "s")"
+            item.state = l.name == active ? .on : .off
+            item.toolTip = workspaceSummary(l)
             layoutsMenu.addItem(item)
         }
         layoutsMenu.addItem(.separator())
-        let manage = NSMenuItem(title: "Manage Layouts…", action: #selector(showSettings(_:)), keyEquivalent: "")
+        let manage = NSMenuItem(title: "Manage Workspaces…", action: #selector(showSettings(_:)), keyEquivalent: "")
         manage.target = self
         layoutsMenu.addItem(manage)
+    }
+
+    /// "5 windows · Desktop 1: 2, Desktop 3: 3 · 2 displays · 1 pin"
+    func workspaceSummary(_ l: Layout) -> String {
+        var parts = ["\(l.windows.count) window\(l.windows.count == 1 ? "" : "s")"]
+        var desks: [Int: Int] = [:]
+        for w in l.windows where w.selected != false { if let n = w.spaceIndex { desks[n, default: 0] += 1 } }
+        if desks.count > 1 { parts.append(desks.keys.sorted().map { "Desktop \($0): \(desks[$0]!)" }.joined(separator: ", ")) }
+        let displays = Set(l.windows.compactMap { $0.display }).count
+        if displays > 1 { parts.append("\(displays) displays") }
+        let pins = l.pins?.count ?? 0
+        if pins > 0 { parts.append("\(pins) pin\(pins == 1 ? "" : "s")") }
+        return parts.joined(separator: " · ")
     }
 
     @objc func showSettings(_ sender: Any?) {
@@ -230,11 +243,14 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
             case "menuBar": cfg.menuBar = on
             case "notifications": cfg.notifications = on
             case "dockBadge": cfg.dockBadge = on
+            case "snapToGrid": cfg.snapToGrid = on
+            case "openAtLogin": cfg.openAtLogin = on
             default: break
             }
             saveConfig(cfg)
             app.config = cfg
             app.applyBadge()
+            if name == "openAtLogin" { app.applyOpenAtLogin() }
             if name == "menuBar" { app.startMenuBarItem() }
         case "server":
             (app.keyController ?? app.openWindow(url: nil, frame: nil)).showConnectPage()
@@ -264,11 +280,10 @@ func settingsHTML(_ app: AppDelegate) -> String {
     df.dateStyle = .medium
     df.timeStyle = .short
     let rows = layouts.isEmpty
-        ? "<div class=\"empty\">No saved layouts yet. Arrange your windows, then save them below.</div>"
+        ? "<div class=\"empty\">No saved workspaces yet. Arrange your windows across your Desktops, then save them below.</div>"
         : layouts.map { l -> String in
             let n = jsString(l.name)
-            let pins = l.pins?.count ?? 0
-            let what = "\(l.windows.count) window\(l.windows.count == 1 ? "" : "s")" + (pins > 0 ? ", \(pins) pin\(pins == 1 ? "" : "s")" : "")
+            let what = app.workspaceSummary(l) + (c.activeWorkspace == l.name ? " · open now" : "")
             let shows = l.windows.compactMap { w -> String? in
                 guard let r = w.url.range(of: "#") else { return nil }
                 let h = String(w.url[r.upperBound...])
@@ -290,7 +305,7 @@ func settingsHTML(_ app: AppDelegate) -> String {
         .map { "<option value=\"\($0.0)\"\(launch == $0.0 ? " selected" : "")>\($0.1)</option>" }.joined()
         + layouts.map { l in
             let v = "layout:" + l.name
-            return "<option value=\"\(htmlEscape(v))\"\(launch == v ? " selected" : "")>Open layout: \(htmlEscape(l.name))</option>"
+            return "<option value=\"\(htmlEscape(v))\"\(launch == v ? " selected" : "")>Open workspace: \(htmlEscape(l.name))</option>"
         }.joined()
     func toggle(_ key: String, _ on: Bool, _ label: String, _ hint: String) -> String {
         """
@@ -327,19 +342,23 @@ func settingsHTML(_ app: AppDelegate) -> String {
       small { color: var(--dim); }
       kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
     </style></head><body>
-    <h2>Window layouts</h2>
+    <h2>Workspaces</h2>
     <div class="card">
       \(rows)
-      <div class="save"><input type="text" id="lname" placeholder="Name this layout, e.g. Morning triage"
+      <div class="save"><input type="text" id="lname" placeholder="Name this workspace, e.g. Morning triage"
         onkeydown="if(event.key==='Enter')saveNew()"><button class="primary" onclick="saveNew()">Save current windows</button></div>
     </div>
     <h2>When amux opens</h2>
-    <div class="card"><div class="save"><select onchange="send('launch','',this.value)">\(launchOptions)</select></div></div>
+    <div class="card"><div class="save"><select onchange="send('launch','',this.value)">\(launchOptions)</select></div>
+      \(toggle("openAtLogin", c.openAtLogin ?? true, "Open amux at login", "So a restart comes back to your windows on their Desktops. Now: \(htmlEscape(app.openAtLoginStatus))."))
+      <div class="row"><div class="info"><small>Each window goes back to its display and Desktop (\(Spaces.canMove ? "available on this Mac" : "not available on this macOS, so windows open on the current Desktop")). Windows on a display that is not connected open on the main display and move back when it returns.</small></div></div>
+    </div>
     <h2>General</h2>
     <div class="card">
       \(toggle("menuBar", c.menuBar ?? true, "Show in menu bar", "CPU and memory readout, with your pinned notes one click away."))
       \(toggle("notifications", c.notifications ?? true, "Notify when amux needs you", "A notification for each new item waiting on you."))
       \(toggle("dockBadge", c.dockBadge ?? true, "Show count on Dock icon", "The number of items waiting on you."))
+      \(toggle("snapToGrid", c.snapToGrid ?? true, "Snap windows to a grid", "While you drag, an outline shows where the window lands: a 12 by 8 grid of the screen or another amux window's edge. Hold Option to place it freely."))
     </div>
     <h2>Server</h2>
     <div class="card"><div class="row"><div class="info"><div class="name">\(server)</div>
@@ -347,7 +366,9 @@ func settingsHTML(_ app: AppDelegate) -> String {
     <h2>Shortcuts</h2>
     <div class="card"><div class="row"><div class="info">
       <kbd>⌃⌥Space</kbd> show or hide amux · <kbd>⌘N</kbd> new window · <kbd>⌘T</kbd> new tab ·
-      <kbd>⇧⌘N</kbd> current view in a new window · <kbd>⌥⌘S</kbd> save window layout</div></div></div>
+      <kbd>⇧⌘N</kbd> current view in a new window · <kbd>⌥⌘S</kbd> save workspace · <kbd>⌃⌘1</kbd>…<kbd>9</kbd> switch workspace ·
+      <kbd>⌃⌥⌘←→↑↓</kbd> halves · <kbd>⌃⌥⌘U I J K</kbd> quarters · <kbd>⌃⌥⌘D F G</kbd> thirds · <kbd>⌃⌥⌘↩</kbd> fill ·
+      <kbd>⌃⌥⌘T</kbd> tile this Desktop · <kbd>⌃⌥⌘S</kbd> stack as tabs · <kbd>⌃⌥⌘N</kbd> next display</div></div></div>
     <script>
       function send(action, name, value) { window.webkit.messageHandlers.amuxSettings.postMessage({action, name, value}); }
       function saveNew() { const v = document.getElementById('lname').value.trim(); if (v) send('save', v); }

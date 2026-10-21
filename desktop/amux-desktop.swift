@@ -31,6 +31,16 @@ struct SavedWindow: Codable {
     var url: String
     var frame: String
     var tabGroup: Int?
+    // Added 2026-10-21 (amux-workspace.swift); optional so older files decode.
+    var selected: Bool?        // the visible tab of its group
+    var display: String?       // the monitor's UUID
+    var displayName: String?
+    var rel: String?           // frame as fractions of that display's usable area
+    var space: String?         // the macOS Desktop's Space UUID
+    var spaceIndex: Int?       // its number on that display (Desktop 1, 2, ...)
+    var allDesktops: Bool?
+    var minimized: Bool?
+    var fullscreen: Bool?
 }
 
 struct Config: Codable {
@@ -44,6 +54,12 @@ struct Config: Codable {
     var layouts: [Layout]?
     // "last" (default), "new", or "layout:<name>"
     var launch: String?
+    var snapToGrid: Bool?
+    var openAtLogin: Bool?
+    // The workspace open now; switching away saves where you left it.
+    var activeWorkspace: String?
+    // false while the app runs; still false at launch means it did not quit cleanly.
+    var cleanExit: Bool?
 }
 
 func loadConfig() -> Config {
@@ -174,19 +190,37 @@ func connectPageHTML(_ config: Config) -> String {
     """
 }
 
-// What the dashboard is showing, as a deep link another window can open:
-// the open worker (#peek=) or the current tab (#view=).
-let currentViewJS = """
-(() => {
+// What the dashboard is showing, as a deep link another window (or the next
+// launch) can open: the open worker and its tab (#peek=x&tab=chat), an open
+// card (#issue=), an open file or folder (#path=), a worker's browser
+// (#browser=), or the current tab (#view=). Every form is one the dashboard's
+// own deep-link router (_handleDeeplink) already opens.
+let viewHashBody = """
   try {
     const peek = document.getElementById('peek-overlay');
-    if (peek && peek.classList.contains('active') && typeof peekSession !== 'undefined' && peekSession)
-      return '#peek=' + encodeURIComponent(peekSession);
-    if (typeof activeView !== 'undefined' && activeView) return '#view=' + encodeURIComponent(activeView);
+    if (peek && peek.classList.contains('active') && typeof peekSession !== 'undefined' && peekSession) {
+      let t = '';
+      try { if (typeof _peekTab !== 'undefined' && _peekTab) t = '&tab=' + encodeURIComponent(_peekTab); } catch (e) {}
+      return '#peek=' + encodeURIComponent(peekSession) + t;
+    }
+    const bd = document.getElementById('board-detail-overlay');
+    if (bd && bd.classList.contains('active') && typeof boardDetailId !== 'undefined' && boardDetailId)
+      return '#issue=' + encodeURIComponent(boardDetailId);
+    const fo = document.getElementById('file-overlay');
+    if (fo && fo.classList.contains('active')) {
+      const dir = (document.getElementById('file-subpath') || {}).textContent || '';
+      const name = (document.getElementById('file-title') || {}).textContent || '';
+      if (dir.startsWith('/') && name) return '#path=' + encodeURIComponent((dir === '/' ? '' : dir) + '/' + name);
+    }
+    if (typeof activeView !== 'undefined' && activeView) {
+      try { if (activeView === 'files' && _filesPath && _filesPath !== '/') return '#path=' + encodeURIComponent(_filesPath); } catch (e) {}
+      try { if (activeView === 'browser' && _bwSession) return '#browser=' + encodeURIComponent(_bwSession); } catch (e) {}
+      return '#view=' + encodeURIComponent(activeView);
+    }
   } catch (e) {}
   return '';
-})()
 """
+let currentViewJS = "(() => {\n" + viewHashBody + "\n})()"
 
 // Names the window after what it is showing, so the Window menu and the
 // Dock's right-click list read "mixpeek-general" or "Board" rather than a
@@ -206,9 +240,16 @@ let windowLabelJS = """
     } catch (e) {}
     return '';
   };
+  const view = () => {
+""" + viewHashBody + """
+  };
+  let lastView = null;
   const tick = () => {
-    const l = label();
-    if (l !== last) { last = l; window.webkit.messageHandlers.amuxWindowLabel.postMessage(l); }
+    const l = label(), v = view();
+    if (l !== last || v !== lastView) {
+      last = l; lastView = v;
+      window.webkit.messageHandlers.amuxWindowLabel.postMessage({label: l, view: v});
+    }
   };
   setInterval(tick, 1000);
   document.addEventListener('click', () => setTimeout(tick, 50), true);
@@ -229,6 +270,14 @@ class WeakScriptHandler: NSObject, WKScriptMessageHandler {
 // ── A dashboard window ──
 class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
     var pageLabel = ""
+    // What the page shows, posted by windowLabelJS; saved with the window.
+    var viewHash = ""
+    // The last amux page this window showed, kept while it shows the connect page.
+    var lastServerURL: URL?
+    // Where you last put it (amux-workspace.swift).
+    var home: SavedWindow?
+    var lastSpace: Spaces.Info?
+    var normalFrame: NSRect?
     let webView: WKWebView
     var titleObservation: NSKeyValueObservation?
     var themeObservation: NSKeyValueObservation?
@@ -263,6 +312,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             backing: .buffered,
             defer: false
         )
+        // A saved frame is the whole window. As a content rect it gained a
+        // title bar's height (32 pt) on every launch.
+        if let frame = frame { window.setFrame(frame, display: false) }
         window.title = "amux"
         window.backgroundColor = NSColor(red: 13/255, green: 17/255, blue: 23/255, alpha: 1)
         window.minSize = NSSize(width: 480, height: 400)
@@ -271,6 +323,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // <meta name="theme-color"> to match its light or dark mode.
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
+        // amux saves and restores its own windows (with their Desktops);
+        // AppKit's restoration would open a second, blank set.
+        window.isRestorable = false
+        window.collectionBehavior.insert(.fullScreenPrimary)
         window.contentView = webView
         super.init(window: window)
         window.delegate = self
@@ -290,7 +346,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "amuxWindowLabel" else { return }
-        pageLabel = (message.body as? String) ?? ""
+        if let d = message.body as? [String: Any] {
+            pageLabel = (d["label"] as? String) ?? ""
+            viewHash = (d["view"] as? String) ?? ""
+        } else {
+            pageLabel = (message.body as? String) ?? ""
+        }
         updateTitle()
     }
 
@@ -329,6 +390,32 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         titleObservation = nil
         themeObservation = nil
         app?.windowClosed(self)
+    }
+
+    func windowWillMove(_ notification: Notification) { app?.dragBegan(self) }
+    // macOS also live-resizes a window it moves off an unplugged display;
+    // only a resize that began with the mouse down is yours.
+    var userResize = false
+    func windowWillStartLiveResize(_ notification: Notification) { userResize = NSEvent.pressedMouseButtons & 1 != 0 }
+    func windowDidEndLiveResize(_ notification: Notification) {
+        if userResize { app?.resizeEnded(self) } else { app?.windowPlaced(self) }
+        userResize = false
+    }
+    func windowDidMove(_ notification: Notification) {
+        if NSEvent.pressedMouseButtons & 1 == 0 { app?.windowPlaced(self) }
+    }
+    func windowDidResize(_ notification: Notification) {
+        if !(window?.inLiveResize ?? false) { app?.windowPlaced(self) }
+    }
+    func windowDidChangeScreen(_ notification: Notification) { app?.windowPlaced(self) }
+    func windowDidMiniaturize(_ notification: Notification) { app?.saveWindowsSoon() }
+    func windowDidDeminiaturize(_ notification: Notification) { app?.saveWindowsSoon() }
+    func windowWillEnterFullScreen(_ notification: Notification) { normalFrame = window?.frame }
+    func windowDidEnterFullScreen(_ notification: Notification) { app?.saveWindowsSoon() }
+    func windowDidExitFullScreen(_ notification: Notification) { normalFrame = nil; app?.windowPlaced(self) }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let u = webView.url, app?.isServerURL(u) == true { lastServerURL = u }
     }
 
     // The tab bar's "+" button and File > New Tab.
@@ -537,7 +624,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var terminating = false
     var lastNeedsCount = 0
     var settings: SettingsWindowController?
-    let layoutsMenu = NSMenu(title: "Layouts")
+    let layoutsMenu = NSMenu(title: "Workspaces")
+    // amux-workspace.swift
+    var restoring = false
+    var screenGrace = Date.distantPast
+    var placementTimer: Timer?
+    var lastSignature = ""
+    var sigtermSource: DispatchSourceSignal?
+    var dragTimer: Timer?
+    lazy var snapPreview = SnapPreview()
 
     func applyBadge() {
         let show = config.dockBadge ?? true
@@ -574,7 +669,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         }
         // A layout link at launch replaces the windows anyway; skip opening them first.
         let launchLinks = CommandLine.arguments.dropFirst().compactMap { URL(string: $0) }.filter { $0.scheme == "amux" }
-        if !launchLinks.contains(where: { $0.host == "layout" }) { launchWindows() }
+        if config.cleanExit == false {
+            NSLog("amux-desktop: verdict=restore_after_unclean_exit windows=%d", config.windows?.count ?? 0)
+        }
+        if !launchLinks.contains(where: { $0.host == "layout" || $0.host == "workspace" }) { launchWindows() }
+        config = loadConfig()
+        config.cleanExit = false
+        saveConfig(config)
+        startWorkspaceTracking()
+        applyOpenAtLogin()
         hotKeyHandler = { [weak self] in self?.toggleVisible() }
         registerHotKey()
         startMenuBarItem()
@@ -593,14 +696,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     // ── Windows ──
     @discardableResult
-    func openWindow(url: URL?, frame: NSRect?, configuration: WKWebViewConfiguration? = nil) -> DashboardWindowController {
+    func openWindow(url: URL?, frame: NSRect?, configuration: WKWebViewConfiguration? = nil, activate: Bool = true) -> DashboardWindowController {
         let c = DashboardWindowController(app: self, frame: frame ?? cascadeFrame(), configuration: configuration)
         controllers.append(c)
         if let url = url { c.load(url) } else if configuration == nil {
             if let s = serverURL { c.load(s) } else { c.showConnectPage() }
         }
-        c.showWindow(nil)
-        c.window?.makeKeyAndOrderFront(nil)
+        if activate {
+            c.showWindow(nil)
+            c.window?.makeKeyAndOrderFront(nil)
+        } else {
+            c.window?.orderFront(nil)
+        }
         return c
     }
 
@@ -636,43 +743,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         return URL(string: normalized(s.absoluteString) + "/" + hash)
     }
 
-    /// Each window's current view as a deep link, so a relaunch reopens the
-    /// same workers and tabs where they were.
-    func snapshotWindows(_ done: @escaping ([SavedWindow]) -> Void) {
-        let list = controllers.filter { $0.window?.isVisible == true || $0.window?.isMiniaturized == true }
-        if list.isEmpty { done([]); return }
-        var out = Array<SavedWindow?>(repeating: nil, count: list.count)
-        var groupIds: [ObjectIdentifier: Int] = [:]
-        let group = DispatchGroup()
-        for (i, c) in list.enumerated() {
-            var tabGroup: Int? = nil
-            if let tabs = c.window?.tabbedWindows, tabs.count > 1, let first = tabs.first {
-                let key = ObjectIdentifier(first)
-                if groupIds[key] == nil { groupIds[key] = groupIds.count }
-                tabGroup = groupIds[key]
-            }
-            let frame = NSStringFromRect(c.window?.frame ?? .zero)
-            let tg = tabGroup
-            guard let base = c.webView.url, isServerURL(base) else { continue }
-            group.enter()
-            c.webView.evaluateJavaScript(currentViewJS) { [weak self] result, _ in
-                let hash = (result as? String) ?? ""
-                let url = hash.isEmpty ? base.absoluteString : (self?.url(withHash: hash)?.absoluteString ?? base.absoluteString)
-                out[i] = SavedWindow(url: url, frame: frame, tabGroup: tg)
-                group.leave()
-            }
-        }
-        group.notify(queue: .main) { done(out.compactMap { $0 }) }
-    }
+    /// Each window's view as a deep link and its place (amux-workspace.swift),
+    /// so a relaunch reopens the same workers and tabs where they were.
+    func snapshotWindows(_ done: @escaping ([SavedWindow]) -> Void) { done(snapshotNow()) }
 
     var saveWork: DispatchWorkItem?
     func saveWindowsSoon() {
         saveWork?.cancel()
         let w = DispatchWorkItem { [weak self] in
             self?.snapshotWindows { windows in
-                guard let self = self, !self.terminating else { return }
-                self.config = loadConfig().merging(windows: windows)
-                saveConfig(self.config)
+                guard let self = self, !self.terminating, !self.restoring else { return }
+                var c = loadConfig().merging(windows: windows)
+                c.cleanExit = false
+                // The open workspace keeps where you left it.
+                if let name = c.activeWorkspace, var ls = c.layouts, let i = ls.firstIndex(where: { $0.name == name }) {
+                    ls[i].windows = windows
+                    ls[i].pins = self.snapshotPins()
+                    c.layouts = ls
+                }
+                self.config = c
+                saveConfig(c)
             }
         }
         saveWork = w
@@ -683,8 +773,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         snapshotWindows { [weak self] windows in
             guard let self = self else { return }
             self.terminating = true
-            self.config = loadConfig().merging(windows: windows)
-            saveConfig(self.config)
+            var c = loadConfig().merging(windows: windows)
+            c.cleanExit = true
+            if let name = c.activeWorkspace, var ls = c.layouts, let i = ls.firstIndex(where: { $0.name == name }) {
+                ls[i].windows = windows
+                ls[i].pins = self.snapshotPins()
+                c.layouts = ls
+            }
+            self.config = c
+            saveConfig(c)
+            NSLog("amux-desktop: verdict=windows_saved_on_quit n=%d", windows.count)
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -746,7 +844,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // ── amux:// links ──
     // amux://worker/<name>  amux://view/<tab>  amux://open#<hash>
     // amux://new-window     amux://pin/<id>     amux://settings
-    // amux://layout/<name>  amux://save-layout/<name>
+    // amux://workspace/<name>  amux://save-workspace/<name> (also layout/, save-layout/)
+    // amux://arrange/<left|right|top|bottom|fill|center|tile|stack|next-display>  amux://quit
     @objc func handleURLEvent(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: s) else { return }
         handleAmuxURL(url)
@@ -758,12 +857,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let arg = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).removingPercentEncoding ?? ""
         let enc = arg.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_."))) ?? arg
         switch url.host ?? "" {
-        case "worker": openWindow(url: self.url(withHash: "#peek=" + enc), frame: nil)
+        case "worker":
+            // Already open somewhere (any Desktop): go to it instead of opening a duplicate.
+            if let c = controllers.first(where: { $0.viewHash.hasPrefix("#peek=" + enc) && ($0.viewHash.count == 6 + enc.count || $0.viewHash.dropFirst(6 + enc.count).hasPrefix("&")) }), let w = c.window {
+                if w.isMiniaturized { w.deminiaturize(nil) }
+                w.tabGroup?.selectedWindow = w
+                w.makeKeyAndOrderFront(nil)
+            } else {
+                openWindow(url: self.url(withHash: "#peek=" + enc), frame: nil)
+            }
         case "view": openWindow(url: self.url(withHash: "#view=" + enc), frame: nil)
         case "open": openWindow(url: self.url(withHash: url.fragment.map { "#" + $0 } ?? ""), frame: nil)
         case "pin": if let id = Int(arg) { openPin(id: id) }
-        case "layout": openLayout(named: arg)
-        case "save-layout": saveLayout(named: arg)
+        case "layout", "workspace": openLayout(named: arg)
+        case "save-layout", "save-workspace": saveLayout(named: arg)
+        case "arrange":
+            let actions: [String: Selector] = [
+                "left": #selector(arrangeLeftHalf(_:)), "right": #selector(arrangeRightHalf(_:)),
+                "top": #selector(arrangeTopHalf(_:)), "bottom": #selector(arrangeBottomHalf(_:)),
+                "fill": #selector(arrangeFill(_:)), "center": #selector(arrangeCenter(_:)),
+                "tile": #selector(arrangeTile(_:)), "stack": #selector(arrangeStack(_:)),
+                "next-display": #selector(arrangeNextDisplay(_:)),
+            ]
+            if let sel = actions[arg] { perform(sel, with: nil) }
+        case "quit": NSApp.terminate(nil)
         case "settings": showSettings(nil)
         default: openWindow(url: nil, frame: nil)
         }
@@ -1046,6 +1163,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if item.action == #selector(toggleMenuBarItem(_:)) { item.state = (config.menuBar ?? true) ? .on : .off }
         if item.action == #selector(toggleNotifications(_:)) { item.state = (config.notifications ?? true) ? .on : .off }
         if item.action == #selector(toggleDockBadge(_:)) { item.state = (config.dockBadge ?? true) ? .on : .off }
+        if item.action == #selector(toggleSnap(_:)) { item.state = snapEnabled ? .on : .off }
         return true
     }
 
@@ -1064,8 +1182,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         for it in pinsMenu.items { copy.addItem(it.copy() as! NSMenuItem) }
         p.submenu = copy
         m.addItem(p)
-        let l = NSMenuItem(title: "Layouts", action: nil, keyEquivalent: "")
-        let lcopy = NSMenu(title: "Layouts")
+        let l = NSMenuItem(title: "Workspaces", action: nil, keyEquivalent: "")
+        let lcopy = NSMenu(title: "Workspaces")
         for it in layoutsMenu.items { lcopy.addItem(it.copy() as! NSMenuItem) }
         l.submenu = lcopy
         m.addItem(l)
@@ -1165,7 +1283,10 @@ func buildMenuBar(_ d: AppDelegate) {
     add(window, "Merge All Windows", #selector(NSWindow.mergeAllWindows(_:)), "")
     add(window, "Move Tab to New Window", #selector(NSWindow.moveTabToNewWindow(_:)), "")
     window.addItem(.separator())
-    let layoutsItem = NSMenuItem(title: "Layouts", action: nil, keyEquivalent: "")
+    let arrangeItem = NSMenuItem(title: "Arrange", action: nil, keyEquivalent: "")
+    arrangeItem.submenu = buildArrangeMenu(d)
+    window.addItem(arrangeItem)
+    let layoutsItem = NSMenuItem(title: "Workspaces", action: nil, keyEquivalent: "")
     d.rebuildLayoutsMenu()
     layoutsItem.submenu = d.layoutsMenu
     window.addItem(layoutsItem)

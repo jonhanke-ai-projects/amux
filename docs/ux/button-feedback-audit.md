@@ -1040,6 +1040,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Close connection history | `` | onclick |
 | app.js | Commit  | `` | onclick |
 | app.js | Drag to move | `` | onclick |
+| app.js | Off | `` | onclick |
+| app.js | On | `` | onclick |
 | app.js | Open | `` | onclick |
 | app.js | Resend to ${esc(_target \|\| session)} | `` | onclick |
 | app.js | Review or restore | `` | onclick |
