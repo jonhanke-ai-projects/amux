@@ -52519,6 +52519,14 @@ async function pullFromRemote(btn) {
       return void setTimeout(_wtMaybeStart, 250);
     }
     if (typeof sessions !== 'undefined' && sessions && sessions.length > 0) return;
+    // One first-run thing at a time. A new amux Cloud server opens "Get started" (connect a
+    // model) and this walkthrough together, and the window covered the walkthrough's Skip
+    // (fresh server e2e, 2026-10-21). Connecting a model comes first; the tour waits.
+    var gs = document.getElementById('apikey-setup-modal');
+    if (gs && getComputedStyle(gs).display !== 'none') {
+      if (++_wtTries > 26 + 1200) return;          // about 20 minutes, then let it go
+      return void setTimeout(_wtMaybeStart, 1000);
+    }
     _wtShow();
   }
   setTimeout(_wtMaybeStart, 1500);
