@@ -138,7 +138,18 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     const agrees = async (on: boolean) => {
       await expect(sw).toHaveText(on ? 'On' : 'Off');
       await expect(sw).toHaveAttribute('aria-checked', String(on));
-      if (on) await expect(sw).toHaveClass(/primary/); else await expect(sw).not.toHaveClass(/primary/);
+      // It looks like a switch (Ethan, 2026-10-21): a track, accent when on,
+      // with the knob moved across; never a filled button.
+      await expect(sw).not.toHaveClass(/primary/);
+      const look = await sw.evaluate(el => {
+        const t = getComputedStyle(el, '::before'), k = getComputedStyle(el, '::after');
+        const probe = document.createElement('i'); probe.style.color = 'var(--accent)'; document.body.append(probe);
+        const accent = getComputedStyle(probe).color; probe.remove();
+        return {track: t.backgroundColor, accent, knobMoved: k.transform !== 'none', trackW: parseFloat(t.width)};
+      });
+      expect(look.trackW, 'a track is drawn').toBeGreaterThan(20);
+      expect(look.track === look.accent, 'track is the accent colour only when on').toBe(on);
+      expect(look.knobMoved, 'knob is across only when on').toBe(on);
     };
     await agrees(false);
     const box = await sw.boundingBox();
