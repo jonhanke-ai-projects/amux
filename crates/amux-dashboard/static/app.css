@@ -10086,3 +10086,6 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .reclaim-safe-card .btn, .reclaim-actions-row .btn { min-height: 44px; }
 .reclaim-host-note { font-size: 0.78rem; color: var(--dim); margin-top: 8px; }
 .reclaim-host-out { font-size: 0.72rem; white-space: pre-wrap; overflow-x: auto; background: var(--surface, rgba(127,127,127,0.08)); border-radius: 6px; padding: 8px; margin-top: 6px; max-height: 260px; }
+
+/* Keep each command fragment whole so a flag never breaks between its two dashes. */
+.cloud-offer-settings-text code { white-space: nowrap; }
