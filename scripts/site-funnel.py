@@ -9,7 +9,7 @@ see which pages and channels convert and which do not.
 
 Events it reads (emitted by site/site.js and site/start/):
   $pageview                         visitors, landing page, referrer
-  cta_click {goal, spot, href}      goal = github | cloud | pricing | walkthrough | ios | concierge
+  cta_click {goal, spot, href}      goal = github | cloud | pricing | walkthrough | ios | mac | concierge
   install_copy                      copied the install command
   signup_form_start, signup_submit, checkout_redirect, signup_paid, server_ready
 
@@ -128,6 +128,8 @@ select person_id,
   countIf(event in ('server_ready', 'cloud_ready')) > 0 as ready,
   countIf(event = 'cloud_canceled') > 0 as canceled,
   countIf(event = 'install_copy') > 0 as install_copy,
+  countIf(event = 'cta_click' and properties.goal = 'ios') > 0 as ios,
+  countIf(event = 'cta_click' and properties.goal = 'mac') > 0 as mac,
   countIf(event = '$pageview' and properties.$pathname like '/walkthrough%') > 0 as walkthrough,
   countIf(event = 'cta_click' and properties.goal = 'concierge') > 0 as concierge
 from events
@@ -137,7 +139,7 @@ group by person_id
 having pv > 0
 limit 100000"""
     cols = ["person", "landing", "ref", "utm", "device", "pv", "github", "cloud_click", "start_view",
-            "form_start", "submit", "checkout", "paid", "ready", "canceled", "install_copy", "walkthrough", "concierge"]
+            "form_start", "submit", "checkout", "paid", "ready", "canceled", "install_copy", "ios", "mac", "walkthrough", "concierge"]
     rows = [dict(zip(cols, r)) for r in hogql(key, sql)]
     for r in rows:
         r["source"] = source_of(r["ref"], r["utm"])
@@ -327,6 +329,8 @@ STEPS = [
     ("ready", "Server ready"),
     ("canceled", "Canceled (subscription ended)"),
     ("install_copy", "Copied the install command"),
+    ("ios", "Clicked the iPhone app (App Store)"),
+    ("mac", "Clicked the Mac app"),
     ("walkthrough", "Viewed the walkthrough"),
     ("concierge", "Clicked Schedule a meeting (concierge)"),
 ]

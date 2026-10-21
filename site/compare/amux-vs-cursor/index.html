@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Cursor","item":"https://amux.io/compare/amux-vs-cursor/"}]}</script>
 
@@ -29,6 +28,7 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux a Cursor alternative?","acceptedAnswer":{"@type":"Answer","text":"amux is not a direct replacement for Cursor — they solve different problems. Cursor is an AI-powered IDE for interactive coding (completions, chat, single-agent refactoring). amux is a headless orchestrator for running 10–50 AI coding agents in parallel, overnight, unattended. Most developers who use amux also use an IDE like Cursor for interactive work."}},{"@type":"Question","name":"Can Cursor run multiple agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent runs one autonomous agent per window. To run 10 agents in parallel, you would need 10 open Cursor windows with no shared coordination. amux is purpose-built for parallel agents: it launches dozens of Claude Code, Codex CLI, or Gemini CLI sessions simultaneously, with a shared kanban board for task coordination and a self-healing watchdog that keeps them running overnight."}},{"@type":"Question","name":"Does amux work with Cursor?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux and Cursor complement each other. Many developers use Cursor for interactive coding during the day (Tab completions, Cursor Chat, quick agent fixes) and amux for overnight batch work (running 10–50 agents to generate tests, refactor modules, or review PRs across a large codebase). They operate at different moments in the development workflow."}},{"@type":"Question","name":"What is the difference between amux and Cursor Agent?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent is a single autonomous agent per Cursor window. It can plan, edit files, and run terminal commands, but it requires Cursor to be open and running, supports only one agent at a time, and has no self-healing — if the agent crashes overnight, it stays crashed until you restart it manually. amux runs agents as persistent tmux sessions — 10, 20, or 50 simultaneously — with a watchdog that auto-compacts context, restarts crashed sessions, and replays the last message, so they keep running while you sleep."}},{"@type":"Question","name":"Which is better for overnight batch coding jobs?","acceptedAnswer":{"@type":"Answer","text":"amux. Its core use case is running AI coding agents overnight while you sleep. The self-healing watchdog auto-compacts context when agents near their limit, restarts crashed sessions, and replays the last message so no work is lost. Cursor Agent is not designed for unattended overnight operation — it requires the IDE to be open and running. amux lets you queue 50 tasks, close your laptop, and wake up to finished pull requests."}}]}</script>
 
   <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -36,6 +36,7 @@
     <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">

@@ -1615,6 +1615,7 @@ async function _initIdentity() {
       acct.style.display = '';
     }
     _applyIdentityToSettings();
+    _cloudOfferInit(d);
     // Settings can open before this async identity request returns. Refresh an
     // already-open Team section so a scoped member never keeps the owner's
     // controls from that brief pre-identity render.
@@ -1629,6 +1630,134 @@ async function _initIdentity() {
       _loadGatewayOrgs();
     }
   } catch(e) {}
+}
+
+// ═══════ amux Cloud offer (self-hosted owners only) ═══════
+// The local dashboard is where people who run amux themselves already are, and
+// it never mentioned Cloud. This offers it at the two moments Cloud solves a
+// problem the owner can feel: opening the dashboard on a phone (the server is a
+// computer that sleeps) and a worker still busy hours after it was given work
+// (the job dies if the laptop closes). Each trigger shows at most once, ever,
+// and "No thanks" ends both. Settings keeps a quiet permanent entry.
+//
+// Who sees it is decided from /api/identity, never a build flag: a Cloud
+// server's owner has account_url, a gateway user is_cloud, and an invited
+// member is_local_member. Only a server with none of those is self-hosted and
+// being looked at by its owner.
+const _CLOUD_OFFER_URL = 'https://amux.io/start/';
+const _CLOUD_OFFER_LS = 'amux_cloud_offer';
+const _CLOUD_LONGJOB_MS = 2 * 3600 * 1000;
+let _cloudOfferOwner = false;
+let _cloudOfferState = null;          // {phone, longjob, dismissed}: ms timestamps
+const _cloudActiveSeen = {};          // worker -> first time this page saw it active
+
+function _cloudOfferIsSelfHostedOwner(d) {
+  return !!d && !d.is_cloud && !d.account_url && !d.is_local_member;
+}
+function _cloudOfferLink(source) {
+  return _CLOUD_OFFER_URL + '?source=' + encodeURIComponent(source);
+}
+function _cloudOfferIsPhone() {
+  try {
+    return !!(navigator.standalone
+      || matchMedia('(display-mode: standalone)').matches
+      || matchMedia('(max-width: 600px)').matches);
+  } catch (e) { return false; }
+}
+
+// Server pref first so a dismissal on one device holds on the others; the
+// localStorage copy covers a write that has not reached the server yet. An
+// unreadable pref means "do not show": a missed offer costs nothing, a repeat
+// after a dismissal is the nagging this must never do.
+async function _cloudOfferLoad() {
+  if (_cloudOfferState) return _cloudOfferState;
+  let st = {};
+  try { st = JSON.parse(localStorage.getItem(_CLOUD_OFFER_LS) || '{}') || {}; } catch (e) { st = {}; }
+  try {
+    const r = await fetch(API + '/api/prefs?key=cloud_offer', { headers: _authHeaders() });
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d && d.value) Object.assign(st, JSON.parse(d.value) || {});
+  } catch (e) { return null; }
+  _cloudOfferState = st;
+  return st;
+}
+function _cloudOfferMark(field) {
+  const st = _cloudOfferState || (_cloudOfferState = {});
+  st[field] = Date.now();
+  const v = JSON.stringify(st);
+  try { localStorage.setItem(_CLOUD_OFFER_LS, v); } catch (e) {}
+  return fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
+    body: JSON.stringify({ key: 'cloud_offer', value: v }) }).catch(() => {});
+}
+
+function _cloudOfferInit(d) {
+  _cloudOfferOwner = !window._peekEmbed && _cloudOfferIsSelfHostedOwner(d);
+  // Published so a check (and a person in devtools) can tell "decided no" from
+  // "never decided": both leave the offer hidden.
+  window._cloudOfferVerdict = { measured: true, owner: _cloudOfferOwner, phone: _cloudOfferIsPhone() };
+  const sec = document.getElementById('settings-cloud-offer');
+  if (sec) sec.style.display = _cloudOfferOwner ? '' : 'none';
+  if (!_cloudOfferOwner) { _cloudOfferHide(); return; }
+  if (_cloudOfferIsPhone()) setTimeout(() => _cloudOfferTry('phone'), 1500);
+  _cloudOfferCheckLongJob();
+  if (!window._cloudOfferTimer) window._cloudOfferTimer = setInterval(_cloudOfferCheckLongJob, 60000);
+}
+
+// A long job: a worker still active 2+ hours after its owner last gave it work
+// (last_human_ts), or, without that, 2+ hours of activity this page has watched.
+function _cloudOfferLongJobSession(list, now) {
+  for (const s of (list || [])) {
+    if (!s || !s.name) continue;
+    if (s.status !== 'active' || s.archived || s.ephemeral) { delete _cloudActiveSeen[s.name]; continue; }
+    if (!_cloudActiveSeen[s.name]) _cloudActiveSeen[s.name] = now;
+    const since = Number(s.last_human_ts) > 0 ? Number(s.last_human_ts) : _cloudActiveSeen[s.name];
+    if (now - since >= _CLOUD_LONGJOB_MS) return s;
+  }
+  return null;
+}
+function _cloudOfferCheckLongJob() {
+  if (!_cloudOfferOwner) return;
+  const s = _cloudOfferLongJobSession(typeof sessions !== 'undefined' ? sessions : [], Date.now());
+  if (s) _cloudOfferTry('longjob', s.name);
+}
+
+async function _cloudOfferTry(trigger, worker) {
+  if (!_cloudOfferOwner || document.getElementById('cloud-offer')) return;
+  const st = await _cloudOfferLoad();
+  if (!st || st.dismissed || st[trigger] || document.getElementById('cloud-offer')) return;
+  const setup = document.getElementById('apikey-setup-modal');
+  if (setup && setup.style.display === 'flex') return;   // first run comes first
+  _cloudOfferMark(trigger);
+  _cloudOfferShow(trigger, worker);
+}
+
+function _cloudOfferShow(trigger, worker) {
+  const copy = trigger === 'phone'
+    ? { title: 'Reach your agents from anywhere, even when this computer sleeps.',
+        text: 'amux Cloud runs your workers on a dedicated server at yourname.amux.io that stays on. From $39/mo.' }
+    : { title: 'Keep long jobs running when your laptop closes.',
+        text: (worker ? worker + ' has been working for over 2 hours. ' : '')
+          + 'amux Cloud runs your workers on a dedicated server that stays on. From $39/mo.' };
+  const el = document.createElement('div');
+  el.id = 'cloud-offer';
+  el.className = 'cloud-offer';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-labelledby', 'cloud-offer-title');
+  el.dataset.trigger = trigger;
+  el.innerHTML = '<div class="cloud-offer-title" id="cloud-offer-title">' + esc(copy.title) + '</div>'
+    + '<div class="cloud-offer-text">' + esc(copy.text) + '</div>'
+    + '<div class="cloud-offer-actions">'
+    + '<a class="btn primary" id="cloud-offer-go" target="_blank" rel="noopener" href="'
+    + esc(_cloudOfferLink(trigger === 'phone' ? 'app-phone' : 'app-longjob')) + '" onclick="_cloudOfferHide()">See amux Cloud</a>'
+    + '<button class="btn" id="cloud-offer-dismiss" onclick="_cloudOfferDismiss()">No thanks</button>'
+    + '</div>';
+  document.body.appendChild(el);
+}
+function _cloudOfferHide() { document.getElementById('cloud-offer')?.remove(); }
+function _cloudOfferDismiss() {
+  _cloudOfferHide();
+  return _cloudOfferMark('dismissed');
 }
 
 function _showKeyWarning(error) {

@@ -131,6 +131,7 @@ function template({ title, description, keywords, canonical, content, breadcrumb
     <a href="/compare/">Comparisons</a><span class="sep">·</span>
     <a href="/use-cases/">Use Cases</a><span class="sep">·</span>
     <a href="/guides/">Guides</a><span class="sep">·</span>
+    <a href="/demos/">Demos</a><span class="sep">·</span>
     <a href="/glossary/">Glossary</a><span class="sep">·</span>
     <a href="/faq/">FAQ</a><span class="sep">·</span>
     <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><span class="sep">·</span>

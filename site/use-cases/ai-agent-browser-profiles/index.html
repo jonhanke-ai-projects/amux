@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"Browser Profiles for AI Agents","item":"https://amux.io/use-cases/ai-agent-browser-profiles/"}]}</script>
 
@@ -30,6 +29,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a browser profile in amux?","acceptedAnswer":{"@type":"Answer","text":"A browser profile in amux is a named, saved Chrome browser session that persists cookies, localStorage, and authentication state across runs. You create a profile (e.g. 'stripe'), log in to the target site once, and every AI agent task launched with that profile starts already authenticated — no re-login needed."}},{"@type":"Question","name":"How do AI agents use saved browser sessions?","acceptedAnswer":{"@type":"Answer","text":"When you create a browser automation task in amux, you select a profile from the profile picker. amux launches Chrome via CDP (Chrome DevTools Protocol) with the saved profile's credentials loaded. The agent sees the site as already logged in and can proceed directly to the task — pulling reports, filling forms, reading dashboards — without triggering login flows."}},{"@type":"Question","name":"Is it safe to store browser credentials in amux?","acceptedAnswer":{"@type":"Answer","text":"amux is a local-first tool. Browser profiles are stored in ~/.amux/playwright-auth/profiles/ on your own machine. The dashboard runs at https://localhost:8824 — it is never exposed to the internet unless you explicitly use the tunnel feature. Your credentials never leave your machine, and no amux server ever sees them."}},{"@type":"Question","name":"Can multiple AI agents use different browser profiles at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes. Each agent runs in its own isolated Chrome session tied to a specific profile. You can run a 'stripe' agent pulling financial data simultaneously with a 'github-work' agent reviewing PRs and a 'client-acme' agent checking a client portal — all in parallel, all authenticated independently."}},{"@type":"Question","name":"What browsers does amux support for browser profiles?","acceptedAnswer":{"@type":"Answer","text":"amux uses Chrome (or Chromium) via the Chrome DevTools Protocol (CDP). Chrome must be installed on the machine running amux. The profiles store Chrome-native session data (cookies, localStorage). Firefox and Safari are not supported for profile-based automation."}},{"@type":"Question","name":"How is this different from Playwright test fixtures?","acceptedAnswer":{"@type":"Answer","text":"Playwright test fixtures create fresh browser state on each run — authentication typically requires a setup step that logs in programmatically using stored credentials. amux browser profiles are persistent human-created sessions: you log in interactively once (including MFA flows that are impossible to script), and the saved state is reused indefinitely. There is no credential management code to write and maintain."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -37,6 +37,7 @@
     <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">
