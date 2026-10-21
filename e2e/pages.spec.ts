@@ -99,6 +99,11 @@ test('a page reads and saves its own database, asks its worker, and cannot reach
     const tabFrame = page.frameLocator(`#pages-frame iframe[data-page="${name}"]`);
     await expect(tabFrame.locator('#t tr').nth(2).locator('.nm')).toHaveText('Sweetgum Hospice');
     await expect(page.locator('#pages-standalone')).toHaveAttribute('href', `/pages/${name}`);
+    // The frame fills the window below its bar (it got its 320px minimum
+    // while the views sat in a block body).
+    const vh = page.viewportSize()!.height;
+    await expect.poll(async () => { const b = (await page.locator('#pages-frame').boundingBox())!; return b.y + b.height; })
+      .toBeGreaterThan(vh - 40);
     await expect(page.locator('#pages-status')).toHaveText('1 ask with the worker');
 
     // Versions: restore puts the data back, and keeps the state it replaced.

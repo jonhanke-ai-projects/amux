@@ -144,13 +144,23 @@ fn open_db(dir: &Path) -> rusqlite::Result<rusqlite::Connection> {
     Ok(conn)
 }
 
+/// A blob that is UTF-8 comes back as text: a worker storing HTML with
+/// `readfile()` or a `X'..'` literal writes a BLOB, and the page then showed
+/// "<624 bytes>" in place of the draft (MTP page, 2026-10-21). Any other blob
+/// comes back as base64, so nothing a page stores is unreadable to it.
 fn cell(v: ValueRef<'_>) -> Value {
     match v {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(i) => json!(i),
         ValueRef::Real(f) => json!(f),
         ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
-        ValueRef::Blob(b) => json!(format!("<{} bytes>", b.len())),
+        ValueRef::Blob(b) => match std::str::from_utf8(b) {
+            Ok(text) => json!(text),
+            Err(_) => {
+                use base64::Engine as _;
+                json!({ "base64": base64::engine::general_purpose::STANDARD.encode(b), "bytes": b.len() })
+            }
+        },
     }
 }
 
@@ -968,6 +978,16 @@ mod tests {
         let (r, wrote) = exec(&conn, "SELECT name, n FROM t ORDER BY id", &Value::Null).unwrap();
         assert!(!wrote);
         assert_eq!(r["rows"], json!([{"name": "a", "n": 1.5}, {"name": "b", "n": 2.0}]));
+    }
+
+    #[test]
+    fn a_text_blob_reads_as_text_and_binary_as_base64() {
+        let d = tmp();
+        let conn = open_db(&d).unwrap();
+        conn.execute_batch("CREATE TABLE t (b BLOB); INSERT INTO t VALUES (CAST('<p>Hi</p>' AS BLOB)), (X'FF00');").unwrap();
+        let (r, _) = exec(&conn, "SELECT b, typeof(b) AS ty FROM t ORDER BY rowid", &Value::Null).unwrap();
+        assert_eq!(r["rows"][0], json!({"b": "<p>Hi</p>", "ty": "blob"}));
+        assert_eq!(r["rows"][1]["b"], json!({"base64": "/wA=", "bytes": 2}));
     }
 
     #[test]
