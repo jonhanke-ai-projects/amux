@@ -18294,6 +18294,55 @@ function _peekPromptNormalized(text) {
 // additive — the tab's full page still replaces it.
 let _peekKindHints = [];
 let _peekKindHintsFor = '';
+
+// DELIVERED BUT NOT IN THE TERMINAL. Claude Code takes a message that arrives
+// mid-turn as input to the running turn and never prints a ❯ prompt for it,
+// so the peek showed nothing although the ledger said delivered and the
+// worker answered it (Ethan, 2026-10-20: amux-helper, MSG-92352). Anchor on
+// the OLDEST recent ledger row the terminal does show; every newer row it
+// does not show was taken mid-turn. Rows older than the anchor may simply
+// have scrolled off, and with no anchor nothing is claimed. They are drawn
+// under the live frame as messages, so search, message navigation and the
+// kind colours treat them like any prompt.
+const _PEEK_UNECHOED_GRACE_MS = 8000;   // a prompt sent at idle takes a moment to draw
+let _peekUnechoedReported = '';
+function _peekUnechoedHtml(output, historyRaw) {
+  if (!peekSession) return '';
+  const canon = t => String(t || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '');
+  const squash = t => t.replace(/\s+/g, '');
+  const frame = squash(_stripAnsi((historyRaw || '') + '\n' + (output || '')));
+  if (!frame) return '';
+  const rows = [];
+  for (const row of [..._peekKindHints, ...(Array.isArray(_cmdHistory) ? _cmdHistory : [])]) {
+    if (!row || typeof row === 'string' || row.session !== peekSession || !row.text) continue;
+    if (row.type && row.type !== 'user') continue;
+    rows.push({ text: canon(row.text), ts: Number(row.ts || row.time || 0), kind: row.kind || '' });
+  }
+  const now = Date.now(), seen = new Set(), recent = [];
+  for (const row of rows.sort((a, b) => a.ts - b.ts)) {
+    const key = squash(row.text).slice(0, 40);
+    if (!key || seen.has(key) || now - row.ts > 12 * 3600 * 1000) continue;
+    seen.add(key);
+    // A long paste draws as "[Pasted text ...]", so its absence proves nothing.
+    if (row.text.length > 1000 || row.text.split('\n').length > 12) continue;
+    recent.push({ ...row, shown: frame.includes(key) });
+  }
+  const anchor = recent.findIndex(r => r.shown);
+  if (anchor < 0) return '';
+  const out = recent.slice(anchor + 1).filter(r => !r.shown && now - r.ts >= _PEEK_UNECHOED_GRACE_MS).slice(-5);
+  if (!out.length) return '';
+  const tag = peekSession + ':' + out.map(r => r.ts).join(',');
+  if (_peekUnechoedReported !== tag) {
+    _peekUnechoedReported = tag;
+    try { window._clientDebug && window._clientDebug('peek-unechoed-messages', { session: peekSession, shown: out.length,
+      verdict: 'delivered_message_not_in_terminal', measured: true, n_considered: rows.length }); } catch (_) {}
+  }
+  return '<div class="peek-unechoed"><div class="peek-unechoed-head">Delivered while the worker was busy. Claude Code took '
+    + (out.length === 1 ? 'it' : 'them') + ' into the running turn without printing a prompt:</div>'
+    + out.map(r => '<div class="peek-unechoed-row"><span class="peek-prompt" data-msg-kind="unknown">' + esc(r.text)
+      + '</span><span class="peek-unechoed-time">' + esc(new Date(r.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
+      + '</span></div>').join('') + '</div>';
+}
 async function _peekLoadKindHints(sess) {
   if (_peekKindHintsFor === sess) return;
   _peekKindHintsFor = sess;
@@ -18305,6 +18354,7 @@ async function _peekLoadKindHints(sess) {
     if (peekSession !== sess) return;
     _peekKindHints = rows;
     _peekReclassifyPrompts();
+    _lastPeekRaw = null;   // repaint once so messages the terminal never echoed can show
   } catch (e) { /* markers still classify; the tab's page may still arrive */ }
 }
 
@@ -19306,7 +19356,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // Prepare both regions before committing the raw-frame dedupe keys. A
     // failed conversion must remain retryable just like a failed body read.
     _peekTraceRegion = 'live';
-    const newHTML = _peekLiveHtml(output);
+    const newHTML = _peekLiveHtml(output) + _peekUnechoedHtml(output, histRaw === null ? _peekHistoryRaw : histRaw);
     _peekTraceRegion = 'history';
     let histChanged = false;
     if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
@@ -19435,6 +19485,47 @@ function _paintPeekRegions(body) {
   if (!hist && !_lastLiveHTML && lastPeekHTML) { body.innerHTML = lastPeekHTML; _peekReclassifyPrompts(); return; }  // IDB cached open paint
   body.innerHTML = '<div id="pk-hist">' + hist + '</div><div id="pk-live">' + _lastLiveHTML + '</div>';
   _peekReclassifyPrompts();
+  // The first search on this paint can reuse it rather than rebuild.
+  _peekSearchDom = { hist, live: _lastLiveHTML, first: body.firstChild };
+}
+// The DOM a search pass built, so the next pass can reuse it.
+let _peekSearchDom = { hist: null, live: null, first: null };
+const _peekSearchStats = { reused: 0, rebuilt: 0 };
+function _peekClearHighlights(body) {
+  const parents = new Set();
+  for (const mark of body.querySelectorAll('span.peek-highlight')) {
+    parents.add(mark.parentNode);
+    mark.replaceWith(document.createTextNode(mark.textContent));
+  }
+  for (const parent of parents) parent.normalize();
+}
+// Typing waits for a pause before searching; Enter runs a pending search first.
+let _peekSearchTimer = 0;
+function _peekSearchTyped(value) {
+  peekSearchQuery = value;
+  document.getElementById('peek-search-wrap')?.classList.toggle('has-value', !!value);
+  clearTimeout(_peekSearchTimer);
+  _peekSearchTimer = setTimeout(() => { _peekSearchTimer = 0; _peekSearchTimed(); }, value.trim() ? 120 : 0);
+}
+// A typed search that blocks the page for over 100ms says so in the server log.
+function _peekSearchTimed() {
+  const t0 = performance.now();
+  applyPeekSearch();
+  const ms = Math.round(performance.now() - t0);
+  if (ms <= 100 || !peekSearchQuery.trim()) return;
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'peek-search-slow', session: peekSession, ver: APP_VER, ms,
+        nodes: document.getElementById('peek-body')?.getElementsByTagName('*').length || 0,
+        reused: _peekSearchStats.reused, rebuilt: _peekSearchStats.rebuilt,
+        verdict: 'peek_search_slow', measured: true, n_considered: 1 }) }).catch(() => {});
+  } catch (e) {}
+}
+function _peekSearchFlush() {
+  if (!_peekSearchTimer) return;
+  clearTimeout(_peekSearchTimer);
+  _peekSearchTimer = 0;
+  _peekSearchTimed();
 }
 function applyPeekSearch(keepIndex, doScroll) {
   const body = document.getElementById('peek-body');
@@ -19452,8 +19543,28 @@ function applyPeekSearch(keepIndex, doScroll) {
   }
   // Search the rendered text, not serialized HTML. Entities and ANSI/link
   // spans must not turn one visible phrase into missing or duplicate matches.
-  body.innerHTML = lastPeekHTML;
-  _peekReclassifyPrompts();
+  // Rebuilding the DOM costs a full relayout plus two prompt reclassifies
+  // (~280ms on a 6,000-line worker, paid per keystroke: Ethan, 2026-10-20,
+  // "very slow to find the terms"). When the body is still the DOM this
+  // search built, unwrap the old highlights instead. A busy worker's live
+  // frame changes every second (its status timer), so a new frame swaps only
+  // #pk-live and keeps the scrollback DOM, exactly as an unsearched tick does.
+  const hist = _peekAgents.selected ? null : _peekEarlierHTML() + _peekHistoryHTML;
+  const liveEl = document.getElementById('pk-live');
+  const reuse = hist !== null && _peekSearchDom.hist === hist && !!liveEl
+    && _peekSearchDom.first === body.firstChild && body.contains(liveEl);
+  if (reuse) {
+    _peekClearHighlights(body);
+    if (_peekSearchDom.live !== _lastLiveHTML) {
+      _peekSetLiveHtml(liveEl, _lastLiveHTML);
+      _peekReclassifyPrompts();
+      _peekSearchDom.live = _lastLiveHTML;
+    }
+  } else {
+    _paintPeekRegions(body);
+    _peekSearchDom = { hist: document.getElementById('pk-live') ? hist : null, live: _lastLiveHTML, first: body.firstChild };
+  }
+  _peekSearchStats[reuse ? 'reused' : 'rebuilt']++;
   const roots = !_peekFiltersActive() ? [body]
     : [...body.querySelectorAll('.peek-prompt')].filter(el => _peekPromptMatchesFilters(el));
   _peekMatches = [];
@@ -19487,7 +19598,7 @@ function applyPeekSearch(keepIndex, doScroll) {
       entry.node.replaceWith(fragment);
     }
   }
-  _peekReclassifyPrompts();
+  if (!reuse) _peekReclassifyPrompts();
   if (!keepIndex || peekSearchIndex >= _peekMatches.length) peekSearchIndex = 0;
   // Typed Find has the same late-history race as Locate: an empty live frame
   // is not proof that the requested text is absent from the arriving history.
@@ -38291,8 +38402,11 @@ async function fetchRawLogs() {
   } catch(e) {}
 }
 
+// An OSC (hyperlinks, titles) ends with BEL or ST (ESC \). Ending it only at
+// BEL let one ST-terminated OSC 8 link swallow the rest of the text: 620 KB of
+// amux-helper's scrollback, owner prompts included, stripped to 29 KB.
 function _stripAnsi(s) {
-  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*(\x07|$)/g, '');
+  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, '');
 }
 
 function renderRawLogs() {

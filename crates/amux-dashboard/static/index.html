@@ -3047,8 +3047,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div class="peek-find-wrap" id="peek-search-wrap" hidden>
       <input class="search-input" id="peek-search" type="search" placeholder="Find in terminal…" aria-label="Find in terminal" autocomplete="off" autocorrect="off"
-        oninput="peekSearchQuery=this.value;document.getElementById('peek-search-wrap').classList.toggle('has-value',!!this.value);applyPeekSearch()"
-        onkeydown="if(event.key==='Enter'){event.preventDefault();if(!_peekMatches.length){_peekDeepSearch();}else{event.shiftKey?peekSearchPrev():peekSearchNext();}}else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();togglePeekFind(false);}">
+        oninput="_peekSearchTyped(this.value)"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();_peekSearchFlush();if(!_peekMatches.length){_peekDeepSearch();}else{event.shiftKey?peekSearchPrev():peekSearchNext();}}else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();togglePeekFind(false);}">
       <span class="peek-find-count" id="peek-search-count" aria-live="polite"></span>
       <button class="search-clear" onclick="clearPeekSearch();document.getElementById('peek-search').focus()" title="Clear search" aria-label="Clear terminal search">&#x2715;</button>
       <div class="peek-deep-results" id="peek-deep-results" hidden></div>
