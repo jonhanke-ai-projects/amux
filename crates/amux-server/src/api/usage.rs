@@ -334,6 +334,19 @@ struct UsageCache {
     /// transient failure cannot evict a good reading.
     last_good: Option<Value>,
     last_good_at: Option<Instant>,
+    /// Which model sign-ins existed when `data` was read. A sign-in or a new
+    /// key makes the cached reading stale at once: a dashboard sign-in kept
+    /// showing "Connect account" for the rest of the 60 s TTL (2026-10-21).
+    creds: Option<String>,
+}
+
+/// Presence of each model credential (never a value), as /api/identity
+/// reports it. Cheap: two small file reads and a few stats.
+fn credential_stamp() -> String {
+    let home = crate::config::amux_home();
+    let env_text = std::fs::read_to_string(home.join("server.env")).unwrap_or_default();
+    let user_home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    super::model_auth_status(&env_text, &user_home).to_string()
 }
 
 /// Production wiring: every provider's real read-only usage surface.
@@ -396,8 +409,11 @@ async fn get_usage(
     // Serve from cache while fresh. Failures are cached too, deliberately: a
     // rate-limited probe must not be retried on every settings render, which
     // is the behaviour that provokes the rate limit in the first place.
-    let fresh = matches!((&c.data, c.at), (Some(_), Some(at)) if at.elapsed() < ttl);
+    let creds = credential_stamp();
+    let fresh = matches!((&c.data, c.at), (Some(_), Some(at)) if at.elapsed() < ttl)
+        && c.creds.as_deref() == Some(creds.as_str());
     if !fresh {
+        c.creds = Some(creds);
         let (claude, claude_account, codex, gemini) = tokio::join!(
             (probes.claude)(),
             (probes.claude_account)(),
@@ -1080,6 +1096,12 @@ fn shape_probe(probe: UsageProbe) -> Value {
         UsageProbe::BadShape => degraded(
             "unexpected_shape",
             "Usage endpoint returned an unexpected response shape".into(),
+        ),
+        // Connected, and nothing to fix: "Not reported" in the SPA, with no
+        // sign-in button (signing in again would give the same kind of token).
+        UsageProbe::SubscriptionTokenOnly => degraded(
+            "account_quota_not_reported",
+            "Signed in with a Claude subscription token. Claude does not report plan usage for this kind of sign-in, so it is not shown here.".into(),
         ),
     }
 }
@@ -2439,6 +2461,7 @@ mod tests {
             (UsageProbe::Transport("timeout"), "probe_failed"),
             (UsageProbe::BadShape, "unexpected_shape"),
             (UsageProbe::Ok(json!([1, 2, 3])), "unexpected_shape"),
+            (UsageProbe::SubscriptionTokenOnly, "account_quota_not_reported"),
         ];
         let mut seen_reasons: Vec<String> = Vec::new();
         for (outcome, expect_cause) in cases {
@@ -2510,6 +2533,25 @@ mod tests {
         }
         // The one path that echoes upstream content is 2xx. The type system
         // is what guarantees the rest: no failure variant can hold a token.
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the AMUX_HOME guard must span the requests
+    async fn a_new_sign_in_makes_the_cached_reading_stale() {
+        // 2026-10-21, live on a Cloud server: the dashboard sign-in saved its
+        // token and the usage list kept serving the cached "no token" for the
+        // rest of the 60 s TTL, so the row still said "Connect account".
+        let _env = default_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = app(probe_fn(UsageProbe::NoToken, calls.clone()));
+        get(&app).await;
+        get(&app).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "unchanged sign-ins: served from cache");
+        std::fs::write(dir.path().join("server.env"), "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fake-e2e-token\n").unwrap();
+        get(&app).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "a new sign-in must re-probe within the TTL");
     }
 
     #[tokio::test]

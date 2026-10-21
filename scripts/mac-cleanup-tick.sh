@@ -3024,11 +3024,23 @@ if [ -n "$fse_reading" ]; then
     elif [ -n "$CHURN_SAMPLE_CMD" ]; then
       fse_top="no directory over ${churn_floor} ${churn_unit} (FSEvents sample, deletions included)"
       echo "mac-cleanup:   fseventsd feed: $fse_top"
+      # Hot on CPU alone with nothing to process is a stuck fseventsd thread
+      # (Mac fseventsd RCA 20261021-135901: one core for 40+ min at ~20 FSEvents/s
+      # disk-wide, after one thread logged 6,200 group-list lookups in 43s).
+      # There is no churn to stop; restarting the daemon clears it.
+      if ! needs_reboot "$fse_gb" "$FSEVENTSD_REBOOT_GB" && [ "${CHURN_COMPLETE:-yes}" != no ]; then
+        fse_spin=1
+        echo "mac-cleanup:   fseventsd is spinning with no file churn to feed it; owner runs: sudo killall fseventsd (launchd restarts it; no reboot needed) (verdict=fseventsd_spin_no_churn)"
+      fi
     else
       fse_top="no directory over ${CHURN_FILES} modified files in ${CHURN_MIN}m (scan complete=${CHURN_COMPLETE}; deletions are not counted)"
       echo "mac-cleanup:   fseventsd feed: $fse_top"
     fi
-    fse_verdict="fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_REBOOT_GB}G or ${FSEVENTSD_CPU_PCT}%); stop the file churn feeding it, then only a reboot returns the memory. Top feed: $fse_top"
+    if [ "${fse_spin:-0}" = 1 ]; then
+      fse_verdict="fseventsd at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_CPU_PCT}%) with no file churn to feed it ($fse_top): a stuck fseventsd thread, not a writer; the owner restarts it with sudo killall fseventsd (launchd brings it back, no reboot)"
+    else
+      fse_verdict="fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_REBOOT_GB}G or ${FSEVENTSD_CPU_PCT}%); stop the file churn feeding it, then only a reboot returns the memory. Top feed: $fse_top"
+    fi
   else
     echo "mac-cleanup: fseventsd ${fse_gb}G ${fse_cpu:-?}% CPU, under the ${FSEVENTSD_REBOOT_GB}G/${FSEVENTSD_CPU_PCT}% thresholds"
   fi

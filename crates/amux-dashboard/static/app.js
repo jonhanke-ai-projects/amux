@@ -3739,17 +3739,6 @@ async function _upqList() {
   return [...current, ...legacy.map(row => ({...row,
     blob:row.bytes ? new Blob([row.bytes], {type:row.mime}) : row.blob}))];
 }
-// The outbox reads pending uploads before delivering any message, so an
-// IndexedDB request that never completes (WebKit, after its storage process
-// restarts) must not hold the messages behind it. Past 5s this pass treats the
-// list as empty and says so; the uploads stay stored for the next pass.
-function _upqListBounded(ms = 5000) {
-  let timer;
-  return Promise.race([
-    _upqList().catch(() => []),
-    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms}); resolve([]); }, ms); }),
-  ]).finally(() => clearTimeout(timer));
-}
 function _uploadStorageError(action, error) {
   const reason = error?.name || 'StorageError';
   console.warn('[amux] upload-storage', action, reason);
@@ -3943,6 +3932,17 @@ function _scheduleSyncRetry() {
 const _SYNC_STALL_MS = 45000, _SYNC_LOCK_WAIT_MS = 20000;
 let _syncPhase = 'idle', _syncPhaseAt = 0, _syncFlightToken = null;
 function _syncSetPhase(phase) { _syncPhase = phase; _syncPhaseAt = Date.now(); }
+// The outbox reads pending uploads before delivering any message, so an
+// IndexedDB request that never completes (WebKit, after its storage process
+// restarts) must not hold the messages behind it. Past 5s this pass treats the
+// list as empty and says so; the uploads stay stored for the next pass.
+function _upqListBounded(ms = 5000) {
+  let timer;
+  return Promise.race([
+    _upqList().catch(() => []),
+    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms}); resolve([]); }, ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 function _syncLockRequest(run) {
   if (!navigator.locks) return run();
   _syncSetPhase('replay_lock_wait');
@@ -3964,20 +3964,24 @@ function runSyncBanner(quiet = false) {
   const run = async () => { _syncSetPhase('queue_read'); await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
   const token = {};
   _syncFlightToken = token;
-  const watch = setInterval(() => {
-    if (_syncFlightToken !== token) return clearInterval(watch);
+  // A re-arming timeout, not setInterval: the outbox unit sandboxes provide
+  // only setTimeout (tests/dashboard-outage-recovery.mjs).
+  let watch = null;
+  const check = () => {
+    watch = null;
+    if (_syncFlightToken !== token) return;
     // Uploads report progress as they go; a long upload is not a stall.
-    if (/^upload/.test(_syncPhase) || Date.now() - _syncPhaseAt < _SYNC_STALL_MS) return;
-    clearInterval(watch);
+    if (/^upload/.test(_syncPhase) || Date.now() - _syncPhaseAt < _SYNC_STALL_MS) { watch = setTimeout(check, 5000); return; }
     _outboxDiagnostic('outbox_flight_stalled', {phase:_syncPhase, stalled_ms:Date.now() - _syncPhaseAt,
       queued:offlineQueue.length, hidden:document.hidden ? 1 : 0});
     _syncFlightToken = null; _syncFlight = null; _syncSetPhase('idle');
     _scheduleSyncRetry();
-  }, 5000);
+  };
+  watch = setTimeout(check, 5000);
   _syncFlight = _syncLockRequest(run)
     .catch(e => { _writeError = String(e.message || e); showToast('Sync failed: ' + _writeError); })
     .finally(() => {
-      clearInterval(watch);
+      clearTimeout(watch);
       // An abandoned pass that wakes later must not clear or reschedule the
       // pass that replaced it.
       if (_syncFlightToken !== token) return;
@@ -50552,21 +50556,31 @@ async function loadUsage() {
       // provider with no readable quota (muse) must not borrow ollama's "Unlimited" or
       // the "No active limits" that means "we looked and there were none". It means we
       // could not look.
-      const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account')
+      // A signed-in provider whose usage reply was empty (codex: cause
+      // unexpected_shape) is not an account to connect.
+      const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported'
+          : provider.cause === 'unexpected_shape' ? 'Usage not reported' : 'Connect account')
         : provider.metered === false ? 'Unlimited'
         : provider.usage_unknown ? 'Usage unknown'
         : minimum === null ? 'No active limits' : (provider.stale ? 'Last known · ' : '') + usagePercent(minimum) + '% left';
       const meta = usageProviderMeta(provider);
       // "Connect account" used to be a label with nothing behind it (2026-10-21): the row said
       // to connect and offered no way to. Providers with a CLI sign-in get the button here.
+      // Every provider with a CLI sign-in offers it on its row, in every state
+      // (Ethan, 2026-10-21: "the same cli login flow for each"): "Sign in" while
+      // it has no account, "Switch account" once it reports one. Gemini on an
+      // API key reads "Not reported" and used to get no button at all.
       const login = window.AmuxState && window.AmuxState.cliLogin && window.AmuxState.cliLogin.CLI_LOGINS[provider.id];
-      const connect = !provider.available && !pending && provider.cause !== 'account_quota_not_reported' && login
-        ? '<button type="button" class="btn primary usage-connect" data-provider="' + esc(provider.id) + '" onclick="event.stopPropagation();usageConnect(this.dataset.provider)">Sign in with ' + esc(login.label) + '</button>'
-        : '';
-      const detail = !provider.available
-        ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>' + connect
+      const signedIn = provider.available || provider.cause === 'unexpected_shape';
+      const connect = login && !pending
+        ? '<button type="button" class="btn' + (signedIn ? '' : ' primary') + ' usage-connect" data-provider="' + esc(provider.id) + '" onclick="event.stopPropagation();usageConnect(this.dataset.provider)">'
+          + (signedIn ? 'Switch ' + esc(login.label) + ' account' : 'Sign in with ' + esc(login.label)) + '</button>'
+        : provider.metered === false || login ? ''
+        : '<div class="usage-reset usage-no-login">No dashboard sign-in for ' + esc(provider.label || provider.id) + ' yet: sign in with its own CLI on this server.</div>';
+      const detail = (!provider.available
+        ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>'
         : windows.length ? windows.map(w => usageWindowRow(w, provider.stale === true)).join('')
-        : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>';
+        : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>') + connect;
       return '<details class="usage-provider" data-provider="' + esc(provider.id || '') + '"'
         + ((openProviders.length ? openProviders.includes(provider.id) : constrained && constrained.id === provider.id) ? ' open' : '') + '>'
         + '<summary><span class="usage-provider-name">' + esc(provider.label || provider.id || 'Provider') + '</span>'
@@ -52507,6 +52521,14 @@ async function pullFromRemote(btn) {
       return void setTimeout(_wtMaybeStart, 250);
     }
     if (typeof sessions !== 'undefined' && sessions && sessions.length > 0) return;
+    // One first-run thing at a time. A new amux Cloud server opens "Get started" (connect a
+    // model) and this walkthrough together, and the window covered the walkthrough's Skip
+    // (fresh server e2e, 2026-10-21). Connecting a model comes first; the tour waits.
+    var gs = document.getElementById('apikey-setup-modal');
+    if (gs && getComputedStyle(gs).display !== 'none') {
+      if (++_wtTries > 26 + 1200) return;          // about 20 minutes, then let it go
+      return void setTimeout(_wtMaybeStart, 1000);
+    }
     _wtShow();
   }
   setTimeout(_wtMaybeStart, 1500);

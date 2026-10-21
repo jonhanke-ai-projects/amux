@@ -94,6 +94,20 @@ if [ "$(uname)" = Darwin ]; then
   check "the tick samples rather than walks"             "yes" "$(has "$out" 'verdict=fseventsd_churn_sampled')"
   check "and names the sampled feed"                     "yes" "$(has "$out" "fseventsd feed: 60 FSEvents in 20s under /Users/x/Dev/cust/runs/eng-R-A/bodies")"
   check "the escalation names it too"                    "yes" "$(grep -q "Top feed: 60 FSEvents in 20s under /Users/x/Dev/cust/runs/eng-R-A/bodies" "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+
+  echo "3b. hot on CPU with no churn is a stuck thread, not a writer (RCA fseventsd 20261021-135901)"
+  # Nothing reaches the floor (the 2026-10-21 sample: the busiest directory had
+  # 134 events in 20s against the census floor).
+  QUIET="$FIX/quiet.sh"; printf '#!/bin/bash\nexit 0\n' > "$QUIET"; chmod +x "$QUIET"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  out=$(AMUX_CLEANUP_CHURN_SAMPLE_CMD="$QUIET" tick "echo 0.81 98.8")
+  check "it says spinning, with a verdict"               "yes" "$(has "$out" 'verdict=fseventsd_spin_no_churn')"
+  check "the escalation names the stuck thread and the restart" "yes" "$(grep -q 'a stuck fseventsd thread, not a writer.*sudo killall fseventsd' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+  check "and does not ask anyone to stop churn"          "no"  "$(grep -q 'stop the file churn' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  out=$(AMUX_CLEANUP_CHURN_SAMPLE_CMD="$QUIET" tick "echo 30 98.8")
+  check "control: over the memory threshold it stays the churn verdict" "yes" "$(grep -q 'stop the file churn' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+  check "control: and is not called a spin"              "no"  "$(has "$out" 'verdict=fseventsd_spin_no_churn')"
 else
   echo "  skip (the end-to-end tick needs macOS)"
 fi
