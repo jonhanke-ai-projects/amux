@@ -16,9 +16,21 @@ curl -fsSL https://amux.io/install.sh | bash
 
 Then open **https://localhost:8824**. It clones amux to `~/Dev/amux`, asks before installing anything (Rust, tmux), and keeps your data in `~/.amux`.
 
-Already running amux? Move it to [amux Cloud](https://amux.io/start/): `amux export`, then `amux import <file> --to https://<you>.amux.io`.
-
 You need tmux 3.2+ and at least one agent CLI (Claude Code, Codex or Gemini CLI). Runs on macOS and Linux. Prefer to read first? `git clone https://github.com/mixpeek/amux && cd amux && ./install.sh` does the same thing.
+
+## amux Cloud
+
+Your own always-on amux server at `yourname.amux.io`, so agents keep working when your laptop sleeps and you steer them from your phone. Same product, we run the box. Bring your Claude, ChatGPT or Gemini account, or an API key.
+
+| Plan | Price | Server |
+|---|---|---|
+| Solo | $39/mo | 4 vCPU, 8 GB RAM |
+| Team | $69/mo | 8 vCPU, 16 GB RAM (for freelancers, agencies and small teams) |
+| Max | $129/mo | 16 vCPU, 32 GB RAM |
+
+**[Start amux Cloud](https://amux.io/start/?source=github)** · [Pricing](https://amux.io/pricing/)
+
+Already running amux locally? `amux export`, then `amux import <file> --to https://<you>.amux.io` moves your setup over.
 
 ## Apps
 
@@ -52,10 +64,6 @@ The Mac app is a native window on the system WebKit (about 1.5 MB). It opens sev
 - **Any model.** Claude Code, Codex, Gemini CLI, OpenCode or Ollama, switchable per worker.
 
 Local-first: one Rust binary and SQLite on your own machine.
-
-## Don't want to run a server?
-
-[amux Cloud](https://amux.io/start/) gives you your own always-on amux at `yourname.amux.io` from $39/mo, so agents keep working when your laptop sleeps. Same product, we run the box. [Pricing](https://amux.io/pricing/).
 
 ## Learn more
 
