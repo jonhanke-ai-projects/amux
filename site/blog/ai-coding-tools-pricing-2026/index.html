@@ -41,9 +41,16 @@
     "author": { "@type": "Organization", "name": "amux" },
     "publisher": { "@type": "Organization", "name": "amux", "url": "https://amux.io" },
     "datePublished": "2026-05-16",
-    "dateModified": "2026-09-06",
+    "dateModified": "2026-10-21",
     "mainEntityOfPage": "https://amux.io/blog/ai-coding-tools-pricing-2026/"
   }
+  </script>
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
+    {"@type":"Question","name":"How much does amux cost?","acceptedAnswer":{"@type":"Answer","text":"Self-hosting amux is free: one Rust binary plus SQLite on your own machine, open source under MIT + Commons Clause. You pay your model provider for tokens. amux Cloud gives you your own always-on server from $39/mo."}},
+    {"@type":"Question","name":"What does it cost to run five AI coding agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"On API billing, about $100 to $400/mo in tokens, depending on task size and model. Subscriptions rate limit each account, so heavy parallel work usually moves to API keys or several plans."}},
+    {"@type":"Question","name":"What is the cheapest AI coding tool in 2026?","acceptedAnswer":{"@type":"Answer","text":"Open-source tools (Aider, Cline, Continue, amux) have no license fee. Among subscriptions, GitHub Copilot Pro at $10/mo is the lowest paid tier; most others start at $20/mo."}}
+  ]}
   </script>
   <style>
     .pricing-card { background: var(--bg-card, var(--panel-2)); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid var(--tint); }
@@ -101,11 +108,13 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> &rsaquo; <a href="/blog/">Blog</a> &rsaquo; AI Coding Tools Pricing 2026</div>
-    <span class="updated-badge">Updated September 2026</span>
+    <span class="updated-badge">Updated October 2026</span>
     <h1>AI Coding Tools Pricing Compared (2026): What Every Setup Actually Costs</h1>
     <p class="subtitle">Flat-rate subscriptions, usage-based billing, and open-source tools that cost nothing except your API key. We break down what you actually pay for <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a>, <a href="https://claude.ai/code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a>, <a href="https://devin.ai" target="_blank" rel="noopener">Devin</a>, and every other major AI coding tool &mdash; including the real monthly cost of running multiple agents in parallel.</p>
 
-    <!-- EXP-078: top-of-page CTA — pricing blog, September 2026 refresh, started 2026-09-06 -->
+    <div class="key-takeaway" data-cta-loc="short-answer">
+      <strong>Short answer:</strong> Most AI coding tools start at $20/mo per seat (Cursor, Windsurf, Claude Pro, ChatGPT Plus, Devin Core), and GitHub Copilot starts at $10/mo. Open-source tools such as Aider, Cline and amux cost nothing; you pay the model provider for tokens. Running five agents in parallel on API billing typically costs $100 to $400/mo in tokens. amux is free to self-host; <a href="/pricing/">amux Cloud</a> runs it on your own always-on server from $39/mo.
+    </div>
 
     <h2>The master pricing table</h2>
     <p>Every major AI coding tool and what it costs. Sorted from cheapest to most expensive at typical usage levels.</p>
@@ -125,10 +134,10 @@
       <tbody>
         <tr>
           <td><a href="https://amux.io" target="_blank" rel="noopener"><strong>amux</strong></a></td>
-          <td>Open source</td>
+          <td>Open source (Cloud optional)</td>
           <td class="tbl-free">Yes (full)</td>
-          <td class="tbl-free">$0</td>
-          <td class="tbl-free">$0</td>
+          <td class="tbl-free">$0 self-hosted</td>
+          <td class="tbl-cheap">$39/mo Cloud (optional)</td>
           <td class="tbl-free">$0 + agent costs</td>
         </tr>
         <tr>
@@ -530,13 +539,13 @@
     <h2>September 2026 pricing update</h2>
     <p>This table is reviewed monthly. Here is what changed since the August 2026 edition:</p>
     <ul>
-      <li><strong>Claude Code:</strong> Unchanged — still API-key usage-based only ($3/M input, $15/M output for Claude Sonnet 5; $0.80/$4 for Haiku 4.5). No subscription tier. The Claude Max subscription ($100/mo) adds a usage cap but does not change the Claude Code CLI pricing model.</li>
+      <li><strong>Claude Code:</strong> Two ways to pay. Claude Pro ($20/mo) and Max ($100 or $200/mo) include Claude Code with rate limits, or an API key bills per token ($3/M input, $15/M output for Claude Sonnet 5).</li>
       <li><strong>GitHub Copilot:</strong> Enterprise seat pricing remains at $39/user/mo. The free tier continues (limited completions, 50 chat messages/mo). Copilot Workspace (async coding tasks) is generally available and included in Business and Enterprise plans.</li>
       <li><strong>Cursor:</strong> Business plan now at $40/user/mo (previously $40, unchanged). Hobby (free) and Pro ($20/mo) tiers unchanged. Fast request quotas still apply on Pro.</li>
       <li><strong>OpenAI Codex:</strong> Codex CLI remains free and open source under MIT. The cloud Codex agent (ChatGPT-integrated async tasks) is available in Plus ($20/mo) and Pro ($200/mo) plans. No dedicated standalone Codex subscription.</li>
       <li><strong>Devin:</strong> Core tier at $20/mo (introduced 2026-Q2) is now the recommended entry point for small teams. Team tier unchanged at $500/mo. ACU (agent compute unit) pricing stable.</li>
       <li><strong>Windsurf:</strong> Free, Pro ($15/mo), and Team ($30/user/mo) tiers unchanged. Cascade credit system (fast vs. slow credits) still applies.</li>
-      <li><strong>amux:</strong> Free. MIT + Commons Clause. Pay only for API tokens. No subscription, no metering, no seat fees.</li>
+      <li><strong>amux:</strong> Free to self-host under MIT + Commons Clause, with no seat fees; you pay only for model tokens. <a href="/pricing/">amux Cloud</a> adds your own always-on server at yourname.amux.io: Solo $39/mo, Team $69/mo, Max $129/mo.</li>
     </ul>
     <p><em>Last verified: September 2026. Prices change — check vendor pricing pages before committing.</em></p>
 
@@ -550,10 +559,15 @@
     <p>The trend is moving toward usage-based, parallel execution. Developers who still pay for a single IDE seat and work one task at a time are leaving both money and throughput on the table.</p>
     <p>If you're spending more than $20/mo on AI coding tools and not running agents in parallel, you're doing it wrong.</p>
 
-    <div class="cta-box"><h3>Run parallel AI agents for free</h3><p>amux is open source. Orchestrate 5, 10, or 20+ Claude Code sessions in parallel. Your API key, your machine, your code.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+    <h2>FAQ</h2>
+    <h3>How much does amux cost?</h3>
+    <p>Self-hosting amux is free: one Rust binary plus SQLite on your own machine, open source under MIT + Commons Clause. You pay your model provider for tokens. If you want agents to keep running while your laptop sleeps, amux Cloud gives you your own always-on server from $39/mo.</p>
+    <h3>What does it cost to run five AI coding agents in parallel?</h3>
+    <p>On API billing, about $100 to $400/mo in tokens, depending on task size and model. On subscriptions, each agent runtime is rate limited per account, so heavy parallel work usually moves to API keys or several plans.</p>
+    <h3>What is the cheapest AI coding tool in 2026?</h3>
+    <p>Open-source tools (Aider, Cline, Continue, amux) have no license fee. Among subscriptions, GitHub Copilot Pro at $10/mo is the lowest paid tier; most others start at $20/mo.</p>
+
+    <div class="cta-box"><h3>Run your AI engineering team with amux</h3><p>Free and open source. One command installs it on macOS or Linux, then open https://localhost:8824.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">Star on GitHub</a> <a class="btn" href="/start/">Run it in the cloud</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
