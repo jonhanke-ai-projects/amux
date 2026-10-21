@@ -53984,6 +53984,37 @@ function _reclaimVolumeNow() {
 // the disk cleanup tab ... there should be easy ways of cleaning up host in safe
 // ways". That day 105 GB sat staged in quarantine, freeing nothing, with the
 // only Purge buttons at the bottom of a 400-row page.
+// The daily disk reclaim (scripts/disk-reclaim-tick.sh, Ethan 2026-10-21:
+// "regular cleanups of data that has not been accessed in a while ... baked
+// into the metrics"). One card per class: its rule, what it holds in
+// quarantine now, and when that is purged. The rules are RECLAIM_* keys in the
+// global Environment capability, so "Change rules" opens that editor.
+function _reclaimScheduledPanel() {
+  const s = _reclaimQuarantine?.scheduled;
+  if (!s) return '';
+  let h = '<div class="metrics-section-title" style="margin-top:12px;" id="reclaim-scheduled-title">Scheduled cleanup</div>';
+  if (!s.measured) {
+    return h + `<div class="metrics-card reclaim-safe-text" id="reclaim-scheduled-unmeasured">Not measured: ${esc(s.why_unmeasured || 'no status')}</div>`;
+  }
+  const keys = { build: 'RECLAIM_IDLE_H, RECLAIM_RETAIN_H, RECLAIM_MIN_MB',
+                 stale: 'RECLAIM_STALE_DAYS, RECLAIM_STALE_RETAIN_D, RECLAIM_STALE_MIN_MB, RECLAIM_STALE (0 = off)' };
+  h += `<div class="reclaim-safe-text" style="margin-bottom:8px;">Runs daily at 4am. Last run ${esc(timeAgo(s.last_run_at))}${s.dry ? ' (dry run)' : ''}, purged ${s.purged || 0} expired batch${s.purged === 1 ? '' : 'es'}.
+    Files are moved to quarantine first and can be restored below until their purge date.</div><div class="reclaim-safe-grid">`;
+  for (const c of (s.classes || [])) {
+    const days = Math.round((c.retain_s || 0) / 86400 * 10) / 10;
+    const due = c.next_purge_at ? new Date(c.next_purge_at * 1000).toLocaleDateString() : '';
+    const off = c.enabled === false;
+    h += `<div class="metrics-card reclaim-safe-card" data-reclaim-class="${esc(c.key || '')}">
+      <div class="reclaim-safe-head">${esc(c.label || c.key || '')}${off ? ' · off' : ''}</div>
+      <div class="reclaim-safe-text">${esc(c.rule || '')}. Restorable for ${days} day${days === 1 ? '' : 's'}.</div>
+      <div class="reclaim-safe-text"><b>${_fmtBytes(c.staged_bytes || 0)}</b> in quarantine (${c.staged_batches || 0} batch${c.staged_batches === 1 ? '' : 'es'})${due ? `, oldest purged ${esc(due)}` : ''}.
+        Last run moved ${c.moved || 0} of ${c.picked || 0} picked${c.refused ? `, ${c.refused} refused by the server` : ''}${c.kept_recently_used ? `, kept ${c.kept_recently_used} opened recently` : ''}${c.kept_open ? `, ${c.kept_open} open now` : ''}.</div>
+      <button class="btn" title="${esc(keys[c.key] || 'RECLAIM_* keys')}" onclick="_scopeEditOpen('global','','env')">Change rules</button>
+    </div>`;
+  }
+  return h + '</div>';
+}
+
 function _reclaimActionsPanel(findings) {
   const v = _reclaimVolumeNow();
   const staged = v?.staged_bytes || 0;
@@ -54000,6 +54031,7 @@ function _reclaimActionsPanel(findings) {
         <button class="btn" onclick="document.getElementById('reclaim-quarantine-title')?.scrollIntoView({behavior:'smooth'})">Review or restore</button>
       </div></div>`;
   }
+  h += _reclaimScheduledPanel();
   h += `<div class="metrics-section-title" style="margin-top:12px;">Safe cleanup</div>
     <div class="reclaim-safe-grid">
       <div class="metrics-card reclaim-safe-card">

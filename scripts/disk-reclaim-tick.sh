@@ -25,6 +25,22 @@
 #      simulators, docker build cache and dangling images). Each tool knows
 #      what is still referenced; rm does not.
 #
+# STALE DATA (Ethan 2026-10-21: "regular cleanups of data that has not been
+# accessed in a while across the MacBook"). A second class, separate knobs:
+# big files under $HOME that nobody has opened in RECLAIM_STALE_DAYS. That is
+# user data, so it gets a long restore window (RECLAIM_STALE_RETAIN_D) under
+# its own session, disk-reclaim-stale, and every batch shows in Metrics > Disk
+# Cleanup with a Restore button until then. "Not accessed" is the newest of
+# mtime, atime and Spotlight's kMDItemLastUsedDate, because APFS only advances
+# atime when it is older than mtime: atime alone cannot prove a file unread.
+# A file some process has open stays. ~/Library, dot-dirs and app bundles
+# (Photos/Music libraries, VMs, .app) are never entered: moving one file out of
+# a bundle breaks the bundle.
+#
+# Knobs come from amux's GLOBAL scope (Scope tab > Environment, ~/.amux/amux.env),
+# the same way mac-cleanup-tick reads AMUX_CLEANUP_*: set RECLAIM_STALE_DAYS=180
+# there and the next tick uses it. An explicit environment value still wins.
+#
 # Reclaim is reported as a df delta, never a sum of sizes (APFS snapshots can
 # hold freed blocks; reclaim.rs explains why the two disagree).
 set -uo pipefail
@@ -37,6 +53,19 @@ for a in "$@"; do
     *) echo "disk-reclaim: unknown argument $a" >&2; exit 2 ;;
   esac
 done
+
+scope_reclaim_knobs() { # <scope file>: RECLAIM_* from the global scope, env wins
+  local f=$1 line k v
+  [ -f "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in RECLAIM_[A-Z0-9_]*=*) ;; *) continue ;; esac
+    k=${line%%=*}; v=${line#*=}
+    v=${v#\"}; v=${v%\"}; v=${v#\'}; v=${v%\'}
+    [ -n "${!k+x}" ] && continue
+    export "$k=$v"
+  done < "$f"
+}
+scope_reclaim_knobs "${RECLAIM_SCOPE_FILE:-${AMUX_HOME:-$HOME/.amux}/amux.env}"
 
 API=${RECLAIM_API:-$(amux url 2>/dev/null)}
 SESSION=${RECLAIM_SESSION:-disk-reclaim-tick}
@@ -54,6 +83,18 @@ SCAN_WAIT_S=${RECLAIM_SCAN_WAIT_S:-2700}
 RECHECK_S=${RECLAIM_RECHECK_S:-60}       # per-path budget for the on-disk idle recheck
 TOOLS=${RECLAIM_TOOLS:-1}                # 0 skips step 5 (the test suite sets it)
 LOG=${RECLAIM_LOG:-$HOME/.amux/logs/disk-reclaim-tick.log}
+# The tick's last run as JSON. /api/reclaim/quarantine returns it as
+# "scheduled", which is what Metrics > Disk Cleanup draws.
+STATUS=${RECLAIM_STATUS_FILE:-$HOME/.amux/logs/disk-reclaim-tick.json}
+STALE=${RECLAIM_STALE:-1}                          # 0 turns the stale-data class off
+STALE_SESSION=${RECLAIM_STALE_SESSION:-disk-reclaim-stale}
+STALE_DAYS=${RECLAIM_STALE_DAYS:-90}               # not opened this long
+STALE_RETAIN_D=${RECLAIM_STALE_RETAIN_D:-30}       # restorable this long before purge
+STALE_MIN_MB=${RECLAIM_STALE_MIN_MB:-500}
+STALE_ROOTS=${RECLAIM_STALE_ROOTS:-$HOME}
+STALE_EXCLUDE=${RECLAIM_STALE_EXCLUDE:-}           # extra path prefixes to leave alone
+MDLS=${RECLAIM_MDLS:-mdls}
+LSOF=${RECLAIM_LSOF:-lsof}
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 exec > >(tee -a "$LOG") 2>&1
@@ -67,6 +108,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/disk-reclaim.XXXXXX")
 trap 'rm -rf -- "${WORK:?}"' EXIT
 free0=$(free_kb)
 say "start dry=$DRY free=$(gb "$free0") idle>=${IDLE_H}h retain=${RETAIN_H}h min=${MIN_MB}M cats=[$CATS] roots=[$ROOTS]"
+say "stale class: on=$STALE unused>=${STALE_DAYS}d retain=${STALE_RETAIN_D}d min=${STALE_MIN_MB}M roots=[$STALE_ROOTS]"
 
 # ── 1. a scan ──────────────────────────────────────────────────────────────
 scan_id=$(api /api/reclaim/scan | python3 -c '
@@ -103,6 +145,7 @@ fi
 
 # ── 2. selection ──────────────────────────────────────────────────────────
 moved=0; refused=0; picked=0
+s_picked=0; s_moved=0; s_refused=0; s_kept_used=0; s_kept_open=0; s_batch=-
 if [ -z "$scan_id" ]; then
   say "verdict=reclaim_tick_no_scan quarantine step skipped: no usable scan"
 else
@@ -149,10 +192,11 @@ PY
   say "selection: $picked picked from scan $scan_id; kept $n_recent recently written, $n_slow unrechecked"
 
   # ── 3. quarantine ───────────────────────────────────────────────────────
-  if [ "$picked" -gt 0 ] && [ "$DRY" = 0 ]; then
-    python3 -c 'import json,sys; print(json.dumps({"paths":[l.strip() for l in open(sys.argv[1]) if l.strip()],"scan_id":sys.argv[2]}))' \
-      "$WORK/paths.txt" "$scan_id" > "$WORK/req.json"
-    api /api/reclaim/quarantine 1800 -X POST -H 'Content-Type: application/json' --data-binary @"$WORK/req.json" > "$WORK/q.json"
+  quarantine() { # <session> <paths file> -> "moved refused batch" on stdout
+    python3 -c 'import json,sys; print(json.dumps({"paths":[l.rstrip("\n") for l in open(sys.argv[1]) if l.strip()],"scan_id":sys.argv[2]}))' \
+      "$2" "$scan_id" > "$WORK/req.json"
+    curl -sk --max-time 1800 -H "X-Amux-Session: $1" -X POST -H 'Content-Type: application/json' \
+      --data-binary @"$WORK/req.json" "$API/api/reclaim/quarantine" > "$WORK/q.json"
     cat > "$WORK/reply.py" <<'PY'
 import json, sys
 # The server answers {"batch_id", "moved": <count>, "refused": [{path, reason, class}]}.
@@ -166,10 +210,94 @@ for r in ref:
 m = d.get("moved")
 print(m if isinstance(m, int) else len(m or []), len(ref), d.get("batch_id") or "-")
 PY
-    read -r moved refused batch < <(python3 "$WORK/reply.py" "$WORK/q.json")
+    python3 "$WORK/reply.py" "$WORK/q.json"
+  }
+  if [ "$picked" -gt 0 ] && [ "$DRY" = 0 ]; then
+    read -r moved refused batch < <(quarantine "$SESSION" "$WORK/paths.txt")
     say "quarantine: batch $batch moved $moved, refused $refused (refusals above name their class)"
   elif [ "$picked" -gt 0 ]; then
     say "quarantine: dry run, would move $picked path(s)"
+  fi
+
+  # ── 3b. stale data: big files nobody has opened in STALE_DAYS ─────────────
+  if [ "$STALE" = 1 ]; then
+    cat > "$WORK/stale.py" <<'EOF'
+import json, os, sys, time
+d = json.load(open(sys.argv[1]))
+age_s, min_b = float(sys.argv[2]) * 86400, int(sys.argv[3]) << 20
+roots = [r.rstrip("/") + "/" for r in sys.argv[4].split()]
+home = sys.argv[5].rstrip("/")
+# Media folders an app indexes behave like bundles too: moving a track out of
+# iTunes Media leaves a broken entry in the Music library.
+excl = [home + d for d in ("/Library/", "/Music/iTunes/", "/Music/Music/", "/Movies/TV/")] \
+     + [e.rstrip("/") + "/" for e in sys.argv[6].split()]
+# Bundles look like folders and are one document: moving a file out of one
+# corrupts it (a Photos library, a VM, an app).
+BUNDLES = (".app", ".photoslibrary", ".musiclibrary", ".tvlibrary", ".imovielibrary",
+           ".fcpbundle", ".logicx", ".band", ".aplibrary", ".vmwarevm", ".pvm", ".utm",
+           ".sparsebundle", ".bundle", ".framework", ".xcarchive", ".lrdata")
+if not (d.get("ownership") or {}).get("fleet_measured", False):
+    print("UNMEASURED"); sys.exit(0)
+now = time.time()
+for f in d.get("findings") or []:
+    p = f.get("path") or ""
+    # The scan files a big file as "stale" past its own 90d mark and "large"
+    # before it, so a shorter STALE_DAYS still finds candidates.
+    if f.get("protected") or f.get("regenerable") or f.get("category") not in ("stale", "large"):
+        continue
+    if not any(p.startswith(r) for r in roots) or any(p.startswith(e) for e in excl):
+        continue
+    dirs = (p[len(home):] if p.startswith(home + "/") else p).split("/")[:-1]
+    if any(c.startswith(".") or c.lower().endswith(BUNDLES) for c in dirs):
+        continue
+    if (f.get("bytes") or 0) < min_b or now - (f.get("mtime") or now) < age_s:
+        continue
+    if os.path.isfile(p) and not os.path.islink(p):
+        print(f"{f['bytes']}\t{p}")
+EOF
+    python3 "$WORK/stale.py" "$WORK/scan.json" "$STALE_DAYS" "$STALE_MIN_MB" "$STALE_ROOTS" "$HOME" "$STALE_EXCLUDE" > "$WORK/stale.tsv"
+    if head -1 "$WORK/stale.tsv" | grep -q '^UNMEASURED'; then
+      say "verdict=reclaim_stale_unmeasured scan ownership was not measured; no stale data moved"
+      : > "$WORK/stale.tsv"
+    fi
+    # Last use is the newest of mtime, atime and Spotlight's last-used date,
+    # read NOW, since the scan can be hours old. Unreadable means keep.
+    cat > "$WORK/lastuse.py" <<'EOF'
+import os, subprocess, sys
+from datetime import datetime
+p, mdls = sys.argv[1], sys.argv[2]
+st = os.stat(p)
+t = max(st.st_mtime, st.st_atime)
+try:
+    out = subprocess.run([mdls, "-raw", "-name", "kMDItemLastUsedDate", p],
+                         capture_output=True, text=True, timeout=20).stdout.strip()
+    if out and out != "(null)":
+        t = max(t, datetime.strptime(out, "%Y-%m-%d %H:%M:%S %z").timestamp())
+except Exception:
+    pass
+print(int(t))
+EOF
+    now_s=$(date +%s); cutoff=$(( now_s - STALE_DAYS * 86400 ))
+    : > "$WORK/stale-paths.txt"
+    while IFS=$'\t' read -r bytes p; do
+      [ -n "$p" ] || continue
+      last=$(python3 "$WORK/lastuse.py" "$p" "$MDLS" 2>/dev/null) || last=
+      if [ -z "$last" ] || [ "$last" -gt "$cutoff" ]; then
+        s_kept_used=$((s_kept_used+1)); say "  keep $p (opened inside ${STALE_DAYS}d, last use ${last:-unreadable})"; continue
+      fi
+      if [ -n "$("$LSOF" -t -- "$p" 2>/dev/null)" ]; then
+        s_kept_open=$((s_kept_open+1)); say "  keep $p (open in a running process)"; continue
+      fi
+      printf '%s\n' "$p" >> "$WORK/stale-paths.txt"; s_picked=$((s_picked+1))
+      say "  stale $(gb $((bytes/1024))) $p (last used $(( (now_s - last) / 86400 ))d ago)"
+    done < "$WORK/stale.tsv"
+    say "stale: $s_picked picked; kept $s_kept_used opened recently, $s_kept_open open now"
+    if [ "$s_picked" -gt 0 ] && [ "$DRY" = 0 ]; then
+      read -r s_moved s_refused s_batch < <(quarantine "$STALE_SESSION" "$WORK/stale-paths.txt")
+      say "stale: batch $s_batch moved $s_moved, refused $s_refused; restorable for ${STALE_RETAIN_D}d in Metrics > Disk Cleanup"
+    elif [ "$s_picked" -gt 0 ]; then
+      say "stale: dry run, would move $s_picked file(s)"
+    fi
   fi
 fi
 
@@ -177,17 +305,19 @@ fi
 purged=0
 api /api/reclaim/quarantine 60 | python3 -c '
 import json, sys, time
-retain, me = float(sys.argv[1]) * 3600, sys.argv[2]
+# Each class purges only batches under its own session, after its own window.
+retain = {sys.argv[1]: float(sys.argv[2]) * 3600, sys.argv[3]: float(sys.argv[4]) * 86400}
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
 for b in d.get("batches") or []:
-    if b.get("session") == me and b.get("status") == "staged" and time.time() - (b.get("created_at") or time.time()) >= retain:
-        print(b["id"], b.get("bytes") or 0)' "$RETAIN_H" "$SESSION" > "$WORK/expired.txt"
-while read -r bid bbytes; do
+    me = b.get("session")
+    if me in retain and b.get("status") == "staged" and time.time() - (b.get("created_at") or time.time()) >= retain[me]:
+        print(b["id"], b.get("bytes") or 0, me)' "$SESSION" "$RETAIN_H" "$STALE_SESSION" "$STALE_RETAIN_D" > "$WORK/expired.txt"
+while read -r bid bbytes bsess; do
   [ -n "$bid" ] || continue
   if [ "$DRY" = 1 ]; then say "purge: dry run, would purge batch $bid ($(gb $((bbytes/1024))))"; continue; fi
   code=$(curl -sk --max-time 1800 -o "$WORK/purge.json" -w '%{http_code}' -X DELETE \
-    -H "X-Amux-Session: $SESSION" "$API/api/reclaim/quarantine/$bid?confirm=$bid")
+    -H "X-Amux-Session: $bsess" "$API/api/reclaim/quarantine/$bid?confirm=$bid")
   case "$code" in
     2??) purged=$((purged+1)); say "purge: batch $bid ($(gb $((bbytes/1024))))" ;;
     *) say "purge: batch $bid refused http=$code $(head -c 200 "$WORK/purge.json")" ;;
@@ -218,4 +348,36 @@ if [ "$TOOLS" = 1 ]; then
 fi
 
 free1=$(free_kb)
-say "done dry=$DRY picked=$picked moved=$moved refused=$refused purged=$purged free $(gb "$free0") -> $(gb "$free1") (df delta $(gb $((free1 - free0))))"
+say "done dry=$DRY picked=$picked moved=$moved refused=$refused stale_picked=$s_picked stale_moved=$s_moved purged=$purged free $(gb "$free0") -> $(gb "$free1") (df delta $(gb $((free1 - free0))))"
+
+# The run, for Metrics > Disk Cleanup (served as "scheduled" by GET
+# /api/reclaim/quarantine). Every value is this run's; written to a temp file
+# and renamed so a reader never sees half of it.
+cat > "$WORK/status.py" <<'EOF'
+import json, os, sys, time
+a = dict(x.split("=", 1) for x in sys.argv[2:])
+n = lambda k: int(a[k]) if a.get(k, "").lstrip("-").isdigit() else 0
+st = {"at": int(time.time()), "dry": a["dry"] == "1", "scan_id": a["scan_id"] or None,
+      "free_kb_before": n("free0"), "free_kb_after": n("free1"), "purged": n("purged"),
+      "classes": [
+        {"key": "build", "label": "Idle build output and orphaned tmp", "session": a["session"],
+         "enabled": True, "retain_s": int(float(a["retain_h"]) * 3600),
+         "rule": f"regenerable, untouched {a['idle_h']}h, {a['min_mb']} MB+, under {a['roots']}",
+         "picked": n("picked"), "moved": n("moved"), "refused": n("refused")},
+        {"key": "stale", "label": f"Files not opened in {a['stale_days']} days", "session": a["stale_session"],
+         "enabled": a["stale"] == "1", "retain_s": int(float(a["stale_retain_d"]) * 86400),
+         "rule": f"not opened {a['stale_days']}d, {a['stale_min_mb']} MB+, under {a['stale_roots']}",
+         "picked": n("s_picked"), "moved": n("s_moved"), "refused": n("s_refused"),
+         "kept_recently_used": n("s_kept_used"), "kept_open": n("s_kept_open")}]}
+tmp = sys.argv[1] + ".tmp"
+os.makedirs(os.path.dirname(sys.argv[1]) or ".", exist_ok=True)
+with open(tmp, "w") as fh: json.dump(st, fh)
+os.replace(tmp, sys.argv[1])
+EOF
+python3 "$WORK/status.py" "$STATUS" dry="$DRY" scan_id="${scan_id:-}" free0="$free0" free1="$free1" purged="$purged" \
+  session="$SESSION" retain_h="$RETAIN_H" idle_h="$IDLE_H" min_mb="$MIN_MB" roots="$ROOTS" \
+  picked="$picked" moved="$moved" refused="$refused" \
+  stale="$STALE" stale_session="$STALE_SESSION" stale_days="$STALE_DAYS" stale_retain_d="$STALE_RETAIN_D" \
+  stale_min_mb="$STALE_MIN_MB" stale_roots="$STALE_ROOTS" \
+  s_picked="$s_picked" s_moved="$s_moved" s_refused="$s_refused" s_kept_used="$s_kept_used" s_kept_open="$s_kept_open" \
+  || say "verdict=reclaim_tick_status_unwritten could not write $STATUS"

@@ -2451,9 +2451,69 @@ async fn list_quarantine(State(state): State<AppState>) -> Response {
         })
         .unwrap_or_default();
 
+    let scheduled = scheduled_summary(&scheduled_status_path(), &conn);
     Json(json!({"batches": batches, "items": items, "root": quarantine_root().to_string_lossy(),
-        "volume_now": volume_now(&state)}))
+        "volume_now": volume_now(&state), "scheduled": scheduled}))
         .into_response()
+}
+
+/// Where scripts/disk-reclaim-tick.sh records its last run.
+fn scheduled_status_path() -> PathBuf {
+    home_dir().join(".amux/logs/disk-reclaim-tick.json")
+}
+
+/// The scheduled cleanup, for Metrics > Disk Cleanup (Ethan 2026-10-21: "regular
+/// cleanups of data that has not been accessed in a while ... baked into the
+/// metrics"). The tick's last run, plus what each class still holds RIGHT NOW:
+/// staged bytes and when the oldest batch is purged. Those totals come from the
+/// table over every staged batch rather than the 50-row list above, because a
+/// 30-day stale window outgrows that list.
+///
+/// `measured: false` with `why_unmeasured` when the tick has never written its
+/// status, so an empty panel cannot read as "nothing to clean".
+pub(crate) fn scheduled_summary(status_file: &FsPath, conn: &rusqlite::Connection) -> serde_json::Value {
+    let run: serde_json::Value = match std::fs::read_to_string(status_file) {
+        Ok(s) => match serde_json::from_str(&s) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(path = %status_file.display(), error = %e, measured = false,
+                    verdict = "reclaim_schedule_status_unreadable", "disk-reclaim-tick status is not JSON");
+                return json!({"measured": false, "why_unmeasured": format!("status file is not JSON: {e}")});
+            }
+        },
+        Err(_) => {
+            return json!({"measured": false,
+                "why_unmeasured": "the scheduled disk reclaim has not run yet (scripts/disk-reclaim-tick.sh)"})
+        }
+    };
+    let now = now_secs();
+    let mut classes = Vec::new();
+    for c in run.get("classes").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        let session = c.get("session").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let retain = c.get("retain_s").and_then(|v| v.as_i64()).unwrap_or(0);
+        let (n, bytes, oldest): (i64, i64, Option<i64>) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(bytes),0), MIN(created_at) FROM reclaim_quarantine
+                 WHERE session = ?1 AND status = 'staged'",
+                [&session],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap_or((0, 0, None));
+        let mut c = c;
+        if let Some(o) = c.as_object_mut() {
+            o.insert("staged_batches".into(), json!(n));
+            o.insert("staged_bytes".into(), json!(bytes));
+            o.insert("next_purge_at".into(), json!(oldest.map(|t| t + retain)));
+        }
+        classes.push(c);
+    }
+    let at = run.get("at").and_then(|v| v.as_i64()).unwrap_or(0);
+    json!({"measured": true, "last_run_at": at, "age_s": now - at,
+        "dry": run.get("dry").cloned().unwrap_or(json!(false)),
+        "purged": run.get("purged").cloned().unwrap_or(json!(0)),
+        "free_kb_before": run.get("free_kb_before").cloned().unwrap_or(json!(null)),
+        "free_kb_after": run.get("free_kb_after").cloned().unwrap_or(json!(null)),
+        "classes": classes})
 }
 
 async fn restore_quarantine(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -2628,6 +2688,51 @@ async fn purge_quarantine(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Metrics panel reads this: per class, what is staged NOW and when the
+    /// oldest batch goes, counted over every staged batch of that class's own
+    /// session. A purged batch, another class's batch and a person's batch do
+    /// not count. No status file is unmeasured, never an empty success.
+    #[test]
+    fn scheduled_summary_counts_each_class_from_its_own_staged_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("status.json");
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE reclaim_quarantine (id TEXT, created_at INTEGER, status TEXT, bytes INTEGER, session TEXT);
+             INSERT INTO reclaim_quarantine VALUES
+               ('a', 1000, 'staged', 10, 'disk-reclaim-stale'),
+               ('b', 2000, 'staged', 5,  'disk-reclaim-stale'),
+               ('c', 500,  'purged', 99, 'disk-reclaim-stale'),
+               ('d', 700,  'staged', 7,  'disk-reclaim-tick'),
+               ('e', 100,  'staged', 50, 'amux');",
+        )
+        .unwrap();
+
+        let none = scheduled_summary(&f, &conn);
+        assert_eq!(none["measured"], json!(false));
+        assert!(none["why_unmeasured"].as_str().unwrap().contains("not run"));
+
+        std::fs::write(&f, "{not json").unwrap();
+        assert_eq!(scheduled_summary(&f, &conn)["measured"], json!(false));
+
+        std::fs::write(
+            &f,
+            r#"{"at": 1, "classes": [
+                {"key":"build","session":"disk-reclaim-tick","retain_s":259200},
+                {"key":"stale","session":"disk-reclaim-stale","retain_s":2592000}]}"#,
+        )
+        .unwrap();
+        let s = scheduled_summary(&f, &conn);
+        assert_eq!(s["measured"], json!(true));
+        let stale = &s["classes"][1];
+        assert_eq!(stale["staged_batches"], json!(2));
+        assert_eq!(stale["staged_bytes"], json!(15));
+        assert_eq!(stale["next_purge_at"], json!(1000 + 2_592_000));
+        let build = &s["classes"][0];
+        assert_eq!(build["staged_bytes"], json!(7));
+        assert_eq!(build["next_purge_at"], json!(700 + 259_200));
+    }
 
     #[test]
     fn snapshot_response_never_turns_failed_measurement_into_zero() {
