@@ -3295,6 +3295,50 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/pages",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/pages/{name}",
+        methods: &["GET", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/pages/{name}/html",
+        methods: &["PUT"],
+    },
+    RouteEntry {
+        path: "/api/pages/{name}/sql",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/pages/{name}/ask",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/pages/{name}/version",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/pages/{name}/file",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/pages/{name}/snapshots",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/pages/{name}/restore",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/pages/{name}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/pages/{name}/",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/skills",
         methods: &["GET"],
     },
