@@ -64,7 +64,8 @@ class H(http.server.BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0); body = self.rfile.read(n).decode()
         open(T + "/posts.log", "a").write(self.headers.get("X-Amux-Session", "") + "\t" + body + "\n")
         paths = json.loads(body).get("paths", [])
-        self.send({"batch_id": "B1", "moved": paths[:-1], "refused": [{"path": paths[-1], "class": "owned", "reason": "test"}] if paths else []})
+        # The real reply's shape (reclaim.rs create_quarantine): moved is a COUNT.
+        self.send({"batch_id": "B1", "moved": len(paths[:-1]), "refused": [{"path": paths[-1], "class": "owned", "reason": "test"}] if paths else []})
     def do_DELETE(self):
         open(T + "/deletes.log", "a").write(self.path + "\n"); self.send({"ok": True})
 s = http.server.HTTPServer(("127.0.0.1", 0), H)

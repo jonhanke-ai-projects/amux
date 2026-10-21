@@ -153,15 +153,20 @@ PY
     python3 -c 'import json,sys; print(json.dumps({"paths":[l.strip() for l in open(sys.argv[1]) if l.strip()],"scan_id":sys.argv[2]}))' \
       "$WORK/paths.txt" "$scan_id" > "$WORK/req.json"
     api /api/reclaim/quarantine 1800 -X POST -H 'Content-Type: application/json' --data-binary @"$WORK/req.json" > "$WORK/q.json"
-    read -r moved refused batch < <(python3 - "$WORK/q.json" <<'PY'
+    cat > "$WORK/reply.py" <<'PY'
 import json, sys
+# The server answers {"batch_id", "moved": <count>, "refused": [{path, reason, class}]}.
 try: d = json.load(open(sys.argv[1]))
-except Exception: print("0 0 -"); sys.exit(0)
-for r in d.get("refused") or []:
+except Exception as e:
+    print(f"verdict=reclaim_tick_bad_reply quarantine reply was not JSON: {e}", file=sys.stderr)
+    print("? ? -"); sys.exit(0)
+ref = d.get("refused") or []
+for r in ref:
     print(f"REFUSED\t{r.get('class','?')}\t{r.get('path')}\t{r.get('reason')}", file=sys.stderr)
-print(len(d.get("moved") or []), len(d.get("refused") or []), d.get("batch_id") or "-")
+m = d.get("moved")
+print(m if isinstance(m, int) else len(m or []), len(ref), d.get("batch_id") or "-")
 PY
-    )
+    read -r moved refused batch < <(python3 "$WORK/reply.py" "$WORK/q.json")
     say "quarantine: batch $batch moved $moved, refused $refused (refusals above name their class)"
   elif [ "$picked" -gt 0 ]; then
     say "quarantine: dry run, would move $picked path(s)"
