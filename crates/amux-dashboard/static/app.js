@@ -36320,6 +36320,7 @@ function switchView(view) {
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
+    ['pages', 'pages', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -36347,6 +36348,7 @@ function switchView(view) {
   if (view === 'draw') _drawEnter(); else _drawLeave();
   if (view === 'vault') _vaultEnter(); else if (typeof _vaultLeave === 'function') _vaultLeave();
   if (view === 'sql') _sqlInit();
+  if (view === 'pages') _pagesEnter(); else if (typeof _pagesLeave === 'function' && _pagesCur) _pagesLeave();
   if (view === 'tasks') _tasksLoad('main', true);
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
@@ -56186,6 +56188,178 @@ let _dbTable = null;
 let _dbMode = 'data';
 let _dbLimit = 50, _dbOffset = 0, _dbSort = '', _dbDir = 'asc';
 let _sqlSchemaLoaded = false;
+
+// ── Pages (api/pages.rs, pages-host.js, docs/research/pages.md) ──
+// An HTML app whose backend is a worker and its own SQLite file. The page
+// runs in a sandboxed frame mounted by pages-host.js, the same host the
+// standalone /pages/<name> uses, so the tab and the link behave alike.
+let _pagesCur = null, _pagesMounted = null, _pagesMeta = null;
+function _pagesHostReady() {
+  if (window.AmuxPages) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/pages-host.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('pages-host.js did not load'));
+    document.head.appendChild(s);
+  });
+}
+function _pagesEnter() {
+  if (_pagesCur) return;
+  _pagesList();
+}
+function _pagesLeave() {
+  if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
+  _pagesCur = null;
+  const open = document.getElementById('pages-open'), list = document.getElementById('pages-list-wrap');
+  if (open) open.style.display = 'none';
+  if (list) list.style.display = '';
+}
+async function _pagesFetch(path, init) {
+  const r = await fetch(API + '/api/pages' + path, Object.assign({ _skipOutbox: true, headers: _authHeaders({ 'Content-Type': 'application/json' }) }, init || {}));
+  let d = null;
+  try { d = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+  return d;
+}
+async function _pagesList() {
+  const el = document.getElementById('pages-list');
+  if (!el) return;
+  el.innerHTML = '<div class="ui-help">Loading…</div>';
+  let d;
+  try { d = await _pagesFetch(''); } catch (e) {
+    el.innerHTML = '<div class="ui-error">Pages could not be loaded: ' + esc(e.message) + '</div>';
+    return;
+  }
+  const pages = d.pages || [];
+  if (!pages.length) {
+    el.innerHTML = '<div class="pages-empty">No pages yet. A page is an HTML app whose backend is a worker and a database: the page saves to its database, and the worker does anything that needs judgment or outside data. Create one, then tell its worker what to build.</div>';
+    return;
+  }
+  const ago = iso => iso ? timeAgo(Date.parse(iso) / 1000) : '';
+  el.innerHTML = pages.map(p => `<div class="pages-row" role="button" tabindex="0" data-page="${esc(p.name)}"
+      onclick="_pagesOpen('${escJs(p.name)}')" onkeydown="if(event.key==='Enter'){event.preventDefault();_pagesOpen('${escJs(p.name)}')}">
+      <div class="pages-row-main"><b>${esc(p.title)}</b><span class="ui-help">/pages/${esc(p.name)} · worker ${esc(p.worker)}</span></div>
+      <span class="ui-help pages-row-when">${p.data_updated_at ? 'Data changed ' + esc(ago(p.data_updated_at)) : ''}</span></div>`).join('');
+}
+async function _pagesNew() {
+  const ok = await showFormModal('New page',
+    '<label class="ui-field">Name<input id="pages-new-name" class="input" placeholder="e.g. lead-research" autocomplete="off" autocapitalize="off" spellcheck="false">'
+    + '<span class="ui-help">Lowercase letters, digits and dashes. The page opens at /pages/&lt;name&gt;.</span></label>'
+    + '<label class="ui-field">What the page is for<textarea id="pages-new-instructions" class="input" rows="4" placeholder="Instructions for its worker, e.g. A CRM for my leads. Enrich a contact when I ask."></textarea></label>'
+    + '<label class="ui-field">HTML (optional)<textarea id="pages-new-html" class="input" rows="5" placeholder="Paste a page, or leave empty and ask the worker to build one."></textarea></label>',
+    'Create');
+  if (!ok) return;
+  const name = (document.getElementById('pages-new-name')?.value || '').trim().toLowerCase();
+  const instructions = document.getElementById('pages-new-instructions')?.value || '';
+  const html = document.getElementById('pages-new-html')?.value || '';
+  if (!name) { showToast('Not created: a page needs a name.'); return; }
+  try {
+    const p = await _pagesFetch('', { method: 'POST', body: JSON.stringify({ name, instructions, html }) });
+    showToast(p.worker_created ? 'Created ' + name + ' and its worker ' + p.worker : 'Created ' + name + '. Its worker was not created (HTTP ' + p.worker_status + ').');
+    _pagesOpen(name);
+  } catch (e) { showToast('Not created: ' + e.message); }
+}
+async function _pagesOpen(name) {
+  _pagesCur = name;
+  document.getElementById('pages-list-wrap').style.display = 'none';
+  document.getElementById('pages-open').style.display = 'flex';
+  document.getElementById('pages-title').textContent = name;
+  document.getElementById('pages-standalone').href = '/pages/' + encodeURIComponent(name);
+  document.getElementById('pages-status').textContent = '';
+  try { await _pagesHostReady(); } catch (e) { document.getElementById('pages-status').textContent = e.message; return; }
+  if (_pagesMounted) _pagesMounted.destroy();
+  _pagesMounted = AmuxPages.mount(document.getElementById('pages-frame'), name, {
+    headers: () => _authHeaders({}),
+    onTitle: t => { if (_pagesCur === name && t) document.getElementById('pages-title').textContent = t; },
+    onLoad: p => { _pagesMeta = p; _pagesAskCount(); },
+    onChange: () => _pagesAskCount(),
+    onPageError: e => { document.getElementById('pages-status').textContent = 'Page script error: ' + (e && e.message || ''); },
+  });
+}
+function _pagesClose() {
+  _pagesLeave();
+  _pagesList();
+}
+async function _pagesAskCount() {
+  const name = _pagesCur;
+  if (!name) return;
+  try {
+    const r = await _pagesFetch('/' + encodeURIComponent(name) + '/sql', { method: 'POST',
+      body: JSON.stringify({ sql: "SELECT COUNT(*) AS n FROM asks WHERE status='new'" }) });
+    const n = r.rows && r.rows[0] ? r.rows[0].n : 0;
+    if (_pagesCur === name) document.getElementById('pages-status').textContent = n ? n + ' ask' + (n === 1 ? '' : 's') + ' with the worker' : '';
+  } catch (_) {}
+}
+function _pagesWorker() {
+  if (!_pagesMeta || !_pagesMeta.worker) return;
+  if (!(sessions || []).some(s => s.name === _pagesMeta.worker)) { showToast('No worker named ' + _pagesMeta.worker); return; }
+  openPeek(_pagesMeta.worker);
+}
+async function _pagesAsks() {
+  const name = _pagesCur;
+  if (!name) return;
+  let rows = [];
+  try {
+    const r = await _pagesFetch('/' + encodeURIComponent(name) + '/sql', { method: 'POST',
+      body: JSON.stringify({ sql: 'SELECT id, kind, status, text, result, created_at, done_at FROM asks ORDER BY id DESC LIMIT 50' }) });
+    rows = r.rows || [];
+  } catch (e) { showToast('Asks could not be read: ' + e.message); return; }
+  const body = rows.length ? '<div class="pages-asks">' + rows.map(a => `<div class="pages-ask">
+      <div class="pages-ask-head"><b>#${a.id}</b> <span class="ui-help">${esc(a.kind || '')}</span>
+      <span class="status-badge ${a.status === 'done' ? 'active' : a.status === 'new' ? 'waiting' : 'idle'}">${esc(a.status)}</span>
+      <span class="ui-help">${esc(a.created_at || '')}</span></div>
+      <div class="pages-ask-text">${esc(a.text || '')}</div>
+      ${a.result ? `<div class="ui-help">${esc(a.result)}</div>` : ''}</div>`).join('') + '</div>'
+    : '<p class="ui-help">No asks yet. Page code adds one with amux.ask(text), and the worker is woken for it.</p>';
+  showFormModal('Asks · ' + name, body, 'Close');
+}
+async function _pagesVersions() {
+  const name = _pagesCur;
+  if (!name) return;
+  let snaps = [];
+  try { snaps = (await _pagesFetch('/' + encodeURIComponent(name) + '/snapshots')).snapshots || []; }
+  catch (e) { showToast('Versions could not be read: ' + e.message); return; }
+  const label = r => ({ 'before-asks': 'Before the worker answered', 'before-html-edit': 'Before an HTML edit',
+    'before-restore': 'Before a restore', manual: 'Saved by hand' }[r] || r);
+  const when = ts => { const m = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)/.exec(ts); return m ? new Date(Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString() : ts; };
+  const body = '<p class="ui-help">amux saves the page\'s data and HTML before each delivery to its worker. Restoring saves the current state first, so a restore can be undone.</p>'
+    + '<div class="ui-guide-row"><button class="btn" onclick="_pagesSnapshotNow()">Save a version now</button></div>'
+    + (snaps.length ? '<div class="pages-asks">' + snaps.map(s => `<div class="pages-ask pages-version">
+        <span><b>${esc(when(s.ts))}</b> <span class="ui-help">${esc(label(s.reason))}</span></span>
+        <button class="btn" onclick="_pagesRestore('${escJs(s.id)}')">Restore</button></div>`).join('') + '</div>'
+      : '<p class="ui-help">No versions yet.</p>');
+  showFormModal('Versions · ' + name, body, 'Close');
+}
+async function _pagesSnapshotNow() {
+  try { await _pagesFetch('/' + encodeURIComponent(_pagesCur) + '/snapshots', { method: 'POST', body: '{}' }); showToast('Version saved'); _modalClose(false); _pagesVersions(); }
+  catch (e) { showToast('Not saved: ' + e.message); }
+}
+async function _pagesRestore(id) {
+  const name = _pagesCur;
+  _modalClose(false);
+  if (!await showConfirm('Restore ' + name + ' to this version? Its data and HTML go back to that point; the current state is saved first.', 'Restore')) return;
+  try {
+    const r = await _pagesFetch('/' + encodeURIComponent(name) + '/restore', { method: 'POST', body: JSON.stringify({ id }) });
+    showToast('Restored. The previous state is saved as ' + r.undo);
+    if (_pagesMounted) _pagesMounted.reload();
+  } catch (e) { showToast('Not restored: ' + e.message); }
+}
+async function _pagesEditHtml() {
+  const name = _pagesCur;
+  if (!name) return;
+  let page;
+  try { page = await _pagesFetch('/' + encodeURIComponent(name)); } catch (e) { showToast(e.message); return; }
+  const ok = await showFormModal('Edit HTML · ' + name,
+    '<textarea id="pages-edit-html" class="input pages-edit-html" rows="18" spellcheck="false">' + esc(page.html || '') + '</textarea>'
+    + '<p class="ui-help">Saving keeps a version of the old HTML.</p>', 'Save');
+  if (!ok) return;
+  try {
+    await _pagesFetch('/' + encodeURIComponent(name) + '/html', { method: 'PUT', body: JSON.stringify({ html: document.getElementById('pages-edit-html').value }) });
+    showToast('Saved');
+    if (_pagesMounted) _pagesMounted.reload();
+  } catch (e) { showToast('Not saved: ' + e.message); }
+}
 
 function _sqlInit() { if (!_sqlSchemaLoaded) { _sqlSchemaLoaded = true; _dbLoadSchema(); } }
 

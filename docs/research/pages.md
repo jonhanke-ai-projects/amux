@@ -1,6 +1,8 @@
 # Pages: agentic HTML in amux
 
-Status: research, 2026-10-21. Asked by Ethan: a global **Pages** tab, "like apps
+Status: built (v1), 2026-10-21. See [What v1 built](#what-v1-built) below.
+
+Asked by Ethan: a global **Pages** tab, "like apps
 but powered by an LLM (worker?) + db (amux db) and maybe anything else", scored
 against three tests:
 
@@ -240,3 +242,59 @@ These are the owner's calls:
    - a page is an app with state.
 
    A page's worker can still read a `.mdai` output like any other file.
+
+## What v1 built
+
+Asked by Ethan the same day: build it, with a real proposal page as the
+criteria, in the Pages tab and at `<amux_url>/pages/<name>`, behind whatever
+sign-in the server has.
+
+| Piece | Where |
+|---|---|
+| Page folder, database, asks wake, snapshots, standalone URL | `crates/amux-server/src/api/pages.rs` |
+| Sandboxed frame and the `amux` bridge, shared by the tab and the URL | `crates/amux-dashboard/static/pages-host.js` |
+| Pages tab | `crates/amux-dashboard/static/app.js` (`_pages*`), `index.html` (`#pages-view`) |
+| Browser test | `e2e/pages.spec.ts` |
+
+Routes:
+
+- **`/api/pages`:** list, create (`name`, `html`, `instructions`, `seed_sql`, `worker`).
+- **`/api/pages/<name>`:**
+  - the page and its HTML: get, `PUT /html`, delete (moves the folder to `.trash`);
+  - its data: `POST /sql` (`{sql, params}` or `{batch}`), `POST /ask`;
+  - change detection and files: `GET /version`, `GET /file?path=`;
+  - history: `GET|POST /snapshots`, `POST /restore`.
+- **`/pages/<name>`:** the standalone page.
+
+Sign-in on the standalone URL is the dashboard shell's own decision
+(`static_files::owner_access`):
+
+| Who opens `/pages/<name>` | Result |
+|---|---|
+| This machine | the page |
+| A browser with the owner session cookie | the page |
+| A request carrying the owner token | the page |
+| A server with no token of its own, such as a cloud server behind its gateway, which signed the visitor in | the page |
+| Anyone else | a sign-in page; no page content or token is sent |
+
+Where v1 differs from the plan above:
+
+- **The worker is an ordinary worker, without a `page` worker type.** Creating a page creates
+  `page-<name>` through the same path as the dashboard's New worker, with the
+  page folder as its directory; `page.json` records it, and `worker` at create
+  time attaches an existing one instead. A type would add a renderer, but the
+  page already has one: the frame.
+- **One file per page.** The frame is `srcdoc`, so relative URLs do not reach the folder.
+  Pages are self-contained (inline CSS and JS, CDNs work), and
+  `amux.file(path)` reads anything else in the folder.
+- **Snapshots are taken before each delivery to the worker, before an HTML edit
+  and before a restore.** They are not taken before every worker turn: amux only
+  knows about the turns it starts for the page.
+- **Change detection polls the file signature every 1.5 s while the page is
+  visible.** The worker writes with the `sqlite3` CLI, which the server never
+  sees, so the file is the one thing every writer moves.
+
+Isolation, tested in `e2e/pages.spec.ts`: from the page, `fetch('/api/workers')`,
+`parent.document` and `localStorage` are all blocked. Giving the frame
+`allow-same-origin` turns the test red. A page connection refuses `ATTACH` and
+`VACUUM INTO` (unit tests in `pages.rs`).

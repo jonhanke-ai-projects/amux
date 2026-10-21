@@ -414,6 +414,19 @@ fn request_authority(headers: &HeaderMap, uri: &Uri) -> Option<String> {
         .or_else(|| uri.authority().map(|authority| authority.to_string()))
 }
 
+/// Owner access for a page view (api/pages.rs): the same decision that gives
+/// the dashboard shell the owner bearer.
+pub(crate) fn owner_access(state: &AppState, headers: &HeaderMap, uri: &Uri, peer: Option<IpAddr>) -> bool {
+    owner_bootstrap_allowed(state, headers, uri, peer)
+}
+
+/// The shell's bootstrap block for another trusted amux document (the
+/// standalone page host), decided the same way as for the shell.
+pub(crate) fn bootstrap_for(html: &str, state: &AppState, headers: &HeaderMap, uri: &Uri, peer: Option<IpAddr>) -> String {
+    let owner = owner_bootstrap_allowed(state, headers, uri, peer);
+    inject_bootstrap(html, state, None, owner)
+}
+
 fn owner_bootstrap_allowed(
     state: &AppState,
     headers: &HeaderMap,

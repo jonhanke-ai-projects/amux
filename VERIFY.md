@@ -134,6 +134,18 @@ Desktops, autosave, `kill -9`, SIGTERM, workspaces, and a virtual monitor
 unplugged and plugged back in. It needs a running amux server and three
 Desktops on the main display; CI cannot run it (no Desktops, no WindowServer).
 
+## Pages (`api/pages.rs`, `static/pages-host.js`)
+
+```bash
+scripts/test-contended.sh -p amux-server --lib api::pages
+npx playwright test --config=e2e/playwright.config.ts e2e/pages.spec.ts
+```
+
+Pass: `test result: ok` for the module tests, which cover sign-in on
+`/pages/<name>`, refused `ATTACH`, and asks delivered once. Then `N passed` on
+desktop, mobile and iOS Safari, including the sandbox probe line
+`api:blocked parent:blocked storage:blocked`.
+
 ## Vault secrets (`api/vault_secrets.rs`)
 
 ```bash

@@ -724,6 +724,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-scratchpad" onclick="switchView('scratchpad')"><span class="tab-ico">📝</span><span class="tab-lbl">Scratchpad</span></button>
   <button id="tab-record" onclick="switchView('record')"><span class="tab-ico">🎙</span><span class="tab-lbl">Record</span></button>
   <button id="tab-mdai" onclick="switchView('mdai')"><span class="tab-ico">&#x2726;</span><span class="tab-lbl">MDAI</span></button>
+  <button id="tab-pages" onclick="switchView('pages')"><span class="tab-ico">&#x25A4;</span><span class="tab-lbl">Pages</span></button>
   <button id="tab-proxies" onclick="switchView('proxies')"><span class="tab-ico">⇄</span><span class="tab-lbl">Proxies</span></button>
   <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
@@ -1774,6 +1775,31 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
      button/cards still exist for muscle memory and now just call
      switchView('disk'); #reclaim-content itself and every _reclaim* function
      are unchanged. -->
+<!-- Pages view (api/pages.rs): HTML apps whose backend is a worker and a
+     database. The open page is mounted by pages-host.js in a sandboxed frame. -->
+<div id="pages-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
+  <div id="pages-list-wrap" class="pages-list-wrap">
+    <div class="pages-head"><div><h2>Pages</h2><p class="ui-help">HTML apps whose backend is a worker and a database.</p></div>
+      <button class="btn primary" onclick="_pagesNew()">New page</button></div>
+    <div id="pages-list" class="pages-list"></div>
+  </div>
+  <div id="pages-open" class="pages-open" style="display:none;">
+    <div class="pages-bar">
+      <button class="btn" onclick="_pagesClose()" aria-label="Back to all pages">&#x2039; Pages</button>
+      <b id="pages-title" class="pages-title"></b>
+      <span id="pages-status" class="ui-help pages-status" role="status" aria-live="polite"></span>
+      <span class="pages-bar-actions">
+        <button class="btn" onclick="_pagesWorker()">Worker</button>
+        <button class="btn" onclick="_pagesAsks()">Asks</button>
+        <button class="btn" onclick="_pagesVersions()">Versions</button>
+        <button class="btn" onclick="_pagesEditHtml()">Edit HTML</button>
+        <a class="btn" id="pages-standalone" target="_blank" rel="noopener">Open &#x2197;</a>
+      </span>
+    </div>
+    <div id="pages-frame" class="pages-frame"></div>
+  </div>
+</div>
+
 <div id="disk-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <div id="reclaim-content" style="display:flex;flex-direction:column;flex:1;min-height:0;"></div>
 </div>
