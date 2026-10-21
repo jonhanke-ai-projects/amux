@@ -621,7 +621,7 @@ function nudgeText(kind, slug) {
     `Your amux server at ${url} is running, but no AI model is connected yet, so workers cannot start.\r\n\r\n` +
     `To connect one:\r\n\r\n` +
     `1. Open ${url} and sign in with this email address and the password you chose at signup.\r\n\r\n` +
-    `2. Choose Sign in with Claude to use your Claude subscription, or paste an Anthropic API key. ChatGPT, Gemini and OpenAI keys work too.\r\n\r\n` +
+    `2. Click Connect a model at the top of the page, then Sign in with Claude to use your Claude subscription, or paste an Anthropic API key. ChatGPT, Gemini and OpenAI keys work too.\r\n\r\n` +
     `It takes about a minute. If something gets in the way, reply to this email and tell us where you got stuck.\r\n\r\n` +
     `To stop these setup emails, reply "stop".`];
   return ['Start your first worker on amux',
