@@ -22,7 +22,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Reviewing AI Agents Offline","item":"https://amux.io/guides/ai-agent-offline-review/"}]}</script>
 
@@ -32,6 +31,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can I check my AI agents without internet?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux v0.9.200 caches every running session's scrollback locally in your browser's IndexedDB. When you open the amux PWA offline, you see the last-cached output for each session. You can read terminal output, check the task board, and review notes without any server connection."}},{"@type":"Question","name":"How does amux cache session scrollback?","acceptedAnswer":{"@type":"Answer","text":"amux uses IndexedDB (the browser's persistent local storage) to cache each session's terminal scrollback. Every time you view a session's Peek panel while online, the current output is written to IndexedDB. On iOS, this cache survives app backgrounding and device restarts. The cache is scoped to your local device — nothing is stored on a third-party server."}},{"@type":"Question","name":"What can I do offline with amux?","acceptedAnswer":{"@type":"Answer","text":"While offline you can: read full terminal scrollback for all sessions, check the kanban board and task statuses, read notes and reference material, review the session message log, and queue new messages for delivery when you reconnect. You cannot start/stop sessions, run commands, or receive live updates — those require a server connection."}},{"@type":"Question","name":"What can I not do when offline?","acceptedAnswer":{"@type":"Answer","text":"Actions that require a live server connection are not available offline: starting or stopping sessions, receiving live terminal updates, triggering new agent tasks, and viewing the real-time output stream. When you reconnect, the dashboard syncs immediately and live updates resume from where they left off."}},{"@type":"Question","name":"Does the offline cache work on iPhone?","acceptedAnswer":{"@type":"Answer","text":"Yes. The amux iOS app and the installable PWA (Add to Home Screen in Safari) both use IndexedDB for offline scrollback storage. iOS WebKit fully supports IndexedDB and persists it across background eviction cycles. If Safari evicts the PWA from memory (common on low-storage devices), the IndexedDB data is retained — you re-open the app to the same cached state."}},{"@type":"Question","name":"How fresh is the offline cache?","acceptedAnswer":{"@type":"Answer","text":"The cache is as fresh as the last time you viewed that session's Peek panel while online. amux does not run a background sync while the app is closed — it writes to IndexedDB on demand as you browse sessions. For long trips, a quick session-by-session review before boarding ensures the most current scrollback is cached."}},{"@type":"Question","name":"Can I send messages to agents while offline?","acceptedAnswer":{"@type":"Answer","text":"Yes — through the offline outbox. Type your message in any session's composer and press Send. The message is queued in IndexedDB and automatically delivered to the session the moment your device reconnects. This pairs with the offline scrollback cache: you read what the agent did, you write a correction or next step, and the instruction lands as soon as signal returns."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -39,6 +39,7 @@
     <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">
@@ -351,6 +352,7 @@ amux serve   <span class="comment"># → dashboard at https://localhost:8824</sp
         <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
         <a href="/docs/">Docs</a> &middot;
         <a href="/guides/">Guides</a> &middot;
+        <a href="/demos/">Demos</a> &middot;
         <a href="/compare/">Compare</a> &middot;
         <a href="/blog/">Blog</a> &middot;
         <a href="/pricing/">Pricing</a> &middot;

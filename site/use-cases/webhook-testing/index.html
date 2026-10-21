@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"Webhook Testing","item":"https://amux.io/use-cases/webhook-testing/"}]}</script>
 
@@ -30,6 +29,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Do I need a static IP to test webhooks locally?","acceptedAnswer":{"@type":"Answer","text":"No. amux tunnel works the opposite way: your machine makes an outbound connection to the amux cloud gateway. The gateway forwards incoming webhook requests to your local server over that persistent connection. You never need to open an inbound port, configure NAT, or have a static IP."}},{"@type":"Question","name":"What is the difference between amux tunnel and ngrok for webhook testing?","acceptedAnswer":{"@type":"Answer","text":"The main practical difference is the free tier. ngrok's free tier gives you an ephemeral URL that changes on every restart — which breaks your webhook registration every time you restart your machine. amux tunnel gives you a stable URL derived from your account token, so it survives restarts and you only configure the webhook provider once. ngrok wins on request inspection UI, TCP tunneling, and custom domains. amux tunnel wins on URL stability without a paid ngrok subscription, and it is built into the same tool you use to orchestrate your AI agents — no separate binary."}},{"@type":"Question","name":"Does the webhook URL change when I restart my machine?","acceptedAnswer":{"@type":"Answer","text":"No. The amux tunnel URL is derived from a SHA-256 hash of your account token, so it is always https://<same-id>.t.amux.io regardless of restarts, IP changes, or network switches. Register it with your webhook provider once and leave it."}},{"@type":"Question","name":"Is the tunnel URL public — can anyone reach it?","acceptedAnswer":{"@type":"Answer","text":"Yes. The URL is public and reachable by anyone who knows it. It is not authenticated. The URL itself is unguessable (derived from a hash, not a sequential ID), but you should treat any data that arrives at it as untrusted and validate webhook signatures on your local server the same way you would in production."}},{"@type":"Question","name":"Does amux tunnel support WebSockets or Server-Sent Events?","acceptedAnswer":{"@type":"Answer","text":"No. amux tunnel buffers responses and does not support streaming protocols. For standard webhook testing — where the provider sends a POST and waits for a 200 OK — it works without issue. For WebSocket or SSE workloads, use ngrok or a dedicated tunnel tool."}},{"@type":"Question","name":"Is amux tunnel free?","acceptedAnswer":{"@type":"Answer","text":"The tunnel feature requires an active amux cloud subscription. The rest of amux — agent orchestration, dashboard, kanban, scheduler — is open source and MIT licensed and runs entirely on your machine for free."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -37,6 +37,7 @@
     <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">

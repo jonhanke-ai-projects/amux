@@ -23,7 +23,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"AI Agent Daily Standup","item":"https://amux.io/use-cases/ai-agent-daily-standup/"}]}</script>
 
@@ -33,6 +32,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do I see what my AI agents did overnight?","acceptedAnswer":{"@type":"Answer","text":"Open the amux board on the iOS app or PWA in the morning. If you have standup schedules configured, each agent session posts a summary to the board at a set time (e.g. 7am). The summary shows completed tasks (with files changed), in-progress items, blockers, and what the agent plans to do next. The board is visible from any connected client — desktop, iOS app, or Android PWA."}},{"@type":"Question","name":"Can AI agents replace daily standup meetings?","acceptedAnswer":{"@type":"Answer","text":"For an AI-only team, yes. Each agent posts a structured standup to the shared board at the configured time, and you review it asynchronously from your phone. For a human+AI hybrid team, AI standup posts give the human team visibility into what their automated counterparts did overnight — reducing the cognitive overhead of tracking parallel agent work and eliminating the need to check multiple dashboards."}},{"@type":"Question","name":"How do I schedule an AI agent to post a morning report?","acceptedAnswer":{"@type":"Answer","text":"Use the amux scheduler: create a schedule with schedule_expr 'daily at 7am' and a command asking the agent to summarize its work and post to the board. Example: curl -sk -X POST -H 'Content-Type: application/json' -d '{\"title\":\"Morning standup\",\"session\":\"myproject\",\"command\":\"Summarize the last 8 hours of work. List completed tasks, in-progress items, blockers, and what you plan to do next. Create a board issue titled Standup $(date +%Y-%m-%d) with this summary.\",\"schedule_expr\":\"daily at 7am\"}' https://localhost:8824/api/schedules"}},{"@type":"Question","name":"What should an AI agent standup include?","acceptedAnswer":{"@type":"Answer","text":"A good AI agent standup post includes: (1) completed tasks with a brief note about which files changed, (2) tests passing or failing, (3) PRs opened or updated, (4) explicit BLOCKED items — where the agent stopped and exactly why, and (5) the next planned action. Always end your overnight agent prompts with 'Post a standup summary to the board at the end of your session.' That instruction ensures the agent reports before its context window ends."}},{"@type":"Question","name":"How does the amux board work for team visibility?","acceptedAnswer":{"@type":"Answer","text":"The amux board is a shared SQLite-backed kanban visible to all connected clients — desktop browser, iOS app, and PWA. Agents create board issues atomically via POST /api/board (SQLite compare-and-swap prevents duplicate claims). Humans move issues from 'done' to 'verified' after confirmation. It replaces a separate project management tool for AI-only or human+AI hybrid teams and is accessible from anywhere without a VPN."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -40,6 +40,7 @@
     <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">
