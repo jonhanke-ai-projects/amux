@@ -419,15 +419,10 @@ export OPENAI_API_KEY=sk-...
 mise exec -- ./bin/symphony ./WORKFLOW.md</code></pre>
     <p>Symphony requires the Elixir/OTP runtime, which is not in most developers' toolboxes. The configuration via <code>WORKFLOW.md</code> is elegant once you understand it, but the learning curve includes Elixir tooling, the SPEC's state machine, and Linear API setup. The HN discussion noted that the documentation was characterized by some as difficult to follow.</p>
 
-    <h3>amux: single-file Python</h3>
-    <pre><code># Install (Python 3 and tmux are likely already on your system)
-git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
-
-# Start using it immediately
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre>
-    <p>amux is a single Rust binary with no dependencies beyond Python 3 and tmux, both of which are pre-installed on most developer machines. No Elixir, no mise, no external API keys for the orchestrator itself. Deploy to a remote server with <code>scp amux-server-rs your-server:</code>.</p>
+    <h3>amux: one command</h3>
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre>
+    <p>amux is one Rust binary plus SQLite. The installer asks before installing Rust or tmux, and you need at least one agent CLI. No Elixir, no mise, no external API keys for the orchestrator itself. For an always-on server without managing one, <a href="/start/">amux Cloud</a> runs your own amux at yourname.amux.io from $39/mo.</p>
 
     <h3>Maintenance commitment</h3>
     <p>Symphony has 12 commits on GitHub and no versioned releases. OpenAI has explicitly stated it is a reference implementation, not a maintained product. The SPEC.md is the lasting contribution &mdash; a well-thought-out specification that others can implement.</p>

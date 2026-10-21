@@ -582,7 +582,7 @@ $ amux serve  <span class="comment"># → https://localhost:8824</span></code></
 
     <p><strong>Append-only execution log:</strong> Every headless session gets an event-sourced execution log &mdash; an append-only record of what each agent did, every tool call, every decision. You can replay the log after a failed overnight run to see exactly where things went wrong, without having been watching the terminal. This is the observability primitive that makes headless AI engineering teams debuggable.</p>
 
-    <p>amux is MIT-licensed and has over 500 stars on <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>. There is also a <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a> for monitoring your agent fleet from your phone.</p>
+    <p>amux is open source (MIT + Commons Clause) and has over 500 stars on <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>. There is also a <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a> for monitoring your agent fleet from your phone.</p>
 
     <p>If you&rsquo;re running one or two headless agents, the raw <code>claude --print</code> approach from earlier in this guide is perfectly fine. If you&rsquo;re running five or more, or anything overnight, use a control plane &mdash; either amux or something equivalent. The scripting to replicate its features yourself is a weekend project, but maintaining that scripting as Claude Code evolves is not.</p>
 
