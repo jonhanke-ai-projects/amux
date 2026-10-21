@@ -22,6 +22,8 @@ export TRACE
 export AMUX_AUTHORITY_SELF_HEAL=0
 # CI verdicts come from a file, one "sha verdict" per line; unlisted = green.
 VERDICTS="$TMP/verdicts"; : > "$VERDICTS"
+# Every cell writes its gate verdict here, never to the live ~/.amux copy.
+export AMUX_ACTIVATION_GATE_STATE="$TMP/gate.json"
 printf '#!/usr/bin/env bash\nv=$(awk -v s="$1" '"'"'$1==s {print $2}'"'"' "%s" | tail -1); echo "${v:-green}"\n' "$VERDICTS" > "$TMP/verdict"
 chmod +x "$TMP/verdict"
 
@@ -112,6 +114,8 @@ echo "{\"commit_full\":\"$ELECTED\"}" > "$TMP/health.json"
 run_launcher
 expect grep -q "repo=$WORK sha=$GREEN" "$TRACE"
 expect grep -q "CI-GATE tip $PENDING is pending; activating newest green $GREEN .*verdict=ci_gate_held_back" "$LOG"
+# The verdict also reaches readers outside the log (amux requests).
+expect grep -q "\"verdict\":\"ci_gate_held_back\",\"tip\":\"$PENDING\",\"tip_state\":\"pending\",\"target\":\"$GREEN\",\"held\":1}" "$AMUX_ACTIVATION_GATE_STATE"
 # The builder must be told the ELECTED sha, or its own authority check refuses it.
 expect grep -q "sha=$GREEN authority=$GREEN" "$TRACE"
 # Once the tip goes green it is activated.
@@ -119,6 +123,7 @@ echo "$PENDING green" >> "$VERDICTS"
 : > "$TRACE"
 run_launcher
 expect grep -q "repo=$WORK sha=$PENDING" "$TRACE"
+expect grep -q "\"verdict\":\"ci_gate_clear\",\"tip\":\"$PENDING\"" "$AMUX_ACTIVATION_GATE_STATE"
 # A red tip whose newest green is older than live: hold, never roll back.
 RED=$(commit_next red)
 echo "$RED red" >> "$VERDICTS"
@@ -127,6 +132,7 @@ echo "{\"commit_full\":\"$RED\"}" > "$TMP/health.json"
 run_launcher
 expect test ! -s "$TRACE"
 expect grep -q "newest green $PENDING is older than the live image $RED.*verdict=ci_gate_no_rollback" "$LOG"
+expect grep -q "\"verdict\":\"ci_gate_no_rollback\",\"tip\":\"$RED\",\"tip_state\":\"red\"" "$AMUX_ACTIVATION_GATE_STATE"
 # Nothing green at all: refuse and keep the live image.
 for s in $(git -C "$STALE" rev-list origin/main); do echo "$s red" >> "$VERDICTS"; done
 echo "{}" > "$TMP/health.json"

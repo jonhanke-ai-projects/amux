@@ -15,6 +15,16 @@ mkdir -p "$(dirname "$LOG")"
 
 say() { echo "== !! ACTIVATION AUTHORITY $*" >> "$LOG"; }
 refuse() { say "REFUSED — $*"; exit 0; }
+# The gate's last verdict, as JSON, for readers outside this log (`amux
+# requests` says why a landed fix is not live). Written by rename so a reader
+# never sees half a file; a failed write costs the reader its explanation only.
+GATE_STATE="${AMUX_ACTIVATION_GATE_STATE:-$HOME/.amux/activation-gate.json}"
+gate_state() { # verdict tip tip_state target held
+  local t
+  t=$(mktemp "$GATE_STATE.XXXXXX" 2>/dev/null) || return 0
+  printf '{"at":%s,"verdict":"%s","tip":"%s","tip_state":"%s","target":"%s","held":%s}\n' \
+    "$(date +%s)" "$1" "$2" "$3" "$4" "${5:-0}" > "$t" && mv -f "$t" "$GATE_STATE" || rm -f "$t"
+}
 
 [ -n "$REPO" ] || refuse "AMUX_AUTHORITY_REPO is unset; no checkout may choose the live image"
 tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
@@ -138,11 +148,13 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
     [ -n "$tip_state" ] || tip_state="$v"
     if [ "$v" = green ]; then target="$sha"; break; fi
     if [ "$v" = unmeasured ]; then
+      gate_state ci_gate_unmeasured "$tip" unmeasured "" "$passed"
       self_heal_launcher
       refuse "CI-GATE unmeasured for $sha (no App token or GitHub unreachable); keeping the live image verdict=ci_gate_unmeasured"
     fi
     passed=$((passed + 1))
   done
+  [ -n "$target" ] || gate_state ci_gate_no_green "$tip" "$tip_state" "" "$passed"
   [ -n "$target" ] || refuse "CI-GATE no green commit in the last $CI_DEPTH of $REF (tip $tip is $tip_state); keeping the live image verdict=ci_gate_no_green"
   if [ "$target" != "$tip" ]; then
     # NEVER ROLL BACK. If the live image already contains the newest green
@@ -153,9 +165,13 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
       | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("commit_full") or d.get("commit") or "").replace("-dirty",""))' 2>/dev/null || true)
     if [ -n "$live" ] && live_full=$(git -C "$REPO" rev-parse --verify -q "${live}^{commit}" 2>/dev/null) \
        && [ "$live_full" != "$target" ] && git -C "$REPO" merge-base --is-ancestor "$target" "$live_full"; then
+      gate_state ci_gate_no_rollback "$tip" "$tip_state" "$target" "$passed"
       refuse "CI-GATE tip $tip is $tip_state; newest green $target is older than the live image $live_full, holding it rather than rolling back verdict=ci_gate_no_rollback"
     fi
+    gate_state ci_gate_held_back "$tip" "$tip_state" "$target" "$passed"
     say "CI-GATE tip $tip is $tip_state; activating newest green $target ($passed newer commit(s) not yet green) verdict=ci_gate_held_back"
+  else
+    gate_state ci_gate_clear "$tip" green "$tip" 0
   fi
 fi
 

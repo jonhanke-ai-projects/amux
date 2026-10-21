@@ -8906,6 +8906,20 @@ for r in rows:
 counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "closed")}
 summary = {"measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
            "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
+# WHY ON MAIN IS NOT LIVE (velocity audit 2026-10-21): the builder's CI gate
+# keeps the last green image while main is red, and said so only in its log.
+# 14 landed fixes sat unseen for 13 hours and the owner re-asked for one.
+# Only a fresh verdict counts: the builder rewrites it every pass.
+try:
+    gate = json.load(open(os.environ.get("AMUX_ACTIVATION_GATE_STATE") or os.path.expanduser("~/.amux/activation-gate.json")))
+except (OSError, ValueError):
+    gate = {}
+held = [r for r in rows if r["status"] == "on-main" and r["repo"] and os.path.isdir(os.path.join(r["repo"], "crates", "amux-server"))]
+if held and gate.get("verdict") in ("ci_gate_held_back", "ci_gate_no_green", "ci_gate_no_rollback") \
+        and time.time() - (gate.get("at") or 0) < 900:
+    summary["held_by_ci"] = dict(gate, requests=len(held))
+    for r in held:
+        r["held_by_ci"] = True
 if only_open:
     rows = [r for r in rows if r["status"] == "open"]
 if raw:
@@ -8913,12 +8927,16 @@ if raw:
     sys.exit(0)
 order = {"open": 0, "on-main": 1, "live": 2, "closed": 3}
 for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"])):
-    print("%-8s %-18s %-10s %6sh  %-10s %s" % (r["status"], r["worker"][:18], r["id"], r["age_h"], r["evidence"][:10], r["text"][:90]))
+    print("%-8s %-18s %-10s %6sh  %-10s %s" % ("held" if r.get("held_by_ci") else r["status"], r["worker"][:18], r["id"], r["age_h"], r["evidence"][:10], r["text"][:90]))
     if r.get("task"):
         print("%59s closed during task: %s" % ("", r["task"][:80]))
 print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d closed%s" % (
     summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["closed"],
     ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
+if summary.get("held_by_ci"):
+    g = summary["held_by_ci"]
+    print("held: %d landed request(s) are not live because main's tip %s is %s; the build stays on %s (%d newer commit(s) waiting). They go live when main is green." % (
+        g["requests"], g["tip"][:9], g["tip_state"], ("green " + g["target"][:9]) if g.get("target") else "its current image", g["held"]))
 PY
 }
 
