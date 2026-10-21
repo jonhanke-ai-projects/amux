@@ -37,6 +37,12 @@ forwards as the only cookie amux sees. Each token is re-validated against
 amux-server's /api/identity at most every 60 seconds, so revoking a member in
 Team settings locks them out within a minute.
 
+Activation report (amux Cloud): GET /_door/report with `Authorization: Bearer <token>`, a
+two-minute token signed like a sign-in link but with scope "report" and no person. It returns
+counts only (sign-ins, connected model providers as booleans, workers, cards, schedules, error
+groups, disk), never content, so cloud.amux.io can tell a customer who is stuck in setup from one
+who is working. Sign-in counts live in ACTIVITY_FILE, written by this process.
+
   door.py serve                 listen on 127.0.0.1:8890
   door.py hash <user>           read a password on stdin, print a users line
 """
@@ -48,6 +54,7 @@ import json
 import os
 import secrets
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -97,6 +104,10 @@ FLEET_ENV = os.environ.get("DOOR_FLEET_ENV", "/etc/amux/fleet.env")
 ENTRY_FILE = os.environ.get("DOOR_ENTRY", "/etc/amux-door/entry")    # standalone: this server's app sign-in key
 AMUX = os.environ.get("DOOR_AMUX_URL", "https://127.0.0.1:8824")
 MEMBER_RECHECK = float(os.environ.get("DOOR_MEMBER_RECHECK", "60"))
+# Sign-in counts for the activation report. /etc/amux-door is group-writable by amux-door on every
+# server already, so a self-updated door can keep it without a bootstrap change.
+ACTIVITY_FILE = os.environ.get("DOOR_ACTIVITY", "/etc/amux-door/activity.json")
+SEEN_FLUSH_S = 600   # a signed-in visit is noted in memory on every request, written at most every 10 min
 _member_ok_cache = {}   # token -> (ok, checked_at)
 
 
@@ -202,10 +213,8 @@ def member_valid(token, now=None):
     return ok
 
 
-def verify_entry_token(token, now=None):
-    """A sign-in link's token: payload.mac, HMAC-SHA256 with this server's secret. Standalone servers get
-    the secret from cloud.amux.io at creation (ENTRY_FILE; the iOS app's Sign in with Apple), fleet
-    servers from fleet.env."""
+def _signed_claims(token, now=None):
+    """payload.mac, HMAC-SHA256 with this server's key: checks the signature, expiry and server."""
     cfg = fleet() if fleet().get("AMUX_FLEET_SECRET") else fleet(ENTRY_FILE)
     sec, slug = cfg.get("AMUX_FLEET_SECRET"), cfg.get("AMUX_SLUG")
     if not sec or not slug:
@@ -222,9 +231,167 @@ def verify_entry_token(token, now=None):
         raise ValueError("expired")
     if claims.get("aud") != slug:
         raise ValueError("wrong server")
+    return claims
+
+
+def verify_entry_token(token, now=None):
+    """A sign-in link's token: payload.mac, HMAC-SHA256 with this server's secret. Standalone servers get
+    the secret from cloud.amux.io at creation (ENTRY_FILE; the iOS app's Sign in with Apple), fleet
+    servers from fleet.env."""
+    claims = _signed_claims(token, now)
+    if claims.get("scope"):
+        raise ValueError("not a sign-in token")   # a report token must never sign anyone in
     if not claims.get("sub") or "@" not in claims["sub"]:
         raise ValueError("no person in token")
     return claims
+
+
+def verify_report_token(token, now=None):
+    """The activation report's token: same key and format, scope "report", at most 5 minutes long."""
+    claims = _signed_claims(token, now)
+    if claims.get("scope") != "report":
+        raise ValueError("not a report token")
+    if claims.get("exp", 0) > (now or time.time()) + 300:
+        raise ValueError("report token lives too long")
+    return claims
+
+
+# -- activity: sign-in counts for the activation report (no names, no addresses) --
+_activity_lock = threading.Lock()
+_activity = None
+_activity_flushed = 0.0
+
+
+def _activity_load(now):
+    global _activity
+    if _activity is None:
+        try:
+            _activity = json.load(open(ACTIVITY_FILE))
+        except Exception:
+            _activity = {}
+        _activity.setdefault("since", int(now))   # when counting began: earlier sign-ins are unknown
+        for k in ("ok", "first_ok", "last_ok", "last_seen"):
+            _activity.setdefault(k, 0)
+        _activity.setdefault("failed", [])
+    return _activity
+
+
+def _activity_flush(now):
+    global _activity_flushed
+    try:
+        tmp = ACTIVITY_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_activity, f)
+        os.replace(tmp, ACTIVITY_FILE)
+        _activity_flushed = now
+    except Exception as e:
+        log(event="activity", verdict="door_activity_write_failed", error=str(e)[:120])
+
+
+def note_signin(ok, now=None):
+    """A sign-in by password, link or invite. Counted; who it was is not kept."""
+    now = now or time.time()
+    with _activity_lock:
+        a = _activity_load(now)
+        if ok:
+            a["ok"] += 1
+            a["first_ok"] = a["first_ok"] or int(now)
+            a["last_ok"] = a["last_seen"] = int(now)
+        else:
+            a["failed"] = [t for t in a["failed"] if t > now - 86400][-999:] + [int(now)]
+        _activity_flush(now)
+
+
+def note_seen(now=None):
+    """A request from someone signed in (a 30-day cookie outlives its sign-in, and that is still use)."""
+    now = now or time.time()
+    with _activity_lock:
+        a = _activity_load(now)
+        a["last_seen"] = int(now)
+        if now - _activity_flushed > SEEN_FLUSH_S:
+            _activity_flush(now)
+
+
+def _amux_json(path, timeout=10):
+    code, body = _amux("GET", path, timeout=timeout)
+    if code != 200:
+        raise ValueError("HTTP %d" % code)
+    return json.loads(body)
+
+
+REPORT_SECTIONS = ("signin", "model", "workers", "tokens", "board", "schedules", "errors", "version", "disk")
+
+
+def activation_report(now=None, get=None, disk_path="/"):
+    """Counts and booleans only. Never message text, prompts, names, emails, titles, paths or keys:
+    every value below is a number, a boolean, a provider name or the running commit."""
+    now = now or time.time()
+    get = get or _amux_json
+
+    def signin():
+        with _activity_lock:
+            a = dict(_activity_load(now))
+        return {"tracking_since": a["since"], "ever": bool(a["ok"] or a["last_seen"]), "count": a["ok"],
+                "first_at": a["first_ok"] or None, "last_at": a["last_ok"] or None,
+                "last_seen_at": a["last_seen"] or None,
+                "failed_24h": sum(1 for t in a["failed"] if t > now - 86400)}
+
+    def model():
+        auth = get("/api/identity").get("model_auth") or {}
+        providers = {p: any(v is True for v in f.values()) for p, f in auth.items() if isinstance(f, dict)}
+        return {"any": any(providers.values()), "providers": providers}
+
+    def workers():
+        rows = [x for x in get("/api/sessions") if isinstance(x, dict)]
+        live = [x for x in rows if not x.get("archived")]
+        used = lambda x: ((x.get("tokens") or {}).get("total") or 0) > 0
+        recent = lambda x: (x.get("last_activity") or 0) > now - 86400
+        return {"n_considered": len(rows), "total": len(live), "ever_ran": sum(1 for x in rows if used(x)),
+                "active_24h": sum(1 for x in live if used(x) and recent(x)),
+                "running": sum(1 for x in live if x.get("running"))}
+
+    def tokens():
+        return {"today": int(get("/api/stats/daily").get("total_tokens") or 0)}
+
+    def board():
+        rows = [r for r in get("/api/board?all=1") if isinstance(r, dict)]
+        return {"n_considered": len(rows), "cards": sum(1 for r in rows if not r.get("archived"))}
+
+    def schedules():
+        rows = [r for r in get("/api/schedules") if isinstance(r, dict)]
+        return {"total": len(rows), "enabled": sum(1 for r in rows if r.get("enabled"))}
+
+    def errors():
+        a = get("/api/logs/analyze?since_h=24", timeout=20)
+        if not a.get("measured"):
+            raise ValueError("log analysis did not run: %s" % str(a.get("why_unmeasured", ""))[:80])
+        return {"groups_24h": int(a.get("groups_total") or len(a.get("groups") or [])),
+                "total_24h": int(a.get("total_errors") or 0), "n_considered": int(a.get("n_considered") or 0)}
+
+    def version():
+        return {"commit": str(get("/health", timeout=3).get("commit", ""))[:40]}
+
+    def disk():
+        st = os.statvfs(disk_path)
+        total = st.f_blocks * st.f_frsize
+        if not total:
+            raise ValueError("no blocks")
+        return {"used_pct": round(100.0 * (total - st.f_bavail * st.f_frsize) / total, 1)}
+
+    fns = {"signin": signin, "model": model, "workers": workers, "tokens": tokens, "board": board,
+           "schedules": schedules, "errors": errors, "version": version, "disk": disk}
+    out, missing = {"v": 1, "generated_at": int(now)}, []
+    for name in REPORT_SECTIONS:
+        try:
+            out[name] = dict(fns[name](), measured=True)
+        except Exception as e:
+            out[name] = {"measured": False, "why_unmeasured": str(e)[:120]}
+            missing.append(name)
+    # Diagnostic contract: a zero is "measured and zero" only beside measured: true.
+    out["n_considered"] = len(REPORT_SECTIONS)
+    out["measured"] = not missing
+    out["unmeasured"] = missing
+    return out
 
 
 def redeem_invite(email, invite):
@@ -384,6 +551,7 @@ class Door(BaseHTTPRequestHandler):
                         and not has_cookie(cookies, VIEW_MARK) and not uri.startswith(("/_door/", VIEW_PATH))):
                     loc = "/_door/refresh?next=" + urllib.parse.quote(safe_next(uri), safe="")
                     return self.send(302, headers=[("Location", loc), ("Cache-Control", "no-store")])
+                note_seen()
                 tok = members().get(user)
                 return self.send(200, headers=[("X-Door-User", user)] + ([("X-Amux-Member", tok)] if tok else []))
             accept = self.headers.get("Accept", "")
@@ -410,6 +578,7 @@ class Door(BaseHTTPRequestHandler):
                 email = claims["sub"].lower()
                 if email in users():       # the server's owner (a standalone server's paying customer)
                     log(event="enter", user=email, ip=ip, role="owner", via=claims.get("via"), verdict="door_enter_ok")
+                    note_signin(True)
                     nxt = safe_next(q.get("next", ["/"])[0])
                     return self.send(303, headers=[("Location", nxt), ("Cache-Control", "no-store")] + session_cookies(email))
                 known = members().get(email)
@@ -425,6 +594,7 @@ class Door(BaseHTTPRequestHandler):
                         html.escape(fleet().get("AMUX_CONTROL_URL", "/_door/login"))).encode()
                 return self.send(401, body, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])
             log(event="enter", user=email, ip=ip, role=claims.get("role"), verdict="door_enter_ok")
+            note_signin(True)
             nxt = safe_next(q.get("next", ["/"])[0])
             return self.send(303, headers=[("Location", nxt), ("Cache-Control", "no-store")] +
                              session_cookies(email, TOKEN_MAX_AGE))
@@ -454,6 +624,19 @@ class Door(BaseHTTPRequestHandler):
             st["measured"] = True
             return self.send(200, json.dumps(st).encode(), [("Content-Type", "application/json"),
                                                              ("Cache-Control", "no-store")])
+        if path.path == "/_door/report":
+            # Counts only, for cloud.amux.io's monitor. Anything without a valid report token gets the
+            # same 404 as an unknown path, so the endpoint reveals nothing.
+            auth = self.headers.get("Authorization", "")
+            try:
+                verify_report_token(auth[7:] if auth.startswith("Bearer ") else "")
+            except Exception as e:
+                log(event="report", verdict="door_report_refused", reason=str(e)[:120])
+                return self.send(404)
+            rep = activation_report()
+            log(event="report", verdict="door_report_ok", measured=rep["measured"], unmeasured=rep["unmeasured"])
+            return self.send(200, json.dumps(rep).encode(), [("Content-Type", "application/json"),
+                                                              ("Cache-Control", "no-store")])
         if path.path == "/_door/refresh":
             q = urllib.parse.parse_qs(path.query)
             nxt = safe_next(q.get("next", ["/"])[0])
@@ -484,8 +667,10 @@ class Door(BaseHTTPRequestHandler):
         ip = self.headers.get("X-Forwarded-For", self.client_address[0])
         if check_password(user, pw):
             log(event="signin", user=user, ip=ip, verdict="door_signin_ok")
+            note_signin(True)
             return self.send(303, headers=[("Location", nxt), ("Cache-Control", "no-store")] + session_cookies(user))
         log(event="signin", user=user, ip=ip, verdict="door_signin_refused")
+        note_signin(False)
         time.sleep(1.0)  # slows guessing without a lockout a person could trip
         return self.page(nxt, user, "Wrong username or password.")
 
@@ -511,6 +696,7 @@ class Door(BaseHTTPRequestHandler):
             return self.join_page(invite, email, "This invite link is used or no longer valid. Ask the server owner for a new one.")
         save_joined(email, scrypt_hash(pw))
         log(event="join", user=email, ip=ip, verdict="door_join_ok")
+        note_signin(True)
         return self.send(303, headers=[("Location", "/"), ("Cache-Control", "no-store")] + session_cookies(email))
 
 

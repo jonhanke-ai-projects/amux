@@ -19,11 +19,13 @@
 //                            from that snapshot: the customer's data comes back, with the new password.
 //   cron every minute        ready emails; delete servers whose final snapshot is done;
 //                            delete snapshots older than 30 days; finish any paid signup the
-//                            webhook did not (reconcile); check each server every 10 minutes
+//                            webhook did not (reconcile); check each server every 10 minutes;
+//                            once an hour read each server's activation report (counts only) and
+//                            send any setup nudge it makes due (only with NUDGES=on)
 //
 // Bindings (cloud/start/deploy.sh): STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, HCLOUD_TOKEN,
 // APPLE_BUNDLE_ID, DOOR_ENTRY_SECRET, CF_TOKEN, CF_ZONE_ID, GMAIL_OAUTH, GOLDEN_IMAGE, PLANS (JSON), MODE (live|test), TEST_KEY,
-// OPS_KEY, POSTHOG_KEY and POSTHOG_PROJECT (the operator audit).
+// OPS_KEY, POSTHOG_KEY and POSTHOG_PROJECT (the operator audit), NUDGES (on = send activation emails to customers; default off).
 
 const SITE = 'https://amux.io';
 const DOMAIN = 'amux.io';
@@ -532,7 +534,124 @@ async function monitor(env, servers) {
       delete labels['amux-fail']; delete labels['amux-alert'];
       log('monitor.ok', { slug });
     }
+    // Once an hour (amux-rep holds the hour it last ran): the activation report, and any nudge it makes due.
+    const hour = String(Math.floor(Date.now() / 3600e3));
+    if (labels['amux-rep'] !== hour) {
+      const rep = await fetchReport(env, slug);
+      labels['amux-rep'] = hour;
+      if (rep.fetched) {
+        labels['amux-act'] = stage(rep.report);
+        await nudge(env, s, rep.report, labels).catch(e => log('nudge.failed', { slug, error: String(e).slice(0, 200) }));
+      }
+      log('activation.report', { slug, fetched: rep.fetched, why: rep.why, stage: labels['amux-act'], unmeasured: rep.report?.unmeasured });
+    }
     if (JSON.stringify(labels) !== JSON.stringify(s.labels)) await hetzner(env, 'PUT', `/servers/${s.id}`, { labels });
+  }
+}
+
+// ------------------------------------------------------------------ activation and friction
+// Each server's door answers GET /_door/report with counts only: sign-ins, which model providers
+// are connected (booleans), workers, cards, schedules, error groups, disk. Never content. The token
+// is signed with the same per-server key as the two-minute sign-in links, with scope "report" and
+// no person in it, so it cannot sign anyone in (cloud/desktop/door.py verify_report_token).
+async function reportToken(env, slug) {
+  const key = await entryKey(env, slug);
+  if (!key) return '';
+  const body = b64u(new TextEncoder().encode(JSON.stringify({ aud: slug, scope: 'report', exp: Math.floor(Date.now() / 1000) + 120 })));
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return `${body}.${b64u(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(body)))}`;
+}
+async function fetchReport(env, slug) {
+  const t = await reportToken(env, slug);
+  if (!t) return { fetched: false, why: 'DOOR_ENTRY_SECRET not configured' };
+  try {
+    const r = await fetch(`https://${host(slug)}/_door/report`, { headers: { authorization: `Bearer ${t}` }, cf: { cacheTtl: 0 } });
+    // 404 is what an older door answers (before its hourly self-update) and what a refused token gets.
+    if (r.status === 404) return { fetched: false, why: 'no report (door not updated yet, or key refused)' };
+    if (!r.ok) return { fetched: false, why: `HTTP ${r.status}` };
+    return { fetched: true, report: await r.json() };
+  } catch (e) { return { fetched: false, why: `unreachable (${String(e).slice(0, 80)})` }; }
+}
+// Where the customer is in setup, as a label value: not_signed_in, no_model, no_worker, idle, working.
+function stage(rep) {
+  if (rep.workers?.measured && rep.workers.active_24h > 0) return 'working';
+  if (rep.workers?.measured && rep.workers.ever_ran > 0) return 'idle';
+  if (rep.signin?.measured && !rep.signin.ever) return 'not_signed_in';
+  if (rep.model?.measured && !rep.model.any) return 'no_model';
+  if (rep.workers?.measured) return 'no_worker';
+  return 'unknown';
+}
+const ageHours = s => (Date.now() - Date.parse(s.created)) / 3600e3;
+// Start simple. Each rule fires only on a measured section, so a probe that did not run never reads as a stuck customer.
+function friction(rep, ageH, prevGroups = 0) {
+  const out = [], now = Date.now() / 1000;
+  const si = rep.signin, mo = rep.model, wk = rep.workers, er = rep.errors, dk = rep.disk;
+  if (si?.measured && !si.ever && ageH >= 24) {
+    // Sign-ins are counted from when the door started counting; an older server's earlier sign-ins are unknown.
+    const trackedH = (now - si.tracking_since) / 3600;
+    if (trackedH >= ageH - 1) out.push(`never signed in (${Math.round(ageH)}h since created)`);
+    else if (trackedH >= 24) out.push(`no sign-in in the ${Math.round(trackedH)}h since counting began`);
+  }
+  if (mo?.measured && !mo.any && ageH >= 24) out.push(`no model connected after ${Math.round(ageH)}h`);
+  if (wk?.measured && wk.ever_ran === 0 && ageH >= 48) out.push(`no worker has ever run after ${Math.round(ageH)}h`);
+  if (er?.measured && (er.groups_24h >= 25 || (er.groups_24h >= 10 && er.groups_24h >= 2 * prevGroups)))
+    out.push(`${er.groups_24h} error groups in 24h (yesterday ${prevGroups})`);
+  if (si?.measured && si.failed_24h >= 10) out.push(`${si.failed_24h} failed sign-ins in 24h`);
+  if (dk?.measured && dk.used_pct > 85) out.push(`disk ${dk.used_pct}% full`);
+  return out;
+}
+function activationRow(slug, ageH, rep) {
+  if (!rep.fetched) return { slug, age_h: Math.round(ageH), measured: false, why: rep.why };
+  const r = rep.report, n = (sec, k) => (r[sec]?.measured ? r[sec][k] : null);
+  return { slug, age_h: Math.round(ageH), measured: Boolean(r.measured), unmeasured: r.unmeasured || [], stage: stage(r),
+    signed_in: n('signin', 'ever'), last_seen_at: n('signin', 'last_seen_at'), failed_signins_24h: n('signin', 'failed_24h'),
+    model: n('model', 'any'), providers: Object.entries(n('model', 'providers') || {}).filter(([, v]) => v).map(([k]) => k),
+    workers: n('workers', 'total'), workers_ever_ran: n('workers', 'ever_ran'), workers_active_24h: n('workers', 'active_24h'),
+    tokens_today: n('tokens', 'today'), cards: n('board', 'cards'), schedules: n('schedules', 'total'),
+    error_groups_24h: n('errors', 'groups_24h'), disk_used_pct: n('disk', 'used_pct'), commit: n('version', 'commit') };
+}
+
+// Activation nudges to the customer, from hello@amux.io. Held unless NUDGES=on (the owner reviews
+// customer copy first). Each goes at most once per server (amux-nudged), at least a day apart
+// (amux-nudge-at). A server labelled amux-nudge-off (set it when a customer replies "stop") gets none.
+const NUDGE_MAX_AGE_H = 14 * 24;
+function nudgeText(kind, slug) {
+  const url = `https://${host(slug)}`;
+  if (kind === 'm') return ['Connect a model to your amux server',
+    `Your amux server at ${url} is running, but no AI model is connected yet, so workers cannot start.\r\n\r\n` +
+    `To connect one:\r\n\r\n` +
+    `1. Open ${url} and sign in with this email address and the password you chose at signup.\r\n\r\n` +
+    `2. Choose Sign in with Claude to use your Claude subscription, or paste an Anthropic API key. ChatGPT, Gemini and OpenAI keys work too.\r\n\r\n` +
+    `It takes about a minute. If something gets in the way, reply to this email and tell us where you got stuck.\r\n\r\n` +
+    `To stop these setup emails, reply "stop".`];
+  return ['Start your first worker on amux',
+    `Your amux server at ${url} has not run a worker yet. A worker is an AI agent with its own terminal on your server.\r\n\r\n` +
+    `To start one:\r\n\r\n` +
+    `1. Open ${url} and sign in.\r\n\r\n` +
+    `2. Click + at the top, then New worker.\r\n\r\n` +
+    `3. Give it a name and tell it what to work on, for example "set up a Python project for my scraper".\r\n\r\n` +
+    `If you are stuck, reply to this email and we will help.\r\n\r\n` +
+    `To stop these setup emails, reply "stop".`];
+}
+async function nudge(env, s, rep, labels) {
+  const slug = s.labels['amux-slug'], ageH = ageHours(s), now = Math.floor(Date.now() / 1000);
+  const sent = new Set((labels['amux-nudged'] || '').split('-').filter(Boolean));
+  let due = '';
+  if (ageH >= 24 && rep.model?.measured && !rep.model.any && !sent.has('m')) due = 'm';
+  else if (ageH >= 72 && rep.workers?.measured && rep.workers.ever_ran === 0 && !sent.has('w')) due = 'w';
+  if (!due) return;
+  const held = env.NUDGES !== 'on' ? 'NUDGES is not on' : labels['amux-nudge-off'] ? 'customer opted out'
+    : ageH > NUDGE_MAX_AGE_H ? 'server older than 14 days' : now - Number(labels['amux-nudge-at'] || 0) < 86400 ? 'a nudge went out in the last day' : '';
+  if (held) { log('nudge.held', { slug, kind: due, why: held }); return; }
+  const sub = await stripe(env, 'GET', `/subscriptions/${s.labels['amux-sub']}`, { expand: ['customer'] });
+  const email = sub.customer?.email;
+  if (!email || email.startsWith('synthetic+')) { log('nudge.held', { slug, kind: due, why: 'no customer email' }); return; }
+  const [subject, text] = nudgeText(due, slug);
+  if (await sendMail(env, email, subject, text)) {
+    sent.add(due);
+    labels['amux-nudged'] = [...sent].sort().join('-');
+    labels['amux-nudge-at'] = String(now);
+    log('nudge.sent', { slug, kind: due });
   }
 }
 
@@ -572,7 +691,7 @@ async function funnel(env) {
 async function audit(env) {
   const subs = await allSubs(env), bySub = new Map(subs.map(s => [s.id, s]));
   const servers = (await hetzner(env, 'GET', `/servers?label_selector=amux-standalone=1,amux-mode=${env.MODE}`)).servers;
-  const problems = [], fixed = [], day = Math.floor(Date.now() / 1000) - 86400;
+  const problems = [], fixed = [], activation = [], stuck = [], day = Math.floor(Date.now() / 1000) - 86400;
   let mrr = 0, cost = 0;
   for (const s of servers) {
     if (s.labels['amux-ending']) continue;
@@ -597,6 +716,19 @@ async function audit(env) {
     if (monthly && amount && amount < monthly * 1.5)
       problems.push(`${slug}: plan ${s.labels['amux-plan']} pays $${amount.toFixed(2)}/mo for a server costing about ${monthly.toFixed(2)}/mo`);
     if (Number(s.labels['amux-fail'] || 0) >= 2) problems.push(`${slug}: failing its checks (${s.labels['amux-fail']} in a row)`);
+    if (s.labels['amux-ready'] !== '1') continue;
+    // Is this paying customer actually using it? Fetched live; amux-errg keeps yesterday's error-group count.
+    const ageH = ageHours(s), rep = await fetchReport(env, slug);
+    activation.push(activationRow(slug, ageH, rep));
+    if (!rep.fetched) continue;
+    const prev = Number(s.labels['amux-errg'] || 0);
+    for (const f of friction(rep.report, ageH, prev)) stuck.push(`${slug}: ${f}`);
+    const g = rep.report.errors?.measured ? String(rep.report.errors.groups_24h) : s.labels['amux-errg'];
+    const act = stage(rep.report);
+    if (g !== s.labels['amux-errg'] || act !== s.labels['amux-act']) {
+      const labels = { ...s.labels, 'amux-act': act, ...(g !== undefined ? { 'amux-errg': g } : {}) };
+      await hetzner(env, 'PUT', `/servers/${s.id}`, { labels }).catch(e => log('activation.label_failed', { slug, error: String(e).slice(0, 120) }));
+    }
   }
   const withServer = new Set(servers.map(s => s.labels['amux-sub']));
   for (const sub of subs)
@@ -609,15 +741,24 @@ async function audit(env) {
     customers: subs.filter(s => LIVE.includes(s.status)).length, servers: servers.length, past_due: pastDue,
     mrr_usd: Math.round(mrr * 100) / 100, server_cost_eur: Math.round(cost * 100) / 100,
     checkouts_24h: { started: checkouts.length, paid: checkouts.filter(c => c.status === 'complete').length },
-    funnel: await funnel(env).catch(e => ({ measured: false, why: String(e).slice(0, 120) })), problems, fixed };
-  log('ops.audit', { ...report, funnel: undefined, visitors: report.funnel.visitors_24h, funnel_measured: report.funnel.measured });
+    funnel: await funnel(env).catch(e => ({ measured: false, why: String(e).slice(0, 120) })), problems, fixed,
+    activation, friction: stuck };
+  log('ops.audit', { ...report, activation: undefined, activation_rows: activation.length, funnel: undefined, visitors: report.funnel.visitors_24h, funnel_measured: report.funnel.measured });
   return report;
 }
 async function dailyAudit(env) {
   const r = await audit(env), monday = new Date().getUTCDay() === 1;
-  if (!r.problems.length && !r.fixed.length && !monday) return r;
+  if (!r.problems.length && !r.fixed.length && !r.friction.length && !monday) return r;
+  const yn = v => (v === null || v === undefined ? '?' : v ? 'yes' : 'no');
+  const row = a => !a.measured && a.why ? `- ${a.slug} (${a.age_h}h): no report, ${a.why}` :
+    `- ${a.slug} (${a.age_h}h, ${a.stage}): signed in ${yn(a.signed_in)}, model ${a.model ? a.providers.join('+') || 'yes' : yn(a.model)}, ` +
+    `workers ${a.workers ?? '?'} (ever ran ${a.workers_ever_ran ?? '?'}, active 24h ${a.workers_active_24h ?? '?'}), cards ${a.cards ?? '?'}, ` +
+    `schedules ${a.schedules ?? '?'}, error groups ${a.error_groups_24h ?? '?'}, disk ${a.disk_used_pct ?? '?'}%` +
+    (a.unmeasured.length ? ` (not measured: ${a.unmeasured.join(', ')})` : '');
   const lines = [
     r.problems.length ? `Needs a look:\r\n\r\n${r.problems.map(x => '- ' + x).join('\r\n\r\n')}` : 'Nothing needs a look.',
+    r.friction.length ? `Customers stuck in setup:\r\n\r\n${r.friction.map(x => '- ' + x).join('\r\n\r\n')}` : '',
+    r.activation.length ? `Activation:\r\n\r\n${r.activation.map(row).join('\r\n\r\n')}` : '',
     r.fixed.length ? `Fixed automatically:\r\n\r\n${r.fixed.map(x => '- ' + x).join('\r\n\r\n')}` : '',
     `Customers: ${r.customers}. Servers: ${r.servers}. Past due: ${r.past_due.length ? r.past_due.join(', ') : 'none'}.`,
     `Revenue: $${r.mrr_usd}/mo list price. Server cost: about EUR ${r.server_cost_eur}/mo.`,
@@ -625,7 +766,10 @@ async function dailyAudit(env) {
     r.funnel.measured ? `Visitors (24h): ${Object.entries(r.funnel.visitors_24h).map(([k, v]) => `/${k} ${v}`).join(', ') || 'none'}.`
                       : `Visitors: not measured (${r.funnel.why}).`,
   ].filter(Boolean);
-  const subject = r.problems.length ? `${r.problems.length} thing(s) need a look` : (r.fixed.length ? 'fixed automatically' : 'weekly summary');
+  const stuckSlugs = new Set(r.friction.map(x => x.split(':')[0]));
+  const subject = [r.problems.length ? `${r.problems.length} thing(s) need a look` : '',
+                   stuckSlugs.size ? `${stuckSlugs.size} stuck customer(s)` : ''].filter(Boolean).join(', ') ||
+                  (r.fixed.length ? 'fixed automatically' : 'weekly summary');
   await sendMail(env, OPERATOR, `[amux cloud ${env.MODE}] ${subject}`, lines.join('\r\n\r\n'));
   return r;
 }

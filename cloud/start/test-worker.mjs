@@ -96,6 +96,17 @@ function world() {
       if (p === '/v1/customers') return ok({ data: [...new Set(Object.values(w.subs).filter(s => s.email === f.get('email')).map(s => s.customer_id))].map(id => ({ id })) });
       if (p === '/v1/billing_portal/sessions') return ok({ url: 'https://portal.test/x' });
     }
+    if (u.pathname === '/_door/report') {
+      // The door's check, in node: a report-scoped token for this host under its derived key, else 404.
+      w.reportCalls = (w.reportCalls || 0) + 1;
+      const t = String(o.headers?.authorization || '').replace(/^Bearer /, ''), [b, mac] = t.split('.'), slug = u.host.split('.')[0];
+      const key = crypto.createHmac('sha256', w.env.DOOR_ENTRY_SECRET || '').update('amux-entry|' + slug).digest('hex');
+      const good = b && w.env.DOOR_ENTRY_SECRET && crypto.createHmac('sha256', key).update(b).digest('base64url') === mac;
+      const c = good ? JSON.parse(Buffer.from(b, 'base64url')) : {};
+      if (!good || c.scope !== 'report' || c.aud !== slug || !w.report) return new Response('', { status: 404 });
+      w.lastReportToken = t;
+      return Response.json(typeof w.report === 'function' ? w.report() : w.report);
+    }
     if (u.pathname === '/_door/status') return w.up ? Response.json({ live_commit: 'abc', dashboard: true, verdict: 'current', checked_at: Math.floor(Date.now() / 1000), ...(typeof w.up === 'object' ? w.up : {}) }) : new Response('down', { status: 502 });
     throw new Error(`fake: unexpected ${m} ${url}`);
   };
@@ -546,6 +557,130 @@ await test('funnel: paid, ready and canceled reach PostHog under the visitor id,
   const w2 = world(); w2.fetch = (orig => async (url, o) => new URL(String(url)).host === 'us.i.posthog.com' ? Promise.reject(new Error('blocked')) : orig(url, o))(w2.fetch);
   const sub2 = paid(w2, 'phdown'); await webhook(w2, sub2);
   eq([w2.servers.length, w2.logs.some(l => l.event === 'track.failed')], [1, true], 'PostHog down: the server is still created, the failure is logged');
+});
+
+// ------------------------------------------------------------------ activation report, friction, nudges
+// A report the way door.py's activation_report() shapes it (counts only).
+function report({ signed = true, model = false, ran = 0, active = 0, groups = 0, failed = 0, disk = 40, trackedH = 1000 } = {}) {
+  const now = Math.floor(Date.now() / 1000), m = { measured: true };
+  return { v: 1, measured: true, n_considered: 9, unmeasured: [],
+    signin: { ...m, tracking_since: now - trackedH * 3600, ever: signed, count: signed ? 1 : 0, failed_24h: failed, last_seen_at: signed ? now : null },
+    model: { ...m, any: model, providers: { claude: model, openai: false } },
+    workers: { ...m, n_considered: ran, total: ran, ever_ran: ran, active_24h: active, running: active },
+    tokens: { ...m, today: 0 }, board: { ...m, cards: 0 }, schedules: { ...m, total: 0, enabled: 0 },
+    errors: { ...m, groups_24h: groups, total_24h: groups, n_considered: groups }, version: { ...m, commit: 'abc' }, disk: { ...m, used_pct: disk } };
+}
+// A paid, ready server of the given age, in this minute's monitor slot.
+async function readyServer(w, slug, ageH) {
+  w.env.DOOR_ENTRY_SECRET = 'entry-root';
+  const sub = paid(w, slug); await webhook(w, sub);
+  const s = w.servers[0];
+  Object.assign(s.labels, { 'amux-ready': '1' }); s.backup_window = '22-02';
+  s.created = new Date(Date.now() - ageH * 3600e3).toISOString();
+  s.id = 10 - (new Date().getUTCMinutes() % 10);
+  w.up = true;
+  return { s, sub };
+}
+const customerMail = w => w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).filter(t => !/^[\s\S]*To: hello@amux\.io/.test(t));
+
+await test('activation: the monitor reads the report once an hour, labels the stage, and door.py takes the Worker\'s token', async () => {
+  const w = world(); const { s } = await readyServer(w, 'act1', 30);
+  w.report = report({ model: false });
+  await cron(w); await cron(w);
+  eq(w.reportCalls, 1, 'one report fetch in the hour');
+  eq([s.labels['amux-act'], s.labels['amux-rep'] === String(Math.floor(Date.now() / 3600e3))], ['no_model', true], 'stage and hour labels');
+  eq(Object.values(s.labels).every(v => /^[a-z0-9]([a-z0-9._-]{0,61}[a-z0-9])?$/.test(v)), true, 'every label value is a valid Hetzner value');
+  // The real door accepts the token for its own server and refuses it as a sign-in link.
+  const { execFileSync } = await import('node:child_process');
+  const os = await import('node:os'), path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'door-report-'));
+  const secret = s.user_data.match(/AMUX_ENTRY_SECRET='([0-9a-f]+)'/)[1];
+  fs.writeFileSync(path.join(dir, 'entry'), `AMUX_SLUG=act1\nAMUX_FLEET_SECRET=${secret}\n`);
+  const py = 'import sys,json; sys.path.insert(0, sys.argv[1]); import door\nc=door.verify_report_token(sys.argv[2])\n' +
+             'try:\n  door.verify_entry_token(sys.argv[2]); print("SIGNIN_ACCEPTED")\nexcept ValueError as e:\n  print(c["scope"], e)';
+  try {
+    const out = execFileSync('python3', ['-I', '-c', py, new URL('../desktop/', import.meta.url).pathname, w.lastReportToken],
+      { env: { PATH: process.env.PATH, DOOR_ENTRY: path.join(dir, 'entry'), DOOR_FLEET_ENV: path.join(dir, 'none'), DOOR_ACTIVITY: path.join(dir, 'a.json') } }).toString().trim();
+    eq(out, 'report not a sign-in token', 'door verdict');
+  } finally { fs.rmSync(dir, { recursive: true }); }
+});
+
+await test('activation: an older door without the report is logged as unmeasured, not as a stuck customer', async () => {
+  const w = world(); const { s } = await readyServer(w, 'olddoor', 100); w.env.OPS_KEY = 'ops';
+  await cron(w);
+  eq([w.reportCalls, s.labels['amux-act']], [1, undefined], 'fetched, no stage');
+  eq(w.logs.some(l => l.event === 'activation.report' && l.fetched === false && /not updated/.test(l.why)), true, 'logged');
+  const rep = await (await call(w, () => worker.fetch(new Request('https://w.test/api/ops', { headers: { 'x-ops-key': 'ops' } }), w.env))).json();
+  eq([rep.activation.length, rep.activation[0].measured, rep.friction], [1, false, []], 'unmeasured row, no friction');
+});
+
+await test('nudges: held while NUDGES is off (nothing reaches the customer)', async () => {
+  const w = world(); const { s } = await readyServer(w, 'quiet', 80);
+  w.report = report({ model: false, ran: 0 });
+  await cron(w);
+  eq(customerMail(w).length, 0, 'customer emails');
+  eq(s.labels['amux-nudged'], undefined, 'nothing recorded as sent');
+  eq(w.logs.some(l => l.event === 'nudge.held' && l.why === 'NUDGES is not on' && l.kind === 'm'), true, 'held and logged');
+});
+
+await test('nudges: with NUDGES=on, day 1 no model sends the model email once; day 3 no worker sends the worker email once', async () => {
+  const w = world(); const { s } = await readyServer(w, 'nudgy', 30); w.env.NUDGES = 'on';
+  w.report = report({ model: false });
+  await cron(w);
+  let mail = customerMail(w);
+  eq([mail.length, /Subject: Connect a model to your amux server/.test(mail[0]), /https:\/\/nudgy\.amux\.io/.test(mail[0]), /reply "stop"/.test(mail[0])],
+     [1, true, true, true], 'model email');
+  eq(s.labels['amux-nudged'], 'm', 'recorded');
+  delete s.labels['amux-rep']; await cron(w);
+  eq(customerMail(w).length, 1, 'not sent twice');
+  // Day 3: model connected, still no worker. A day has passed since the last nudge.
+  s.created = new Date(Date.now() - 80 * 3600e3).toISOString(); s.labels['amux-nudge-at'] = String(Math.floor(Date.now() / 1000) - 90000);
+  w.report = report({ model: true, ran: 0 }); delete s.labels['amux-rep'];
+  await cron(w);
+  mail = customerMail(w);
+  eq([mail.length, /Subject: Start your first worker on amux/.test(mail[1]), s.labels['amux-nudged']], [2, true, 'm-w'], 'worker email');
+  delete s.labels['amux-rep']; await cron(w);
+  eq(customerMail(w).length, 2, 'worker email not sent twice');
+  for (const t of mail) eq([t.includes('\u2014'), /\bnot\b[^.]*,\s*it'?s\b/i.test(t)], [false, false], 'no em dash, no "not X, it is Y"');
+});
+
+await test('nudges: none when the condition does not hold, too early, or the customer opted out', async () => {
+  const w = world(); const { s } = await readyServer(w, 'busy', 30); w.env.NUDGES = 'on';
+  w.report = report({ model: true, ran: 1, active: 1 });
+  await cron(w);
+  eq([customerMail(w).length, s.labels['amux-act']], [0, 'working'], 'a working customer gets nothing');
+  const w2 = world(); await readyServer(w2, 'early', 10); w2.env.NUDGES = 'on'; w2.report = report({ model: false });
+  await cron(w2);
+  eq(customerMail(w2).length, 0, 'under 24h: nothing yet');
+  const w3 = world(); const r3 = await readyServer(w3, 'optout', 30); w3.env.NUDGES = 'on'; w3.report = report({ model: false });
+  r3.s.labels['amux-nudge-off'] = '1';
+  await cron(w3);
+  eq([customerMail(w3).length, w3.logs.some(l => l.event === 'nudge.held' && l.why === 'customer opted out')], [0, true], 'opt-out');
+});
+
+await test('audit: activation table and friction for a stuck customer; the daily email goes out for it', async () => {
+  const w = world(); const { s } = await readyServer(w, 'stuckco', 72); w.env.OPS_KEY = 'ops';
+  w.report = report({ signed: false, model: false, ran: 0, groups: 12, failed: 11, disk: 91, trackedH: 72 });
+  s.labels['amux-errg'] = '3';
+  const rep = await (await call(w, () => worker.fetch(new Request('https://w.test/api/ops', { headers: { 'x-ops-key': 'ops' } }), w.env))).json();
+  eq(rep.activation.map(a => [a.slug, a.stage, a.signed_in, a.model, a.workers_ever_ran, a.disk_used_pct]),
+     [['stuckco', 'not_signed_in', false, false, 0, 91]], 'activation row');
+  eq(rep.friction, ['stuckco: never signed in (72h since created)', 'stuckco: no model connected after 72h',
+    'stuckco: no worker has ever run after 72h', 'stuckco: 12 error groups in 24h (yesterday 3)',
+    'stuckco: 11 failed sign-ins in 24h', 'stuckco: disk 91% full'], 'friction');
+  eq([s.labels['amux-errg'], s.labels['amux-act']], ['12', 'not_signed_in'], 'labels updated');
+  eq(rep.problems, [], 'nothing else is wrong');
+  // The 13:00 UTC run on a Wednesday with no other problem: the stuck customer alone sends the email.
+  const RealDate = Date, at = RealDate.UTC(2026, 9, 21, 13, 0, 20);
+  globalThis.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [at])); } static now() { return at; } };
+  s.created = new RealDate(at - 72 * 3600e3).toISOString();
+  try {
+    await call(w, async () => { const ps = []; await worker.scheduled({}, w.env, { waitUntil: p => ps.push(p) }); await Promise.all(ps); });
+  } finally { globalThis.Date = RealDate; }
+  const ops = w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).filter(t => /To: hello@amux\.io/.test(t));
+  eq(ops.length, 1, 'one operator email');
+  eq([/Subject: \[amux cloud test\] 1 stuck customer\(s\)/.test(ops[0]), /Customers stuck in setup:/.test(ops[0]), /- stuckco \(72h, not_signed_in\): signed in no/.test(ops[0])],
+     [true, true, true], 'subject, friction and activation table');
 });
 
 process.exitCode = failures;

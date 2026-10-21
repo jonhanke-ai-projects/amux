@@ -84,6 +84,9 @@ b.append({"type": "secret_text", "name": "OPS_KEY", "text": open(ok).read().stri
 if os.environ.get("POSTHOG_KEY"):
     b.append({"type": "secret_text", "name": "POSTHOG_KEY", "text": os.environ["POSTHOG_KEY"]})
     b.append({"type": "plain_text", "name": "POSTHOG_PROJECT", "text": "378145"})   # PostHog project "amux"
+# Activation emails to customers (no model after a day, no worker after three). Off unless the deploy
+# runs with NUDGES=on, because a deploy replaces every binding: say it each time you mean it.
+b.append({"type": "plain_text", "name": "NUDGES", "text": "on" if os.environ.get("NUDGES") == "on" else "off"})
 if mode == "test":
     b.append({"type": "secret_text", "name": "TEST_KEY", "text": open(os.path.join(s, "start-test-key")).read().strip()})
 json.dump({"main_module": "worker.mjs", "compatibility_date": "2026-10-01", "bindings": b,

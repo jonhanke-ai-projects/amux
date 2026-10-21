@@ -32,6 +32,50 @@ failed checks in a row.
 State lives in Hetzner labels (`amux-sub`, `amux-slug`, `amux-mode`, `amux-ready`, `amux-ending`)
 and Stripe metadata. The password hash is removed from Stripe once the server exists.
 
+## Activation and friction (is a paying customer stuck?)
+
+Once an hour the cron reads each ready server's activation report, `GET /_door/report` on the
+server's door (`cloud/desktop/door.py`, shipped to existing servers by their hourly self-update).
+The request carries a two-minute token signed with the same per-server key as the app's sign-in
+links (derived from `DOOR_ENTRY_SECRET`), with `scope: "report"` and no person in it, so it cannot
+sign anyone in. Anything else gets a 404.
+
+What the report holds, all counts or booleans:
+
+| Section | Fields |
+|---|---|
+| signin | ever signed in, sign-in count, first/last sign-in time, last signed-in visit, failed sign-ins (24h), when counting began |
+| model | which providers are connected (`claude`, `codex`, `gemini`... true/false) |
+| workers | total, ever ran (used any tokens), active in the last 24h, running |
+| tokens | tokens used today |
+| board, schedules | card count; schedule count and how many are enabled |
+| errors | error groups and errors in the last 24h (amux-server's own `/api/logs/analyze`) |
+| version, disk | running commit; root disk used % |
+
+What it never holds: message text, prompts, worker or file names, paths, emails, card titles,
+schedule commands, keys or tokens. The door keeps only sign-in counts and times in
+`/etc/amux-door/activity.json`, with no names or addresses. Each section reports `measured`, and a
+section that could not be read says why instead of reading zero. Sign-ins are counted from the
+door update onward (`tracking_since`), so a server older than that is never called "never signed
+in"; it is flagged only after 24 counted hours with no sign-in and no signed-in visit.
+
+Where it shows up:
+
+- Labels: `amux-act` (the setup stage: `not_signed_in`, `no_model`, `no_worker`, `idle`, `working`),
+  `amux-rep` (the hour the report was last read), `amux-errg` (yesterday's error-group count).
+- `GET /api/ops` and the 13:00 UTC email: an `activation` row per server and a `friction` list. The
+  email now also goes out when a customer is stuck. Rules: never signed in after 24h, no model after
+  24h, no worker ever after 48h, error groups at 25 or more (or 10 or more and double yesterday's),
+  10 or more failed sign-ins in 24h, disk over 85%. A server whose door has no report yet shows
+  "no report" and is not counted as stuck.
+
+Setup nudges to the customer, from hello@amux.io: a day after the server is created with no model
+connected, how to connect one; three days in with no worker ever run, how to start one. Each goes
+once per server (`amux-nudged`), at least a day apart (`amux-nudge-at`), and never to a server
+older than 14 days. **Off unless the Worker runs with `NUDGES=on`** (`NUDGES=on cloud/start/deploy.sh
+live`; a deploy without it turns them off again). Held nudges are logged as `nudge.held`. Every
+nudge says to reply "stop"; when someone does, set the label `amux-nudge-off=1` on their server.
+
 ## Moving a local amux in
 
 The customer is the server's owner (`AMUX_WEB_USERS` entry marked `owner`, no member token), so
