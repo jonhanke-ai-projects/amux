@@ -142,7 +142,7 @@ test('Codex: the usage row starts the ChatGPT device sign-in', async ({ page }) 
 // reply was empty read "Connect account".
 test('every provider with a CLI sign-in offers it, whatever its usage state', async ({ page }) => {
   await page.route('**/api/usage', r => r.fulfill({ json: { providers: [
-    { id: 'claude', label: 'Claude', available: true, metered: true, windows: [{ label: '5-hour session', used_percent: 42, remaining_percent: 58 }] },
+    { id: 'claude', label: 'Claude', available: false, cause: 'account_quota_not_reported', signed_in: true, reason: 'Signed in with a Claude subscription token.' },
     { id: 'codex', label: 'Codex', available: false, cause: 'unexpected_shape', reason: 'Codex account usage returned no rate-limit snapshot.' },
     { id: 'gemini', label: 'Gemini', available: false, cause: 'account_quota_not_reported', reason: 'This Gemini authentication mode does not report an account-wide remaining subscription quota' },
     { id: 'ollama', label: 'Ollama', available: true, metered: false },
@@ -158,6 +158,8 @@ test('every provider with a CLI sign-in offers it, whatever its usage state', as
   await page.goto('/');
   await openUsage(page);
   const label = (id: string) => page.locator(`.usage-provider[data-provider="${id}"] .usage-connect`);
+  // A subscription-token sign-in reports no usage and is still an account (live, usage-a759).
+  await expect(page.locator('.usage-provider[data-provider="claude"] .usage-provider-status')).toHaveText('Not reported');
   await expect(label('claude')).toHaveText('Switch Claude account');
   await expect(page.locator('.usage-provider[data-provider="codex"] .usage-provider-status')).toHaveText('Usage not reported');
   await expect(label('codex')).toHaveText('Switch ChatGPT account');

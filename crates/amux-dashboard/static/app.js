@@ -50571,7 +50571,8 @@ async function loadUsage() {
       // it has no account, "Switch account" once it reports one. Gemini on an
       // API key reads "Not reported" and used to get no button at all.
       const login = window.AmuxState && window.AmuxState.cliLogin && window.AmuxState.cliLogin.CLI_LOGINS[provider.id];
-      const signedIn = provider.available || provider.cause === 'unexpected_shape';
+      // signed_in: a Claude subscription token is an account that reports no usage.
+      const signedIn = provider.available || provider.cause === 'unexpected_shape' || provider.signed_in === true;
       const connect = login && !pending
         ? '<button type="button" class="btn' + (signedIn ? '' : ' primary') + ' usage-connect" data-provider="' + esc(provider.id) + '" onclick="event.stopPropagation();usageConnect(this.dataset.provider)">'
           + (signedIn ? 'Switch ' + esc(login.label) + ' account' : 'Sign in with ' + esc(login.label)) + '</button>'

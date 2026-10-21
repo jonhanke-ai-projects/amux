@@ -834,6 +834,7 @@ fn shape_claude_provider(body: &Value) -> Value {
             "measured": false, "n_considered": 0,
             "account": body.get("account_email").cloned().unwrap_or(Value::Null),
             "cause": body.get("cause").cloned().unwrap_or(Value::Null),
+            "signed_in": body.get("signed_in") == Some(&json!(true)),
             "reason": body.get("reason").cloned()
                 .unwrap_or_else(|| json!("Claude usage is unavailable.")),
             "retry_at": body.get("retry_at"),
@@ -1097,12 +1098,17 @@ fn shape_probe(probe: UsageProbe) -> Value {
             "unexpected_shape",
             "Usage endpoint returned an unexpected response shape".into(),
         ),
-        // Connected, and nothing to fix: "Not reported" in the SPA, with no
-        // sign-in button (signing in again would give the same kind of token).
-        UsageProbe::SubscriptionTokenOnly => degraded(
-            "account_quota_not_reported",
-            "Signed in with a Claude subscription token. Claude does not report plan usage for this kind of sign-in, so it is not shown here.".into(),
-        ),
+        // Connected, and nothing to fix: "Not reported" in the SPA. `signed_in`
+        // tells the row to offer "Switch account" rather than "Sign in", since
+        // `available: false` alone reads as no account.
+        UsageProbe::SubscriptionTokenOnly => {
+            let mut v = degraded(
+                "account_quota_not_reported",
+                "Signed in with a Claude subscription token. Claude does not report plan usage for this kind of sign-in, so it is not shown here.".into(),
+            );
+            v["signed_in"] = json!(true);
+            v
+        }
     }
 }
 
@@ -2470,6 +2476,12 @@ mod tests {
             assert_eq!(st, StatusCode::OK, "{outcome:?}");
             assert_eq!(v["available"], json!(false), "{outcome:?}");
             assert_eq!(v["cause"], json!(expect_cause), "{outcome:?}");
+            // Only the subscription-token state is a degraded row with an account.
+            assert_eq!(
+                v.get("signed_in") == Some(&json!(true)),
+                matches!(outcome, UsageProbe::SubscriptionTokenOnly),
+                "{outcome:?}"
+            );
             let reason = v["reason"].as_str().unwrap().to_string();
             assert!(!reason.is_empty());
             // Never the collapsed sentence again.
