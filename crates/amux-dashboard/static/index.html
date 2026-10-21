@@ -2008,7 +2008,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="cv-hint" id="cv-hint"><span>@person to notify a teammate</span><span>@worker to give a worker a task</span><span>Shift + Enter for a new line</span></div>
   </section>
   <div id="msgs-log-pane">
-  <div style="display:flex;gap:6px;margin-bottom:10px;flex-shrink:0;">
+  <!-- One wrapper for every control above the list. On a phone it is ONE row
+       that scrolls sideways (Ethan, 2026-10-21: "only 1 row at bottom and one
+       on top"); on wider screens its rows lay out as before. -->
+  <div id="msgs-topbar">
+  <div id="msgs-modes" style="display:flex;gap:6px;margin-bottom:10px;flex-shrink:0;">
     <button class="msg-mode-btn active" id="msgmode-messages" onclick="_msgSetMode('messages')">Messages</button>
     <button class="msg-mode-btn" id="msgmode-trends" onclick="_msgSetMode('trends')">&#x1F4C8; Trends</button>
     <!-- AMUX-4664: Trends can only answer what its theme list already names.
@@ -2039,6 +2043,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="msgs-kind-filter" style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;margin-bottom:10px;flex-shrink:0;align-items:center;">
     <button class="btn" onclick="_msgsAllSessions=null;_messagesLoad(true)" title="Refresh" style="font-size:0.78rem;padding:5px 10px;min-height:44px;flex:0 0 auto;">&#x21BB;</button>
   </div>
+  </div><!-- #msgs-topbar -->
   <div id="msgs-list" style="overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;-webkit-overflow-scrolling:touch;"></div>
   <div id="ask-view" style="display:none;overflow-y:auto;flex:1;min-height:0;">
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">

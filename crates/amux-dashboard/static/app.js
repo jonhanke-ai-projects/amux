@@ -61991,7 +61991,10 @@ function _cvEnter() {
   const lp = document.getElementById('msgs-log-pane');
   if (lp && !lp.querySelector('.cv-back')) {
     const b = document.createElement('button'); b.className = 'btn cv-back'; b.innerHTML = '&#x2039; Conversations';
-    b.style.alignSelf = 'flex-start'; b.style.marginBottom = '8px'; b.onclick = _cvBack; lp.prepend(b);
+    b.setAttribute('aria-label', 'Back to conversations');
+    b.style.alignSelf = 'flex-start'; b.style.marginBottom = '8px'; b.onclick = _cvBack;
+    // Inside the top bar, so on a phone it is the first control of its one row.
+    (document.getElementById('msgs-topbar') || lp).prepend(b);
   }
   _cvFit();
   _cv.picked = false;

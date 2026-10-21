@@ -8861,14 +8861,32 @@ button.cv-sec:hover { color:var(--text); }
   .cv-hint { display:none; }
   .cv-head-people { display:none; }
   #msgs-log-pane { padding:8px 10px; }
-  /* The search takes its own row on a phone so the two filters below it get
-     half the width each instead of being squeezed beside it to "All w". */
-  #msgs-controls > .search-wrap { flex:1 1 100% !important; min-width:0 !important; }
-  /* Worker and From filters share one row at 375px and stay 44px tall. */
+  /* Worker and From filters stay 44px tall. */
   /* WebKit ignores min-height on a native menulist select, so the control
      drops its native chrome here and draws its own chevron. */
-  #msgs-session-filter, #msgs-sender-filter { flex:1 1 calc(50% - 5px); min-width:0; max-width:none !important; min-height:44px; -webkit-appearance:none; appearance:none; padding-right:26px !important; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E") !important; background-repeat:no-repeat !important; background-position:right 10px center !important; }
+  #msgs-session-filter, #msgs-sender-filter { min-height:44px; -webkit-appearance:none; appearance:none; padding-right:26px !important; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E") !important; background-repeat:no-repeat !important; background-position:right 10px center !important; }
   .cv-attach-bar { padding:0 10px; }
+  /* ONE ROW ABOVE THE LIST AND ONE BELOW (Ethan, 2026-10-21). The back button,
+     the Messages/Trends/Ask switch, search, both filters, the date, the count,
+     refresh and the kind chips were six rows over a list that got the bottom
+     third of the screen. They are one row now that scrolls sideways; the inner
+     rows dissolve (display:contents) so their controls join it. */
+  #msgs-topbar { display:flex; flex-wrap:nowrap; align-items:center; gap:6px; overflow-x:auto; overflow-y:hidden;
+    -webkit-overflow-scrolling:touch; scrollbar-width:none; margin:0 -10px 8px; padding:0 10px 2px; flex-shrink:0; }
+  #msgs-topbar::-webkit-scrollbar { display:none; }
+  #msgs-topbar > #msgs-modes, #msgs-topbar > #msgs-controls, #msgs-topbar > #msgs-kind-filter { display:contents !important; }
+  #msgs-topbar > * , #msgs-topbar > div > * { flex:0 0 auto !important; margin:0 !important; }
+  #msgs-topbar .cv-back { font-size:0; min-width:44px; min-height:44px; padding:0 12px; }
+  #msgs-topbar .cv-back::before { content:'\2039'; font-size:1.3rem; }
+  #msgs-topbar .msg-mode-btn { min-height:44px; white-space:nowrap; }
+  #msgs-controls > .search-wrap { flex:0 0 190px !important; width:190px; min-width:0 !important; }
+  #msgs-session-filter, #msgs-sender-filter { flex:0 0 auto !important; width:auto; min-width:140px !important; max-width:170px !important; }
+  #msgs-date-jump { min-height:44px; }
+  #msgs-count { align-self:center; }
+  #msgs-pager { flex-wrap:nowrap !important; justify-content:flex-start !important; overflow-x:auto; -webkit-overflow-scrolling:touch;
+    scrollbar-width:none; margin:0 -10px; padding:8px 10px 0 !important; }
+  #msgs-pager::-webkit-scrollbar { display:none; }
+  #msgs-pager > * { flex:0 0 auto; }
 }
 
 /* ── Converse tab (worker view): hands-free voice chat with the worker ──────
