@@ -392,6 +392,7 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-disk-reclaim-tick.sh
+          ./scripts/test-pkill-guard-shim.sh
       - name: orch-pace projects the proof rate to its checkpoint
         run: |
           ./scripts/test-orch-pace-proof.sh

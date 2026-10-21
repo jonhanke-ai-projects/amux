@@ -226,6 +226,17 @@ fn install_shims(dir: &Path, names: &[&str], body: &str) -> std::io::Result<()> 
 /// guard saw only `reset.sh`; a shim on PATH also covers what scripts run.
 pub(crate) const TMUX_FLEET_SHIM: &str = include_str!("../../../../scripts/shims/tmux-fleet-shim.sh");
 
+/// PKILL/PGREP GUARD, installed beside the tmux shim in the same directory
+/// (already first on every worker's PATH): refuses an option after the
+/// pattern, and a pkill matching more than AMUX_PKILL_MAX (20) processes.
+///
+/// 2026-10-21 10:54: a worker's subagent ran `pkill -f "explore.js" -P 1`.
+/// BSD pkill reads options after the pattern as more patterns, "1" matched
+/// 226 processes, and the SIGTERM took down every worker on the Mac plus 36
+/// crashpad handlers (Mac crashes RCA 20261021-105917). Same class as the
+/// 2026-10-19 test cleanup that killed 184.
+pub(crate) const PKILL_GUARD_SHIM: &str = include_str!("../../../../scripts/shims/pkill-guard-shim.sh");
+
 pub(crate) fn tmux_fleet_shim_dir() -> PathBuf {
     home().join("shims").join("tmux-fleet")
 }
@@ -234,6 +245,11 @@ pub(crate) fn tmux_fleet_shim_dir() -> PathBuf {
 /// Goes last in the launch line so a profile that reorders PATH cannot bury it.
 pub(crate) fn tmux_fleet_exports(name: &str) -> String {
     let dir = tmux_fleet_shim_dir();
+    if let Err(e) = install_shims(&dir, &["pkill", "pgrep"], PKILL_GUARD_SHIM) {
+        tracing::warn!(session = name, error = %e, dir = %dir.display(), measured = true, n_considered = 1,
+            verdict = "pkill_guard_shim_install_failed",
+            "the pkill/pgrep guard could not be installed; a misordered pkill from this worker can kill the whole machine");
+    }
     match install_shims(&dir, &["tmux"], TMUX_FLEET_SHIM) {
         Ok(()) => format!(
             "export AMUX_FLEET_TMUX_SOCKET={}; export PATH={}:\"$PATH\"; ",
@@ -57225,6 +57241,9 @@ mod tmux_fleet_shim_tests {
         assert!(ex.contains(&format!("export PATH={}:", sh_quote(&dir.to_string_lossy()))), "{ex}");
         assert!(ex.contains("export AMUX_FLEET_TMUX_SOCKET="), "{ex}");
         assert_eq!(std::fs::read_to_string(dir.join("tmux")).unwrap(), TMUX_FLEET_SHIM);
+        // The pkill/pgrep guard rides the same PATH entry (RCA 20261021-105917).
+        assert_eq!(std::fs::read_to_string(dir.join("pkill")).unwrap(), PKILL_GUARD_SHIM);
+        assert_eq!(std::fs::read_to_string(dir.join("pgrep")).unwrap(), PKILL_GUARD_SHIM);
         let rc = surviving_shell_scope_rc("lane");
         assert!(rc.ends_with(&ex), "a restarted shell gets the shim last, so first on PATH: {rc}");
     }
