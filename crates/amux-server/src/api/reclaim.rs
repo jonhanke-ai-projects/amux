@@ -748,6 +748,135 @@ struct WalkOut {
     /// Directories the skip list kept us out of, so the scan can say what it
     /// did not look at instead of silently under-reporting a home directory.
     skipped: Vec<PathBuf>,
+    /// Directories whose listing went quiet for READDIR_QUIET and were stepped
+    /// over this scan (see [`DirLister`]). Recorded as stalled after the walk.
+    timed_out: Vec<PathBuf>,
+}
+
+// ── one directory listing, on a thread the walk can walk away from ──────────
+
+/// How long a directory listing may send nothing before the walk steps over it.
+///
+/// Until 2026-10-20 the listing ran on the walk thread itself, so one folder
+/// macOS would not answer (~/Library/Containers/com.apple.DeskCam/Data,
+/// ~/Downloads, ~/Documents) froze the whole scan until the 300s watchdog
+/// ended it: 9 of the 10 scans since 2026-09-11 stopped that way and the Disk
+/// tab showed a 6-day-old result. A listing that keeps sending entries, however
+/// slowly, is never cut off; only silence is. `AMUX_RECLAIM_READDIR_QUIET_S`.
+fn readdir_quiet() -> std::time::Duration {
+    let s = std::env::var("AMUX_RECLAIM_READDIR_QUIET_S")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(60);
+    std::time::Duration::from_secs(s)
+}
+
+type DirEntryInfo = (PathBuf, String, std::io::Result<std::fs::Metadata>);
+
+enum ListMsg {
+    Chunk(Vec<DirEntryInfo>),
+    Done,
+    Failed,
+}
+
+/// Outcome of listing one directory.
+pub(crate) enum Listing {
+    /// Every entry, with its metadata.
+    Entries(Vec<DirEntryInfo>),
+    /// `read_dir` refused (permission denied and the like): skip, as before.
+    Unreadable,
+    /// Nothing arrived for the quiet window. The reader thread is abandoned
+    /// (a thread blocked in the kernel cannot be cancelled) and a fresh one
+    /// serves the next directory.
+    TimedOut,
+}
+
+/// A reader thread that lists directories on request and streams the entries
+/// back in chunks, so the walk can wait with a timeout instead of blocking.
+pub(crate) struct DirLister {
+    tx: std::sync::mpsc::Sender<PathBuf>,
+    rx: std::sync::mpsc::Receiver<ListMsg>,
+    quiet: std::time::Duration,
+    pub(crate) abandoned: usize,
+}
+
+impl DirLister {
+    pub(crate) fn new(quiet: std::time::Duration) -> Self {
+        let (tx, rx) = Self::spawn();
+        DirLister { tx, rx, quiet, abandoned: 0 }
+    }
+
+    fn spawn() -> (std::sync::mpsc::Sender<PathBuf>, std::sync::mpsc::Receiver<ListMsg>) {
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<PathBuf>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<ListMsg>();
+        let spawned = std::thread::Builder::new()
+            .name("reclaim-readdir".into())
+            .spawn(move || {
+                set_background_io();
+                for dir in req_rx {
+                    // Test hook: a directory that never answers, like the
+                    // macOS-protected folders that hung real scans.
+                    #[cfg(test)]
+                    if dir.file_name().is_some_and(|n| n == "NEVER_ANSWERS_FOR_TEST") {
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                    }
+                    let it = match std::fs::read_dir(&dir) {
+                        Ok(it) => it,
+                        Err(_) => {
+                            if res_tx.send(ListMsg::Failed).is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                    };
+                    let mut chunk = Vec::with_capacity(256);
+                    for e in it.flatten() {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        chunk.push((e.path(), name, e.metadata()));
+                        if chunk.len() >= 256
+                            && res_tx.send(ListMsg::Chunk(std::mem::take(&mut chunk))).is_err()
+                        {
+                            return;
+                        }
+                    }
+                    if !chunk.is_empty() && res_tx.send(ListMsg::Chunk(chunk)).is_err() {
+                        return;
+                    }
+                    if res_tx.send(ListMsg::Done).is_err() {
+                        return;
+                    }
+                }
+            });
+        if spawned.is_err() {
+            tracing::error!(verdict = "reclaim_readdir_thread_failed", "could not start the reclaim directory reader");
+        }
+        (req_tx, res_rx)
+    }
+
+    pub(crate) fn list(&mut self, dir: &FsPath) -> Listing {
+        if self.tx.send(dir.to_path_buf()).is_err() {
+            let (tx, rx) = Self::spawn();
+            self.tx = tx;
+            self.rx = rx;
+            return Listing::Unreadable;
+        }
+        let mut out = Vec::new();
+        loop {
+            match self.rx.recv_timeout(self.quiet) {
+                Ok(ListMsg::Chunk(mut c)) => out.append(&mut c),
+                Ok(ListMsg::Done) => return Listing::Entries(out),
+                Ok(ListMsg::Failed) => return Listing::Unreadable,
+                Err(_) => {
+                    let (tx, rx) = Self::spawn();
+                    self.tx = tx;
+                    self.rx = rx;
+                    self.abandoned += 1;
+                    return Listing::TimedOut;
+                }
+            }
+        }
+    }
 }
 
 struct Finding {
@@ -791,7 +920,9 @@ fn walk(
         files: 0,
         bytes: 0,
         skipped: Vec::new(),
+        timed_out: Vec::new(),
     };
+    let mut lister = DirLister::new(readdir_quiet());
     let devtools = if cfg.include_devtools {
         devtool_roots()
     } else {
@@ -847,16 +978,24 @@ fn walk(
             // up to 64 directories behind it.
             progress(out.dirs, out.files, out.bytes, &dir, &mut out.findings);
 
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(e) => e,
-                Err(_) => continue, // permission denied etc — skip, do not fail the scan
+            let entries = match lister.list(&dir) {
+                Listing::Entries(e) => e,
+                Listing::Unreadable => continue, // permission denied etc — skip, do not fail the scan
+                Listing::TimedOut => {
+                    tracing::warn!(path = %dir.display(), quiet_s = lister.quiet.as_secs(),
+                        verdict = "reclaim_readdir_stepped_over",
+                        "a directory sent nothing; the scan steps over it and carries on");
+                    out.timed_out.push(dir.clone());
+                    pos.set(&dir, "entries");
+                    continue;
+                }
             };
             pos.set(&dir, "entries");
             out.dirs += 1;
             let mut local = Acc::default();
 
             let mut n_entries = 0u32;
-            for entry in entries.flatten() {
+            for (path, name, md) in entries {
                 n_entries += 1;
                 // Statting 200k entries under background I/O priority is slow
                 // work, not stuck work. The clock has to advance through it or
@@ -866,8 +1005,7 @@ fn walk(
                 if n_entries.is_multiple_of(512) {
                     pos.set(&dir, "entries");
                 }
-                let path = entry.path();
-                let md = match entry.metadata() {
+                let md = match md {
                     Ok(m) => m,
                     Err(_) => continue,
                 };
@@ -878,8 +1016,6 @@ fn walk(
                 if md.dev() != root_dev {
                     continue; // different filesystem — `du -x` semantics
                 }
-                let name = entry.file_name().to_string_lossy().to_string();
-
                 if md.is_dir() {
                     // Prune at a known build/dep dir: record it whole.
                     if BUILD_DIRS.contains(&name.as_str()) {
@@ -1538,6 +1674,26 @@ fn run_scan(store: crate::db::SharedStore, scan_id: String, cfg: ScanCfg, cancel
         .collect();
     let n_skipped = hit_skips.len();
     touch_skips(&store, hit_skips);
+    // Stepped-over directories count toward the skip list the same way a
+    // watchdog stall did, so a folder that never answers stops costing a
+    // quiet window on every scan once it has done so twice.
+    let n_timed_out = out.timed_out.len();
+    for d in &out.timed_out {
+        record_stalled_dir(
+            &store,
+            d.to_string_lossy().into_owned(),
+            format!(
+                "sent nothing for {}s; stepped over and the scan carried on (skipped after \
+                 {STALL_HITS_TO_SKIP} such scans)",
+                readdir_quiet().as_secs()
+            ),
+        );
+    }
+    if n_timed_out > 0 {
+        tracing::warn!(scan = %scan_id, n_timed_out, measured = true,
+            verdict = "reclaim_scan_stepped_over_dirs",
+            "the scan stepped over directories that sent nothing and finished anyway");
+    }
 
     // Snapshot-held space as a first-class finding. Without this the UI shows
     // a big reclaimable total that the disk will not actually hand back.
@@ -1686,9 +1842,37 @@ async fn get_scan(
     let ownership = annotate_protected(&mut findings).await;
     Json(json!({
         "scan": scan, "findings": findings, "totals": totals, "skipped": skipped,
-        "ownership": ownership,
+        "ownership": ownership, "volume_now": volume_now(&state),
     }))
     .into_response()
+}
+
+/// Free space NOW, and what quarantine still holds. The scan row's df_free is
+/// from when the scan ran, and the header showed it as current: "4.67 GB free,
+/// 0.3%" on 2026-10-20 while the disk had 284 GB free, from a 6-day-old scan.
+/// Staged quarantine bytes ride along because a move frees nothing until purge
+/// (105 GB sat staged that day with nothing on screen saying so).
+fn volume_now(state: &AppState) -> serde_json::Value {
+    let (free, total) = df_bytes(&home_dir()).unwrap_or((0, 0));
+    let (staged_bytes, staged_batches): (i64, i64) = state
+        .store
+        .read()
+        .ok()
+        .and_then(|c| {
+            c.query_row(
+                "SELECT COALESCE(SUM(bytes),0), COUNT(*) FROM reclaim_quarantine
+                  WHERE status='staged' AND item_count > 0",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+        })
+        .unwrap_or((0, 0));
+    json!({
+        "measured": total > 0,
+        "df_free": free, "df_total": total, "at": now_secs(),
+        "staged_bytes": staged_bytes, "staged_batches": staged_batches,
+    })
 }
 
 /// Total wall-clock the findings annotation may spend on ownership probes.
@@ -1830,12 +2014,14 @@ fn read_scan(state: &AppState, id: String, q: &FindingsQuery) -> Result<ScanPart
     let (sql, params): (&str, Vec<&dyn rusqlite::ToSql>) = match &q.category {
         Some(c) => (
             "SELECT category, path, bytes, file_count, mtime, regenerable, detail
-             FROM reclaim_findings WHERE scan_id=?1 AND category=?2 ORDER BY bytes DESC LIMIT ?3",
+             FROM reclaim_findings WHERE scan_id=?1 AND category=?2
+               AND path NOT IN (SELECT original_path FROM reclaim_quarantine_items WHERE status IN ('staged','purged')) ORDER BY bytes DESC LIMIT ?3",
             vec![&id, c, &limit],
         ),
         None => (
             "SELECT category, path, bytes, file_count, mtime, regenerable, detail
-             FROM reclaim_findings WHERE scan_id=?1 ORDER BY bytes DESC LIMIT ?2",
+             FROM reclaim_findings WHERE scan_id=?1
+               AND path NOT IN (SELECT original_path FROM reclaim_quarantine_items WHERE status IN ('staged','purged')) ORDER BY bytes DESC LIMIT ?2",
             vec![&id, &limit],
         ),
     };
@@ -1860,7 +2046,7 @@ fn read_scan(state: &AppState, id: String, q: &FindingsQuery) -> Result<ScanPart
     let mut cstmt = conn
         .prepare(
             "SELECT category, COUNT(*), COALESCE(SUM(bytes),0) FROM reclaim_findings
-             WHERE scan_id=?1 GROUP BY category ORDER BY 3 DESC",
+             WHERE scan_id=?1 AND path NOT IN (SELECT original_path FROM reclaim_quarantine_items WHERE status IN ('staged','purged')) GROUP BY category ORDER BY 3 DESC",
         )
         .ok();
     let totals: Vec<_> = cstmt
@@ -2265,7 +2451,8 @@ async fn list_quarantine(State(state): State<AppState>) -> Response {
         })
         .unwrap_or_default();
 
-    Json(json!({"batches": batches, "items": items, "root": quarantine_root().to_string_lossy()}))
+    Json(json!({"batches": batches, "items": items, "root": quarantine_root().to_string_lossy(),
+        "volume_now": volume_now(&state)}))
         .into_response()
 }
 
@@ -3037,4 +3224,45 @@ mod tests {
         assert!(last_seen > 100, "last_seen must advance, got {last_seen}");
         assert_eq!(hits, 1, "hits must be untouched by a refresh");
     }
+    /// 2026-10-20: one folder macOS would not answer froze the scan until the
+    /// 300s watchdog ended it, so 9 of 10 scans never finished. The walk now
+    /// steps over a silent directory and covers everything else.
+    #[test]
+    fn a_directory_that_never_answers_is_stepped_over_and_the_scan_finishes() {
+        std::env::set_var("AMUX_RECLAIM_READDIR_QUIET_S", "1");
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["before", "NEVER_ANSWERS_FOR_TEST", "after"] {
+            let sub = dir.path().join(name);
+            std::fs::create_dir(&sub).expect("mkdir");
+            std::fs::write(sub.join("f.bin"), vec![1u8; 4096]).expect("write");
+        }
+        let cancel = AtomicBool::new(false);
+        let pos = ScanPos::new();
+        let skip = std::collections::HashSet::new();
+        let mut noop = |_: u64, _: u64, _: u64, _: &FsPath, _: &mut Vec<Finding>| {};
+        let t0 = std::time::Instant::now();
+        let out = walk(&cfg_for(dir.path()), &cancel, &pos, &skip, &mut noop);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20), "the walk waited on the silent folder");
+        assert_eq!(out.timed_out, vec![dir.path().join("NEVER_ANSWERS_FOR_TEST")]);
+        assert_eq!(out.files, 2, "both answering folders were still counted");
+    }
+
+    #[test]
+    fn the_lister_serves_the_next_directory_after_abandoning_a_silent_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let silent = dir.path().join("NEVER_ANSWERS_FOR_TEST");
+        let ok = dir.path().join("ok");
+        std::fs::create_dir(&silent).expect("mkdir");
+        std::fs::create_dir(&ok).expect("mkdir");
+        std::fs::write(ok.join("a"), b"x").expect("write");
+        let mut l = DirLister::new(std::time::Duration::from_secs(1));
+        assert!(matches!(l.list(&silent), Listing::TimedOut));
+        assert_eq!(l.abandoned, 1);
+        match l.list(&ok) {
+            Listing::Entries(e) => assert_eq!(e.len(), 1),
+            _ => panic!("a fresh reader must serve the next directory"),
+        }
+        assert!(matches!(l.list(&dir.path().join("missing")), Listing::Unreadable));
+    }
+
 }

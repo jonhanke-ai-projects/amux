@@ -3624,8 +3624,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_reclaimCleanSafe": {
+      "kind": "command._reclaimCleanSafe",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_reclaimPurge": {
       "kind": "command._reclaimPurge",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_reclaimPurgeAllStaged": {
+      "kind": "command._reclaimPurgeAllStaged",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3644,6 +3656,12 @@
     },
     "_reclaimRestore": {
       "kind": "command._reclaimRestore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_reclaimRunHostCleanup": {
+      "kind": "command._reclaimRunHostCleanup",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

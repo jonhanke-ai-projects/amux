@@ -10044,3 +10044,15 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .composer-grip { width: 22px; height: 22px; top: -11px; left: -11px; }
   .composer-grip::before { content: ''; position: absolute; inset: -11px; }
 }
+
+/* Disk Cleanup: quarantine banner and safe one-click cleanups (2026-10-20). */
+.reclaim-actions { margin: 4px 0 12px; }
+.reclaim-staged-banner { border: 1px solid var(--red, #f85149); background: rgba(248,81,73,0.08); border-radius: 8px; padding: 10px 12px; font-size: 0.82rem; line-height: 1.5; display: flex; flex-direction: column; gap: 8px; }
+.reclaim-actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.reclaim-safe-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.reclaim-safe-card { display: flex; flex-direction: column; gap: 8px; }
+.reclaim-safe-head { font-weight: 600; font-size: 0.86rem; }
+.reclaim-safe-text { font-size: 0.76rem; color: var(--dim); line-height: 1.5; flex: 1; }
+.reclaim-safe-card .btn, .reclaim-actions-row .btn { min-height: 44px; }
+.reclaim-host-note { font-size: 0.78rem; color: var(--dim); margin-top: 8px; }
+.reclaim-host-out { font-size: 0.72rem; white-space: pre-wrap; overflow-x: auto; background: var(--surface, rgba(127,127,127,0.08)); border-radius: 6px; padding: 8px; margin-top: 6px; max-height: 260px; }

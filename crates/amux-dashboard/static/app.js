@@ -53568,13 +53568,18 @@ function _reclaimRender() {
   findings.forEach(f => { if (_reclaimProtected(f)) _reclaimSel.delete(f.path); });
   let html = '';
 
-  // Header + volume state
-  const freePct = scan?.df_total ? (scan.df_free / scan.df_total * 100) : null;
+  // Header + volume state. Free space is read NOW (volume_now), not at the last
+  // scan: a 6-day-old "4.67 GB free, 0.3%" was shown on 2026-10-20 while the
+  // disk had 284 GB free.
+  const vol = _reclaimVolumeNow();
+  const hdrFree = vol?.measured ? vol.df_free : scan?.df_free;
+  const hdrTotal = vol?.measured ? vol.df_total : scan?.df_total;
+  const freePct = hdrTotal ? (hdrFree / hdrTotal * 100) : null;
   const critical = freePct !== null && freePct < 10;
   html += `<div class="metrics-hdr">
     <div class="metrics-hdr-left">
       <span class="metrics-hdr-title">Disk Cleanup</span>
-      ${scan?.df_total ? `<span class="metrics-hostname">${_fmtBytes(scan.df_free)} free of ${_fmtBytes(scan.df_total)}</span>` : ''}
+      ${hdrTotal ? `<span class="metrics-hostname" id="reclaim-free-now">${_fmtBytes(hdrFree)} free of ${_fmtBytes(hdrTotal)}${vol?.measured ? ' now' : ' at last scan'}</span>` : ''}
       ${critical ? `<span style="color:var(--red);font-size:0.72rem;font-weight:600;">${freePct.toFixed(1)}% free</span>` : ''}
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
@@ -53583,6 +53588,8 @@ function _reclaimRender() {
         : `<button class="btn" id="reclaim-scan-btn" onclick="_reclaimStartScan()" style="font-size:0.8rem;padding:5px 12px;">${scan ? 'Rescan' : 'Run scan'}</button>`}
     </div>
   </div>`;
+
+  if (!scan) html += _reclaimActionsPanel(findings);
 
   if (!scan) {
     html += `<div class="reclaim-empty">
@@ -53680,6 +53687,10 @@ function _reclaimRender() {
       </div>`).join('')}
     </div>`;
   }
+
+  // After the scan's own status and warnings (those must stay in the first
+  // screen on a phone), before the numbers.
+  html += _reclaimActionsPanel(findings);
 
   // Headline: what is free, what the scan can vouch for, what needs a person,
   // and what it never looked at. "Not mapped" is the used space the scan did not
@@ -53806,7 +53817,7 @@ function _reclaimRender() {
   const batches = (_reclaimQuarantine?.batches || []).filter(b => b.status !== 'purged' || b.item_count);
   if (batches.length) {
     const old = _reclaimOldBatches();
-    html += `<div class="metrics-section-title" style="margin-top:20px;">Quarantine
+    html += `<div class="metrics-section-title" id="reclaim-quarantine-title" style="margin-top:20px;">Quarantine
       ${old.length ? `<button class="btn reclaim-minibtn reclaim-danger" id="reclaim-purge-old" onclick="_reclaimPurgeOld()" title="Permanently delete every staged batch older than ${_RECLAIM_PURGE_AGE_DAYS} days, one confirmed batch at a time">Purge ${old.length} batch${old.length === 1 ? '' : 'es'} older than ${_RECLAIM_PURGE_AGE_DAYS} days (${_fmtBytes(old.reduce((a, b) => a + (b.bytes || 0), 0))})</button>` : ''}
     </div>`;
     html += '<div class="metrics-table-wrap"><table class="metrics-table"><thead><tr>';
@@ -53837,6 +53848,142 @@ function _reclaimRender() {
 
   el.innerHTML = html;
   el.querySelectorAll('.reclaim-rec input[data-partial]').forEach(i => { i.indeterminate = true; });
+}
+
+function _reclaimVolumeNow() {
+  return _reclaimScan?.volume_now || _reclaimQuarantine?.volume_now || null;
+}
+
+// The top of the tab: what still holds disk, and the cleanups that are safe in
+// one click. Ethan, 2026-10-20: "make sure i can actually do disk cleanup from
+// the disk cleanup tab ... there should be easy ways of cleaning up host in safe
+// ways". That day 105 GB sat staged in quarantine, freeing nothing, with the
+// only Purge buttons at the bottom of a 400-row page.
+function _reclaimActionsPanel(findings) {
+  const v = _reclaimVolumeNow();
+  const staged = v?.staged_bytes || 0;
+  const safe = _reclaimRecs(findings).safe;
+  const safeBytes = safe.reduce((a, r) => a + (r.bytes || 0), 0);
+  const safeN = safe.reduce((a, r) => a + r.paths.length, 0);
+  let h = '<div class="reclaim-actions" id="reclaim-actions">';
+  if (staged > 0) {
+    h += `<div class="reclaim-staged-banner" id="reclaim-staged-banner">
+      <div><b>${_fmtBytes(staged)}</b> is in quarantine (${v.staged_batches} batch${v.staged_batches === 1 ? '' : 'es'}) and still uses the disk.
+      Quarantine only moves files; the space comes back when you delete them.</div>
+      <div class="reclaim-actions-row">
+        <button class="btn reclaim-danger" id="reclaim-purge-all" onclick="_reclaimPurgeAllStaged()">Delete quarantined files (${_fmtBytes(staged)})</button>
+        <button class="btn" onclick="document.getElementById('reclaim-quarantine-title')?.scrollIntoView({behavior:'smooth'})">Review or restore</button>
+      </div></div>`;
+  }
+  h += `<div class="metrics-section-title" style="margin-top:12px;">Safe cleanup</div>
+    <div class="reclaim-safe-grid">
+      <div class="metrics-card reclaim-safe-card">
+        <div class="reclaim-safe-head">Rebuildable files</div>
+        <div class="reclaim-safe-text">Build output (node_modules, target, .venv and the like) and tool caches the last scan found.
+          They are rebuilt or downloaded again on next use. Anything a running worker, a git repo or an open file owns is refused by the server.</div>
+        <button class="btn primary" id="reclaim-clean-safe" ${safeN ? '' : 'disabled'} onclick="_reclaimCleanSafe()">${safeN ? `Clean ${safeN} item${safeN === 1 ? '' : 's'} (${_fmtBytes(safeBytes)})` : 'Nothing rebuildable found'}</button>
+      </div>
+      <div class="metrics-card reclaim-safe-card">
+        <div class="reclaim-safe-head">Host cleanup</div>
+        <div class="reclaim-safe-text">The hourly host check, run now: idle build targets, old session scratch, leftover test processes,
+          VM build cache and the like. It only removes what has been idle past its threshold and reports everything else.</div>
+        <button class="btn" id="reclaim-host-cleanup" onclick="_reclaimRunHostCleanup()">Run host cleanup now</button>
+      </div>
+    </div>
+    <div id="reclaim-host-result">${_reclaimHostResult ? _reclaimHostResult : ''}</div>`;
+  h += '</div>';
+  return h;
+}
+
+async function _reclaimPurgeAllStaged() {
+  const batches = (_reclaimQuarantine?.batches || []).filter(b => b.status === 'staged' && b.item_count > 0);
+  const total = batches.reduce((a, b) => a + (b.bytes || 0), 0);
+  if (!batches.length) { showToast('Nothing is staged'); return; }
+  if (!confirm('PERMANENTLY DELETE every quarantined file?\n\n' + batches.length + ' batch(es), ' + _fmtBytes(total)
+    + '\n\nThis cannot be undone. Use "Review or restore" first if anything in there is still needed.')) return;
+  if (prompt('Type PURGE to confirm permanent deletion:') !== 'PURGE') { showToast('Cancelled'); return; }
+  let freed = 0, failed = 0;
+  for (const b of batches) {
+    const r = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(b.id)
+      + '?confirm=' + encodeURIComponent(b.id), { method: 'DELETE' }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    if (!r || !r.ok) failed++; else freed += d.actually_freed || 0;
+  }
+  showToast('Deleted ' + (batches.length - failed) + ' batch(es) · free space +' + _fmtBytes(freed)
+    + (failed ? ' · ' + failed + ' failed' : ''));
+  _reclaimLoad();
+}
+
+// Quarantine the rebuildable groups, then purge that one batch. Rebuildable
+// means a later build or download recreates it, so one confirmation is enough;
+// the server still refuses anything owned (reclaim_owner.rs) and says why.
+async function _reclaimCleanSafe() {
+  const safe = _reclaimRecs(_reclaimScan?.findings).safe;
+  const paths = [...new Set(safe.flatMap(r => r.paths))].filter(p => !_reclaimIsProtectedPath(p));
+  if (!paths.length) { showToast('Nothing rebuildable to clean'); return; }
+  const est = safe.reduce((a, r) => a + (r.bytes || 0), 0);
+  if (!confirm('Delete ' + paths.length + ' rebuildable item(s), about ' + _fmtBytes(est) + '?\n\n'
+    + 'Build output and caches only; they come back on the next build or download.\n\n'
+    + safe.slice(0, 10).map(r => '· ' + r.label + ' (' + _fmtBytes(r.bytes) + ')').join('\n'))) return;
+  const btn = document.getElementById('reclaim-clean-safe');
+  if (btn) { btn.disabled = true; btn.textContent = 'Cleaning…'; }
+  const r = await fetch(API + '/api/reclaim/quarantine', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths, scan_id: _reclaimScan?.scan?.id }),
+  }).catch(() => null);
+  const d = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok || !d.batch_id) {
+    showToast('Could not clean: ' + (d.error || 'request failed'));
+    _reclaimLoad();
+    return;
+  }
+  let freed = 0;
+  if ((d.moved || 0) > 0) {
+    const pr = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(d.batch_id)
+      + '?confirm=' + encodeURIComponent(d.batch_id), { method: 'DELETE' }).catch(() => null);
+    const pd = pr ? await pr.json().catch(() => ({})) : {};
+    freed = pd.actually_freed || 0;
+  }
+  const refused = (d.refused || []).length;
+  showToast('Cleaned ' + (d.moved || 0) + ' item(s) · free space +' + _fmtBytes(freed)
+    + (refused ? ' · ' + refused + ' kept (owned or gone)' : ''));
+  _reclaimLoad();
+}
+
+let _reclaimHostResult = '';
+async function _reclaimRunHostCleanup() {
+  const btn = document.getElementById('reclaim-host-cleanup');
+  const setResult = (html) => {
+    _reclaimHostResult = html;
+    const el = document.getElementById('reclaim-host-result');
+    if (el) el.innerHTML = html;
+  };
+  const scheds = await fetch(API + '/api/schedules').then(r => r.json()).catch(() => null);
+  const list = Array.isArray(scheds) ? scheds : (scheds?.schedules || []);
+  const s = list.find(x => /mac-cleanup-tick\.sh/.test(x.command || '') && !x.deleted);
+  if (!s) { setResult('<div class="reclaim-host-note">No host cleanup schedule is installed on this machine.</div>'); return; }
+  const before = await fetch(API + '/api/schedules/runs?limit=200').then(r => r.json()).catch(() => []);
+  const prevIds = new Set((Array.isArray(before) ? before : before.runs || []).filter(x => x.schedule_id === s.id).map(x => x.id));
+  const r = await fetch(API + '/api/schedules/' + encodeURIComponent(s.id) + '/run', { method: 'POST' }).catch(() => null);
+  if (!r || !r.ok) { setResult('<div class="reclaim-host-note">Could not start the host cleanup (' + esc(s.id) + ').</div>'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Running… (a few minutes)'; }
+  setResult('<div class="reclaim-host-note">Host cleanup is running (' + esc(s.id) + '). The result appears here when it finishes.</div>');
+  const t0 = Date.now();
+  while (Date.now() - t0 < 15 * 60 * 1000) {
+    await new Promise(res => setTimeout(res, 10000));
+    const runs = await fetch(API + '/api/schedules/runs?limit=200').then(r => r.json()).catch(() => null);
+    const mine = (Array.isArray(runs) ? runs : runs?.runs || []).filter(x => x.schedule_id === s.id && !prevIds.has(x.id));
+    if (!mine.length) continue;
+    const run = mine[0];
+    const text = String(run.output_tail || run.note || '').split('\n').filter(l => /removed|reaped|freed|pruned|reclaimed|stopped|done /i.test(l)).slice(-14).join('\n');
+    setResult('<div class="reclaim-host-note">Host cleanup finished, exit ' + esc(String(run.exit_code ?? '?')) + '.</div>'
+      + (text ? '<pre class="reclaim-host-out">' + esc(text) + '</pre>' : ''));
+    if (btn) { btn.disabled = false; btn.textContent = 'Run host cleanup now'; }
+    _reclaimLoad();
+    return;
+  }
+  setResult('<div class="reclaim-host-note">Still running after 15 minutes; see Scheduler → ' + esc(s.id) + ' for its log.</div>');
+  if (btn) { btn.disabled = false; btn.textContent = 'Run host cleanup now'; }
 }
 
 // ── Torrents tab ─────────────────────────────────────────────────────────────

@@ -499,12 +499,15 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | div | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Read aloud latest | `_readLatestMessage` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Stop scan | `_reclaimCancelScan` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | ${safeN ? Clean ${safeN} item${safeN === 1 ?  :  | `_reclaimCleanSafe` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | g | `_reclaimLoadTree` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ↑ up | `_reclaimLoadTree` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Purge | `_reclaimPurge` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Delete quarantined files (${_fmtBytes(staged)}) | `_reclaimPurgeAllStaged` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Purge ${old.length} batch${old.length === 1 ?  : | `_reclaimPurgeOld` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Move to quarantine… | `_reclaimQuarantineSelected` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Restore | `_reclaimRestore` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Run host cleanup now | `_reclaimRunHostCleanup` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${scan ? Rescan : Run scan} | `_reclaimStartScan` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Re-include | `_reclaimUnskip` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Transcribe again | `_recorderRetranscribe` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
@@ -1037,6 +1040,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Drag to move | `` | onclick |
 | app.js | Open | `` | onclick |
 | app.js | Resend to ${esc(_target \|\| session)} | `` | onclick |
+| app.js | Review or restore | `` | onclick |
 | app.js | Select  | `` | onclick |
 | app.js | Select row | `` | onclick |
 | app.js | View on Google Maps ↗ | `` | onclick |
