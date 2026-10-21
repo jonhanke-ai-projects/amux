@@ -9633,7 +9633,9 @@ function _embedFitZoom() {
   // The peek side panel (?peekTab=messages|chat) shows a panel, not a scaled
   // terminal tile: the chat renders into this same body and came out at
   // tile zoom, unreadably small (Ethan, 2026-10-09, side-panel check).
-  if (new URLSearchParams(location.search).get('peekTab')) { body.style.zoom = '1'; return; }
+  // A split-pane TERMINAL is still a terminal: it keeps the fit zoom below.
+  const embedTab = new URLSearchParams(location.search).get('peekTab');
+  if (embedTab && embedTab !== 'terminal') { body.style.zoom = '1'; return; }
   // widest source line (textContent keeps source newlines, unaffected by wrap)
   let cols = 0;
   for (const l of (body.textContent || '').split('\n')) if (l.length > cols) cols = l.length;
@@ -16542,6 +16544,10 @@ function _savePeekState() {
 // Messages and Chat are a real peek of the same worker in an iframe
 // (?peekEmbed=<name>&peekTab=<tab>, the Workspace tile path), so each works
 // exactly as its tab does with no shared state with the terminal beside it.
+// Terminal too (Ethan, 2026-10-21: "add terminal as an option here, so i can
+// have terminal in both sides"): the same embedded peek, opened on its
+// terminal tab, so a second terminal of the worker sits beside the first.
+const _PEEK_SPLIT_VIEWS = ['files', 'messages', 'chat', 'terminal'];
 let _peekSplitView = localStorage.getItem('amux_peek_split_view') || 'files';
 // Place a position:fixed element so its box lands at viewport (x, y) as
 // getBoundingClientRect reports it. On the Mac app the Split menu opened ~500px
@@ -16568,7 +16574,7 @@ function _peekSplitMenu(btn) {
   _peekSplitMenuClose();
   const m = document.createElement('div');
   m.id = 'psp-menu'; m.className = 'psp-menu'; m.setAttribute('role', 'menu');
-  for (const [v, label] of [['files', 'Files'], ['messages', 'Messages'], ['chat', 'Chat']]) {
+  for (const [v, label] of [['files', 'Files'], ['messages', 'Messages'], ['chat', 'Chat'], ['terminal', 'Terminal']]) {
     const b = document.createElement('button');
     b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label;
     b.onclick = () => { _peekSplitMenuClose(); _peekSplitOpen(v); };
@@ -16588,7 +16594,7 @@ function _peekSplitOpen(view) {
   _peekSplitShow(view);
 }
 function _peekSplitShow(view) {
-  if (!['files', 'messages', 'chat'].includes(view)) view = 'files';
+  if (!_PEEK_SPLIT_VIEWS.includes(view)) view = 'files';
   _peekSplitView = view;
   try { localStorage.setItem('amux_peek_split_view', view); } catch (e) {}
   _peekViewRemember();
@@ -16698,7 +16704,7 @@ function _peekViewApply(name) {
     const wrap = document.getElementById('peek-split-wrap');
     const wantSplit = !!(v && v.split) && window.innerWidth > 600;
     if (wantSplit) {
-      if (['files', 'messages', 'chat'].includes(v.splitView)) _peekSplitView = v.splitView;
+      if (_PEEK_SPLIT_VIEWS.includes(v.splitView)) _peekSplitView = v.splitView;
       _peekSplitSetActive(true);
       _peekSplitShow(_peekSplitView);
     } else if (wrap && wrap.classList.contains('split-active')) {

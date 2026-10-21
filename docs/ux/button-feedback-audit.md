@@ -1299,6 +1299,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Chat | `_peekSplitShow` | onclick |
 | index.html | Files | `_peekSplitShow` | onclick |
 | index.html | Messages | `_peekSplitShow` | onclick |
+| index.html | Terminal | `_peekSplitShow` | onclick |
 | app.js | + | `_peekToggleInherited` | onclick |
 | index.html | peek-plan-hdr | `_peekTogglePlan` | onclick |
 | app.js | + | `_peekToggleTool` | onclick |

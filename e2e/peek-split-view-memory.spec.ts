@@ -64,17 +64,28 @@ const NO_NESTING = { panelMode: true, visibleTabBars: 0, splitPanes: 0, splitHan
 test.describe('desktop split', () => {
   test.skip(({ viewport }) => !!viewport && viewport.width <= 600, 'a phone has no split: the button opens Files');
 
-  for (const view of ['chat', 'messages'] as const) {
+  // Terminal (Ethan, 2026-10-21: "add terminal as an option here, so i can
+  // have terminal in both sides").
+  const LABEL = { chat: 'Chat', messages: 'Messages', terminal: 'Terminal' } as const;
+  for (const view of ['chat', 'messages', 'terminal'] as const) {
     test(`Split > ${view} renders one panel, never a nested worker view`, async ({ page }) => {
       await boot(page);
       await open(page, A);
       await page.locator('#peek-split-toggle').click();
-      await page.locator('#psp-menu button', { hasText: view === 'chat' ? 'Chat' : 'Messages' }).click();
+      await page.locator('#psp-menu button', { hasText: LABEL[view] }).click();
       await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
       await expect(page.locator('#psp-frame')).toHaveAttribute('src', new RegExp('peekTab=' + view + '&peekSplitChild=1'));
       const frame = page.frameLocator('#psp-frame');
       expect(await frameState(frame)).toEqual(NO_NESTING);
       expect(await nesting(page)).toEqual({ tabBars: 1, splitWraps: 1 });
+      // The pane's own tab row marks the chosen view, Terminal included.
+      await expect(page.locator(`.psp-opt[data-psp="${view}"]`)).toHaveClass(/active/);
+      if (view === 'terminal') {
+        // The second side IS a terminal: its panel shows and it can be typed into.
+        await expect(frame.locator('#peek-terminal-panel')).toBeVisible();
+        await expect(frame.locator('#peek-cmd-input')).toBeVisible();
+        expect(await frame.locator('body').evaluate(() => (window as any).eval('_peekTab'))).toBe('terminal');
+      }
 
       // After a re-render cycle the answer is the same.
       await page.evaluate(() => (window as any).fetchSessions());
