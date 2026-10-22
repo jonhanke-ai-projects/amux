@@ -28988,6 +28988,20 @@ pub(crate) fn no_reply_path_stamp(origin: &str, is_isolated: bool) -> Option<Str
     ))
 }
 
+/// How the recipient replies to a paired peer, or None. Given when the two name
+/// each other in CC_PEERS and either is isolated: an isolated recipient has no
+/// AMUX_URL or CLI identity, so the line is the whole request, naming the
+/// recipient as the sender. The flags are parameters for the same reason as
+/// [`no_reply_path_stamp`].
+pub(crate) fn paired_reply_path(origin: &str, name: &str, paired_and_isolated: bool, port: u16) -> Option<String> {
+    if origin.is_empty() || origin == name || !paired_and_isolated {
+        return None;
+    }
+    Some(format!(
+        "\n\n[reply path: you and `{origin}` are paired peers (CC_PEERS on both), so a reply is delivered even though one of you is isolated. Reply with:\n  curl -sk -X POST -H 'Content-Type: application/json' -H 'X-Amux-Session: {name}' -d '{{\"text\":\"<your reply>\"}}' https://localhost:{port}/api/sessions/{origin}/send]"
+    ))
+}
+
 /// A lane's groups, from `CC_TAGS` in its env file.
 pub(crate) fn lane_groups(lane: &str) -> std::collections::BTreeSet<String> {
     parse_env(lane)
@@ -29918,8 +29932,24 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     // fix a reply problem. What was missing is that the recipient could not SEE
     // the asymmetry, so it is put where they read it (ethos rule 4: the fact
     // belongs beside the answer, not in a payload nobody opens).
-    if let Some(stamp) = no_reply_path_stamp(&send_origin, session_is_isolated(&send_origin)) {
+    //
+    // PAIRED PEERS DO HAVE A PATH BACK (Ethan, 2026-10-22: "this should be
+    // solved even if isolated, peers should override"). tubescience-parity and
+    // mxp-gs12 are both isolated and name each other in CC_PEERS, so a reply is
+    // delivered (send_origin_for), yet every message carried "A peer send back
+    // to it is REFUSED ... do not write a reply you cannot deliver", and
+    // mxp-gs12 obeyed it for a day. A paired message says how to reply
+    // instead. An isolated recipient has no AMUX_URL or CLI identity, so the
+    // line is the full request.
+    let origin_isolated = session_is_isolated(&send_origin);
+    let paired = !send_origin.is_empty() && send_origin != name && bilateral_peers(&send_origin, name);
+    if let Some(stamp) = no_reply_path_stamp(&send_origin, origin_isolated && !paired) {
         text.push_str(&stamp);
+    }
+    if let Some(line) = paired_reply_path(&send_origin, name, paired && (origin_isolated || session_is_isolated(name)), crate::config::canonical_port()) {
+        tracing::info!(origin = %send_origin, target = %name, measured = true, n_considered = 1, verdict = "paired_reply_path_stamped",
+            "a paired peer's message carries how to reply to it");
+        text.push_str(&line);
     }
     // An approval of a card ask carries the owner's notes on that ask (gs12
     // review finding 2). Before the dedupe gate and history, so what is
@@ -47265,6 +47295,30 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
     // Ethan, 2026-10-22: peers set from the Configurations tab. One side alone
     // opens nothing (bilateral_peers), so the PATCH writes both sides, and
     // removing a peer takes this worker off that peer's list too.
+    // Ethan, 2026-10-22: tubescience-parity and mxp-gs12, both isolated and
+    // paired, were told "a peer send back to it is REFUSED" on every message.
+    #[test]
+    fn a_paired_isolated_peer_gets_a_reply_path_not_a_refusal() {
+        // Isolated and paired: no refusal footer, a reply path naming the
+        // recipient as sender and the origin as target.
+        assert!(no_reply_path_stamp("tubescience-parity", true && !true).is_none());
+        let line = paired_reply_path("tubescience-parity", "mxp-gs12", true, 8824).unwrap();
+        assert!(line.contains("paired peers"), "{line}");
+        assert!(line.contains("X-Amux-Session: mxp-gs12"), "{line}");
+        assert!(line.contains("https://localhost:8824/api/sessions/tubescience-parity/send"), "{line}");
+        assert!(!line.contains("REFUSED"), "{line}");
+        // Isolated and not paired: the refusal footer stands, no reply path.
+        assert!(no_reply_path_stamp("tubescience-parity", true).is_some());
+        assert!(paired_reply_path("tubescience-parity", "mxp-gs12", false, 8824).is_none());
+        // Nobody isolated, or a self-send: nothing.
+        assert!(paired_reply_path("", "mxp-gs12", true, 8824).is_none());
+        assert!(paired_reply_path("a", "a", true, 8824).is_none());
+        // The send path asks pairing before stamping a refusal.
+        let src = include_str!("session_verbs.rs");
+        assert!(src.contains("no_reply_path_stamp(&send_origin, origin_isolated && !paired)"), "the refusal must yield to a pairing");
+        assert!(src.contains("if let Some(line) = paired_reply_path(&send_origin, name,"), "a paired message must carry its reply path");
+    }
+
     #[tokio::test]
     async fn peers_patch_pairs_both_sides_and_unpairs_both() {
         let home = tempfile::tempdir().unwrap();
