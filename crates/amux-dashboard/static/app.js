@@ -18532,7 +18532,11 @@ let _peekUnechoedReported = '';
 function _peekUnechoedHtml(output, historyRaw) {
   if (!peekSession) return '';
   const canon = t => String(t || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '');
-  const squash = t => t.replace(/\s+/g, '');
+  // Letters and digits only. The recorded text and the drawn prompt differ in
+  // markup: Ethan, 2026-10-22 11:47, mixpeek-ops-server printed "can you tell
+  // @mixpeek-cicd" as its prompt while the record read "can you tell
+  // `@mixpeek-cicd`", so a printed message was listed as taken without one.
+  const squash = t => String(t || '').replace(/[^\p{L}\p{N}]+/gu, '');
   const frame = squash(_stripAnsi((historyRaw || '') + '\n' + (output || '')));
   if (!frame) return '';
   const rows = [];
