@@ -25420,7 +25420,12 @@ function _mergeUnechoed(serverRows, session) {
   // Project steering adds a display timestamp before the server records the
   // message. The optimistic local row keeps the original text; exact-text
   // comparison rendered one human send twice, once falsely labeled "direct?".
-  const canonical = text => String(text || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '').trim();
+  // The server records a message with its attachments appended as @/path
+  // mentions; the local row keeps only what was typed. Compared as typed text,
+  // MSG-92727 (two screenshots) never matched its echo and showed a second,
+  // ghost "queued" row beside the delivered one (2026-10-22).
+  const canonical = text => String(text || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '')
+    .replace(/(?:\s+@\/\S+)+\s*$/, '').trim();
   const echoed = local => serverRows.some(row =>
     (row.session || '') === (local.session || '')
     && canonical(row.text) === canonical(local.text)
