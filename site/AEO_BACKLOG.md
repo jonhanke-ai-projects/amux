@@ -490,3 +490,8 @@ AI agent server sizing guide + EXP-069 | /guides/ai-agent-server-sizing/
 | Docker Sandboxes (sbx) in the sandboxing guide | /guides/ai-agent-sandboxing/ | M | todo, after EXP-142 scores on 2026-10-27 (do not edit the page mid-test); verify from docs.docker.com before adding a row |
 | /blog/ai-coding-tools-pricing-2026/ pricing refresh | /blog/ | M | shipped 2026-10-21 (short answer, amux Cloud row, Claude Code subscription fact, FAQ); Windsurf bullet ($15/$30) still disagrees with its card ($20/$200), verify on windsurf.com before the next edit |
 | concierge goal measurement | site.js | H | shipped 2026-10-21 (Schedule a meeting sends cta_click goal=concierge) |
+| best app to control Claude Code from phone / run coding agents from your phone (roundup) | /guides/best-phone-apps-for-coding-agents-2026/ | H | shipped 2026-10-22 (299507601): amux, Claude Code Remote Control, Codex in ChatGPT, Happy, Paseo, HAPI, SSH+tmux; Cloud blocks with source=best-phone-apps-for-coding-agents-2026 |
+| background coding agents compared (Cloud CTA) | /guides/background-agents-compared/ | H | enriched 2026-10-22 (24aee8f87): short answer, amux Cloud row and card, Cloud blocks; EXP-146 scores 2026-10-29 (baseline 0/32 GH, 0/32 /start/ over 30 days) |
+| amux vs Happy (Happy Coder alternative) | /compare/amux-vs-happy/ | H | todo: Happy has ~24k stars and ranks for "Claude Code mobile app"; compare shape converts |
+| amux vs Paseo | /compare/amux-vs-paseo/ | M | todo |
+| Cloud block on /glossary/agent-multiplexer/ (27.6% GH, 0% /start/ over 30 days, no Cloud block) | /glossary/agent-multiplexer/ | H | todo: next Job 2 candidate |

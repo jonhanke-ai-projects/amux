@@ -1,5 +1,92 @@
 [
   {
+    "hash": "a7e6c828f1ee39a3cf345ac31f6ef5d5f6f32217",
+    "short": "a7e6c828",
+    "title": "A lost message gets sent again",
+    "date": "2026-10-22",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "reliability"
+    ],
+    "description": "If a message you queued for a busy worker never reaches its transcript, amux notices and sends it once more. It used to count an empty message box as proof of delivery. A message still missing after the retry is logged as lost, never as delivered."
+  },
+  {
+    "hash": "6cda247fe740107e99d39732bf7270030a590405",
+    "short": "6cda247f",
+    "title": "Pages: small web apps run by a worker",
+    "date": "2026-10-21",
+    "type": "feat",
+    "tags": [
+      "pages",
+      "apps",
+      "workers"
+    ],
+    "description": "The new Pages tab hosts HTML apps at /pages/<name>, each with its own SQLite file and a worker that keeps it up to date. The page runs in a sandboxed frame and can only read and write its own database, ask its worker a question, or open a file. It respects your server's sign-in, Cloud included."
+  },
+  {
+    "hash": "e9a6cf4a7050556b418e9605490af39e83f40de2",
+    "short": "e9a6cf4a",
+    "title": "Snap windows and torn-off tabs into place on the Mac",
+    "date": "2026-10-21",
+    "type": "feat",
+    "tags": [
+      "mac app",
+      "windows"
+    ],
+    "description": "In the Mac app, drag a window or a torn-off tab to a screen edge to snap it: the sides give half the screen, corners a quarter, the top fills it, and the bottom gives a third. A preview shows where it will land. Saved workspaces now keep each window's tab names."
+  },
+  {
+    "hash": "28f73d443ec5e973e18ed53c9fa79ff4cc6889d4",
+    "short": "28f73d44",
+    "title": "Mac windows come back where you left them",
+    "date": "2026-10-21",
+    "type": "feat",
+    "tags": [
+      "mac app",
+      "workspaces"
+    ],
+    "description": "The Mac app remembers each window's display, size, macOS Desktop, tabs and what it was showing, then restores them after a quit, crash, reboot or monitor change. Arrange workers across several Desktops once and keep that layout."
+  },
+  {
+    "hash": "5e6f4842a2df28ac6288dd4b771c8c7264d6e469",
+    "short": "5e6f4842",
+    "title": "A terminal on both sides of split view",
+    "date": "2026-10-21",
+    "type": "feat",
+    "tags": [
+      "terminal",
+      "split view",
+      "dashboard"
+    ],
+    "description": "Split view now offers Terminal beside Files, Messages and Chat, so you can watch two terminals side by side. Each has its own message box, and the choice is remembered per worker."
+  },
+  {
+    "hash": "743b0bb417062f60565b0da05167a2a5e8297161",
+    "short": "743b0bb4",
+    "title": "Copy and paste in the terminal just work in the Mac app",
+    "date": "2026-10-21",
+    "type": "fix",
+    "tags": [
+      "terminal",
+      "mac app",
+      "clipboard"
+    ],
+    "description": "Cmd+V in a worker's terminal now pastes into the message box without asking for clipboard permission, and Cmd+C copies a selection. Before, the Mac app blocked the paste and showed an error."
+  },
+  {
+    "hash": "b975b9fffcbd8cf80be2e4d8d75268a1e69bc86b",
+    "short": "b975b9ff",
+    "title": "Queued messages no longer look delivered",
+    "date": "2026-10-21",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "dashboard"
+    ],
+    "description": "A message still waiting in a worker's queue stays labeled as queued until the worker takes it. Switches such as the Board toggle in worker details now look and act like real on/off switches."
+  },
+  {
     "hash": "2ab7254c3e754e8ad1bd0e89015fdac36e82a0e6",
     "short": "2ab7254c",
     "title": "Mermaid diagrams draw wherever markdown shows",
