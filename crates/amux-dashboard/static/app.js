@@ -18485,7 +18485,10 @@ function _draftEchoesSteering(input) {
 }
 // Only the current frame has a composer. Its ruled input box is terminal UI,
 // not a delivered message, even when it contains a collapsed paste or a stamp.
-function _peekLiveHtml(raw) {
+// `taken` is the mid-turn messages block (_peekUnechoedHtml). It goes ABOVE the
+// input box, where Claude Code prints a prompt it took, and never under the
+// footer: drawn there it read as an unsent draft (Ethan, 2026-10-22 16:41).
+function _peekLiveHtml(raw, taken = '') {
   const lines = raw.split('\n');
   const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
   const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
@@ -18499,11 +18502,11 @@ function _peekLiveHtml(raw) {
     if (cut < lines.length) _peekTraceFrame('split-composer', 'input box kept as terminal UI, not a message');
     const head = cut > 0 ? _peekRun('thin', lines.slice(0, cut).join('\n')) : '';
     const tail = cut < lines.length ? _peekRun('thin-composer', lines.slice(cut).join('\n')) : '';
-    return head + (head && tail ? '\n' : '') + tail;
+    return head + taken + (head && tail ? '\n' : '') + tail;
   }
   // Claude Code's input box: ❯ between two rules, then its ⏵/shift+tab footer.
   // Other providers' composers are recognised inside tag-prompts.
-  if (_peekPipelines(_peekProviderNow()).composer !== 'claude') return _peekHtml(raw);
+  if (_peekPipelines(_peekProviderNow()).composer !== 'claude') return _peekHtml(raw) + taken;
   for (let i = plain.length - 1; i > 0; i--) {
     if (!/^\s*❯(?:\s|$)/.test(plain[i]) || !rule(plain[i - 1])) continue;
     const end = plain.findIndex((line, n) => n > i && rule(line));
@@ -18520,10 +18523,10 @@ function _peekLiveHtml(raw) {
     if (showDraft) _peekTraceFrame('show-draft', input.length + ' characters typed, not sent');
     else if (input) _peekTraceFrame('hide-steering-echo', 'matches a queued Steering message');
     const draft = showDraft ? '<div class="peek-queued-msg"><span class="peek-queued-prompt">❯</span> ' + esc(input) + '</div>' : '';
-    return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
+    return _peekHtml(lines.slice(0, i - 1).join('\n')) + taken + draft
       + '<div class="peek-worker-footer">' + _peekRun('footer', lines.slice(end + 1).join('\n')) + '</div>';
   }
-  return _peekHtml(raw);
+  return _peekHtml(raw) + taken;
 }
 
 // The MARKERS amux stamps on everything it injects into a pane. Structural, not
@@ -18627,11 +18630,12 @@ let _peekKindHintsFor = '';
 // mid-turn as input to the running turn and never prints a ❯ prompt for it,
 // so the peek showed nothing although the ledger said delivered and the
 // worker answered it (Ethan, 2026-10-20: amux-helper, MSG-92352). Anchor on
-// the OLDEST recent ledger row the terminal does show; every newer row it
-// does not show was taken mid-turn. Rows older than the anchor may simply
-// have scrolled off, and with no anchor nothing is claimed. They are drawn
-// under the live frame as messages, so search, message navigation and the
-// kind colours treat them like any prompt.
+// the NEWEST recent ledger row the terminal does show; every newer row it
+// does not show was taken by the turn that prompt started. An older unprinted
+// row belonged to an earlier turn and is not listed (Ethan, 2026-10-22 16:41:
+// they piled up under later prompts, out of order). With no anchor nothing is
+// claimed. They are drawn as ❯ prompts above the input box, so search, message
+// navigation and the kind colours treat them like any prompt.
 const _PEEK_UNECHOED_GRACE_MS = 8000;   // a prompt sent at idle takes a moment to draw
 let _peekUnechoedReported = '';
 function _peekUnechoedHtml(output, historyRaw) {
@@ -18676,7 +18680,8 @@ function _peekUnechoedHtml(output, historyRaw) {
     if (row.text.length > 1000 || row.text.split('\n').length > 12) continue;
     recent.push({ ...row, shown: frame.includes(key) });
   }
-  const anchor = recent.findIndex(r => r.shown);
+  let anchor = -1;
+  for (let i = recent.length - 1; i >= 0; i--) if (recent[i].shown) { anchor = i; break; }
   if (anchor < 0) return '';
   const out = recent.slice(anchor + 1).filter(r => !r.shown && now - r.ts >= _PEEK_UNECHOED_GRACE_MS).slice(-5);
   if (!out.length) return '';
@@ -18686,10 +18691,10 @@ function _peekUnechoedHtml(output, historyRaw) {
     try { window._clientDebug && window._clientDebug('peek-unechoed-messages', { session: peekSession, shown: out.length,
       verdict: 'delivered_message_not_in_terminal', still_queued: held, measured: true, n_considered: rows.length }); } catch (_) {}
   }
-  return '<div class="peek-unechoed"><div class="peek-unechoed-head">Delivered while the worker was busy. Claude Code took '
-    + (out.length === 1 ? 'it' : 'them') + ' into the running turn without printing a prompt:</div>'
-    + out.map(r => '<div class="peek-unechoed-row"><span class="peek-prompt" data-msg-kind="unknown">' + esc(r.text)
-      + '</span><span class="peek-unechoed-time">' + esc(new Date(r.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
+  return '<div class="peek-unechoed">'
+    + out.map(r => '<div class="peek-unechoed-row"><span class="peek-prompt" data-msg-kind="unknown">❯ ' + esc(r.text)
+      + '</span><span class="peek-unechoed-time" title="Delivered while the worker was busy: Claude Code took it into the running turn without printing it">taken mid-turn · '
+      + esc(new Date(r.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
       + '</span></div>').join('') + '</div>';
 }
 async function _peekLoadKindHints(sess) {
@@ -19705,7 +19710,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // Prepare both regions before committing the raw-frame dedupe keys. A
     // failed conversion must remain retryable just like a failed body read.
     _peekTraceRegion = 'live';
-    const newHTML = _peekLiveHtml(output) + _peekUnechoedHtml(output, histRaw === null ? _peekHistoryRaw : histRaw);
+    const newHTML = _peekLiveHtml(output, _peekUnechoedHtml(output, histRaw === null ? _peekHistoryRaw : histRaw));
     _peekTraceRegion = 'history';
     let histChanged = false;
     if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once

@@ -62,3 +62,41 @@ test('a printed prompt whose record differs only in markup is not listed as unpr
   await expect(banner).toContainText(unprinted, {timeout: 15000});
   await expect(banner).not.toContainText('can you tell');
 });
+
+// Ethan, 2026-10-22 16:41, "this weirdness is still happening": the block sat
+// under the input box and the status line, so a delivered message read as an
+// unsent draft, and it kept listing a message from an earlier turn under a
+// newer printed prompt. It is drawn as a ❯ prompt above the input box, and
+// only for the turn the newest printed prompt started.
+test('a message taken mid-turn is drawn above the input box, for the current turn only', async ({page}) => {
+  const now = Date.now();
+  const earlier = 'rename the export button please';
+  const taken = 'i want to drag this up and down';
+  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({json: [{
+    name: 'midw', running: true, status: 'active', dir: '/tmp', session_created: Math.floor(now / 1000) - 3600, steering: [],
+  }]}));
+  await page.route(/\/api\/history(?:\?.*)?$/, r => r.fulfill({json: [
+    {id: 4, session: 'midw', type: 'user', kind: 'human', text: taken, ts: now - 60_000, delivery: 'direct'},
+    {id: 3, session: 'midw', type: 'user', kind: 'human', text: 'now fix the header grip', ts: now - 300_000, delivery: 'direct'},
+    {id: 2, session: 'midw', type: 'user', kind: 'human', text: earlier, ts: now - 500_000, delivery: 'direct'},
+    {id: 1, session: 'midw', type: 'user', kind: 'human', text: 'start the split panes', ts: now - 900_000, delivery: 'direct'},
+  ]}));
+  const rule = '─'.repeat(60);
+  await page.route(/\/api\/sessions\/midw\/peek\?/, r => r.fulfill({json: {
+    name: 'midw', history: '',
+    live: `❯ start the split panes\n\n⏺ Done.\n\n❯ now fix the header grip\n\n⏺ Working on it\n\n✻ Booping… (1m 39s)\n\n${rule}\n❯ \n${rule}\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n`,
+  }}));
+  await page.route('**/api/sessions/midw/subagents', r => r.fulfill({json: {session: 'midw', subagents: []}}));
+  await page.goto('/');
+  await page.evaluate(() => (window as any).openPeek('midw'));
+  const block = page.locator('#peek-body .peek-unechoed');
+  await expect(block).toContainText(taken, {timeout: 15000});
+  await expect(block).toContainText('taken mid-turn');
+  await expect(block).not.toContainText(earlier);
+  // Above the input box: the block comes before the worker footer in the page.
+  const order = await page.evaluate(() => {
+    const b = document.querySelector('#peek-body .peek-unechoed'), f = document.querySelector('#peek-body .peek-worker-footer');
+    return b && f ? !!(b.compareDocumentPosition(f) & Node.DOCUMENT_POSITION_FOLLOWING) : null;
+  });
+  expect(order).toBe(true);
+});
