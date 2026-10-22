@@ -1528,6 +1528,45 @@ fn days_in_month(y: i32, mo: u32) -> Option<u32> {
 /// `subprocess.run(..., timeout=600)`.
 pub const SHELL_TIMEOUT_S: u64 = 600;
 
+/// `/bin/bash -o pipefail -c <cmd>` in a process group of its own, so a run
+/// that times out can be stopped whole. `kill_on_drop` alone kills only this
+/// bash: SCHED-783's `bash "$R" | tail -60` kept running after its 600s
+/// timeout (2026-10-22 04:00), finished at 04:15 and quarantined a file under
+/// a run already reported failed.
+fn shell_schedule_command(cmd: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("/bin/bash");
+    // A check piped into tail must report the check's failure.
+    command.args(["-o", "pipefail", "-c"]).arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
+    command.process_group(0);
+    command
+}
+
+/// Kills a shell schedule's whole process group if the run is dropped before
+/// it finishes, which is what the timeout does. Declared after the child, so
+/// it drops first: the group is killed while its leader is still unreaped and
+/// the id cannot have been reused. A run that finishes disarms it, so a
+/// daemon a schedule starts on purpose (`nohup x &`) outlives the run as before.
+struct ShellGroupKill {
+    pgid: i32,
+    armed: bool,
+}
+impl ShellGroupKill {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+impl Drop for ShellGroupKill {
+    fn drop(&mut self) {
+        if self.armed && self.pgid > 0 {
+            // SAFETY: the group was created for this run by process_group(0)
+            // and its leader has not been reaped yet (see the type's comment).
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 /// How much of a shell run's output the run ROW keeps (AMUX-5241). The full
 /// stream is in `~/.amux/shell-runs/<schedule>/`; the row keeps enough to read a
 /// failure from `/api/schedules/runs` without opening a file.
@@ -1964,9 +2003,7 @@ impl LiveDeliverer {
                 let path = shell_run_log_path(&sid);
                 let fut = async {
                     use tokio::io::AsyncReadExt;
-                    let mut command = tokio::process::Command::new("/bin/bash");
-                    // A check piped into tail must report the check's failure.
-                    command.args(["-o", "pipefail", "-c"]).arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
+                    let mut command = shell_schedule_command(&cmd);
                     for (k, v) in vault_vals.iter() {
                         command.env(k, v);
                     }
@@ -1990,6 +2027,7 @@ impl LiveDeliverer {
                         .kill_on_drop(true)
                         .spawn()
                         .map_err(|e| format!("could not spawn /bin/bash: {e}"))?;
+                    let mut group = ShellGroupKill { pgid: child.id().map(|p| p as i32).unwrap_or(0), armed: true };
                     let log = std::sync::Arc::new(std::sync::Mutex::new(ShellRunLog::open(path.as_deref())));
                     // Both streams in ARRIVAL order, bounded, for the run row's
                     // tail (AMUX-5241). (bytes kept, bytes dropped off the front)
@@ -2057,6 +2095,7 @@ impl LiveDeliverer {
                             }
                         }
                     };
+                    group.disarm();
                     let code = status.code().unwrap_or(-1);
                     if let Ok(mut l) = log.lock() { l.write(format!("\n[exit {code}]\n").as_bytes()); }
                     let tail = combined
@@ -2081,7 +2120,9 @@ impl LiveDeliverer {
                 match tokio::time::timeout(std::time::Duration::from_secs(SHELL_TIMEOUT_S), fut).await {
                     Ok(r) => r,
                     Err(_) => {
-                        if let Some(p) = &path { ShellRunLog::open(Some(p)).write(format!("\n[timed out after {SHELL_TIMEOUT_S}s]\n").as_bytes()); }
+                        if let Some(p) = &path { ShellRunLog::open(Some(p)).write(format!("\n[timed out after {SHELL_TIMEOUT_S}s; its process group was killed]\n").as_bytes()); }
+                        tracing::warn!(schedule = %sid, verdict = "shell_schedule_timed_out_group_killed", measured = true, n_considered = 1,
+                            "shell schedule timed out after {SHELL_TIMEOUT_S}s; killed its whole process group, so nothing it started keeps running");
                         Err(format!("timed out after {SHELL_TIMEOUT_S}s"))
                     }
                 }
@@ -3237,6 +3278,60 @@ mod tests {
         }
     }
 
+
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the pid exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// Spawns a schedule shell that backgrounds a sleeper and waits on it, as
+    /// `bash "$R" | tail -60` leaves the script under the top bash. Returns
+    /// the child and the sleeper's pid.
+    async fn shell_with_grandchild() -> (tokio::process::Child, i32) {
+        use tokio::io::AsyncBufReadExt;
+        let mut child = shell_schedule_command("sleep 60 & echo $!; wait")
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        tokio::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).await.unwrap();
+        (child, line.trim().parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_schedule_shell_leads_its_own_process_group() {
+        let (child, _sleeper) = shell_with_grandchild().await;
+        let pid = child.id().unwrap() as i32;
+        // SAFETY: getpgid reads the group of a live child.
+        assert_eq!(unsafe { libc::getpgid(pid) }, pid, "the run's bash must lead a new group, or a timeout cannot stop what it started");
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_run_kills_what_its_shell_started_and_a_finished_one_does_not() {
+        // Timed out: the run future drops with the guard armed.
+        let (child, sleeper) = shell_with_grandchild().await;
+        let group = ShellGroupKill { pgid: child.id().unwrap() as i32, armed: true };
+        drop(group);
+        drop(child);
+        let mut gone = false;
+        for _ in 0..50 {
+            if !alive(sleeper) { gone = true; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(gone, "pid {sleeper}, started by a timed-out run, is still running");
+
+        // Finished: disarmed, a process the run started on purpose outlives it.
+        let (child, sleeper) = shell_with_grandchild().await;
+        let mut group = ShellGroupKill { pgid: child.id().unwrap() as i32, armed: true };
+        group.disarm();
+        drop(group);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(alive(sleeper), "a finished run must not kill a daemon it started");
+        // SAFETY: the sleeper is this test's own grandchild.
+        unsafe { libc::kill(sleeper, libc::SIGKILL); }
+        drop(child);
+    }
 
     #[tokio::test]
     async fn reserve_refusal_preserves_a_one_off_but_never_replays_uncertain_delivery() {
