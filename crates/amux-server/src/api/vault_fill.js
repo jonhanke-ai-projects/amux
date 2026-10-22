@@ -100,6 +100,19 @@
     if (DIGIT_KEYS[key]) return digits(el.value) === digits(val) && digits(val) !== '';
     return norm(el.value) === norm(val);
   };
+  // Two single-field modes for real typing (api/vault.rs, payment iframes): a
+  // field that rejects script-set values (Stripe, Braintree) is focused and
+  // cleared here, typed into by Chrome itself (Input.insertText), then read back.
+  if (v.__focus) {
+    const el = pick(F[v.__focus] || []);
+    if (!el) return { focused: false };
+    el.focus(); setNative(el, ''); fire(el, 'input');
+    return { focused: document.activeElement === el };
+  }
+  if (v.__check) {
+    const el = pick(F[v.__check.key] || []);
+    return { took: !!el && took(el, v.__check.key, String(v.__check.val)) };
+  }
   const filled = [], not_found = [], mismatched = [], used = new Set();
   const wantsSplit = !pick(F.exp);
   for (const [k, sels] of Object.entries(F)) {

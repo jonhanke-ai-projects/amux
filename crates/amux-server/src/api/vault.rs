@@ -31,8 +31,10 @@
 //! as `server.env`, where credential values already live. The amount is what the
 //! worker DECLARES; the audit line records it so a mismatch with the actual
 //! charge is findable. A card field inside a cross-origin payment iframe
-//! (Stripe Elements and similar) cannot be reached from the page and is
-//! reported back as `not_found`, never guessed at.
+//! (Stripe Elements, Braintree hosted fields) is filled by attaching to that
+//! frame over CDP (`fill_with_frames`), only for frames served by a payment
+//! provider (`PAYMENT_FRAME_HOSTS`, extended by AMUX_VAULT_PAYMENT_FRAME_HOSTS).
+//! A field still unreached is reported back as `not_found`, never guessed at.
 
 use crate::config::{amux_home, now_f64};
 use axum::extract::Path as AxPath;
@@ -626,6 +628,141 @@ pub(crate) fn fill_script(values: &Value) -> String {
     FILL_SCRIPT_JS.replacen("__AMUX_FILL_VALUES__", &values.to_string(), 1)
 }
 
+/// Hosts whose iframes may receive card fields: the payment providers'
+/// hosted-field frames. A cross-origin frame from anyone else (an ad, a chat
+/// widget, analytics) never does. AMUX_VAULT_PAYMENT_FRAME_HOSTS adds more,
+/// comma-separated.
+pub(crate) const PAYMENT_FRAME_HOSTS: [&str; 4] = ["stripe.com", "braintreegateway.com", "braintree-api.com", "adyen.com"];
+
+pub(crate) fn payment_frame_hosts() -> Vec<String> {
+    let mut v: Vec<String> = PAYMENT_FRAME_HOSTS.iter().map(|h| h.to_string()).collect();
+    if let Ok(extra) = std::env::var("AMUX_VAULT_PAYMENT_FRAME_HOSTS") {
+        v.extend(extra.split(',').map(|h| h.trim().to_ascii_lowercase()).filter(|h| !h.is_empty()));
+    }
+    v
+}
+
+/// The host of `url` when it is one of `allowed` or under one.
+pub(crate) fn payment_frame_host(url: &str, allowed: &[String]) -> Option<String> {
+    let host = url.split("://").nth(1)?.split(['/', '?', '#']).next()?;
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let host = host.rsplit_once(':').filter(|(_, p)| p.chars().all(|c| c.is_ascii_digit())).map_or(host, |(h, _)| h).to_ascii_lowercase();
+    allowed.iter().any(|a| host == *a || host.ends_with(&format!(".{a}"))).then_some(host)
+}
+
+/// The card keys a payment frame may hold. Address and email stay on the page.
+const FRAME_KEYS: [&str; 7] = ["number", "exp", "exp_month", "exp_year", "cvc", "name", "zip"];
+
+fn keys_of(v: &Value) -> Vec<String> {
+    v.as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_string)).collect()
+}
+
+/// Merge the page's fill result with each payment frame's, into the shape
+/// `fill_outcome` reads: a key filled anywhere is filled; a mismatch counts
+/// only if no frame filled that key; not_found is what the page could not find
+/// and no frame filled or mismatched.
+pub(crate) fn merge_frame_fills(top: &Value, frames: &[(String, Value)], skipped: &[String]) -> Value {
+    let mut filled = keys_of(&top["filled"]);
+    for (_, r) in frames {
+        for k in keys_of(&r["filled"]) {
+            if !filled.contains(&k) {
+                filled.push(k);
+            }
+        }
+    }
+    let mut mismatched: Vec<Value> = Vec::new();
+    for m in top["mismatched"].as_array().into_iter().flatten()
+        .chain(frames.iter().flat_map(|(_, r)| r["mismatched"].as_array().into_iter().flatten()))
+    {
+        let k = m["key"].as_str().unwrap_or("").to_string();
+        if !filled.contains(&k) && !mismatched.iter().any(|x| x["key"] == m["key"]) {
+            mismatched.push(m.clone());
+        }
+    }
+    let not_found: Vec<String> = keys_of(&top["not_found"]).into_iter()
+        .filter(|k| !filled.contains(k) && !mismatched.iter().any(|m| m["key"].as_str() == Some(k)))
+        .collect();
+    let mut out = top.clone();
+    out["filled"] = json!(filled);
+    out["mismatched"] = json!(mismatched);
+    out["not_found"] = json!(not_found);
+    out["frames"] = json!(frames.iter().map(|(h, r)| json!({"host": h, "filled": r["filled"]})).collect::<Vec<_>>());
+    out["frames_skipped"] = json!(skipped);
+    out
+}
+
+/// Fill the page, then any card field still empty inside the page's payment
+/// iframes. Each frame runs the same script; a field that rejects a value set
+/// by script is typed into by Chrome itself (Input.insertText), which is what
+/// Stripe's and Braintree's hosted fields accept.
+pub(crate) async fn fill_with_frames(
+    cdp: &mut crate::integrations::browser::CdpClient,
+    values: &Value,
+    allowed: &[String],
+) -> anyhow::Result<Value> {
+    let top = cdp.eval(&fill_script(values), 15).await?;
+    let done = keys_of(&top["filled"]);
+    let mut want = serde_json::Map::new();
+    for k in FRAME_KEYS {
+        let v = &values[k];
+        if !done.iter().any(|d| d == k || (k.starts_with("exp") && d.starts_with("exp")))
+            && v.as_str().is_some_and(|s| !s.is_empty())
+        {
+            want.insert(k.to_string(), v.clone());
+        }
+    }
+    if want.is_empty() {
+        return Ok(merge_frame_fills(&top, &[], &[]));
+    }
+    let attached = cdp.attach_frames(std::time::Duration::from_millis(600)).await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, verdict = "vault_frames_unmeasured", "could not attach to the page's iframes");
+        Vec::new()
+    });
+    let want = Value::Object(want);
+    let (mut frames, mut skipped) = (Vec::new(), Vec::new());
+    for (sid, url) in &attached {
+        let Some(host) = payment_frame_host(url, allowed) else {
+            skipped.push(url.split('/').take(3).collect::<Vec<_>>().join("/"));
+            continue;
+        };
+        let mut r = match cdp.eval_in(sid, &fill_script(&want), 15).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(host = %host, error = %e, verdict = "vault_frame_fill_failed", "payment frame did not run the fill");
+                continue;
+            }
+        };
+        // Real typing for what a script-set value did not stick in.
+        let mut still = Vec::new();
+        for m in r["mismatched"].as_array().cloned().unwrap_or_default() {
+            let key = m["key"].as_str().unwrap_or("").to_string();
+            let val = want[&key].as_str().unwrap_or("").to_string();
+            let focused = cdp.eval_in(sid, &fill_script(&json!({"__focus": key})), 10).await
+                .ok().and_then(|f| f["focused"].as_bool()).unwrap_or(false);
+            if focused {
+                let _ = cdp.call_in(Some(sid), "Input.insertText", json!({"text": val}),
+                    std::time::Duration::from_secs(10), None).await;
+            }
+            let ok = focused && cdp.eval_in(sid, &fill_script(&json!({"__check": {"key": key, "val": val}})), 10).await
+                .ok().and_then(|c| c["took"].as_bool()).unwrap_or(false);
+            if ok {
+                if let Some(f) = r["filled"].as_array_mut() {
+                    f.push(json!(key));
+                }
+            } else {
+                still.push(m);
+            }
+        }
+        r["mismatched"] = json!(still);
+        frames.push((host, r));
+    }
+    let merged = merge_frame_fills(&top, &frames, &skipped);
+    tracing::info!(attached = attached.len(), reached = frames.len(), skipped = ?skipped,
+        filled = %merged["filled"], measured = true, n_considered = attached.len(),
+        verdict = "vault_fill_frames", "filled card fields inside payment iframes (values not logged)");
+    Ok(merged)
+}
+
 /// What a fill result says about the form, read the same way by both callers.
 /// A fill that typed nothing, or wrote a field that did not keep its value, is
 /// not a filled form (GE-1121: "order form filled by the harness (fields: )"
@@ -645,7 +782,7 @@ pub(crate) fn fill_outcome(r: &Value) -> FillOutcome {
     let n_filled = filled.as_array().map_or(0, Vec::len);
     let n_bad = mismatched.as_array().map_or(0, Vec::len);
     let why = if n_filled == 0 && n_bad == 0 {
-        "no payment field on this page took a value: the form was not filled. Fields inside a cross-origin payment iframe cannot be reached; check payment_iframes and not_found".to_string()
+        "no payment field on this page took a value: the form was not filled. Payment iframes are reached only when served by a payment provider (frames, frames_skipped); check payment_iframes and not_found".to_string()
     } else if n_bad > 0 {
         let keys: Vec<&str> = mismatched.as_array().into_iter().flatten()
             .filter_map(|m| m["key"].as_str()).collect();
@@ -772,7 +909,7 @@ async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<V
     });
     let mut reached_page = true;
     let result = match super::browser::connect_session(&session, None).await {
-        Ok((_page, mut cdp)) => cdp.eval(&fill_script(&values), 15).await.map_err(|e| e.to_string()),
+        Ok((_page, mut cdp)) => fill_with_frames(&mut cdp, &values, &payment_frame_hosts()).await.map_err(|e| e.to_string()),
         Err(_) => {
             reached_page = false;
             Err(format!("no amux browser page for session '{session}': open the checkout with /api/browser/start first"))
@@ -797,14 +934,16 @@ async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<V
                     "vault card fill did not fill the form (values not logged)");
                 return err(StatusCode::UNPROCESSABLE_ENTITY, json!({"ok": false, "error": o.why,
                     "filled": o.filled, "not_found": o.not_found, "mismatched": o.mismatched,
-                    "payment_iframes": r.get("payment_iframes"), "page": r.get("url")}));
+                    "payment_iframes": r.get("payment_iframes"), "frames": r.get("frames"),
+                    "frames_skipped": r.get("frames_skipped"), "page": r.get("url")}));
             }
             tracing::info!(item = %id, session = %session, amount, merchant = %merchant,
                 measured = true, n_considered = 1, verdict = "vault_card_filled",
                 "vault card filled into the worker's page (values not logged)");
             Json(json!({"ok": true, "filled": o.filled, "not_found": o.not_found,
                 "payment_iframes": r.get("payment_iframes"),
-                "note": "values were typed into the page by amux and are not returned. A field inside a cross-origin payment iframe cannot be reached from the page and shows up in not_found."}))
+                "frames": r.get("frames"),
+                "note": "values were typed into the page by amux and are not returned. Card fields inside a payment provider's iframe are filled there (frames); anything unreached shows up in not_found."}))
                 .into_response()
         }
         Err(e) => {
@@ -1062,8 +1201,7 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
         "address": f["address"], "city": f["city"], "state": f["state"],
         "zip": f["zip"], "country": f["country"], "email": f["email"],
     });
-    let fill_result = cdp
-        .eval(&fill_script(&values), 15)
+    let fill_result = fill_with_frames(&mut cdp, &values, &payment_frame_hosts())
         .await
         .map_err(|e| e.to_string());
 
@@ -1116,7 +1254,8 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
                     "order form NOT filled by the harness; nothing was submitted (values not logged)");
                 return err(StatusCode::UNPROCESSABLE_ENTITY, json!({"ok": false, "error": o.why,
                     "filled": o.filled, "not_found": o.not_found, "mismatched": o.mismatched,
-                    "payment_iframes": r.get("payment_iframes"), "page": r.get("url"),
+                    "payment_iframes": r.get("payment_iframes"), "frames": r.get("frames"),
+                    "frames_skipped": r.get("frames_skipped"), "page": r.get("url"),
                     "submitted": false}));
             }
             tracing::info!(item = %id, session = %session, amount, merchant = %merchant,
@@ -1217,6 +1356,146 @@ pub fn routes() -> Router<super::AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payment_frames_are_only_the_providers() {
+        let a: Vec<String> = PAYMENT_FRAME_HOSTS.iter().map(|h| h.to_string()).collect();
+        let host = |u: &str| payment_frame_host(u, &a);
+        assert_eq!(host("https://js.stripe.com/v3/elements-inner-card.html#x").as_deref(), Some("js.stripe.com"));
+        assert_eq!(host("https://assets.braintreegateway.com/web/3.97/html/hosted-fields-frame.min.html").as_deref(),
+            Some("assets.braintreegateway.com"));
+        assert_eq!(host("https://checkoutshopper-live.adyen.com:443/x").as_deref(), Some("checkoutshopper-live.adyen.com"));
+        // Lookalikes and everyone else get nothing.
+        assert_eq!(host("https://js.stripe.com.evil.example/x"), None);
+        assert_eq!(host("https://evilstripe.com/x"), None);
+        assert_eq!(host("https://user@evil.example/js.stripe.com"), None);
+        assert_eq!(host("https://ads.example.com/frame"), None);
+        assert_eq!(host("about:blank"), None);
+    }
+
+    #[test]
+    fn frame_fills_merge_into_one_outcome() {
+        let top = json!({"filled": ["email"], "not_found": ["number", "exp", "cvc", "zip"], "mismatched": [], "url": "u"});
+        let frames = vec![
+            ("js.stripe.com".to_string(), json!({"filled": ["number", "exp"], "not_found": ["cvc", "zip"], "mismatched": []})),
+            ("js.stripe.com".to_string(), json!({"filled": ["cvc"], "not_found": [], "mismatched": [{"key": "number"}]})),
+        ];
+        let m = merge_frame_fills(&top, &frames, &["https://ads.example".into()]);
+        assert_eq!(m["filled"], json!(["email", "number", "exp", "cvc"]));
+        // A mismatch in one frame does not count when another frame filled the key.
+        assert_eq!(m["mismatched"], json!([]));
+        assert_eq!(m["not_found"], json!(["zip"]));
+        assert_eq!(m["frames_skipped"], json!(["https://ads.example"]));
+        assert!(fill_outcome(&m).complete);
+        let none = merge_frame_fills(&json!({"filled": [], "not_found": ["number"], "mismatched": []}), &[], &[]);
+        assert!(!fill_outcome(&none).complete);
+    }
+
+    /// A real Chromium: a checkout on 127.0.0.1 with a cross-site payment
+    /// iframe (localhost, allowed) whose card number keeps only what Chrome
+    /// itself types, as hosted fields do, and a cross-site iframe from a host
+    /// that is not a payment provider ([::1]), which must receive nothing.
+    /// Needs Playwright's headless Chromium (or AMUX_TEST_CHROME); without one
+    /// it says so and passes, since CI has none.
+    #[tokio::test]
+    async fn fills_card_fields_inside_a_cross_origin_payment_iframe() {
+        let Some(chrome) = test_chrome() else {
+            eprintln!("SKIPPED fills_card_fields_inside_a_cross_origin_payment_iframe: no headless Chromium (set AMUX_TEST_CHROME)");
+            return;
+        };
+        let v4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let v6 = std::net::TcpListener::bind("[::1]:0").unwrap();
+        let (p4, p6) = (v4.local_addr().unwrap().port(), v6.local_addr().unwrap().port());
+        let page = format!(r#"<input id="email" type="email"><script>window.__loaded=0</script>
+<iframe src="http://localhost:{p4}/pay" onload="window.__loaded++"></iframe>
+<iframe src="http://[::1]:{p6}/other" onload="window.__loaded++"></iframe>"#);
+        let pay = r#"<input autocomplete="cc-number" id="n"><input autocomplete="cc-exp" id="e"><input autocomplete="cc-csc" id="c">
+<script>const n=document.getElementById('n');n.addEventListener('input',e=>{if(!e.isTrusted)n.value='';});
+setInterval(()=>{if(n.value&&!n.dataset.t)n.value=''},0);n.addEventListener('beforeinput',e=>{if(e.isTrusted)n.dataset.t=1});</script>"#;
+        let other = r#"<input autocomplete="cc-number" id="n"><input autocomplete="cc-csc" id="c">"#;
+        for (l, routes) in [(v4, vec![("/page", page.clone()), ("/pay", pay.to_string())]), (v6, vec![("/other", other.to_string())])] {
+            std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                for mut c in l.incoming().flatten() {
+                    let mut buf = [0u8; 4096];
+                    let n = c.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req.split_whitespace().nth(1).unwrap_or("/");
+                    let body = routes.iter().find(|(p, _)| *p == path).map(|(_, b)| b.clone()).unwrap_or_default();
+                    let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                }
+            });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = tokio::process::Command::new(&chrome)
+            .args(["--headless", "--site-per-process", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
+            .arg(format!("--user-data-dir={}", dir.path().display()))
+            .arg("about:blank")
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let port = {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+            let mut port = 0u16;
+            while let Ok(Ok(Some(l))) = tokio::time::timeout(std::time::Duration::from_secs(20), lines.next_line()).await {
+                if let Some(rest) = l.split("ws://127.0.0.1:").nth(1) {
+                    port = rest.split('/').next().unwrap().parse().unwrap();
+                    break;
+                }
+            }
+            port
+        };
+        assert!(port > 0, "chrome did not report its DevTools port");
+        let tab = crate::integrations::browser::cdp_new_tab(port, "about:blank").await.unwrap();
+        let mut cdp = crate::integrations::browser::CdpClient::connect(tab["webSocketDebuggerUrl"].as_str().unwrap()).await.unwrap();
+        cdp.call("Page.navigate", json!({"url": format!("http://127.0.0.1:{p4}/page")}), std::time::Duration::from_secs(10)).await.unwrap();
+        let mut loaded = false;
+        for _ in 0..100 {
+            if cdp.eval("window.__loaded", 5).await.ok().and_then(|v| v.as_u64()) == Some(2) { loaded = true; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(loaded, "the checkout and both iframes loaded");
+        let values = json!({"number": "4242424242424242", "exp": "03/29", "exp_month": "03", "exp_year": "2029",
+            "cvc": "123", "email": "buyer@example.test"});
+        let r = fill_with_frames(&mut cdp, &values, &["localhost".to_string()]).await.unwrap();
+        let o = fill_outcome(&r);
+        assert!(o.complete, "{r}");
+        assert_eq!(r["frames"].as_array().map(Vec::len), Some(1), "{r}");
+        assert_eq!(r["frames"][0]["host"], "localhost", "{r}");
+        assert_eq!(r["frames_skipped"].as_array().map(Vec::len), Some(1), "{r}");
+        for k in ["email", "number", "exp", "cvc"] {
+            assert!(keys_of(&r["filled"]).contains(&k.to_string()), "{k} not filled: {r}");
+        }
+        // Read the frames' fields back through their own sessions.
+        let ts = cdp.call("Target.getTargets", json!({}), std::time::Duration::from_secs(5)).await.unwrap();
+        let mut seen = 0;
+        for t in ts["targetInfos"].as_array().unwrap().iter().filter(|t| t["type"] == "iframe") {
+            let a = cdp.call("Target.attachToTarget", json!({"targetId": t["targetId"], "flatten": true}),
+                std::time::Duration::from_secs(5)).await.unwrap();
+            let (sid, url) = (a["sessionId"].as_str().unwrap().to_string(), t["url"].as_str().unwrap_or(""));
+            let n = cdp.eval_in(&sid, "document.getElementById('n').value.replace(/\\D/g,'')", 5).await.unwrap();
+            if url.contains("localhost") { assert_eq!(n, "4242424242424242", "payment frame"); seen += 1; }
+            if url.contains("[::1]") { assert_eq!(n, "", "a non-payment frame got a card number"); seen += 1; }
+        }
+        assert_eq!(seen, 2, "both frames read back");
+        let _ = child.kill().await;
+    }
+
+    fn test_chrome() -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("AMUX_TEST_CHROME") {
+            return Some(p.into());
+        }
+        let cache = std::path::PathBuf::from(std::env::var("HOME").ok()?).join("Library/Caches/ms-playwright");
+        let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&cache).ok()?.flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("chromium_headless_shell-"))
+            .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten().map(|d| d.path().join("chrome-headless-shell")))
+            .filter(|p| p.exists())
+            .collect();
+        found.sort();
+        found.pop()
+    }
 
     #[test]
     fn login_origins_match_host_suffixes_and_nothing_else() {

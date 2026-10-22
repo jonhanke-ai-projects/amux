@@ -30,5 +30,8 @@ parameters, and the harness does the rest.
 
 ### After filling
 
-The command reports which fields it filled. Cross-origin iframes cannot be
-reached and show as `not_found`. After filling, click the submit button.
+The command reports which fields it filled. Card fields inside a payment
+provider's iframe (Stripe Elements, Braintree hosted fields, Adyen) are filled
+there and listed under `frames`; an iframe from any other host is never given
+card data and is listed under `frames_skipped`. Anything unreached shows as
+`not_found`. After filling, click the submit button.

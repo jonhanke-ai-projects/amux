@@ -2901,9 +2901,27 @@ impl CdpClient {
         params: Value,
         timeout: std::time::Duration,
     ) -> anyhow::Result<Value> {
+        self.call_in(None, method, params, timeout, None).await
+    }
+
+    /// `call`, optionally inside a child session (a cross-origin iframe this
+    /// socket attached to, see `attach_frames`), and optionally keeping the
+    /// EVENTS that arrive while waiting instead of dropping them.
+    pub async fn call_in(
+        &mut self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+        timeout: std::time::Duration,
+        mut events: Option<&mut Vec<Value>>,
+    ) -> anyhow::Result<Value> {
         self.next_id += 1;
         let id = self.next_id;
-        let payload = json!({ "id": id, "method": method, "params": params }).to_string();
+        let mut msg = json!({ "id": id, "method": method, "params": params });
+        if let Some(sid) = session {
+            msg["sessionId"] = json!(sid);
+        }
+        let payload = msg.to_string();
         let fut = async {
             use tokio_tungstenite::tungstenite::Message;
             self.ws.send(Message::Text(payload)).await?;
@@ -2981,6 +2999,11 @@ impl CdpClient {
                             return Ok(v.get("result").cloned().unwrap_or(Value::Null));
                         }
                         // No id match: a protocol event — not ours, keep reading.
+                        if let Some(ev) = events.as_deref_mut() {
+                            if v.get("method").is_some() {
+                                ev.push(v);
+                            }
+                        }
                     }
                     Message::Close(_) => anyhow::bail!(
                         "CDP websocket closed during {method} ({skipped_unparseable} unparseable \
@@ -3004,15 +3027,80 @@ impl CdpClient {
         }
     }
 
+    /// Attach to the page's cross-origin iframes. Chrome runs each in its own
+    /// process, so `Runtime.evaluate` on the page never reaches into one (a
+    /// Stripe or Braintree card field). `Target.setAutoAttach` with `flatten`
+    /// announces each existing one as `Target.attachedToTarget` on THIS socket;
+    /// commands then go to it with its `sessionId` (`call_in`, `eval_in`).
+    /// Returns (sessionId, url) per iframe. `settle` is how long to keep
+    /// collecting announcements after Chrome acknowledges.
+    pub async fn attach_frames(
+        &mut self,
+        settle: std::time::Duration,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let mut events = Vec::new();
+        self.call_in(
+            None,
+            "Target.setAutoAttach",
+            json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }),
+            std::time::Duration::from_secs(10),
+            Some(&mut events),
+        )
+        .await?;
+        let deadline = tokio::time::Instant::now() + settle;
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            use tokio_tungstenite::tungstenite::Message;
+            match tokio::time::timeout(left, self.ws.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                        if v.get("method").is_some() {
+                            events.push(v);
+                        }
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(e))) => return Err(e.into()),
+                Ok(None) => anyhow::bail!("CDP websocket closed while attaching frames"),
+                Err(_) => break,
+            }
+        }
+        Ok(events
+            .iter()
+            .filter(|e| e["method"] == "Target.attachedToTarget")
+            .filter(|e| e.pointer("/params/targetInfo/type").and_then(Value::as_str) == Some("iframe"))
+            .filter_map(|e| {
+                Some((
+                    e.pointer("/params/sessionId")?.as_str()?.to_string(),
+                    e.pointer("/params/targetInfo/url").and_then(Value::as_str).unwrap_or("").to_string(),
+                ))
+            })
+            .collect())
+    }
+
     /// Runtime.evaluate with by-value results. A page exception is an ERROR
     /// carrying the page's own description, never a silent null — an eval
     /// that cannot fail reads as "the page had no answer" (ethos rule 7).
     pub async fn eval(&mut self, expr: &str, timeout_s: u64) -> anyhow::Result<Value> {
+        self.eval_session(None, expr, timeout_s).await
+    }
+
+    /// `eval` inside an attached iframe (`attach_frames`).
+    pub async fn eval_in(&mut self, session: &str, expr: &str, timeout_s: u64) -> anyhow::Result<Value> {
+        self.eval_session(Some(session), expr, timeout_s).await
+    }
+
+    async fn eval_session(&mut self, session: Option<&str>, expr: &str, timeout_s: u64) -> anyhow::Result<Value> {
         let r = self
-            .call(
+            .call_in(
+                session,
                 "Runtime.evaluate",
                 json!({ "expression": expr, "returnByValue": true, "awaitPromise": true }),
                 std::time::Duration::from_secs(timeout_s),
+                None,
             )
             .await?;
         if let Some(ex) = r.get("exceptionDetails") {
