@@ -21212,9 +21212,15 @@ async function _uploadRequest(f, phase, url, options) {
     }, timeoutMs);
   });
   try {
+    // Same binding as _uploadChunkXHR: finish is POST /api/upload/<id>/finish,
+    // so a restart under a new upload id is a new path and needs a new id.
+    // "_finish_1" without it 409'd every retry of an upload that once got a
+    // 404, and the message waiting on it never sent (Mac app, 2026-10-22).
+    // start always posts to one path, so its id stays per attachment.
+    const scope = phase === 'start' || !f.uploadId ? '' : f.uploadId + '_';
     return await Promise.race([deadline, cancelled, (async () => {
       const response = await fetch(url, {...options, _interactionWorkflow:true,
-        headers:_authHeaders({...options.headers, 'X-Amux-Interaction-Id':f.interactionId + '_' + phase + '_' + (f.chunk || 0), 'X-Amux-Command-Kind':'filesystem.upload'}), signal:controller.signal});
+        headers:_authHeaders({...options.headers, 'X-Amux-Interaction-Id':f.interactionId + '_' + scope + phase + '_' + (f.chunk || 0), 'X-Amux-Command-Kind':'filesystem.upload'}), signal:controller.signal});
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) {
         const status = response.status;
