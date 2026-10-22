@@ -51674,14 +51674,10 @@ async function _handleDeeplink(hash) {
     const raw = hash.slice(6);
     const amp = raw.indexOf('&');
     const target = decodeURIComponent(amp < 0 ? raw : raw.slice(0, amp));
-    let tab = '', view = '';
+    let tab = '';
     if (amp >= 0) {
       const m = raw.slice(amp + 1).match(/(?:^|&)tab=([^&]+)/);
       if (m) tab = decodeURIComponent(m[1]);
-      // The view behind the worker, written by _syncLocationHash so a refresh
-      // keeps both.
-      const v = raw.slice(amp + 1).match(/(?:^|&)view=([^&]+)/);
-      if (v) view = decodeURIComponent(v[1]);
     }
     const tryOpen = (attempt) => {
       // `sessions` (b009f6e's THIRD casualty): `typeof workers` was undefined
@@ -51693,7 +51689,6 @@ async function _handleDeeplink(hash) {
           closeBoardDetail(); // preserves edited fields in the existing board draft
           amuxTrack('deeplink_surface_changed', {from:'board-detail',to:'worker',session:target,measured:true,n_considered:1});
         }
-        if (view && view !== activeView && document.getElementById('tab-' + view)) { try { switchView(view); } catch (e) {} }
         openPeek(target);
         // Let openPeek finish its own async setup before switching tabs.
         if (tab) setTimeout(() => { try { setPeekTab(tab); } catch(e) {} }, 350);
@@ -51935,66 +51930,6 @@ function _restoreAppScreen() {
   const bootHash = location.hash;
   _handleDeeplink(bootHash);
   _restoreScreen(bootHash);
-  // After the boot link and the saved screen are applied (the peek restore
-  // runs at 200 + 350 ms), the URL follows the location from here on.
-  setTimeout(_startLocationSync, 2000);
-}
-
-// THE URL IS WHERE YOU ARE (Ethan, 2026-10-22: "when i refresh a page it
-// should resume that state/location"). A page opened from a deep link kept the
-// link in its URL while you moved on, and a refresh went back to the link. Every
-// Mac app window opens with one, so there a refresh always returned to where
-// the window was at launch. The URL now names the current location, so a
-// refresh, a copied link and the Mac app's saved window all agree.
-function _currentLocationHash() {
-  try {
-    const peek = document.getElementById('peek-overlay');
-    if (peek && peek.classList.contains('active') && typeof peekSession !== 'undefined' && peekSession) {
-      let h = '#peek=' + encodeURIComponent(peekSession);
-      if (typeof _peekTab === 'string' && _peekTab) h += '&tab=' + encodeURIComponent(_peekTab);
-      if (typeof activeView === 'string' && activeView) h += '&view=' + encodeURIComponent(activeView);
-      return h;
-    }
-    const bd = document.getElementById('board-detail-overlay');
-    if (bd && bd.classList.contains('active') && typeof boardDetailId !== 'undefined' && boardDetailId)
-      return '#issue=' + encodeURIComponent(boardDetailId);
-    const fo = document.getElementById('file-overlay');
-    if (fo && fo.classList.contains('active')) {
-      const dir = (document.getElementById('file-subpath') || {}).textContent || '';
-      const name = (document.getElementById('file-title') || {}).textContent || '';
-      if (dir.startsWith('/') && name) return '#path=' + _encodeHashPath((dir === '/' ? '' : dir) + '/' + name);
-    }
-    if (typeof activeView === 'string' && activeView) {
-      if (activeView === 'files' && typeof _filesPath === 'string' && _filesPath && _filesPath !== '/') return '#path=' + _encodeHashPath(_filesPath);
-      if (activeView === 'browser' && typeof _bwSession === 'string' && _bwSession) return '#browser=' + encodeURIComponent(_bwSession);
-      return '#view=' + encodeURIComponent(activeView);
-    }
-  } catch (e) {}
-  return '';
-}
-let _locSyncOn = false;
-function _syncLocationHash() {
-  if (!_locSyncOn || window._peekSplitChild || window._peekEmbed) return;
-  const cur = location.hash;
-  // The board filter owns the URL while the board is up (_bfSyncHash).
-  if (cur.startsWith('#bq=') && activeView === 'board') return;
-  const next = _currentLocationHash();
-  const params = new URLSearchParams(location.search);
-  const hadView = params.has('view');
-  params.delete('view');   // a ?view= entry link is a location too, now superseded
-  if (!next || (next === cur && !hadView)) return;
-  try {
-    const qs = params.toString();
-    history.replaceState(history.state, '', location.pathname + (qs ? '?' + qs : '') + next);
-  } catch (e) {}
-}
-function _startLocationSync() {
-  if (_locSyncOn) return;
-  _locSyncOn = true;
-  _syncLocationHash();
-  document.addEventListener('click', () => setTimeout(_syncLocationHash, 60), true);
-  document.addEventListener('keyup', () => setTimeout(_syncLocationHash, 60), true);
-  setInterval(_syncLocationHash, 1000);
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _restoreAppScreen, {once:true});
 else queueMicrotask(_restoreAppScreen);
