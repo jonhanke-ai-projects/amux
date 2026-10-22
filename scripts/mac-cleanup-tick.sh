@@ -1393,6 +1393,14 @@ check_respawn_loops() {
   rows=$($RESPAWN_CMD 2>/dev/null || true)
   while read -r cnt name; do
     [ -n "${name:-}" ] && [ "${cnt:-0}" -ge "$RESPAWN_N" ] 2>/dev/null || continue
+    # A loop is launches that CRASH. Busy launchers are reaped just as often:
+    # lanes start background jobs through nohup, 111 in 5m on 2026-10-22, and
+    # that escalated as a crash loop "held by an unknown app" (RCA crashes
+    # 20261022-105614). Without a crash report for the name it is not one.
+    if ! crash_counts "$CRASH_DIR" 1440 | awk -v p="$name" '{c=$1; $1=""; sub(/^ /,""); if (index($0, p) == 1 && c > 0) f=1} END{exit !f}'; then
+      echo "mac-cleanup: respawn check: $name launched $cnt times in ${RESPAWN_WINDOW_MIN}m with no crash report in 24h: a busy launcher, not a crash loop (verdict=respawn_busy_no_crashes)"
+      continue
+    fi
     n=$((n+1)); RESPAWN_LOOPS="$RESPAWN_LOOPS $name"
     resp=$(crash_responsible "$CRASH_DIR" "$name" || true)
     rpid=""; [ -z "$resp" ] || rpid=$($RESPAWN_PID_CMD "$resp" 2>/dev/null | awk 'NR==1{print $1}' || true)

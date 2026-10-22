@@ -171,13 +171,16 @@ echo "4b3. a crash handler relaunched every second is a respawn loop, counted by
 CRASH_DIR="$FIX/crash-respawn"; mkdir -p "$CRASH_DIR"; rm -f "$CRASH_STATE"
 for i in $(seq 1 25); do printf '{"app_name":"EndoCrashpadHandler"}\n{"responsibleProc":"Muse","procPath":"/Applications/Muse.app/Contents/MacOS/EndoCrashpadHandler"}\n' \
   > "$CRASH_DIR/EndoCrashpadHandler-$(stamp $((600 + i * 2))).ips"; done
-printf '#!/bin/bash\necho "597 EndoCrashpadHan"; echo "53 nohup"\n' > "$FIX/respawn.sh"
+printf '#!/bin/bash\necho "597 EndoCrashpadHan"; echo "111 nohup"\n' > "$FIX/respawn.sh"
 printf '#!/bin/bash\necho "40 EndoCrashpadHan"\n' > "$FIX/respawn-low.sh"; chmod +x "$FIX/respawn.sh" "$FIX/respawn-low.sh"
 RESPAWN_CMD="$FIX/respawn.sh" RESPAWN_PID_CMD="echo 51370"
 HEALTH_VERDICTS=""; { check_respawn_loops; check_crash_reports 1; } > "$FIX/crash4b3.out"; out=$(cat "$FIX/crash4b3.out")
 check "the loop is a constraint, by launches"           yes "$(has "$HEALTH_VERDICTS" '^crashes EndoCrashpadHan relaunched 597 times in 5m (over 100)')"
 check "it names the app holding it and the remedy"      yes "$(has "$HEALTH_VERDICTS" 'held by Muse (pid 51370).*quits and reopens Muse')"
 check "a busy but ordinary launcher is not a loop"      no  "$(has "$HEALTH_VERDICTS" 'nohup')"
+# RCA crashes 20261022-105614: nohup, 111 launches in 5m and no crash report,
+# escalated as a crash loop held by an unknown app.
+check "a launcher over 100 with no crash reports is named as busy, not a loop" yes "$(has "$out" 'nohup launched 111 times in 5m with no crash report in 24h.*verdict=respawn_busy_no_crashes')"
 check "its crash reports are not raised a second time"  1   "$(printf '%s\n' "$HEALTH_VERDICTS" | grep -c '^crashes Endo')"
 check "they are named as the loop's reports"            yes "$(has "$out" 'EndoCrashpadHandler crashed 25 times in 24h, reports of the live respawn loop EndoCrashpadHan .*verdict=crash_reports_from_respawn_loop')"
 check "the escalation key is the app and its pid"       "EndoCrashpadHan:Muse:51370" "$RESPAWN_ESC_KEY"
