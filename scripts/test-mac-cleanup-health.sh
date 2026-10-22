@@ -165,6 +165,32 @@ rm -f "$CRASH_STATE"
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b2.out"
 check "control: never escalated, the live loop is a constraint" yes "$(has "$HEALTH_VERDICTS" '^crashes browser_crashpad_handler')"
 
+echo "4b3. a crash handler relaunched every second is a respawn loop, counted by launches (RCA crashes 20261021-235935)"
+# Muse's crash handler died on launch once a second for 13 hours; ReportCrash
+# wrote 25 reports per burst and stopped, so the reports read as small bursts.
+CRASH_DIR="$FIX/crash-respawn"; mkdir -p "$CRASH_DIR"; rm -f "$CRASH_STATE"
+for i in $(seq 1 25); do printf '{"app_name":"EndoCrashpadHandler"}\n{"responsibleProc":"Muse","procPath":"/Applications/Muse.app/Contents/MacOS/EndoCrashpadHandler"}\n' \
+  > "$CRASH_DIR/EndoCrashpadHandler-$(stamp $((600 + i * 2))).ips"; done
+printf '#!/bin/bash\necho "597 EndoCrashpadHan"; echo "53 nohup"\n' > "$FIX/respawn.sh"
+printf '#!/bin/bash\necho "40 EndoCrashpadHan"\n' > "$FIX/respawn-low.sh"; chmod +x "$FIX/respawn.sh" "$FIX/respawn-low.sh"
+RESPAWN_CMD="$FIX/respawn.sh" RESPAWN_PID_CMD="echo 51370"
+HEALTH_VERDICTS=""; { check_respawn_loops; check_crash_reports 1; } > "$FIX/crash4b3.out"; out=$(cat "$FIX/crash4b3.out")
+check "the loop is a constraint, by launches"           yes "$(has "$HEALTH_VERDICTS" '^crashes EndoCrashpadHan relaunched 597 times in 5m (over 100)')"
+check "it names the app holding it and the remedy"      yes "$(has "$HEALTH_VERDICTS" 'held by Muse (pid 51370).*quits and reopens Muse')"
+check "a busy but ordinary launcher is not a loop"      no  "$(has "$HEALTH_VERDICTS" 'nohup')"
+check "its crash reports are not raised a second time"  1   "$(printf '%s\n' "$HEALTH_VERDICTS" | grep -c '^crashes Endo')"
+check "they are named as the loop's reports"            yes "$(has "$out" 'EndoCrashpadHandler crashed 25 times in 24h, reports of the live respawn loop EndoCrashpadHan .*verdict=crash_reports_from_respawn_loop')"
+check "the escalation key is the app and its pid"       "EndoCrashpadHan:Muse:51370" "$RESPAWN_ESC_KEY"
+printf 'esc_crashes=%s\nesc_respawn_key=EndoCrashpadHan:Muse:51370\n' "$(( $(date +%s) - 3600 ))" > "$CRASH_STATE"
+HEALTH_VERDICTS=""; { check_respawn_loops; check_crash_reports 1; } > "$FIX/crash4b3.out"; out=$(cat "$FIX/crash4b3.out")
+check "escalated, the same Muse still looping waits on its owner" yes "$(has "$out" 'verdict=respawn_loop_owner_pending')"
+check "and is not a constraint again"                    no  "$(has "$HEALTH_VERDICTS" '^crashes Endo')"
+HEALTH_VERDICTS=""; RESPAWN_PID_CMD="echo 60001" check_respawn_loops > "$FIX/crash4b3.out"
+check "a reopened Muse that loops again is a new constraint" yes "$(has "$HEALTH_VERDICTS" '^crashes EndoCrashpadHan relaunched')"
+HEALTH_VERDICTS=""; RESPAWN_CMD="$FIX/respawn-low.sh" check_respawn_loops > "$FIX/crash4b3.out"
+check "control: under 100 launches is no loop"           no  "$(has "$HEALTH_VERDICTS" '^crashes')"
+RESPAWN_CMD=true; RESPAWN_LOOPS=""; rm -f "$CRASH_STATE"
+
 echo "4c. an orphaned crash handler whose executable is gone is stopped (RCA crashes 20261019-195257)"
 # Real processes, each pid from $! (never a pattern match), each orphaned to
 # launchd. A compiled stand-in: macOS kills a copied system binary on launch.

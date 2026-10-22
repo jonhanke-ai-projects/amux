@@ -605,6 +605,16 @@ CRASH_KEEP_DAYS=${AMUX_CLEANUP_CRASH_KEEP_DAYS:-30}
 # its reports aged out (RCA crashes 20261017-022150: git x30, the last at 16:57
 # the day before, none after the 19:50 fix). Same 6h as the escalation cooldown.
 CRASH_RECENT_MIN=${AMUX_CLEANUP_CRASH_RECENT_MIN:-360}
+# A process macOS relaunches over and over: launchd logs every short-lived one
+# it reaps. ReportCrash writes about 25 reports per burst and then stops, so a
+# crash handler relaunched once a second for 13 hours (Muse's, 2026-10-21, about
+# 47,000 launches) read as three small bursts and once as "the loop has stopped"
+# (Mac crashes RCA 20261021-235935). This counts launches, not reports.
+RESPAWN_CMD=${AMUX_CLEANUP_RESPAWN_CMD:-respawn_reading}
+RESPAWN_WINDOW_MIN=${AMUX_CLEANUP_RESPAWN_WINDOW_MIN:-5}
+RESPAWN_N=${AMUX_CLEANUP_RESPAWN_N:-100}
+RESPAWN_REMIND_H=${AMUX_CLEANUP_RESPAWN_REMIND_H:-24}
+RESPAWN_PID_CMD=${AMUX_CLEANUP_RESPAWN_PID_CMD:-pgrep -xo}
 # Report-only probes: launchd jobs outside com.apple that last exited non-zero
 # and are not running, the default gateway's packet loss with DNS lookup time,
 # and macOS thermal/CPU-speed limits.
@@ -1344,6 +1354,58 @@ print(n_after)
 PY
 }
 
+# Prints "<launches> <name>" per process launchd reaped in the window, busiest
+# first. The name is launchd's, cut to 15 characters ("EndoCrashpadHan").
+respawn_reading() {
+  log show --last "${RESPAWN_WINDOW_MIN}m" --style compact \
+    --predicate 'process == "launchd" AND eventMessage BEGINSWITH "removing inactive unmanaged service"' 2>/dev/null \
+    | sed -nE 's/.*unmanaged service: com\.apple\.xpc\.launchd\.unmanaged\.(.*)\.[0-9]+$/\1/p' | sort | uniq -c | sort -rn
+}
+
+crash_responsible() { # <dir> <name prefix>: the app macOS holds responsible in that process's newest crash report
+  python3 - "$1" "$2" <<'PY' 2>/dev/null
+import json, os, re, sys
+d, pre = sys.argv[1], sys.argv[2]
+best = None
+for n in os.listdir(d):
+    if not n.endswith(".ips") or not re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", n).startswith(pre):
+        continue
+    t = os.stat(os.path.join(d, n)).st_mtime
+    if best is None or t > best[0]:
+        best = (t, n)
+if best:
+    try:
+        body = open(os.path.join(d, best[1]), errors="replace").read().split("\n", 1)[1]
+        print(json.loads(body).get("responsibleProc") or "")
+    except Exception:
+        pass
+PY
+}
+
+check_respawn_loops() {
+  local rows cnt name resp rpid key esc_key esc_at n=0
+  RESPAWN_LOOPS=""; RESPAWN_ESC_KEY=""
+  rows=$($RESPAWN_CMD 2>/dev/null || true)
+  while read -r cnt name; do
+    [ -n "${name:-}" ] && [ "${cnt:-0}" -ge "$RESPAWN_N" ] 2>/dev/null || continue
+    n=$((n+1)); RESPAWN_LOOPS="$RESPAWN_LOOPS $name"
+    resp=$(crash_responsible "$CRASH_DIR" "$name" || true)
+    rpid=""; [ -z "$resp" ] || rpid=$($RESPAWN_PID_CMD "$resp" 2>/dev/null | awk 'NR==1{print $1}' || true)
+    key="$name:${resp:-unknown}:${rpid:-none}"
+    esc_key=$(state_get "$CRASH_STATE" esc_respawn_key 2>/dev/null || true)
+    esc_at=$(state_get "$CRASH_STATE" esc_crashes 2>/dev/null || true); case "$esc_at" in ''|*[!0-9]*) esc_at=0 ;; esac
+    if [ "$key" = "$esc_key" ] && [ $(( $(date +%s) - esc_at )) -lt $(( RESPAWN_REMIND_H * 3600 )) ]; then
+      echo "mac-cleanup: respawn loop: $name relaunched $cnt times in ${RESPAWN_WINDOW_MIN}m, the loop the last crashes escalation named $(( ($(date +%s) - esc_at) / 60 ))m ago; ${resp:-its app} restarting it is pending; not escalated again until its pid changes or ${RESPAWN_REMIND_H}h (verdict=respawn_loop_owner_pending)"
+      continue
+    fi
+    echo "mac-cleanup: respawn loop: $name relaunched $cnt times in ${RESPAWN_WINDOW_MIN}m, responsible app ${resp:-unknown}${rpid:+ pid $rpid} (verdict=respawn_loop)"
+    HEALTH_VERDICTS=$(printf '%s\ncrashes %s relaunched %s times in %sm (over %s), each launch dying at once: a respawn loop held by %s; crash reports undercount it (ReportCrash stops after about 25); the owner quits and reopens %s\n' \
+      "$HEALTH_VERDICTS" "$name" "$cnt" "$RESPAWN_WINDOW_MIN" "$RESPAWN_N" "${resp:-an unknown app}${rpid:+ (pid $rpid)}" "${resp:-that app}")
+    RESPAWN_ESC_KEY=$key
+  done <<< "$rows"
+  echo "mac-cleanup: respawn loops (over ${RESPAWN_N} launches in ${RESPAWN_WINDOW_MIN}m): ${n}${RESPAWN_LOOPS:+:$RESPAWN_LOOPS}"
+}
+
 check_crash_reports() { # <dry:0|1>
   local DRY=${1:-0} top name cnt pruned=0 old newest esc episode since_esc
   if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
@@ -1352,7 +1414,11 @@ check_crash_reports() { # <dry:0|1>
   local recent
   while read -r cnt name; do
     [ -n "${cnt:-}" ] || continue
-    if [ "$cnt" -ge "$CRASH_LOOP_N" ]; then
+    local r covered=""
+    for r in ${RESPAWN_LOOPS:-}; do case "$name" in "$r"*) covered=$r ;; esac; done
+    if [ -n "$covered" ] && [ "$cnt" -ge "$CRASH_LOOP_N" ]; then
+      echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h, reports of the live respawn loop $covered (counted above by launches, not again here) (verdict=crash_reports_from_respawn_loop)"
+    elif [ "$cnt" -ge "$CRASH_LOOP_N" ]; then
       recent=$(crash_counts "$CRASH_DIR" "$CRASH_RECENT_MIN" "$name" | awk '{print $1}'); recent=${recent:-0}
       # A loop with no crash since the last crashes escalation was already
       # handed over, with its card (Mac crashes RCA 20261020-015312): the 6h
@@ -1606,7 +1672,7 @@ for o in m.get("top_unattributed") or []:
 system_health() { # <dry:0|1>
   HEALTH_VERDICTS=""; CPU_RESTARTED=0; TEST_ORPHANS_STOPPED=0; CRASH_PRUNED=0
   if [ "$HEALTH_PROBES" = off ]; then echo "mac-cleanup: system health: probes off (AMUX_CLEANUP_HEALTH_PROBES=off)"; return 0; fi
-  check_cpu_hogs "$1"; reap_test_orphans "$1"; reap_orphan_mp_workers "$1"; reap_orphan_crash_handlers "$1"; check_limits; check_crash_reports "$1"
+  check_cpu_hogs "$1"; reap_test_orphans "$1"; reap_orphan_mp_workers "$1"; reap_orphan_crash_handlers "$1"; check_limits; check_respawn_loops; check_crash_reports "$1"
   check_launchd_failing; check_network; check_thermal; check_agent_volume; check_utilization "$1"; check_self_runs
   HEALTH_VERDICTS=$(printf '%s\n' "$HEALTH_VERDICTS" | grep . || true)
 }
@@ -3239,6 +3305,7 @@ else
     if sendout=$($cmd 2>&1); then
       state_put "$STATE" "esc_$cls=$now" "esc_${cls}_stamp=$stamp" "esc_${cls}_snap=$nowsnap" "sendfail_$cls=0"; escalated=$((escalated+1))
       [ "$cls" = fseventsd ] && [ -n "${fse_pid:-}" ] && state_put "$STATE" "esc_fseventsd_pid=$fse_pid"
+      [ "$cls" = crashes ] && [ -n "${RESPAWN_ESC_KEY:-}" ] && state_put "$STATE" "esc_respawn_key=$RESPAWN_ESC_KEY"
       echo "mac-cleanup: constraint $v — escalated to $ESCALATE_TO$( [ "$page" = - ] || echo " (recurrence, previous ${page}h ago, card $pcard)") (bundle $bundle)"
     else
       # The reason, not just the word: round 1 printed FAILED and the cause (an
