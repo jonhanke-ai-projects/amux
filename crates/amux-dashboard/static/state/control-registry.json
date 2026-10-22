@@ -3366,6 +3366,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekSplitAddPane": {
+      "kind": "command._peekSplitAddPane",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekSplitClosePane": {
+      "kind": "command._peekSplitClosePane",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekSplitMenu": {
       "kind": "command._peekSplitMenu",
       "feedback_required": true,
@@ -3384,8 +3396,26 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekSplitRenderPanes": {
+      "kind": "command._peekSplitRenderPanes",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekSplitSetActive": {
       "kind": "command._peekSplitSetActive",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekSplitSetPane": {
+      "kind": "command._peekSplitSetPane",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekSplitShow": {
+      "kind": "command._peekSplitShow",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

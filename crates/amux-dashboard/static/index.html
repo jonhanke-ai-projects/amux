@@ -3238,15 +3238,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Split drag handle (visible only when split-active) -->
   <div id="peek-split-handle" class="peek-split-handle"></div>
   <!-- Split files panel -->
-  <div id="peek-split-files" class="peek-split-files">
-    <div class="psp-switch" role="tablist" aria-label="Side panel">
-      <button type="button" class="psp-opt" data-psp="files" onclick="_peekSplitShow('files')">Files</button>
-      <button type="button" class="psp-opt" data-psp="messages" onclick="_peekSplitShow('messages')">Messages</button>
-      <button type="button" class="psp-opt" data-psp="chat" onclick="_peekSplitShow('chat')">Chat</button>
-      <button type="button" class="psp-opt" data-psp="terminal" onclick="_peekSplitShow('terminal')">Terminal</button>
-      <button type="button" class="btn psp-close" onclick="togglePeekSplit()" title="Close side panel" aria-label="Close side panel">&#x2715;</button>
-    </div>
-    <iframe id="psp-frame" class="psp-frame" title="Side panel" allow="clipboard-write; clipboard-read" style="display:none"></iframe>
+  <div id="peek-split-files" class="peek-split-files psp-embed">
+    <!-- Split panes: each is this worker's own page on one tab, or the Files view (_peekSplitRenderPanes). -->
+    <div id="psp-panes" class="psp-panes"></div>
     <div class="peek-split-files-header">
       <div id="psf-breadcrumb" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></div>
       <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="togglePeekSplit()">&#x2715;</button>

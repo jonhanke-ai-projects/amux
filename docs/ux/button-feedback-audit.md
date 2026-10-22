@@ -990,7 +990,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | This worker | `togglePeekIssuesAll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Worker actions | `togglePeekMoreMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | + | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | Close side panel | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Split view | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | button | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Customize worker tabs | `togglePeekTabCustomizer` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1311,10 +1310,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Attach file | `_peekMoreClose` | onclick |
 | app.js | peek-body | `_peekOpenLink` | addEventListener |
 | index.html | button | `_peekRenderSchedules` | onclick |
-| index.html | Chat | `_peekSplitShow` | onclick |
-| index.html | Files | `_peekSplitShow` | onclick |
-| index.html | Messages | `_peekSplitShow` | onclick |
-| index.html | Terminal | `_peekSplitShow` | onclick |
 | app.js | + | `_peekToggleInherited` | onclick |
 | index.html | peek-plan-hdr | `_peekTogglePlan` | onclick |
 | app.js | + | `_peekToggleTool` | onclick |

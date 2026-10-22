@@ -16747,8 +16747,117 @@ function _savePeekState() {
 // Terminal too (Ethan, 2026-10-21: "add terminal as an option here, so i can
 // have terminal in both sides"): the same embedded peek, opened on its
 // terminal tab, so a second terminal of the worker sits beside the first.
-const _PEEK_SPLIT_VIEWS = ['files', 'messages', 'chat', 'terminal'];
+//
+// 2-4 PANES (Ethan, 2026-10-22: "make split view the ability to have 2-4
+// panes. each pane should just be the worker details page ... each pane should
+// have a dropdown of a particular view"). The main pane is the worker page
+// itself; beside it sit 1-3 more, each the same worker page embedded on one tab
+// (?peekEmbed=<name>&peekTab=<tab>) or the Files view (?embed=files#path=), with
+// its own dropdown. Nothing is re-implemented for a pane: it is the tab.
+const _PEEK_SPLIT_MAX = 3;   // panes beside the main one
 let _peekSplitView = localStorage.getItem('amux_peek_split_view') || 'files';
+let _peekSplitPanes = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem('amux_peek_split_panes') || 'null');
+    if (Array.isArray(v) && v.length) return v.filter(x => typeof x === 'string' && x).slice(0, _PEEK_SPLIT_MAX);
+  } catch (e) {}
+  return null;
+})() || [_peekSplitView];
+// Every view a pane can show: Files, then the worker's own tabs as its tab bar
+// lists them, so a new tab is a pane option with no list to keep here.
+function _peekSplitViewOptions() {
+  const out = [['files', 'Files']];
+  document.querySelectorAll('#peek-overlay .peek-tab[id^="peek-tab-"]').forEach(b => {
+    const id = b.id.slice('peek-tab-'.length);
+    if (!id || /-count$/.test(id) || id === 'customizer-menu' || id === 'customize') return;
+    if (b.hidden || getComputedStyle(b).display === 'none') return;
+    const lbl = ((b.querySelector('.tab-lbl') || b).textContent || '').trim();
+    if (!out.some(o => o[0] === id)) out.push([id, lbl || id]);
+  });
+  return out;
+}
+function _peekSplitSrc(view) {
+  if (view === 'files') return '/?embed=files#path=' + _encodeHashPath(peekSessionDir || '/');
+  return '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view) + '&peekSplitChild=1';
+}
+function _peekSplitPersist() {
+  _peekSplitView = _peekSplitPanes[0] || 'files';
+  try {
+    localStorage.setItem('amux_peek_split_view', _peekSplitView);
+    localStorage.setItem('amux_peek_split_panes', JSON.stringify(_peekSplitPanes));
+  } catch (e) {}
+  _peekViewRemember();
+}
+// Builds or updates the panes in place: a pane whose view did not change keeps
+// its iframe, so a terminal in pane 2 survives adding pane 3.
+function _peekSplitRenderPanes() {
+  const host = document.getElementById('psp-panes');
+  if (!host || !peekSession) return;
+  const opts = _peekSplitViewOptions();
+  const optHtml = opts.map(([v, l]) => '<option value="' + esc(v) + '">' + esc(l) + '</option>').join('');
+  while (host.children.length > _peekSplitPanes.length) host.lastElementChild.remove();
+  _peekSplitPanes.forEach((view, i) => {
+    let pane = host.children[i];
+    if (!pane) {
+      pane = document.createElement('div');
+      pane.className = 'psp-pane';
+      pane.innerHTML = '<div class="psp-pane-bar"><select class="input psp-pane-view" aria-label="Pane view"></select>'
+        + '<span class="psp-pane-spacer"></span>'
+        + '<button type="button" class="btn psp-pane-add" title="Add a pane" aria-label="Add a pane">+</button>'
+        + '<button type="button" class="btn psp-pane-close" title="Close this pane" aria-label="Close this pane">&#x2715;</button></div>'
+        + '<iframe class="psp-frame" title="Split pane" allow="clipboard-write; clipboard-read"></iframe>';
+      host.appendChild(pane);
+    }
+    pane.dataset.paneI = String(i);
+    pane.dataset.view = view;
+    const sel = pane.querySelector('.psp-pane-view');
+    if (sel.dataset.opts !== optHtml) { sel.innerHTML = optHtml; sel.dataset.opts = optHtml; }
+    if (!opts.some(o => o[0] === view)) sel.insertAdjacentHTML('beforeend', '<option value="' + esc(view) + '">' + esc(view) + '</option>');
+    sel.value = view;
+    sel.onchange = () => _peekSplitSetPane(i, sel.value);
+    const add = pane.querySelector('.psp-pane-add');
+    add.hidden = _peekSplitPanes.length >= _PEEK_SPLIT_MAX || i !== _peekSplitPanes.length - 1;
+    add.onclick = (e) => { e.stopPropagation(); _peekSplitAddPane(); };
+    pane.querySelector('.psp-pane-close').onclick = (e) => { e.stopPropagation(); _peekSplitClosePane(i); };
+    const frame = pane.querySelector('.psp-frame');
+    if (i === 0) frame.id = 'psp-frame'; else frame.removeAttribute('id');
+    const src = _peekSplitSrc(view);
+    if (frame.dataset.src !== src) {
+      // Same worker, tab to tab: ask the pane's own page to switch, no reload.
+      const prev = frame.dataset.src || '';
+      let switched = false;
+      if (view !== 'files' && prev.indexOf('peekEmbed=' + encodeURIComponent(peekSession) + '&') >= 0) {
+        try { frame.contentWindow.setPeekTab(view); switched = true; } catch (e) {}
+      }
+      frame.dataset.src = src;
+      if (!switched) frame.src = src;
+    }
+  });
+  host.dataset.panes = String(_peekSplitPanes.length);
+}
+function _peekSplitSetPane(i, view) {
+  if (!view || i < 0 || i >= _peekSplitPanes.length) return;
+  _peekSplitPanes[i] = view;
+  _peekSplitPersist();
+  _peekSplitRenderPanes();
+}
+function _peekSplitAddPane() {
+  if (_peekSplitPanes.length >= _PEEK_SPLIT_MAX) return;
+  const used = new Set(_peekSplitPanes);
+  const next = ['files', 'messages', 'chat', 'terminal'].find(v => !used.has(v)) || 'terminal';
+  _peekSplitPanes.push(next);
+  _peekSplitPersist();
+  _peekSplitRenderPanes();
+}
+function _peekSplitClosePane(i) {
+  if (_peekSplitPanes.length <= 1) {   // the last pane: close the split
+    togglePeekSplit();
+    return;
+  }
+  _peekSplitPanes.splice(i, 1);
+  _peekSplitPersist();
+  _peekSplitRenderPanes();
+}
 // Place a position:fixed element so its box lands at viewport (x, y) as
 // getBoundingClientRect reports it. On the Mac app the Split menu opened ~500px
 // right of its button (Ethan, 2026-10-14): the style coordinates and the rect
@@ -16774,7 +16883,7 @@ function _peekSplitMenu(btn) {
   _peekSplitMenuClose();
   const m = document.createElement('div');
   m.id = 'psp-menu'; m.className = 'psp-menu'; m.setAttribute('role', 'menu');
-  for (const [v, label] of [['files', 'Files'], ['messages', 'Messages'], ['chat', 'Chat'], ['terminal', 'Terminal']]) {
+  for (const [v, label] of _peekSplitViewOptions()) {
     const b = document.createElement('button');
     b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label;
     b.onclick = () => { _peekSplitMenuClose(); _peekSplitOpen(v); };
@@ -16793,22 +16902,12 @@ function _peekSplitOpen(view) {
   if (!wrap.classList.contains('split-active')) togglePeekSplit(null, true);
   _peekSplitShow(view);
 }
+// The first pane's view (the Split menu and saved views name one view).
 function _peekSplitShow(view) {
-  if (!_PEEK_SPLIT_VIEWS.includes(view)) view = 'files';
-  _peekSplitView = view;
-  try { localStorage.setItem('amux_peek_split_view', view); } catch (e) {}
-  _peekViewRemember();
-  const panel = document.getElementById('peek-split-files');
-  const frame = document.getElementById('psp-frame');
-  document.querySelectorAll('.psp-opt').forEach(b => b.classList.toggle('active', b.dataset.psp === view));
-  const embed = view !== 'files';
-  panel?.classList.toggle('psp-embed', embed);
-  if (!frame) return;
-  frame.style.display = embed ? '' : 'none';
-  if (embed && peekSession) {
-    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view) + '&peekSplitChild=1';
-    if (frame.dataset.src !== src) { frame.dataset.src = src; frame.src = src; }
-  }
+  if (typeof view !== 'string' || !view) view = 'files';
+  if (!_peekSplitPanes.length) _peekSplitPanes = [view]; else _peekSplitPanes[0] = view;
+  _peekSplitPersist();
+  _peekSplitRenderPanes();
 }
 // Open or close the split with no menu and no persistence. Every path that
 // changes the split goes through here, so the nesting gate has one place.
@@ -16821,12 +16920,12 @@ function _peekSplitSetActive(active, path) {
   if (btn) btn.classList.toggle('active', active);
   if (active) {
     _peekSplitPath = path || peekSessionDir || '/';
-    _psfLoad(_peekSplitPath);
     _initSplitResize();
     _restoreSplitWidths();
   } else {
-    const frame = document.getElementById('psp-frame');
-    if (frame) { frame.removeAttribute('src'); frame.dataset.src = ''; }
+    // Closing the split unloads every pane.
+    const host = document.getElementById('psp-panes');
+    if (host) host.innerHTML = '';
     const tp = document.getElementById('peek-terminal-panel');
     const sf = document.getElementById('peek-split-files');
     if (tp) tp.style.flex = '';
@@ -16844,7 +16943,7 @@ function togglePeekSplit(ev, force) {
   const btn = document.getElementById('peek-split-toggle');
   if (ev && btn && !wrap.classList.contains('split-active')) { _peekSplitMenu(btn); return; }
   const active = _peekSplitSetActive(force ? true : !wrap.classList.contains('split-active'));
-  if (active && !force) _peekSplitShow(_peekSplitView);
+  if (active && !force) _peekSplitRenderPanes();
   _peekViewRemember();
   _savePeekState();
 }
@@ -16879,10 +16978,12 @@ function _peekViewRemember() {
     // window keeps whatever split the wide one chose.
     entry.split = !!prev.split;
     if (prev.splitView) entry.splitView = prev.splitView;
+    if (Array.isArray(prev.splitViews)) entry.splitViews = prev.splitViews;
     if (prev.ratio) entry.ratio = prev.ratio;
   } else {
     entry.split = !!(wrap && wrap.classList.contains('split-active'));
     entry.splitView = _peekSplitView;
+    entry.splitViews = _peekSplitPanes.slice();
     const tp = document.getElementById('peek-terminal-panel');
     const ratio = (entry.split && tp && tp.style.flex) || prev.ratio;
     if (ratio) entry.ratio = ratio;
@@ -16904,9 +17005,10 @@ function _peekViewApply(name) {
     const wrap = document.getElementById('peek-split-wrap');
     const wantSplit = !!(v && v.split) && window.innerWidth > 600;
     if (wantSplit) {
-      if (_PEEK_SPLIT_VIEWS.includes(v.splitView)) _peekSplitView = v.splitView;
+      if (Array.isArray(v.splitViews) && v.splitViews.length) _peekSplitPanes = v.splitViews.filter(x => typeof x === 'string' && x).slice(0, _PEEK_SPLIT_MAX);
+      else if (typeof v.splitView === 'string' && v.splitView) _peekSplitPanes = [v.splitView];
       _peekSplitSetActive(true);
-      _peekSplitShow(_peekSplitView);
+      _peekSplitRenderPanes();
     } else if (wrap && wrap.classList.contains('split-active')) {
       _peekSplitSetActive(false);
     }
