@@ -31,6 +31,14 @@ check "a disk gaining space has no ETA"              "-10.0 -"  "$(disk_trend 10
 check "burning 10G/h from 100G is full in 10h"       "10.0 10.0" "$(disk_trend 1000 110 4600 100 1)"
 check "under the minimum burn there is no ETA"       "0.5 -"    "$(disk_trend 1000 100.5 4600 100 1)"
 
+echo "1a. a burn that is swap growth is named as swap (disk RCA 20261022-105614)"
+# Swap grew 7G to 59G under memory pressure; no file search names it.
+check "swap growth explaining the burn is named"     "yes" "$(has "$(swap_burn_note 28.9 30000 59392 1)" 'the writer is macOS swap, grown 29.3G to 58.0G since the last run (28.7G/h)')"
+check "swap growth under half the burn is not blamed" ""   "$(swap_burn_note 28.9 50000 59392 1)"
+check "no previous reading names nothing"             ""   "$(swap_burn_note 28.9 0 59392 1)"
+check "no burn names nothing"                         ""   "$(swap_burn_note - 30000 59392 1)"
+check "swap shrinking names nothing"                  ""   "$(swap_burn_note 10 59392 30000 1)"
+
 echo "1b. burn rate from the host history, by least squares"
 mkhist() { # <n> <gb per 5 min> [unmeasured rows]
   python3 -c '

@@ -2217,6 +2217,19 @@ disk_trend() { # <prev_ts> <prev_free_gb> <now_ts> <now_free_gb> <min_gbh>
 # backup (a 14G amux.db dump, then hashing) and an fseventsd backlog held
 # load15 at 35-42 on 28 cores while top read the CPU 65% idle. Arg 10 is the
 # measured idle percent (-1 = unmeasured, which keeps the load-only rule).
+# The disk writer that no file search sees: macOS swap. Disk RCA
+# 20261022-105614 burned 28.9G/h with no writer named, while swap grew from 7G
+# to 59G under memory pressure (two VMs holding 64G, fseventsd 17G). When swap
+# growth since the last run explains at least half the burn, the disk verdict
+# says so and points at memory. Prints the suffix, or nothing.
+swap_burn_note() { # <burn_gbh> <swap_total_prev_mb> <swap_total_now_mb> <hours_between>
+  awk -v b="$1" -v p="$2" -v n="$3" -v h="$4" 'BEGIN{
+    if (b+0 <= 0 || p+0 <= 0 || n+0 <= 0 || h+0 <= 0) exit
+    g = (n - p) / 1024; r = g / h
+    if (g >= 1 && r >= b * 0.5) printf "; the writer is macOS swap, grown %.1fG to %.1fG since the last run (%.1fG/h) under memory pressure, so the cause is memory (see the memory class)", p/1024, n/1024, r
+  }'
+}
+
 classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swap_free_mb> <load15> <ncpu> <family_exceeds:0|1> <swap_total_mb> [cpu_idle_pct]
   awk -v df="$1" -v b="$2" -v h="$3" -v pr="$4" -v sw="$5" -v l="$6" -v n="$7" -v fam="$8" -v swt="$9" -v idle="${10:--1}" -v imax="$CPU_IDLE_MAX_PCT" \
       -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" -v swcp="$SWAP_FREE_CRITICAL_PCT" -v sgd="$SWAP_GROW_DISK_GB" 'BEGIN{
@@ -3220,6 +3233,7 @@ cpu_idle=$($CPU_IDLE_CMD 2>/dev/null | awk '/^CPU usage/ {for (i=1;i<=NF;i++) if
 ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 0)
 STATE="$STATE_DIR/state"
 prev_ts=$(state_get "$STATE" last_ts); prev_free=$(state_get "$STATE" last_disk_free_gb)
+prev_swt=$(state_get "$STATE" last_swap_total_mb || true)   # read before this run's state write below
 HISTORY_CMD=${AMUX_CLEANUP_HISTORY_CMD:-curl -sk --max-time 15 $(amux url 2>/dev/null || echo https://localhost:8824)/api/metrics/host/history?since_h=2}
 read -r burn htf hist_n hist_span hist_run <<EOF
 $($HISTORY_CMD 2>/dev/null | burn_from_history "$BURN_MIN_GBH" "$(date +%s)" "$disk_now")
@@ -3234,9 +3248,14 @@ EOF
 fi
 if [ "$burn" = "-" ]; then burn_txt="unmeasured (no previous reading)"; else burn_txt="${burn}G/h from ${burn_src}"; fi
 if [ "$htf" = "-" ]; then htf_txt="not filling"; else htf_txt="full in ${htf}h"; fi
-[ "$DRY" = "1" ] || state_put "$STATE" "last_ts=$now" "last_disk_free_gb=$disk_now"
+[ "$DRY" = "1" ] || state_put "$STATE" "last_ts=$now" "last_disk_free_gb=$disk_now" "last_swap_total_mb=$swap_total_now"
 tick_mark verdicts
 verdicts=$(classify_constraints "$disk_now" "$burn" "$htf" "$level_now" "$swap_free_now" "$load15" "$ncpu" "$fam_over" "$swap_total_now" "$cpu_idle")
+swap_note=$(swap_burn_note "$burn" "${prev_swt:-0}" "$swap_total_now" "$(awk -v a="$now" -v b="${prev_ts:-0}" 'BEGIN{ if (b > 0) printf "%.3f", (a-b)/3600; else print 0 }')")
+if [ -n "$swap_note" ] && printf '%s\n' "$verdicts" | grep -q '^disk burning'; then
+  verdicts=$(printf '%s\n' "$verdicts" | N="$swap_note" awk '/^disk burning/{$0=$0 ENVIRON["N"]} {print}')
+  echo "mac-cleanup: disk burn is swap growth${swap_note#;} (verdict=disk_burn_is_swap)"
+fi
 # Say so when a high load was judged not to be CPU, so a sweep can tell
 # "load was high but the CPU idle" from "load was fine".
 if awk -v l="$load15" -v n="$ncpu" -v cs="$CPU_SHARE" -v i="$cpu_idle" -v m="$CPU_IDLE_MAX_PCT" 'BEGIN{exit !(l>=0 && n>0 && l/n>cs && i>=m)}'; then
