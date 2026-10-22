@@ -622,6 +622,7 @@ extension AppDelegate {
             }
             t.invalidate()
             self.snapPreview.hide()
+            self.lastTabPlaced = Date()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.placeTornTab(from: candidates, source: source, zone: zone)
             }
@@ -652,6 +653,10 @@ extension AppDelegate {
             if !windowDrag { self.snapPreview.hide() }
             dlog("verdict=tab_press_released out=\(out ? 1 : 0) free=\(free ? 1 : 0) window_drag=\(windowDrag ? 1 : 0) zone=\(zone?.zone.name ?? "none")")
             guard out, !free else { return }
+            // AppKit splits the tab off at the drop, so the watcher sees the
+            // split just after this release: it must not place the window a
+            // second time (11:24, Ethan's drag: right half, then grid).
+            self.lastTabPlaced = Date()
             // AppKit makes the window the tab became key once the drop lands.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.placeTornTab(from: group, source: source, zone: zone)
@@ -702,10 +707,17 @@ extension AppDelegate {
         case "/press-content": press(false)     // a click in the page, which must not
         // What AppKit does with a tab dropped outside every tab bar.
         case "/tear-tab": arrangeTarget?.moveTabToNewWindow(nil)
+        // A real drop: the button comes up and AppKit splits the tab off in the same instant.
+        case "/drop-tab":
+            if let o = Pointer.testOverride { Pointer.testOverride = (o.at, false) }
+            arrangeTarget?.moveTabToNewWindow(nil)
         // What AppKit does with a tab dropped on another window's tab bar.
+        // The visible tab of a tab group, never whichever window is in front
+        // (that made tab-snap-e2e case 9 flaky: a lone window joined instead).
         case "/join-tab":
-            if let w = arrangeTarget, let other = controllers.compactMap({ $0.window }).first(where: { o in
-                o !== w && o.isVisible && !(w.tabbedWindows?.contains(o) ?? false) }) {
+            let ws = controllers.compactMap { $0.window }
+            if let w = ws.first(where: { $0.isVisible && ($0.tabbedWindows?.count ?? 1) > 1 && $0.tabGroup?.selectedWindow === $0 }),
+               let other = ws.first(where: { o in o !== w && o.isVisible && !(w.tabbedWindows?.contains(o) ?? false) }) {
                 other.addTabbedWindow(w, ordered: .above)
             }
         case "/window-drag":

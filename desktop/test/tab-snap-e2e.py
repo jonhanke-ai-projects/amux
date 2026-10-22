@@ -104,7 +104,7 @@ def zone(st, fx, fy, fw, fh):
     return (round(x + w * fx), round(y + h * fy), round(w * fw), round(h * fh))
 
 
-def drag_tab(name, at, expect, press="press-tab", tear=True, snap=True, extra=()):
+def drag_tab(name, at, expect, press="press-tab", tear=True, snap=True, extra=(), tear_after_release=False):
     """Press in the tab bar, move to `at` (a function of the state) with the
     button down, drop, and check where the new window lands."""
     print(name)
@@ -122,9 +122,13 @@ def drag_tab(name, at, expect, press="press-tab", tear=True, snap=True, extra=()
         app.send(f"pointer?x={x}&y={y}&down=1", 0.4)
         mid = app.state()
         log_before = App.count("verdict=tab_")
-        if tear:
+        if tear and not tear_after_release:
             app.send("tear-tab" if tear is True else tear, 0.1)
-        app.send(f"pointer?x={x}&y={y}&down=0", 1.2)
+        if tear and tear_after_release:
+            # A real AppKit drag splits the tab off at the drop, with the release.
+            app.send("drop-tab", 1.5)
+        else:
+            app.send(f"pointer?x={x}&y={y}&down=0", 1.2)
         end = app.state()
         return st, mid, end, App.count("verdict=tab_") > log_before
     finally:
@@ -188,6 +192,13 @@ want = zone(st, 0, 0, 0.5, 1)
 check("the watcher sees the tear and previews the zone", mid["preview"] and near(rect(mid["preview_frame"]), want) or "tab_tear_seen_by_watch" in open(LOG, errors="replace").read(), mid["preview_frame"])
 check("the torn tab lands in the left half", any(w["tabs"] == 1 and near(rect(w["frame"]), want) for w in end["windows"]), str(end["windows"]))
 check("it says the watcher found it", "verdict=tab_tear_seen_by_watch" in open(LOG, errors="replace").read())
+
+n0 = open(LOG, errors="replace").read().count("verdict=tab_torn_off_snapped")
+st, mid, end, logged = drag_tab("11. AppKit splits the tab off at the drop: placed once, in the zone", edge_left, None, tear_after_release=True)
+want = zone(st, 0, 0, 0.5, 1)
+placed = open(LOG, errors="replace").read().count("verdict=tab_torn_off_snapped") - n0
+check("the torn tab lands in the left half", any(w["tabs"] == 1 and near(rect(w["frame"]), want) for w in end["windows"]), str(end["windows"]))
+check("it is placed once, not again by the watcher", placed == 1, f"{placed} placements")
 
 print("8. a whole window dragged to the right edge: the right half")
 app = App()
