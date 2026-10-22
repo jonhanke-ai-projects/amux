@@ -438,6 +438,17 @@ extension AppDelegate {
 // dragged near a grid line or another amux window's edge snaps to it when you
 // let go, and a translucent outline shows where while you drag. Hold Option
 // while letting go to place it freely.
+// What the drag code reads of the mouse. Under AMUX_DESKTOP_TEST=1 a test can
+// set it (amux://test/pointer): a real drag needs synthetic mouse events, which
+// macOS refuses an agent without the Accessibility grant. What that leaves
+// untested is written in desktop/test/tab-snap-e2e.py.
+enum Pointer {
+    static var testOverride: (at: NSPoint, down: Bool)?
+    static var location: NSPoint { testOverride?.at ?? NSEvent.mouseLocation }
+    static var buttonDown: Bool { testOverride.map { $0.down } ?? (NSEvent.pressedMouseButtons & 1 != 0) }
+}
+let desktopTestMode = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST"] == "1"
+
 let gridColumns: CGFloat = 12
 let gridRows: CGFloat = 8
 let snapDistance: CGFloat = 18
@@ -518,7 +529,7 @@ extension AppDelegate {
     func dragBegan(_ c: DashboardWindowController) {
         // windowWillMove also fires for a programmatic move (Arrange, a
         // restore); only a drag with the button down snaps.
-        guard NSEvent.pressedMouseButtons & 1 != 0, !restoring,
+        guard Pointer.buttonDown, !restoring,
               let w = c.window, !w.styleMask.contains(.fullScreen) else { return }
         dragTimer?.invalidate()
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self, weak c] t in
@@ -527,7 +538,7 @@ extension AppDelegate {
             // At a display edge the zone sets the size; elsewhere the grid nudges the edges.
             let zone = free ? nil : self.zoneAtCursor()
             let target = zone?.frame ?? self.snapMove(w.frame, w)
-            if NSEvent.pressedMouseButtons & 1 != 0 {
+            if Pointer.buttonDown {
                 if !free, target != w.frame { self.snapPreview.show(target, below: w) } else { self.snapPreview.hide() }
                 return
             }
@@ -547,7 +558,7 @@ extension AppDelegate {
 
     /// The snap zone under the cursor, on whichever display the cursor is on.
     func zoneAtCursor() -> (zone: SnapZone, frame: NSRect)? {
-        let p = NSEvent.mouseLocation
+        let p = Pointer.location
         guard let scr = NSScreen.screens.first(where: { $0.frame.insetBy(dx: -1, dy: -1).contains(p) }),
               let z = snapZone(cursor: p, screen: scr.frame, visible: scr.visibleFrame) else { return nil }
         return (z, z.frame(in: scr.visibleFrame))
@@ -568,7 +579,6 @@ extension AppDelegate {
         guard let w = e.window, controllers.contains(where: { $0.window === w }),
               let group = w.tabbedWindows, group.count > 1, !w.styleMask.contains(.fullScreen),
               e.locationInWindow.y >= (w.contentView?.frame.maxY ?? .infinity) else { return }
-        let before = Set(group.map { ObjectIdentifier($0) })
         let source = w.frame
         tabDragTimer?.invalidate()
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] t in
@@ -576,9 +586,9 @@ extension AppDelegate {
             // Dragging the bar itself moves the whole window; dragBegan has that.
             let windowDrag = self.dragTimer?.isValid ?? false
             let free = !self.snapEnabled || NSEvent.modifierFlags.contains(.option) || windowDrag
-            let out = !source.insetBy(dx: -8, dy: -8).contains(NSEvent.mouseLocation)
+            let out = !source.insetBy(dx: -8, dy: -8).contains(Pointer.location)
             let zone = free || !out ? nil : self.zoneAtCursor()
-            if NSEvent.pressedMouseButtons & 1 != 0 {
+            if Pointer.buttonDown {
                 if let z = zone { self.snapPreview.showFront(z.frame) } else if !windowDrag { self.snapPreview.hide() }
                 return
             }
@@ -587,16 +597,22 @@ extension AppDelegate {
             guard out, !free else { return }
             // AppKit makes the window the tab became key once the drop lands.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.placeTornTab(before: before, zone: zone)
+                self?.placeTornTab(from: group, source: source, zone: zone)
             }
         }
         RunLoop.main.add(t, forMode: .common)
         tabDragTimer = t
     }
 
-    func placeTornTab(before: Set<ObjectIdentifier>, zone: (zone: SnapZone, frame: NSRect)?) {
-        // A tab dropped on another window's tab bar joined it: nothing to place.
-        guard let k = NSApp.keyWindow, before.contains(ObjectIdentifier(k)), (k.tabbedWindows?.count ?? 1) == 1,
+    func placeTornTab(from group: [NSWindow], source: NSRect, zone: (zone: SnapZone, frame: NSRect)?) {
+        // The window the tab became: from the group, on its own now, and moved
+        // off the group's frame (AppKit puts it where it was dropped), else the
+        // key window. Not focus alone: an app that is not frontmost has none.
+        // A tab dropped on another window's tab bar joined it: the tab left
+        // behind is alone but did not move and is not key, so nothing is placed.
+        let alone = group.filter { w in controllers.contains { $0.window === w } && w.isVisible && (w.tabbedWindows?.count ?? 1) == 1 }
+        let moved = alone.first { abs($0.frame.minX - source.minX) > 1 || abs($0.frame.maxY - source.maxY) > 1 }
+        guard let k = moved ?? alone.first(where: { $0.isKeyWindow }),
               let c = controllers.first(where: { $0.window === k }) else {
             NSLog("amux-desktop: verdict=tab_drag_not_torn_off")
             return
@@ -609,6 +625,54 @@ extension AppDelegate {
             windowPlaced(c, user: true)
         }
         NSLog("amux-desktop: verdict=tab_torn_off_snapped zone=%@", zone?.zone.name ?? "grid")
+    }
+
+    /// amux://test/... links, honoured only under AMUX_DESKTOP_TEST=1.
+    func handleTestURL(_ url: URL) -> Bool {
+        guard desktopTestMode, url.host == "test" else { return false }
+        let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func num(_ k: String) -> CGFloat { CGFloat(Double(q.first { $0.name == k }?.value ?? "") ?? 0) }
+        func press(_ inTabBar: Bool) {
+            guard let w = arrangeTarget, let cv = w.contentView else { return }
+            let p = inTabBar ? NSPoint(x: cv.frame.midX, y: cv.frame.maxY + 8) : NSPoint(x: cv.frame.midX, y: cv.frame.midY)
+            if let e = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { tabPressed(e) }
+        }
+        switch url.path {
+        case "/pointer": Pointer.testOverride = (NSPoint(x: num("x"), y: num("y")), q.contains { $0.name == "down" && $0.value == "1" })
+        case "/pointer-clear": Pointer.testOverride = nil
+        case "/press-tab": press(true)          // the mouse-down that starts a tab drag
+        case "/press-content": press(false)     // a click in the page, which must not
+        // What AppKit does with a tab dropped outside every tab bar.
+        case "/tear-tab": arrangeTarget?.moveTabToNewWindow(nil)
+        // What AppKit does with a tab dropped on another window's tab bar.
+        case "/join-tab":
+            if let w = arrangeTarget, let other = controllers.compactMap({ $0.window }).first(where: { o in
+                o !== w && o.isVisible && !(w.tabbedWindows?.contains(o) ?? false) }) {
+                other.addTabbedWindow(w, ordered: .above)
+            }
+        case "/window-drag":
+            if let w = arrangeTarget, let c = controllers.first(where: { $0.window === w }) { dragBegan(c) }
+        // Through Window > Arrange > Snap to Grid While Dragging, as a person turns it off.
+        case "/snap": if snapEnabled != (q.first { $0.name == "on" }?.value != "0") { toggleSnap(nil) }
+        case "/state":
+            let ws = controllers.compactMap { c -> [String: Any]? in
+                guard let w = c.window, w.isVisible else { return nil }
+                return ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow]
+            }
+            let st: [String: Any] = ["preview": snapPreview.panel.isVisible, "preview_frame": NSStringFromRect(snapPreview.panel.frame),
+                                     "tracking": tabDragTimer?.isValid ?? false,
+                                     "visible_frame": NSStringFromRect(arrangeTarget?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero),
+                                     "screen_frame": NSStringFromRect(arrangeTarget?.screen?.frame ?? NSScreen.main?.frame ?? .zero),
+                                     "windows": ws]
+            if let path = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST_STATE"],
+               let data = try? JSONSerialization.data(withJSONObject: st, options: [.sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            }
+        default: return false
+        }
+        NSLog("amux-desktop: test_hook=%@", url.absoluteString)
+        return true
     }
 
     func resizeEnded(_ c: DashboardWindowController) {

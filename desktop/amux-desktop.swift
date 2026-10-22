@@ -859,6 +859,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     func handleAmuxURL(_ url: URL) {
         NSLog("amux-desktop: amux_url=%@ server=%@", url.absoluteString, serverURL?.absoluteString ?? "-")
+        if handleTestURL(url) { return }
         NSApp.activate(ignoringOtherApps: true)
         let arg = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).removingPercentEncoding ?? ""
         let enc = arg.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_."))) ?? arg
