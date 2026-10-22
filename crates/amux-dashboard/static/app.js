@@ -20925,7 +20925,7 @@ async function _queueAttachment(f, sink) {
   try {
     await _persistAttachment(f);
     if (f.cancelled) return;
-    f.status = 'Queued';
+    f.status = f.noLocalCopy ? 'Queued (no local copy)' : 'Queued';
     if (f.interactionId) _interactionSet(f.interactionId, {phase:'queued', feedback:{message:'File saved on this device; queued for upload'}});
     _uploadQueue.push({ f, sink });
     sink.render();
@@ -20962,22 +20962,44 @@ function _storedUploadFile(row) {
       return new Blob([bytes], {type:row.mime}).slice(start % CHUNK_SIZE, start % CHUNK_SIZE + end - start);
     }};
 }
+// A local save that stops making progress (WebKit's IndexedDB after its storage
+// process restarts: the request never completes) must not hold the attachment.
+// MSG-92727 (2026-10-22): a screenshot sat at "Saving locally…" and the message
+// could not be sent. Past this window with no progress the save is abandoned, the
+// attachment uploads from the file in memory, and a beacon says so.
+const _ATTACH_SAVE_STALL_MS = 8000;
 function _persistAttachment(f) {
   if (!f.id) return Promise.resolve();
   // The local save already failed once; do not re-read the whole file per chunk.
   if (f.noLocalCopy) return Promise.resolve();
-  f.persistence = (f.persistence || Promise.resolve()).catch(() => {}).then(async () => {
+  let lastProgress = Date.now();
+  const run = (f.persistence || Promise.resolve()).catch(() => {}).then(async () => {
     if (f.cancelled) return _idb.deleteUpload(f.id);
     if (f.stored) return _idb.updateUpload(f.id, {path:f.path, url:f.url, uploadId:f.uploadId, nextChunk:f.nextChunk, uploadChunkSize:f.uploadChunkSize});
     await _idb.putUpload({id:f.id, session:f.session, surface:f.surface, name:f.name, file:f.file,
       dir:f.dir, path:f.path, url:f.url, isImage:f.isImage, sizeMB:f.sizeMB, totalChunks:f.totalChunks}, (done, total) => {
+        lastProgress = Date.now();
         f.status = 'Saving locally ' + Math.round(done / total * 100) + '%';
         if (f.interactionId) _interactionSet(f.interactionId, {phase:'running', progress:{completed:done,total}, feedback:{message:'Saving file on this device'}});
         _durableAttachments.get(f.id)?.sink.render();
       });
     f.stored = true;
   });
-  return f.persistence;
+  f.persistence = run;
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const check = () => {
+      if (Date.now() - lastProgress < _ATTACH_SAVE_STALL_MS) { timer = setTimeout(check, 1000); return; }
+      f.noLocalCopy = true; f.persistence = null;
+      if (!f.stored && !f.cancelled) f.status = 'Queued (no local copy)';
+      _uploadDiagnostic(f, 'attachment-save-stalled', Object.assign(new Error('local save made no progress'),
+        {reason:'local_save_stalled', waited_ms:_ATTACH_SAVE_STALL_MS}));
+      _durableAttachments.get(f.id)?.sink.render();
+      resolve();
+    };
+    timer = setTimeout(check, 1000);
+    run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
+  });
 }
 function _restoreAttachments() {
   if (_attachmentRestorePromise) return _attachmentRestorePromise;

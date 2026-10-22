@@ -3420,6 +3420,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_persistAttachment": {
+      "kind": "command._persistAttachment",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_persistPeekTabPrefs": {
       "kind": "command._persistPeekTabPrefs",
       "feedback_required": true,
