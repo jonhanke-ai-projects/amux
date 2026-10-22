@@ -751,10 +751,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         return key.frame.offsetBy(dx: 28, dy: -28)
     }
 
+    /// A new tab opens on the worker list (Ethan, 2026-10-22). The bare server
+    /// address restores the page's last view, which is usually the worker the
+    /// tab beside it already shows.
     func newTab(nextTo c: DashboardWindowController) {
         let n = DashboardWindowController(app: self, frame: c.window?.frame, configuration: nil)
         controllers.append(n)
-        if let s = serverURL { n.load(s) } else { n.showConnectPage() }
+        if let u = url(withHash: "#view=sessions") { n.load(u) } else { n.showConnectPage() }
         if let w = c.window, let nw = n.window {
             w.addTabbedWindow(nw, ordered: .above)
             nw.makeKeyAndOrderFront(nil)

@@ -720,6 +720,9 @@ extension AppDelegate {
                let other = ws.first(where: { o in o !== w && o.isVisible && !(w.tabbedWindows?.contains(o) ?? false) }) {
                 other.addTabbedWindow(w, ordered: .above)
             }
+        // The tab bar's + button, on the window Arrange acts on.
+        case "/new-tab":
+            if let w = arrangeTarget, let c = controllers.first(where: { $0.window === w }) { c.newWindowForTab(nil) }
         case "/window-drag":
             if let w = arrangeTarget, let c = controllers.first(where: { $0.window === w }) { dragBegan(c) }
         // Through Window > Arrange > Snap to Grid While Dragging, as a person turns it off.
@@ -738,7 +741,8 @@ extension AppDelegate {
         case "/state":
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
-                return ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow]
+                return ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow,
+                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w]
             }
             let st: [String: Any] = ["preview": snapPreview.panel.isVisible, "preview_frame": NSStringFromRect(snapPreview.panel.frame),
                                      "tracking": tabDragTimer?.isValid ?? false,
