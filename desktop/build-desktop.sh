@@ -10,7 +10,7 @@ APP="Amux.app"
 # One binary: the app, the pinned-note overlay and the menu bar readout. The
 # last two keep their own standalone builds; -D AMUX_APP drops their entry
 # points here.
-SRC="desktop/amux-desktop.swift desktop/amux-settings.swift desktop/amux-workspace.swift desktop/amux-snapzones.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
+SRC="desktop/amux-desktop.swift desktop/amux-settings.swift desktop/amux-update.swift desktop/amux-workspace.swift desktop/amux-snapzones.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
 BIN="$APP/Contents/MacOS/amux"
 ICON_SRC="assets/icon-512.png"
 ICNS="$APP/Contents/Resources/AppIcon.icns"
@@ -106,6 +106,16 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
 </dict>
 </plist>
 PLIST
+
+# The commit this build came from, so Settings > Updates can compare it with
+# the desktop-latest release. "-dirty" when the app's sources have uncommitted
+# changes: that build is no commit's.
+COMMIT=${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}
+if [ -n "$COMMIT" ] && [ -z "${GITHUB_SHA:-}" ] && [ -n "$(git status --porcelain -- desktop scripts/pinned-overlay.swift scripts/amux-menubar.swift 2>/dev/null)" ]; then
+    COMMIT="$COMMIT-dirty"
+fi
+/usr/libexec/PlistBuddy -c "Add :AmuxBuildCommit string ${COMMIT:-}" -c "Add :AmuxBuildDate string $(date -u '+%Y-%m-%d %H:%M UTC')" "$APP/Contents/Info.plist"
+echo "  Built from ${COMMIT:-an unknown commit}"
 
 # Ad-hoc sign so macOS keeps the microphone and notification permissions
 # across rebuilds of the same bundle id.

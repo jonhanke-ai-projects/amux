@@ -1249,6 +1249,7 @@ func buildMenuBar(_ d: AppDelegate) {
     let appMenu = NSMenu()
     add(appMenu, "About amux", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), "")
     appMenu.addItem(.separator())
+    add(appMenu, "Check for Updates…", #selector(AppDelegate.checkForUpdates(_:)), "", target: d)
     add(appMenu, "Settings…", #selector(AppDelegate.showSettings(_:)), ",", target: d)
     appMenu.addItem(.separator())
     add(appMenu, "Show in Menu Bar", #selector(AppDelegate.toggleMenuBarItem(_:)), "", target: d)

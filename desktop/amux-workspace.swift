@@ -724,6 +724,17 @@ extension AppDelegate {
             if let w = arrangeTarget, let c = controllers.first(where: { $0.window === w }) { dragBegan(c) }
         // Through Window > Arrange > Snap to Grid While Dragging, as a person turns it off.
         case "/snap": if snapEnabled != (q.first { $0.name == "on" }?.value != "0") { toggleSnap(nil) }
+        // Click a button in Settings by id, as a person does (desktop/test/update-e2e.py).
+        case "/settings-click":
+            showSettings(nil)
+            let id = q.first { $0.name == "id" }?.value ?? ""
+            // JSON-quoted for JavaScript (jsString also escapes for HTML attributes).
+            let lit = String(data: (try? JSONSerialization.data(withJSONObject: [id])) ?? Data("[\"\"]".utf8), encoding: .utf8)?.dropFirst().dropLast() ?? "\"\""
+            settings?.afterLoad.append { [weak self] in
+                self?.settings?.webView.evaluateJavaScript("(function(){const b=document.getElementById(\(lit));if(!b)return 'missing';if(b.disabled)return 'disabled';b.click();return 'clicked'})()") { r, e in
+                    dlog("verdict=test_settings_click id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
+                }
+            }
         case "/state":
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
@@ -733,7 +744,9 @@ extension AppDelegate {
                                      "tracking": tabDragTimer?.isValid ?? false,
                                      "visible_frame": NSStringFromRect(arrangeTarget?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero),
                                      "screen_frame": NSStringFromRect(arrangeTarget?.screen?.frame ?? NSScreen.main?.frame ?? .zero),
-                                     "windows": ws]
+                                     "windows": ws,
+                                     "update": ["state": "\(Updater.shared.state)", "detail": Updater.shared.detail,
+                                                "commit": Updater.shared.commit, "latest": Updater.shared.latest]]
             if let path = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST_STATE"],
                let data = try? JSONSerialization.data(withJSONObject: st, options: [.sortedKeys]) {
                 try? data.write(to: URL(fileURLWithPath: path), options: .atomic)

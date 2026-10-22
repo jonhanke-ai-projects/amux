@@ -216,6 +216,14 @@ extension AppDelegate {
         settings?.showWindow(nil)
         settings?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        // Opening Settings checks too, at most every 10 minutes.
+        let u = Updater.shared
+        if u.state == .idle || (u.state != .checking && u.state != .installing && -(u.checkedAt?.timeIntervalSinceNow ?? -1e9) > 600) { u.check() }
+    }
+
+    @objc func checkForUpdates(_ sender: Any?) {
+        showSettings(sender)
+        Updater.shared.check()
     }
 }
 
@@ -238,12 +246,21 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
         w.center()
         w.setFrameAutosaveName("amuxSettings")
         super.init(window: w)
+        Updater.shared.changed = { [weak self] in self?.reload() }
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxSettings")
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Run once the page has loaded (a test click must not land on the page a reload is replacing).
+    var afterLoad: [() -> Void] = []
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let run = afterLoad
+        afterLoad = []
+        run.forEach { $0() }
+    }
 
     func reload() {
         guard let app = app else { return }
@@ -284,6 +301,8 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
             if name == "menuBar" { app.startMenuBarItem() }
         case "server":
             (app.keyController ?? app.openWindow(url: nil, frame: nil)).showConnectPage()
+        case "update-check": Updater.shared.check(); return
+        case "update-install": Updater.shared.install(); return
         default: break
         }
         reload()
@@ -339,6 +358,14 @@ func settingsHTML(_ app: AppDelegate) -> String {
         """
     }
     let server = htmlEscape(app.serverURL?.absoluteString ?? "not connected")
+    let u = Updater.shared
+    let built = u.commit.isEmpty ? "a build that does not record its commit" : "built from \(htmlEscape(String(u.commit.prefix(9))))"
+        + (u.builtAt.isEmpty ? "" : " on \(htmlEscape(u.builtAt))")
+    let updStatus = u.state == .idle ? "Check whether a newer build is out." : htmlEscape(u.detail)
+    let busy = u.state == .checking || u.state == .installing
+    let updButtons = (u.state == .available || (u.state == .failed && !u.latest.isEmpty)
+        ? "<button class=\"primary\" id=\"upd-install\" onclick=\"send('update-install','')\"\(busy ? " disabled" : "")>Update and Relaunch</button>" : "")
+        + "<button id=\"upd-check\" onclick=\"send('update-check','')\"\(busy ? " disabled" : "")>Check for Updates</button>"
     return """
     <!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
@@ -357,6 +384,7 @@ func settingsHTML(_ app: AppDelegate) -> String {
       .empty { color: var(--dim); padding: 12px 0; }
       button { font: inherit; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
       button:hover { border-color: var(--accent); }
+      button:disabled { opacity: .5; cursor: default; }
       button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
       button.danger { color: var(--danger); }
       .save { display:flex; gap:8px; padding: 12px 0; }
@@ -385,6 +413,9 @@ func settingsHTML(_ app: AppDelegate) -> String {
       \(toggle("dockBadge", c.dockBadge ?? true, "Show count on Dock icon", "The number of items waiting on you."))
       \(toggle("snapToGrid", c.snapToGrid ?? true, "Snap windows to a grid", "While you drag, an outline shows where the window lands: a 12 by 8 grid of the screen or another amux window's edge. Hold Option to place it freely."))
     </div>
+    <h2>Updates</h2>
+    <div class="card"><div class="row"><div class="info"><div class="name">This app: \(built)</div>
+      <div class="meta" id="upd-status" data-state="\(u.state)">\(updStatus)</div></div>\(updButtons)</div></div>
     <h2>Server</h2>
     <div class="card"><div class="row"><div class="info"><div class="name">\(server)</div>
       <div class="meta">Every window connects here.</div></div><button onclick="send('server','')">Change…</button></div></div>
