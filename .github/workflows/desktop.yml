@@ -50,6 +50,9 @@ jobs:
           xcrun swiftc -parse-as-library -o /tmp/pinned-overlay scripts/pinned-overlay.swift -framework Cocoa -framework WebKit
           xcrun swiftc -parse-as-library -o /tmp/amux-menubar scripts/amux-menubar.swift -framework Cocoa -framework WebKit
 
+      - name: Snap zones
+        run: xcrun swiftc -parse-as-library -o /tmp/snapzones desktop/amux-snapzones.swift desktop/test/snapzones-test.swift && /tmp/snapzones
+
       - name: Zip
         run: ditto -c -k --keepParent Amux.app Amux-macOS.zip && ls -l Amux-macOS.zip
 

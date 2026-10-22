@@ -41,6 +41,9 @@ struct SavedWindow: Codable {
     var allDesktops: Bool?
     var minimized: Bool?
     var fullscreen: Bool?
+    // The tab's name when it was saved ("mixpeek-general", "Board"), shown in
+    // Workspaces and on the tab until its page loads.
+    var title: String?
 }
 
 struct Config: Codable {
@@ -632,6 +635,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var lastSignature = ""
     var sigtermSource: DispatchSourceSignal?
     var dragTimer: Timer?
+    var tabDragTimer: Timer?
+    var tabDragMonitor: Any?
     lazy var snapPreview = SnapPreview()
 
     func applyBadge() {
@@ -677,6 +682,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         config.cleanExit = false
         saveConfig(config)
         startWorkspaceTracking()
+        startTabDragTracking()
         applyOpenAtLogin()
         hotKeyHandler = { [weak self] in self?.toggleVisible() }
         registerHotKey()

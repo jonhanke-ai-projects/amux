@@ -16,6 +16,16 @@ struct SavedPin: Codable {
     var opacity: Double
 }
 
+/// A saved window's tab name: the one it had when saved, or (a file saved
+/// before names were kept) what its link shows.
+func savedTabName(_ w: SavedWindow) -> String {
+    if let t = w.title, !t.isEmpty { return t }
+    guard let r = w.url.range(of: "#") else { return "amux" }
+    let h = String(w.url[r.upperBound...]).split(separator: "&").first.map(String.init) ?? ""
+    let v = h.split(separator: "=", maxSplits: 1).last.map(String.init) ?? h
+    return v.removingPercentEncoding ?? v
+}
+
 struct Layout: Codable {
     var name: String
     var windows: [SavedWindow]
@@ -45,7 +55,8 @@ extension AppDelegate {
             c.layouts = layouts
             saveConfig(c)
             self.config = c
-            NSLog("amux-desktop: verdict=layout_saved name=%@ windows=%d pins=%d", trimmed, windows.count, l.pins?.count ?? 0)
+            NSLog("amux-desktop: verdict=layout_saved name=%@ windows=%d pins=%d shows=%@", trimmed, windows.count, l.pins?.count ?? 0,
+                  self.workspaceWindows(l).joined(separator: " | "))
             self.rebuildLayoutsMenu()
             done?()
         }
@@ -167,6 +178,25 @@ extension AppDelegate {
         layoutsMenu.addItem(manage)
     }
 
+    /// Each window by its tab names and where it sits: "mixpeek-general, Board
+    /// (left half)". A tab group is one window; its visible tab comes first.
+    func workspaceWindows(_ l: Layout) -> [String] {
+        var out: [String] = []
+        var groups: [Int: Int] = [:]
+        var names: [[String]] = [], spots: [String?] = []
+        for w in l.windows {
+            let name = savedTabName(w)
+            if let g = w.tabGroup, let i = groups[g] {
+                if w.selected == true { names[i].insert(name, at: 0); spots[i] = zoneName(rel: w.rel) } else { names[i].append(name) }
+                continue
+            }
+            if let g = w.tabGroup { groups[g] = names.count }
+            names.append([name]); spots.append(zoneName(rel: w.rel))
+        }
+        for (i, n) in names.enumerated() { out.append(n.joined(separator: ", ") + (spots[i].map { " (\($0))" } ?? "")) }
+        return out
+    }
+
     /// "5 windows · Desktop 1: 2, Desktop 3: 3 · 2 displays · 1 pin"
     func workspaceSummary(_ l: Layout) -> String {
         var parts = ["\(l.windows.count) window\(l.windows.count == 1 ? "" : "s")"]
@@ -177,7 +207,7 @@ extension AppDelegate {
         if displays > 1 { parts.append("\(displays) displays") }
         let pins = l.pins?.count ?? 0
         if pins > 0 { parts.append("\(pins) pin\(pins == 1 ? "" : "s")") }
-        return parts.joined(separator: " · ")
+        return parts.joined(separator: " · ") + "\n" + workspaceWindows(l).joined(separator: "\n")
     }
 
     @objc func showSettings(_ sender: Any?) {
@@ -283,17 +313,12 @@ func settingsHTML(_ app: AppDelegate) -> String {
         ? "<div class=\"empty\">No saved workspaces yet. Arrange your windows across your Desktops, then save them below.</div>"
         : layouts.map { l -> String in
             let n = jsString(l.name)
-            let what = app.workspaceSummary(l) + (c.activeWorkspace == l.name ? " · open now" : "")
-            let shows = l.windows.compactMap { w -> String? in
-                guard let r = w.url.range(of: "#") else { return nil }
-                let h = String(w.url[r.upperBound...])
-                let v = h.split(separator: "=", maxSplits: 1).last.map(String.init) ?? h
-                return v.removingPercentEncoding ?? v
-            }.joined(separator: ", ")
+            let what = app.workspaceSummary(l).components(separatedBy: "\n")[0] + (c.activeWorkspace == l.name ? " · open now" : "")
+            let shows = app.workspaceWindows(l).map(htmlEscape).joined(separator: "<br>")
             return """
             <div class="row">
               <div class="info"><div class="name">\(htmlEscape(l.name))</div>
-                <div class="meta">\(what) · saved \(df.string(from: Date(timeIntervalSince1970: l.savedAt)))\(shows.isEmpty ? "" : "<br>" + htmlEscape(shows))</div></div>
+                <div class="meta">\(what) · saved \(df.string(from: Date(timeIntervalSince1970: l.savedAt)))\(shows.isEmpty ? "" : "<br>" + shows)</div></div>
               <button class="primary" onclick="send('open',\(n))">Open</button>
               <button onclick="send('update',\(n))" title="Replace with the windows open now">Update</button>
               <button onclick="send('rename',\(n))">Rename</button>

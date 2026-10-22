@@ -196,6 +196,8 @@ extension AppDelegate {
                 guard let url = m.savedURL() else { return nil }
                 var s = place
                 s.url = url
+                let t = m.window?.title ?? ""
+                if !t.isEmpty, t != "amux" { s.title = t }
                 s.tabGroup = group
                 if group != nil { s.selected = m.window === selected }
                 return s
@@ -251,6 +253,7 @@ extension AppDelegate {
                 }
             } else {
                 c = openWindow(url: URL(string: s.url), frame: frame, activate: false)
+                if let t = s.title, !t.isEmpty { c.pageLabel = t; c.updateTitle() }
             }
             c.home = s
             c.home?.display = s.display ?? screen?.uuid
@@ -295,8 +298,10 @@ extension AppDelegate {
             }
         }
         // Focus the front-most window on the Desktop you are on, so restoring
-        // does not pull you to another Desktop.
-        if let front = placed.reversed().first(where: { $0.0.window?.isOnActiveSpace == true && $0.1.minimized != true })?.0 {
+        // does not pull you to another Desktop. Never a hidden tab: bringing
+        // one forward makes it the visible tab of its group (a saved grid
+        // came back showing Workers where Calendar had been).
+        if let front = placed.reversed().first(where: { $0.0.window?.isOnActiveSpace == true && $0.1.minimized != true && $0.1.selected != false })?.0 {
             front.window?.makeKeyAndOrderFront(nil)
         }
         NSLog("amux-desktop: verdict=windows_restored n_considered=%d desktops_moved=%d desktops_current=%d desktops_unavailable=%d spaces_readable=%d spaces_movable=%d displays=%d",
@@ -459,6 +464,11 @@ final class SnapPreview {
         panel.setFrame(r, display: true)
         if !panel.isVisible { panel.order(.below, relativeTo: w.windowNumber) }
     }
+    /// For a tab being dragged out: there is no window under it yet.
+    func showFront(_ r: NSRect) {
+        panel.setFrame(r, display: true)
+        if !panel.isVisible { panel.orderFrontRegardless() }
+    }
     func hide() { panel.orderOut(nil) }
 }
 
@@ -514,7 +524,9 @@ extension AppDelegate {
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self, weak c] t in
             guard let self = self, let c = c, let w = c.window else { t.invalidate(); return }
             let free = !self.snapEnabled || NSEvent.modifierFlags.contains(.option)
-            let target = self.snapMove(w.frame, w)
+            // At a display edge the zone sets the size; elsewhere the grid nudges the edges.
+            let zone = free ? nil : self.zoneAtCursor()
+            let target = zone?.frame ?? self.snapMove(w.frame, w)
             if NSEvent.pressedMouseButtons & 1 != 0 {
                 if !free, target != w.frame { self.snapPreview.show(target, below: w) } else { self.snapPreview.hide() }
                 return
@@ -524,12 +536,79 @@ extension AppDelegate {
             if !free, target != w.frame {
                 w.setFrame(target, display: true, animate: true)
                 self.arranged(w, to: target)
+                if let z = zone { NSLog("amux-desktop: verdict=window_snapped_zone zone=%@", z.zone.name) }
             } else {
                 self.windowPlaced(c, user: true)
             }
         }
         RunLoop.main.add(t, forMode: .common)
         dragTimer = t
+    }
+
+    /// The snap zone under the cursor, on whichever display the cursor is on.
+    func zoneAtCursor() -> (zone: SnapZone, frame: NSRect)? {
+        let p = NSEvent.mouseLocation
+        guard let scr = NSScreen.screens.first(where: { $0.frame.insetBy(dx: -1, dy: -1).contains(p) }),
+              let z = snapZone(cursor: p, screen: scr.frame, visible: scr.visibleFrame) else { return nil }
+        return (z, z.frame(in: scr.visibleFrame))
+    }
+
+    /// A tab dragged out of a tab bar is a drag session, not a window move:
+    /// windowWillMove never fires, so dragBegan never sees it. From a press in
+    /// a tab bar to the release this previews the zone under the cursor, then
+    /// places the window the tab became: in that zone, or snapped to the grid.
+    func startTabDragTracking() {
+        tabDragMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
+            self?.tabPressed(e)
+            return e
+        }
+    }
+
+    func tabPressed(_ e: NSEvent) {
+        guard let w = e.window, controllers.contains(where: { $0.window === w }),
+              let group = w.tabbedWindows, group.count > 1, !w.styleMask.contains(.fullScreen),
+              e.locationInWindow.y >= (w.contentView?.frame.maxY ?? .infinity) else { return }
+        let before = Set(group.map { ObjectIdentifier($0) })
+        let source = w.frame
+        tabDragTimer?.invalidate()
+        let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] t in
+            guard let self = self else { t.invalidate(); return }
+            // Dragging the bar itself moves the whole window; dragBegan has that.
+            let windowDrag = self.dragTimer?.isValid ?? false
+            let free = !self.snapEnabled || NSEvent.modifierFlags.contains(.option) || windowDrag
+            let out = !source.insetBy(dx: -8, dy: -8).contains(NSEvent.mouseLocation)
+            let zone = free || !out ? nil : self.zoneAtCursor()
+            if NSEvent.pressedMouseButtons & 1 != 0 {
+                if let z = zone { self.snapPreview.showFront(z.frame) } else if !windowDrag { self.snapPreview.hide() }
+                return
+            }
+            t.invalidate()
+            if !windowDrag { self.snapPreview.hide() }
+            guard out, !free else { return }
+            // AppKit makes the window the tab became key once the drop lands.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.placeTornTab(before: before, zone: zone)
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        tabDragTimer = t
+    }
+
+    func placeTornTab(before: Set<ObjectIdentifier>, zone: (zone: SnapZone, frame: NSRect)?) {
+        // A tab dropped on another window's tab bar joined it: nothing to place.
+        guard let k = NSApp.keyWindow, before.contains(ObjectIdentifier(k)), (k.tabbedWindows?.count ?? 1) == 1,
+              let c = controllers.first(where: { $0.window === k }) else {
+            NSLog("amux-desktop: verdict=tab_drag_not_torn_off")
+            return
+        }
+        let target = zone?.frame ?? (snapEnabled ? snapMove(k.frame, k) : k.frame)
+        if target != k.frame {
+            k.setFrame(target, display: true, animate: true)
+            arranged(k, to: target)
+        } else {
+            windowPlaced(c, user: true)
+        }
+        NSLog("amux-desktop: verdict=tab_torn_off_snapped zone=%@", zone?.zone.name ?? "grid")
     }
 
     func resizeEnded(_ c: DashboardWindowController) {
