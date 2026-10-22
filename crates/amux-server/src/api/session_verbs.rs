@@ -34965,7 +34965,7 @@ fn config_patch_operations_keys() -> Vec<&'static str> {
 const CONFIG_PATCH_OPS: &[&[&str]] = &[
     &["worktree_verify"], &["worktree_base"], &["rename"], &["worker_type"],
     &["provider"], &["model", "effort"], &["dir"], &["task_summary"], &["desc"],
-    &["toggle_pin"], &["isolated"], &["toggle_yolo"], &["external_email_allowed"],
+    &["toggle_pin"], &["isolated"], &["peers"], &["toggle_yolo"], &["external_email_allowed"],
     &["send_allow", "spans_groups"], &["worktree_profile"], &["branch"], &["tags"],
     &["mcp"], &["new_conversation", "restart"],
 ];
@@ -35640,6 +35640,81 @@ async fn config_patch_with_liveness(
             );
         }
         return j200(json!({"ok": true, "message": "pin toggled"}));
+    }
+
+    // PEERS from the Configurations tab (Ethan, 2026-10-22: "i want to be able
+    // to do in the ui", "make it multiselect/search"). CC_PEERS opens a channel
+    // only when both workers name each other (bilateral_peers), so one side
+    // alone does nothing: the dashboard writes both. A worker added here gets
+    // this one in its own list, and a worker removed here loses it. Both lists
+    // are read on every send, so nothing restarts.
+    if let Some(pv) = body.get("peers") {
+        let Some(arr) = pv.as_array() else {
+            return jresp(StatusCode::BAD_REQUEST, json!({"error": "peers must be a list of worker names"}));
+        };
+        let mut want: Vec<String> = Vec::new();
+        let mut unknown: Vec<String> = Vec::new();
+        for v in arr {
+            let p = v.as_str().unwrap_or("").trim().to_string();
+            if p.is_empty() || p.eq_ignore_ascii_case(name) || want.iter().any(|w| w.eq_ignore_ascii_case(&p)) {
+                continue;
+            }
+            if env_path(&p).exists() { want.push(p) } else { unknown.push(p) }
+        }
+        if !unknown.is_empty() {
+            return jresp(StatusCode::BAD_REQUEST,
+                json!({"error": format!("no such worker: {}", unknown.join(", ")), "unknown": unknown}));
+        }
+        want.sort();
+        let before = lane_peers(name);
+        let split = |v: Option<&str>| -> Vec<String> {
+            v.unwrap_or("").split(',').map(|t| t.trim().trim_matches('"').to_string()).filter(|t| !t.is_empty()).collect()
+        };
+        // This worker's own list.
+        if want.is_empty() { cfg.remove("CC_PEERS") } else { cfg.set("CC_PEERS", &want.join(",")) }
+        if let Err(e) = cfg.write(&f) {
+            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": env_write_error(&f, &e)}));
+        }
+        // The other side of each pairing.
+        let mut added = 0usize;
+        let mut removed = 0usize;
+        let mut failed: Vec<String> = Vec::new();
+        let removed_peers: Vec<String> = before.iter()
+            .filter(|b| !want.iter().any(|w| w.eq_ignore_ascii_case(b)))
+            .cloned().collect();
+        for (peer, add) in want.iter().map(|p| (p.clone(), true)).chain(removed_peers.into_iter().map(|p| (p, false))) {
+            let pf = env_path(&peer);
+            if !pf.exists() { continue; }
+            let mut pc = EnvFile::load(&pf);
+            let mut list = split(pc.get("CC_PEERS"));
+            let has = list.iter().any(|x| x.eq_ignore_ascii_case(name));
+            if add && !has { list.push(name.to_string()); added += 1; }
+            else if !add && has { list.retain(|x| !x.eq_ignore_ascii_case(name)); removed += 1; }
+            else { continue; }
+            if list.is_empty() { pc.remove("CC_PEERS") } else { pc.set("CC_PEERS", &list.join(",")) }
+            if let Err(e) = pc.write(&pf) {
+                tracing::warn!(session = %name, peer = %peer, error = %env_write_error(&pf, &e), verdict = "peers_other_side_unwritten",
+                    "peers: could not update the other worker's list; the pairing is one-sided");
+                failed.push(peer);
+            }
+        }
+        let mutual: serde_json::Map<String, Value> = want.iter().map(|p| (p.clone(), json!(bilateral_peers(name, p)))).collect();
+        tracing::info!(session = %name, peers = %want.join(","), added, removed, failed = failed.len(),
+            measured = true, n_considered = want.len(), verdict = "peers_set",
+            "peers set from the dashboard; both sides written");
+        return j200(json!({
+            "ok": failed.is_empty(),
+            "peers": want,
+            "mutual": mutual,
+            "failed": failed,
+            "message": if !failed.is_empty() {
+                format!("Peers saved, but could not update {}: those pairings are one-sided", failed.join(", "))
+            } else if want.is_empty() {
+                "No peers: this worker messages only its groups".to_string()
+            } else {
+                format!("Peers: {} (both sides set; applies to the next send)", want.join(", "))
+            },
+        }));
     }
 
     // Isolated (raw agent, no amux harness), AMUX-3232. Persisted as the env
@@ -47185,6 +47260,45 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         let (ok, detail) = start_session(&state, "probe", "", false).await;
         assert!(!ok);
         assert!(detail.contains("paused"), "{detail}");
+    }
+
+    // Ethan, 2026-10-22: peers set from the Configurations tab. One side alone
+    // opens nothing (bilateral_peers), so the PATCH writes both sides, and
+    // removing a peer takes this worker off that peer's list too.
+    #[tokio::test]
+    async fn peers_patch_pairs_both_sides_and_unpairs_both() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        for (n, extra) in [("pa", ""), ("pb", "CC_PEERS=\"pc\"\n"), ("pc", "")] {
+            std::fs::write(home.path().join(format!("sessions/{n}.env")), format!("CC_DIR=\"/tmp\"\n{extra}")).unwrap();
+        }
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        let app: Router = routes().with_state(state);
+        let peers = |n: &str| lane_peers(n).into_iter().collect::<Vec<_>>();
+
+        let (st, v) = call(&app, "PATCH", "/api/sessions/pa/config", Some(json!({"peers": ["pb", "pc", "pa"]}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(peers("pa"), vec!["pb", "pc"], "itself is never its own peer");
+        assert_eq!(peers("pb"), vec!["pa", "pc"], "the other side gains this worker and keeps its own peers");
+        assert_eq!(peers("pc"), vec!["pa"]);
+        assert_eq!(v["mutual"], json!({"pb": true, "pc": true}));
+        assert!(bilateral_peers("pa", "pb") && bilateral_peers("pc", "pa"));
+
+        let (st, v) = call(&app, "PATCH", "/api/sessions/pa/config", Some(json!({"peers": ["pc"]}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(peers("pb"), vec!["pc"], "a removed peer loses this worker, nothing else");
+        assert!(!bilateral_peers("pa", "pb"));
+
+        let (st, v) = call(&app, "PATCH", "/api/sessions/pa/config", Some(json!({"peers": ["pc", "ghost"]}))).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(v["unknown"], json!(["ghost"]));
+        assert_eq!(peers("pa"), vec!["pc"], "an unknown name changes nothing");
+
+        let (st, _) = call(&app, "PATCH", "/api/sessions/pa/config", Some(json!({"peers": []}))).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(parse_env("pa").get("CC_PEERS").is_none() && parse_env("pc").get("CC_PEERS").is_none(),
+            "clearing removes the key on both sides");
     }
 
     #[tokio::test]
