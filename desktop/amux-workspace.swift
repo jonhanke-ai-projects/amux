@@ -445,7 +445,13 @@ extension AppDelegate {
 enum Pointer {
     static var testOverride: (at: NSPoint, down: Bool)?
     static var location: NSPoint { testOverride?.at ?? NSEvent.mouseLocation }
-    static var buttonDown: Bool { testOverride.map { $0.down } ?? (NSEvent.pressedMouseButtons & 1 != 0) }
+    // The window server's own button state as well as AppKit's: during AppKit's
+    // tab drag session the app receives no mouse events, and a real tab drag
+    // (Ethan's recording, 2026-10-22 10:48) never got a preview or a zone.
+    static var buttonDown: Bool {
+        testOverride.map { $0.down }
+            ?? (NSEvent.pressedMouseButtons & 1 != 0 || CGEventSource.buttonState(.combinedSessionState, button: .left))
+    }
 }
 let desktopTestMode = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST"] == "1"
 
@@ -531,6 +537,7 @@ extension AppDelegate {
         // restore); only a drag with the button down snaps.
         guard Pointer.buttonDown, !restoring,
               let w = c.window, !w.styleMask.contains(.fullScreen) else { return }
+        dlog("verdict=window_drag_tracking")
         dragTimer?.invalidate()
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self, weak c] t in
             guard let self = self, let c = c, let w = c.window else { t.invalidate(); return }
@@ -547,7 +554,7 @@ extension AppDelegate {
             if !free, target != w.frame {
                 w.setFrame(target, display: true, animate: true)
                 self.arranged(w, to: target)
-                if let z = zone { NSLog("amux-desktop: verdict=window_snapped_zone zone=%@", z.zone.name) }
+                if let z = zone { dlog("verdict=window_snapped_zone zone=\(z.zone.name)") }
             } else {
                 self.windowPlaced(c, user: true)
             }
@@ -573,6 +580,54 @@ extension AppDelegate {
             self?.tabPressed(e)
             return e
         }
+        // The fallback that needs no press: a window that leaves a tab group
+        // while the button is down is a tab being dragged out, however AppKit
+        // delivered (or did not deliver) the press.
+        let t = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in self?.watchTabGroups() }
+        RunLoop.main.add(t, forMode: .common)
+        tearWatchTimer = t
+    }
+
+    func watchTabGroups() {
+        var now: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]
+        var leavers: [(NSWindow, NSRect)] = []
+        for c in controllers {
+            guard let w = c.window, w.isVisible else { continue }
+            let id = ObjectIdentifier(w), n = w.tabbedWindows?.count ?? 1
+            now[id] = (n, w.frame)
+            if let was = tabGroupSeen[id], was.tabs > 1, n == 1 { leavers.append((w, was.frame)) }
+        }
+        tabGroupSeen = now
+        guard !leavers.isEmpty, !(tabDragTimer?.isValid ?? false), Date().timeIntervalSince(lastTabPlaced) > 2,
+              snapEnabled, !NSEvent.modifierFlags.contains(.option) else { return }
+        // Which of the windows left alone is the torn tab is decided at the
+        // release: the one that moved off the group's frame. The tab left
+        // behind (or every one, when the tab joined another window) did not.
+        dlog("verdict=tab_tear_seen_by_watch left_alone=\(leavers.count) button_down=\(Pointer.buttonDown ? 1 : 0)")
+        followTornTab(leavers.map { $0.0 }, source: leavers[0].1)
+    }
+
+    /// Previews the zone under the cursor until the button is released, then
+    /// places `w` (the window a tab became) there, or snaps it to the grid.
+    func followTornTab(_ candidates: [NSWindow], source: NSRect) {
+        tabDragTimer?.invalidate()
+        var zone: (zone: SnapZone, frame: NSRect)? = nil
+        let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] t in
+            guard let self = self else { t.invalidate(); return }
+            let out = !source.insetBy(dx: -8, dy: -8).contains(Pointer.location)
+            zone = out ? self.zoneAtCursor() : nil
+            if Pointer.buttonDown {
+                if let z = zone { self.snapPreview.showFront(z.frame) } else { self.snapPreview.hide() }
+                return
+            }
+            t.invalidate()
+            self.snapPreview.hide()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.placeTornTab(from: candidates, source: source, zone: zone)
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        tabDragTimer = t
     }
 
     func tabPressed(_ e: NSEvent) {
@@ -580,6 +635,7 @@ extension AppDelegate {
               let group = w.tabbedWindows, group.count > 1, !w.styleMask.contains(.fullScreen),
               e.locationInWindow.y >= (w.contentView?.frame.maxY ?? .infinity) else { return }
         let source = w.frame
+        dlog("verdict=tab_press_tracked tabs=\(group.count) button_down=\(Pointer.buttonDown ? 1 : 0)")
         tabDragTimer?.invalidate()
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] t in
             guard let self = self else { t.invalidate(); return }
@@ -594,6 +650,7 @@ extension AppDelegate {
             }
             t.invalidate()
             if !windowDrag { self.snapPreview.hide() }
+            dlog("verdict=tab_press_released out=\(out ? 1 : 0) free=\(free ? 1 : 0) window_drag=\(windowDrag ? 1 : 0) zone=\(zone?.zone.name ?? "none")")
             guard out, !free else { return }
             // AppKit makes the window the tab became key once the drop lands.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -606,17 +663,17 @@ extension AppDelegate {
 
     func placeTornTab(from group: [NSWindow], source: NSRect, zone: (zone: SnapZone, frame: NSRect)?) {
         // The window the tab became: from the group, on its own now, and moved
-        // off the group's frame (AppKit puts it where it was dropped), else the
-        // key window. Not focus alone: an app that is not frontmost has none.
-        // A tab dropped on another window's tab bar joined it: the tab left
-        // behind is alone but did not move and is not key, so nothing is placed.
+        // off the group's frame (AppKit puts it where it was dropped). Never by
+        // focus: the tab left behind when a tab joins another window can be key,
+        // and placing it moved the wrong window (tab-snap-e2e case 9).
         let alone = group.filter { w in controllers.contains { $0.window === w } && w.isVisible && (w.tabbedWindows?.count ?? 1) == 1 }
         let moved = alone.first { abs($0.frame.minX - source.minX) > 1 || abs($0.frame.maxY - source.maxY) > 1 }
-        guard let k = moved ?? alone.first(where: { $0.isKeyWindow }),
+        guard let k = moved,
               let c = controllers.first(where: { $0.window === k }) else {
-            NSLog("amux-desktop: verdict=tab_drag_not_torn_off")
+            dlog("verdict=tab_drag_not_torn_off")
             return
         }
+        lastTabPlaced = Date()
         let target = zone?.frame ?? (snapEnabled ? snapMove(k.frame, k) : k.frame)
         if target != k.frame {
             k.setFrame(target, display: true, animate: true)
@@ -624,7 +681,7 @@ extension AppDelegate {
         } else {
             windowPlaced(c, user: true)
         }
-        NSLog("amux-desktop: verdict=tab_torn_off_snapped zone=%@", zone?.zone.name ?? "grid")
+        dlog("verdict=tab_torn_off_snapped zone=\(zone?.zone.name ?? "grid")")
     }
 
     /// amux://test/... links, honoured only under AMUX_DESKTOP_TEST=1.

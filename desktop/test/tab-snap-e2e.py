@@ -116,7 +116,8 @@ def drag_tab(name, at, expect, press="press-tab", tear=True, snap=True, extra=()
             app.send("snap?on=0")
         # The button is down where the press lands (the tab bar), as in a real drag.
         app.send(f"pointer?x={src[0] + src[2] / 2}&y={src[1] + src[3] - 10}&down=1", 0.1)
-        app.send(press)
+        if press:
+            app.send(press)
         x, y = at(st)
         app.send(f"pointer?x={x}&y={y}&down=1", 0.4)
         mid = app.state()
@@ -161,7 +162,7 @@ check("no preview away from the edges", not mid["preview"], mid["preview_frame"]
 check("the torn window keeps its size", len(t) == 2 and all(abs(rect(w["frame"])[2] - src[2]) <= 2 and abs(rect(w["frame"])[3] - src[3]) <= 2 for w in t), str(t))
 check("and it says the grid placed it", "verdict=tab_torn_off_snapped zone=grid" in open(LOG, errors="replace").read())
 
-st, mid, end, logged = drag_tab("5. a click in the page then a drag is not a tab drag", edge_left, None, press="press-content")
+st, mid, end, logged = drag_tab("5. a click in the page then a drag is not a tab drag", edge_left, None, press="press-content", tear=False)
 check("nothing tracks it and nothing previews", not mid["tracking"] and not mid["preview"], str(mid))
 check("no window is moved into a zone", not any(near(rect(w["frame"]), zone(st, 0, 0, 0.5, 1)) for w in end["windows"]), str(end["windows"]))
 
@@ -178,6 +179,15 @@ st, mid, end, logged = drag_tab("9. a tab dropped on another window's tab bar jo
 check("the tab joined the other window", any(w["title"] == "Messages" and w["tabs"] == 2 for w in end["windows"]), str(end["windows"]))
 check("the tab it left is not moved", any(w["title"] == "Board" and w["tabs"] == 1 and near(rect(w["frame"]), src) for w in end["windows"]), str(end["windows"]))
 check("no window is put in the zone the drag passed over", not any(near(rect(w["frame"]), zone(st, 0, 0, 0.5, 1)) for w in end["windows"]), str(end["windows"]))
+
+# Ethan's real drag (2026-10-22 10:48) got no preview and no zone: the press
+# monitor never tracked it. The watcher places a tab that leaves its group while
+# the button is down, with no press seen at all.
+st, mid, end, logged = drag_tab("10. the press never reaches the app: the tab is still placed in its zone", edge_left, None, press=None)
+want = zone(st, 0, 0, 0.5, 1)
+check("the watcher sees the tear and previews the zone", mid["preview"] and near(rect(mid["preview_frame"]), want) or "tab_tear_seen_by_watch" in open(LOG, errors="replace").read(), mid["preview_frame"])
+check("the torn tab lands in the left half", any(w["tabs"] == 1 and near(rect(w["frame"]), want) for w in end["windows"]), str(end["windows"]))
+check("it says the watcher found it", "verdict=tab_tear_seen_by_watch" in open(LOG, errors="replace").read())
 
 print("8. a whole window dragged to the right edge: the right half")
 app = App()

@@ -65,6 +65,29 @@ struct Config: Codable {
     var cleanExit: Bool?
 }
 
+/// One line in the app's log: NSLog, which reaches the file below too.
+func dlog(_ s: String) { NSLog("amux-desktop: %@", s) }
+
+/// Launched from Finder the app's stderr is /dev/null, and its NSLog lines did
+/// not reach the unified log either: a whole session (2026-10-22) left no
+/// amux-desktop line anywhere, so a drag that failed could not say where. Under
+/// Finder they now go to ~/.amux/logs/desktop-app.log (kept under 5 MB, one
+/// previous file). A terminal or a test harness keeps its own stderr.
+func routeStderrToLogFile() {
+    var st = stat(), nul = stat()
+    guard fstat(2, &st) == 0, stat("/dev/null", &nul) == 0,
+          (st.st_mode & S_IFMT) == S_IFCHR, st.st_rdev == nul.st_rdev else { return }
+    let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".amux/logs")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let path = dir.appendingPathComponent("desktop-app.log").path
+    if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int, size > 5 << 20 {
+        try? FileManager.default.removeItem(atPath: path + ".1")
+        try? FileManager.default.moveItem(atPath: path, toPath: path + ".1")
+    }
+    if freopen(path, "a", stderr) != nil { setvbuf(stderr, nil, _IOLBF, 0) }
+    dlog("verdict=log_routed path=\(path)")
+}
+
 func loadConfig() -> Config {
     guard let data = try? Data(contentsOf: configURL),
           let config = try? JSONDecoder().decode(Config.self, from: data) else {
@@ -637,6 +660,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var dragTimer: Timer?
     var tabDragTimer: Timer?
     var tabDragMonitor: Any?
+    var tearWatchTimer: Timer?
+    var tabGroupSeen: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]
+    var lastTabPlaced = Date.distantPast
     lazy var snapPreview = SnapPreview()
 
     func applyBadge() {
@@ -667,6 +693,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        routeStderrToLogFile()
         NSWindow.allowsAutomaticWindowTabbing = true
         buildMenuBar(self)
         NotificationCenter.default.addObserver(forName: .amuxOverlayClosed, object: nil, queue: .main) { [weak self] n in
