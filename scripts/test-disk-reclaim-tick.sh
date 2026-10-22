@@ -96,8 +96,11 @@ class H(http.server.BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(b)
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
+        pending = __import__("os").path.exists(T + "/scan-pending")
         if u.path == "/api/reclaim/scan":
-            return self.send([{"id": "S1", "status": "done", "finished_at": time.time() - 60}])
+            return self.send([] if pending else [{"id": "S1", "status": "done", "finished_at": time.time() - 60}])
+        if u.path == "/api/reclaim/scan/S2":
+            return self.send({"scan": {"id": "S2", "status": "running"}})
         if u.path == "/api/reclaim/scan/S1":
             return self.send(json.load(open(T + "/scan.json")))
         if u.path == "/api/reclaim/quarantine":
@@ -108,6 +111,8 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send({"error": "nf"}, 404)
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0); body = self.rfile.read(n).decode()
+        if self.path.startswith("/api/reclaim/scan"):
+            return self.send({"scan_id": "S2"})
         open(T + "/posts.log", "a").write(self.headers.get("X-Amux-Session", "") + "\t" + body + "\n")
         paths = json.loads(body).get("paths", [])
         # The real reply's shape (reclaim.rs create_quarantine): moved is a COUNT.
@@ -195,6 +200,16 @@ grep -q 'would move 2 path' "$T/out.txt" && grep -q 'would move 1 file' "$T/out.
 # ── ownership not measured ──
 mkscan false; run
 [ ! -s "$T/posts.log" ] && grep -q 'verdict=reclaim_tick_unmeasured' "$T/out.txt" && ok "unmeasured ownership moves nothing and says so" || bad "unmeasured ownership"
+
+# ── a scan longer than the schedule's budget (SCHED-783, 2026-10-22 04:00) ──
+mkscan true; touch "$T/scan-pending"
+RECLAIM_SCAN_WAIT_S=2 RECLAIM_SCAN_POLL_S=1 run; rm -f -- "$T/scan-pending"
+[ "$(cat "$T/rc")" = 0 ] && grep -q 'scan: S2 still running after .*verdict=reclaim_scan_pending' "$T/out.txt" && [ ! -s "$T/posts.log" ] \
+  && ok "a scan still running when the wait ends: exit 0, nothing moved, says the next run uses it" || { bad "scan pending"; tail -5 "$T/out.txt"; }
+limit=$(sed -nE 's/^pub const SHELL_TIMEOUT_S: u64 = ([0-9]+);.*/\1/p' crates/amux-server/src/runtime_jobs/scheduler.rs)
+wait_s=$(sed -nE 's/^SCAN_WAIT_S=\$\{RECLAIM_SCAN_WAIT_S:-([0-9]+)\}.*/\1/p' "$TICK")
+[ -n "$limit" ] && [ -n "$wait_s" ] && [ $((wait_s + 240)) -le "$limit" ] \
+  && ok "the default scan wait (${wait_s}s) leaves 240s of the scheduler's ${limit}s for the rest" || bad "scan wait ${wait_s:-?}s vs scheduler limit ${limit:-?}s"
 
 # ── no rm on a candidate, ever ──
 grep -nE '(^|[^a-z_])rm ' "$TICK" | grep -v -- '"${WORK:?}"' | grep -v '^[0-9]*:#' > "$T/rm.txt" || true

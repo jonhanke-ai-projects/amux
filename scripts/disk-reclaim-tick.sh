@@ -79,7 +79,14 @@ CATS=${RECLAIM_CATS:-build tmp-orphan}   # finding categories eligible for auto-
 # for a person to judge.
 ROOTS=${RECLAIM_ROOTS:-$HOME/Dev $HOME/.amux /private/tmp /private/var/folders}
 SCAN_MAX_AGE_H=${RECLAIM_SCAN_MAX_AGE_H:-20}
-SCAN_WAIT_S=${RECLAIM_SCAN_WAIT_S:-2700}
+# The scheduler kills a shell schedule at 600s (SHELL_TIMEOUT_S in
+# runtime_jobs/scheduler.rs), and a scan takes 12 to 41 minutes. Waiting 2700s
+# for one killed the 2026-10-22 04:00 run at 600s, with its log cut mid-wait.
+# So wait 300s at most, which leaves the rest of the budget for the quarantine
+# and the tool prunes. An unfinished scan carries on server-side, and the
+# schedule's second daily fire (06:00) reuses it, being under SCAN_MAX_AGE_H old.
+SCAN_WAIT_S=${RECLAIM_SCAN_WAIT_S:-300}
+SCAN_POLL_S=${RECLAIM_SCAN_POLL_S:-30}
 RECHECK_S=${RECLAIM_RECHECK_S:-60}       # per-path budget for the on-disk idle recheck
 TOOLS=${RECLAIM_TOOLS:-1}                # 0 skips step 5 (the test suite sets it)
 LOG=${RECLAIM_LOG:-$HOME/.amux/logs/disk-reclaim-tick.log}
@@ -132,12 +139,17 @@ except Exception: pass')
     say "scan: started $scan_id, waiting up to ${SCAN_WAIT_S}s"
     t0=$SECONDS; st=running
     while [ "$st" = running ] && [ $((SECONDS - t0)) -lt "$SCAN_WAIT_S" ]; do
-      sleep 30
+      sleep "$SCAN_POLL_S"
       st=$(api "/api/reclaim/scan/$scan_id?limit=1" 60 | python3 -c 'import json,sys
 try: print(json.load(sys.stdin)["scan"]["status"])
 except Exception: print("running")')
     done
-    [ "$st" = done ] || { say "scan: $scan_id ended as '$st' after $((SECONDS - t0))s, not used"; scan_id=; }
+    if [ "$st" = running ]; then
+      say "scan: $scan_id still running after $((SECONDS - t0))s; it finishes server-side and the next run within ${SCAN_MAX_AGE_H}h uses it (verdict=reclaim_scan_pending)"
+      scan_id=
+    elif [ "$st" != done ]; then
+      say "scan: $scan_id ended as '$st' after $((SECONDS - t0))s, not used"; scan_id=
+    fi
   else
     say "scan: could not start one (another scan running, or the API refused)"
   fi
