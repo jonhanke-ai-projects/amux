@@ -26,7 +26,7 @@ yn() { if "$@"; then echo yes; else echo no; fi; }
 export AMUX_CLEANUP_SCOPE_FILE=/dev/null   # the live global scope must not configure a test (DESKT-72)
 export AMUX_CLEANUP_SESSIONS_CMD=false        # the VM-reference report must not read the live fleet (AMUX-5491)
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
-export AMUX_CLEANUP_STATE_DIR="$FIX/assess-state" AMUX_CLEANUP_ESCALATE_CMD="true" AMUX_CLEANUP_HISTORY_CMD="true" AMUX_CLEANUP_CARD_CMD="true" AMUX_CLEANUP_VM_LIST_CMD="true"   # never page a real lane from a test (DESKT-57)
+export AMUX_CLEANUP_STATE_DIR="$FIX/assess-state" AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD="true" AMUX_CLEANUP_HISTORY_CMD="true" AMUX_CLEANUP_CARD_CMD="true" AMUX_CLEANUP_VM_LIST_CMD="true"   # never page a real lane from a test (DESKT-57)
 DEFAULT_KEEP=$TARGET_KEEP; DEFAULT_ROOTS=$TARGET_ROOTS; DEFAULT_VM_PRUNE=$VM_PRUNE_CMD; DEFAULT_VM_CAP=$VM_PRUNE_CAP_CMD; DEFAULT_VM_IMAGE=$VM_IMAGE_PRUNE_CMD; DEFAULT_VM_MAX_USED=$VM_PRUNE_MAX_USED; DEFAULT_VM_STOP=$VM_STOP_CMD      # what the scheduler actually runs with, before this file overrides the knobs
 DEFAULT_VM_GUEST_DF=$VM_GUEST_DF_CMD
 # The guest's df is a fake: no cell may ssh into a real VM. "$FIX/guest.<profile>"

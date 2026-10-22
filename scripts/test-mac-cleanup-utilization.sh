@@ -95,7 +95,7 @@ check "the cpu line names who"                        yes "$(has "$out" '^cpu 15
 check "other lines are untouched"                     yes "$(has "$out" '^memory x$')"
 
 echo "6. system_health runs it"
-check "wired between the volume and self checks"      yes "$(grep -q 'check_agent_volume; check_utilization "\$1"; check_self_runs' "$TICK" && echo yes || echo no)"
+check "wired between the volume and self checks"      yes "$(grep -q 'check_agent_volume; check_utilization "\$1"; demote_background_daemons "\$1"; check_self_runs' "$TICK" && echo yes || echo no)"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-utilization — all checks passed"; exit 0; fi

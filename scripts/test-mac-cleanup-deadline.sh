@@ -89,7 +89,7 @@ if [ "$(uname)" = Darwin ]; then
         AMUX_CLEANUP_USER_TMP=0 AMUX_CLEANUP_WORKTREE_ROOTS="$FIX/none" AMUX_CLEANUP_CHURN_ROOTS="$FIX/none" \
         AMUX_CLEANUP_VM_LIST_CMD=true AMUX_CLEANUP_VM_IMAGE_PRUNE_CMD=true AMUX_CLEANUP_SESSIONS_CMD=false \
         AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 AMUX_CLEANUP_HISTORY_CMD=true AMUX_CLEANUP_CARD_CMD=true \
-        AMUX_CLEANUP_ESCALATE_CMD=true "$@" bash "$TICK" --dry-run 2>&1; }
+        AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD=true "$@" bash "$TICK" --dry-run 2>&1; }
   out=$(run env AMUX_CLEANUP_TICK_BUDGET_S=1 AMUX_CLEANUP_TICK_RESERVE_S=1); rc=$?
   check "the tick exits cleanly"                      0   "$rc"
   for arm in "cargo targets" "lane tmp" "worktrees" "claude tmp"; do

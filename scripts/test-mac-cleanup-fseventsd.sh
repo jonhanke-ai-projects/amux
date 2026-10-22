@@ -47,7 +47,7 @@ if [ "$(uname)" = Darwin ]; then
            AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRESSURE_PURGE=99 AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=0 \
            AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 AMUX_CLEANUP_CPU_SHARE=99 AMUX_CLEANUP_SWAP_FREE_FLOOR_MB=0 \
            AMUX_CLEANUP_DISK_FLOOR_GB=0 AMUX_CLEANUP_HISTORY_CMD=true AMUX_CLEANUP_CARD_CMD=true \
-           AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_ESCALATE_CMD="${TICK_REC:-$REC} TARGET FILE" bash "$TICK" 2>&1; }
+           AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD="${TICK_REC:-$REC} TARGET FILE" bash "$TICK" 2>&1; }
   out=$(tick "echo 0.01 3")
   check "control: a quiet fseventsd is under its thresholds" "yes" "$(has "$out" 'fseventsd 0.01G 3% CPU, under')"
   check "and escalates nothing"                         "no"  "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"

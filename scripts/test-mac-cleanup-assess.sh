@@ -166,7 +166,7 @@ if [ "$(uname)" = Darwin ]; then
   tick() { AMUX_CLEANUP_STATE_DIR="$FIX/tick" AMUX_CLEANUP_TARGET_ROOTS="$FIX/none" AMUX_CLEANUP_PURGE_CMD=true \
            AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRESSURE_PURGE=99 AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=0 \
            AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 AMUX_CLEANUP_CPU_SHARE=99 AMUX_CLEANUP_SWAP_FREE_FLOOR_MB=0 \
-           AMUX_CLEANUP_DISK_FLOOR_GB="$1" AMUX_CLEANUP_HISTORY_CMD="cat $FIX/hist.json" AMUX_CLEANUP_CARD_CMD="$CARDREC --data @FILE" AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_ESCALATE_CMD="$2 TARGET FILE" \
+           AMUX_CLEANUP_DISK_FLOOR_GB="$1" AMUX_CLEANUP_HISTORY_CMD="cat $FIX/hist.json" AMUX_CLEANUP_CARD_CMD="$CARDREC --data @FILE" AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD="$2 TARGET FILE" \
            bash "$TICK" ${3:-} 2>&1; }
   mkhist 13 0 > "$FIX/hist.json"      # a flat disk: the trend must not fire, only the floor knob
   out=$(tick 0 "$REC"); rm -f "$FIX/sent.log"
@@ -193,6 +193,24 @@ if [ "$(uname)" = Darwin ]; then
   check "the trend line names its source"              "yes" "$(has "$out" 'from history 13 samples over 1.0h')"
   check "with nothing constrained it says none"        "yes" "$(has "$out" 'constraints none')"
   check "and sends nothing"                            "no"  "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
+  # A disk constraint starts the scheduled reclaim (SCHED-783) instead of only reporting it.
+  TRIG="$FIX/trig.sh"; printf '#!/bin/bash\necho x >> %s/trig.log\necho "${TRIG_CODE:-204}"\n' "$FIX" > "$TRIG"; chmod +x "$TRIG"
+  ntrig() { [ -f "$FIX/trig.log" ] && grep -c . "$FIX/trig.log" | tr -d ' ' || echo 0; }
+  out=$(RECLAIM_TRIGGER_STUB="$TRIG" tick 999999 "$REC" --dry-run)
+  check "a dry run says it would start the reclaim"   "yes" "$(has "$out" 'would start the disk reclaim (dry run)')"
+  check "and starts nothing"                          "0"   "$(ntrig)"
+  out=$(TRIG_CODE=500 RECLAIM_TRIGGER_STUB="$TRIG" tick 999999 "$REC")
+  check "a refused start is reported with its code"   "yes" "$(has "$out" 'could not start the disk reclaim (http 500)')"
+  check "and does not start the reclaim cooldown"     ""    "$(state_get "$FIX/tick/state" esc_reclaim)"
+  out=$(RECLAIM_TRIGGER_STUB="$TRIG" tick 999999 "$REC")
+  check "a disk constraint starts the reclaim"        "yes" "$(has "$out" 'started the disk reclaim (SCHED-783) (verdict=disk_reclaim_triggered)')"
+  check "the done line counts it"                     "yes" "$(has "$out" 'reclaim_started=1')"
+  out=$(RECLAIM_TRIGGER_STUB="$TRIG" tick 999999 "$REC")
+  check "inside the cooldown it starts no second one" "yes" "$(has "$out" 'verdict=disk_reclaim_cooldown')"
+  check "two starts were attempted in all (fail, ok)" "2"   "$(ntrig)"
+  out=$(RECLAIM_TRIGGER_STUB="$TRIG" tick 0 "$REC")
+  check "no disk constraint, no start"                "2"   "$(ntrig)"
+  rm -f "$FIX/sent.log" "$FIX/tick/state"   # the escalations above must not shade the cells below
   out=$(tick 999999 "$FAILCMD")
   check "a refused send is reported with its reason"   "yes" "$(has "$out" 'FAILED (1 in a row): target is an isolated worker')"
   check "and does not start the cooldown"              ""    "$(state_get "$FIX/tick/state" esc_disk)"

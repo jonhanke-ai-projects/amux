@@ -365,6 +365,16 @@ UTIL_ACT_SHARE=${AMUX_CLEANUP_UTIL_ACT_SHARE:-0.85}
 UTIL_RENICE_MIN_PCT=${AMUX_CLEANUP_UTIL_RENICE_MIN_PCT:-100}
 UTIL_RENICE_EXCLUDE=${AMUX_CLEANUP_UTIL_RENICE_EXCLUDE:-(^|/)tmux( |$)|gs12}
 UTIL_TREE_PS_CMD=${AMUX_CLEANUP_UTIL_TREE_PS_CMD:-ps -axo pid=,ppid=,uid=,nice=,args=}
+# Apple's photo and video analysis daemons run at normal priority under the
+# user's uid and take whole cores: mediaanalysisd measured 270% at PRI 58 on
+# 2026-10-21. Background policy (taskpolicy -b) drops it to PRI 4, where it only
+# gets cores nothing else wants, so it costs nothing on an idle Mac and yields
+# to workers on a busy one. Root-owned analytics daemons are already at
+# background priority and are not ours to change.
+DEMOTE_NAMES=${AMUX_CLEANUP_DEMOTE_NAMES:-mediaanalysisd photoanalysisd}
+DEMOTE_MIN_PCT=${AMUX_CLEANUP_DEMOTE_MIN_PCT:-50}
+DEMOTE_PS_CMD=${AMUX_CLEANUP_DEMOTE_PS_CMD:-ps -Ao pid=,uid=,pri=,pcpu=,comm=}
+TASKPOLICY_CMD=${AMUX_CLEANUP_TASKPOLICY_CMD:-/usr/sbin/taskpolicy -b -p}
 RENICE_CMD=${AMUX_CLEANUP_RENICE_CMD:-renice}
 VM_EVENTS_CMD=${AMUX_CLEANUP_VM_EVENTS_CMD:-docker --context colima-PROFILE events --since MINm --until 0s --format \{\{.Action\}\}}
 # Running containers: any one not in VM_IDLE_IGNORE makes the VM busy. A proof
@@ -522,6 +532,19 @@ ESCALATE_TO=${AMUX_CLEANUP_ESCALATE_TO:-mac-ops}
 ESCALATE_COOLDOWN_H=${AMUX_CLEANUP_ESCALATE_COOLDOWN_H:-6}
 # Seam: FILE is replaced with the message path. The test points this at a recorder.
 ESCALATE_CMD=${AMUX_CLEANUP_ESCALATE_CMD:-amux send TARGET --file FILE}
+# A disk constraint STARTS the scheduled reclaim (SCHED-783, scripts/disk-reclaim-tick.sh)
+# instead of only reporting it. 2026-10-20 the tick logged "disk free 90.2G is
+# under the 150G floor — escalation suppressed" hour after hour and changed
+# nothing. The reclaim runs on its own scheduler slot, so this tick's 600s budget
+# is not spent on it; it tightens its own idle and retention rules when the disk
+# is low. One start per RECLAIM_TRIGGER_COOLDOWN_H.
+RECLAIM_SCHEDULE=${AMUX_CLEANUP_RECLAIM_SCHEDULE:-SCHED-783}
+reclaim_trigger_default() { # prints the HTTP status of the run request
+  curl -sk --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H "X-Amux-Session: desktop" \
+    "$(amux url 2>/dev/null || echo https://localhost:8824)/api/schedules/$RECLAIM_SCHEDULE/run"
+}
+RECLAIM_TRIGGER_CMD=${AMUX_CLEANUP_RECLAIM_TRIGGER_CMD:-reclaim_trigger_default}
+RECLAIM_TRIGGER_COOLDOWN_H=${AMUX_CLEANUP_RECLAIM_TRIGGER_COOLDOWN_H:-3}
 RUNBOOK=docs/runbooks/mac-resource-rca.md
 # Seam: FILE is replaced with a JSON body. The test points this at a recorder.
 # Not written as ${AMUX_CLEANUP_CARD_CMD:-curl ...}: the `}` in curl's %{http_code}
@@ -1155,7 +1178,16 @@ reap_test_orphans() { # <dry:0|1>
   local DRY=${1:-0} pid ppid puid et args s found=0 stopped=0 ex=""
   while read -r pid ppid puid et args; do
     [ "$ppid" = 1 ] && [ "$puid" = "$(id -u)" ] || continue
-    case "$args" in *"/pytest-of-"*) ;; *) continue ;; esac
+    # A cargo test whose caller exited is the same leftover as a pytest one, and
+    # costs more: 2026-10-21 one sat 10h50m at 0% CPU holding the builder's cargo
+    # lease (cargo_reclaim_deferred streak 103, wedged=true), so the shared 62G
+    # target could not be reclaimed. Its test binary is a separate ppid-1 process
+    # once cargo dies, and matches the deps/ arm on the next tick.
+    case "$args" in
+      *"/pytest-of-"*) ;;
+      *"cargo test"*|*"cargo nextest"*|*/target/debug/deps/*|*/target/release/deps/*) ;;
+      *) continue ;;
+    esac
     s=$(etime_secs "$et"); case "$s" in ''|*[!0-9]*) continue ;; esac
     [ "$s" -ge $(( TEST_ORPHAN_MIN * 60 )) ] || continue
     found=$((found+1))
@@ -1168,7 +1200,7 @@ reap_test_orphans() { # <dry:0|1>
     printf '%s\tstopped\t%s\t%s\t%s\n' "$(date '+%F %T')" "$pid" "$et" "${args:0:300}" >> "$STATE_DIR/test-orphans.log"
   done < <($ORPHAN_PS_CMD 2>/dev/null)
   TEST_ORPHANS_STOPPED=$stopped
-  echo "mac-cleanup: leftover test processes (ppid 1, under a pytest temp dir, over ${TEST_ORPHAN_MIN}m): found ${found}, stopped ${stopped}$( [ "$DRY" = 1 ] && [ "$found" -gt 0 ] && echo " (dry run)")"
+  echo "mac-cleanup: leftover test processes (ppid 1, pytest temp dir or cargo test / test binary, over ${TEST_ORPHAN_MIN}m): found ${found}, stopped ${stopped}$( [ "$DRY" = 1 ] && [ "$found" -gt 0 ] && echo " (dry run)")"
   [ -z "$ex" ] || echo "mac-cleanup:   e.g. $ex (full list in $STATE_DIR/test-orphans.log)"
 }
 
@@ -1682,11 +1714,35 @@ for o in m.get("top_unattributed") or []:
   echo "mac-cleanup: utilization: detached trees lowered ${n_trees} (${n_pids} processes) at or over ${UTIL_RENICE_MIN_PCT}% while the CPU is ${UTIL_ACT_SHARE}+ busy; log $log"
 }
 
+DEMOTED=0
+demote_background_daemons() { # <dry:0|1>
+  local DRY=${1:-0} pid uid pri pcpu comm name n=0 found=0 log="$STATE_DIR/daemon-demote.log"
+  DEMOTED=0
+  while read -r pid uid pri pcpu comm; do
+    [ -n "$comm" ] || continue
+    name=${comm##*/}
+    in_list "$name" "$DEMOTE_NAMES" || continue
+    [ "$uid" = "$(id -u)" ] || continue
+    awk -v p="$pcpu" -v m="$DEMOTE_MIN_PCT" 'BEGIN{exit !(p+0 >= m+0)}' || continue
+    [ "${pri:-0}" -gt 20 ] || { echo "mac-cleanup:   $name pid $pid at ${pcpu}%: already background (pri $pri)"; continue; }
+    found=$((found+1))
+    if [ "$DRY" = 1 ]; then echo "mac-cleanup:   $name pid $pid at ${pcpu}% pri $pri: would set background policy (dry run)"; continue; fi
+    if $TASKPOLICY_CMD "$pid" >/dev/null 2>&1; then
+      n=$((n+1)); mkdir -p "$STATE_DIR"; printf '%s\tbackground\t%s\t%s\t%s%%\tpri %s\n' "$(date '+%F %T')" "$pid" "$name" "$pcpu" "$pri" >> "$log"
+      echo "mac-cleanup:   $name pid $pid at ${pcpu}% pri $pri: set to background policy (verdict=daemon_demoted)"
+    else
+      echo "mac-cleanup:   $name pid $pid: taskpolicy FAILED (verdict=daemon_demote_failed)"
+    fi
+  done < <($DEMOTE_PS_CMD 2>/dev/null)
+  DEMOTED=$n
+  echo "mac-cleanup: background daemons [$DEMOTE_NAMES] at or over ${DEMOTE_MIN_PCT}% at normal priority: found $found, demoted $n"
+}
+
 system_health() { # <dry:0|1>
   HEALTH_VERDICTS=""; CPU_RESTARTED=0; TEST_ORPHANS_STOPPED=0; CRASH_PRUNED=0
   if [ "$HEALTH_PROBES" = off ]; then echo "mac-cleanup: system health: probes off (AMUX_CLEANUP_HEALTH_PROBES=off)"; return 0; fi
   check_cpu_hogs "$1"; reap_test_orphans "$1"; reap_orphan_mp_workers "$1"; reap_orphan_crash_handlers "$1"; check_limits; check_respawn_loops; check_crash_reports "$1"
-  check_launchd_failing; check_network; check_thermal; check_agent_volume; check_utilization "$1"; check_self_runs
+  check_launchd_failing; check_network; check_thermal; check_agent_volume; check_utilization "$1"; demote_background_daemons "$1"; check_self_runs
   HEALTH_VERDICTS=$(printf '%s\n' "$HEALTH_VERDICTS" | grep . || true)
 }
 
@@ -3274,6 +3330,20 @@ if [ -n "${HEALTH_VERDICTS:-}" ]; then verdicts=$(printf '%s\n%s\n' "$verdicts" 
 # the consumers rather than from a load number (check_utilization).
 if [ -n "${UTIL_SUMMARY:-}" ]; then verdicts=$(printf '%s\n' "$verdicts" | U="$UTIL_SUMMARY" awk '/^cpu /{$0=$0 " (who: " ENVIRON["U"] ")"} {print}'); fi
 echo "mac-cleanup: assess disk=${disk_now}G burn=${burn_txt} ${htf_txt} pressure=${level_now} swap_free=${swap_free_now}MB swap_total=${swap_total_now}MB load15=${load15}/${ncpu}"
+reclaim_started=0
+if printf '%s\n' "$verdicts" | grep -q '^disk '; then
+  if [ "$DRY" = 1 ]; then
+    echo "mac-cleanup: disk constraint: would start the disk reclaim (dry run)"
+  elif ! escalation_due "$STATE" reclaim "$now" "$RECLAIM_TRIGGER_COOLDOWN_H"; then
+    echo "mac-cleanup: disk constraint: disk reclaim already started under ${RECLAIM_TRIGGER_COOLDOWN_H}h ago (verdict=disk_reclaim_cooldown)"
+  else
+    rcode=$($RECLAIM_TRIGGER_CMD 2>/dev/null); case "$rcode" in
+      2??) state_put "$STATE" "esc_reclaim=$now"; reclaim_started=1
+           echo "mac-cleanup: disk constraint: started the disk reclaim ($RECLAIM_SCHEDULE) (verdict=disk_reclaim_triggered)" ;;
+      *)   echo "mac-cleanup: disk constraint: could not start the disk reclaim (http ${rcode:-none}) (verdict=disk_reclaim_trigger_failed)" ;;
+    esac
+  fi
+fi
 escalated=0
 if [ -z "$verdicts" ]; then
   echo "mac-cleanup: constraints none"
@@ -3361,5 +3431,5 @@ if [ "$SECONDS" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: WARN tick took ${SECONDS}s, over ${TICK_WARN_S}s: the scheduler kills it at 600s, so a slower run is lost; tighten the budgets"
 fi
 tick_mark end
-echo "mac-cleanup: done elapsed=${SECONDS}s slowest=${TICK_SLOWEST:-none} purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} util_reniced=${UTIL_RENICED:-0} skipped=${TICK_SKIPPED:-none} sections=${TICK_SECTIONS:-none} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
+echo "mac-cleanup: done elapsed=${SECONDS}s slowest=${TICK_SLOWEST:-none} purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} util_reniced=${UTIL_RENICED:-0} daemons_demoted=${DEMOTED:-0} reclaim_started=${reclaim_started:-0} skipped=${TICK_SKIPPED:-none} sections=${TICK_SECTIONS:-none} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
 exit 0

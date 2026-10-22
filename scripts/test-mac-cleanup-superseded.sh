@@ -17,7 +17,7 @@ fails=0
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expected '$2', got '$3'"; fails=$((fails+1)); fi; }
 ex() { if [ -e "$1" ]; then echo yes; else echo no; fi; }
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
-export AMUX_CLEANUP_STATE_DIR="$FIX/assess-state" AMUX_CLEANUP_ESCALATE_CMD="true" AMUX_CLEANUP_HISTORY_CMD="true" AMUX_CLEANUP_CARD_CMD="true" AMUX_CLEANUP_VM_LIST_CMD="true"
+export AMUX_CLEANUP_STATE_DIR="$FIX/assess-state" AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD="true" AMUX_CLEANUP_HISTORY_CMD="true" AMUX_CLEANUP_CARD_CMD="true" AMUX_CLEANUP_VM_LIST_CMD="true"
 TARGET_DEPTH=8; TARGET_SCAN_S=30
 printf 'launchd 1 root cwd DIR 1,18 64 2 /\n' > "$FIX/lsof.base"
 LSOF_CMD="cat $FIX/lsof.base"

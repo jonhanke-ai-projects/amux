@@ -107,13 +107,33 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 exec > >(tee -a "$LOG") 2>&1
 say() { printf '%s disk-reclaim: %s\n' "$(date '+%F %T')" "$*"; }
 api() { local path=$1 t=${2:-30}; shift; [ $# -gt 0 ] && shift; curl -sk --max-time "$t" -H "X-Amux-Session: $SESSION" "$@" "$API$path"; }
-free_kb() { df -k "$HOME" | awk 'NR==2{print $4}'; }
+free_kb() { if [ -n "${RECLAIM_FREE_KB:-}" ]; then echo "$RECLAIM_FREE_KB"; else df -k "$HOME" | awk 'NR==2{print $4}'; fi; }   # override: tests
 gb() { awk -v k="${1:-0}" 'BEGIN{printf "%.1fG", k/1048576}'; }
+
+# Pressure tiers. Quarantine is a rename on the same volume, so it frees nothing
+# until the purge: on a full disk a 72h restore window is 72h of no relief. The
+# hourly health tick starts this run the moment it sees a disk constraint
+# (mac-cleanup-tick.sh, verdict=disk_reclaim_triggered); these tiers make that
+# run worth starting. An explicit RECLAIM_IDLE_H / RECLAIM_RETAIN_H wins.
+TIGHT_GB=${RECLAIM_TIGHT_FREE_GB:-150}
+CACHE_H=${RECLAIM_DOCKER_CACHE_H:-24}                # docker build cache unused this long is pruned
+DOCKER_CTX_CMD=${RECLAIM_DOCKER_CTX_CMD:-colima list --json}
+CRITICAL_GB=${RECLAIM_CRITICAL_FREE_GB:-60}
 
 if [ -z "$API" ]; then say "verdict=reclaim_tick_unmeasured why=no amux url"; exit 1; fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/disk-reclaim.XXXXXX")
 trap 'rm -rf -- "${WORK:?}"' EXIT
 free0=$(free_kb)
+tier=normal
+if [ $((free0 / 1048576)) -lt "$CRITICAL_GB" ]; then
+  tier=critical
+  IDLE_H=${RECLAIM_IDLE_H:-12}; RETAIN_H=${RECLAIM_RETAIN_H:-6}; SCAN_MAX_AGE_H=${RECLAIM_SCAN_MAX_AGE_H:-6}; CACHE_H=${RECLAIM_DOCKER_CACHE_H:-6}
+elif [ $((free0 / 1048576)) -lt "$TIGHT_GB" ]; then
+  tier=tight
+  IDLE_H=${RECLAIM_IDLE_H:-24}; RETAIN_H=${RECLAIM_RETAIN_H:-24}; CACHE_H=${RECLAIM_DOCKER_CACHE_H:-12}
+fi
+floor=$TIGHT_GB; [ "$tier" = critical ] && floor=$CRITICAL_GB
+[ "$tier" = normal ] || say "verdict=reclaim_tick_${tier} free $(gb "$free0") is under the ${floor}G floor: idle>=${IDLE_H}h, purge after ${RETAIN_H}h"
 say "start dry=$DRY free=$(gb "$free0") idle>=${IDLE_H}h retain=${RETAIN_H}h min=${MIN_MB}M cats=[$CATS] roots=[$ROOTS]"
 say "stale class: on=$STALE unused>=${STALE_DAYS}d retain=${STALE_RETAIN_D}d min=${STALE_MIN_MB}M roots=[$STALE_ROOTS]"
 
@@ -413,12 +433,25 @@ if [ "$TOOLS" = 1 ]; then
   tool "pnpm store prune" pnpm store prune
   tool "brew cleanup" brew cleanup -s --prune=30
   tool "unavailable simulators" xcrun simctl delete unavailable
-  if docker info >/dev/null 2>&1; then
-    tool "docker build cache >72h" docker builder prune -f --filter until=72h
-    tool "docker dangling images" docker image prune -f
-  else
-    say "tool: docker not running"
-  fi
+  # Every running Docker engine, not only the current context. 2026-10-22 the
+  # goal-shared Colima VM was the Mac's biggest writer (datadisk 134G -> 159G in
+  # a day, ~29G/h at peak) and held 21.9G of build cache last used 11-14h ago:
+  # the old 72h filter on the default context never touched it. Freed blocks
+  # reach the Mac through the VM trim schedule (SCHED-617, every 5m).
+  ctxs=$($DOCKER_CTX_CMD 2>/dev/null | python3 -c 'import json,sys
+for l in sys.stdin:
+    try: d = json.loads(l)
+    except Exception: continue
+    if d.get("status") == "Running" and d.get("runtime", "docker") == "docker": print("colima-" + d["name"])' 2>/dev/null)
+  [ -n "$ctxs" ] || ctxs=default
+  for ctx in $ctxs; do
+    if docker --context "$ctx" info >/dev/null 2>&1; then
+      tool "docker[$ctx] build cache >${CACHE_H}h" docker --context "$ctx" builder prune -f --filter "until=${CACHE_H}h"
+      tool "docker[$ctx] dangling images" docker --context "$ctx" image prune -f
+    else
+      say "tool: docker[$ctx] not answering"
+    fi
+  done
 fi
 
 free1=$(free_kb)

@@ -87,6 +87,45 @@ check "one outside a pytest dir is kept"              alive "$(alive "$PLAIN")"
 check "another user's is kept"                        alive "$(alive "$THEIRS")"
 check "the summary counts one stopped"                yes   "$(has "$out" 'found 1, stopped 1')"
 
+echo "2b. leftover cargo tests: an orphaned cargo test and its test binary are stopped, a build is not"
+spawn CT  "$FIX/cargo-test"
+spawn TB  "$FIX/test-bin"
+spawn CB  "$FIX/cargo-build"
+spawn CTP "$FIX/cargo-test-parented"
+{
+  printf '%s 1 %s 10:50:04 %s/.rustup/toolchains/1.94/bin/cargo test --lib -j 3 -- --test-threads 4\n' "$CT" "$ME" "$FIX"
+  printf '%s 1 %s 10:50:06 %s/scratch/mvs-ne/target/debug/deps/mvs_shard-3c13 --test-threads 4\n'     "$TB" "$ME" "$FIX"
+  printf '%s 1 %s 10:50:04 %s/.rustup/toolchains/1.94/bin/cargo build --release\n'                       "$CB" "$ME" "$FIX"
+  printf '%s 4242 %s 10:50:04 %s/.rustup/toolchains/1.94/bin/cargo test --lib\n'                        "$CTP" "$ME" "$FIX"
+} > "$FIX/ps.orph"
+reap_test_orphans 0 > "$FIX/orph.out"; out=$(cat "$FIX/orph.out")
+check "an orphaned cargo test is stopped"             gone  "$(alive "$CT")"
+check "an orphaned test binary under target/*/deps is stopped" gone "$(alive "$TB")"
+check "an orphaned cargo build is kept"               alive "$(alive "$CB")"
+check "a cargo test whose parent is alive is kept"    alive "$(alive "$CTP")"
+check "the summary counts two stopped"                yes   "$(has "$out" 'found 2, stopped 2')"
+
+echo "2c. background daemons: a listed one of ours at normal priority goes to background policy"
+{
+  printf '87198 %s 58 270.0 /System/Library/PrivateFrameworks/MediaAnalysis.framework/Versions/A/mediaanalysisd\n' "$ME"
+  printf '59525 %s 4 120.0 /System/Library/PrivateFrameworks/PhotoAnalysis.framework/Versions/A/Support/photoanalysisd\n' "$ME"
+  printf '88481 0 46 90.0 /System/Library/PrivateFrameworks/MediaAnalysis.framework/Versions/A/mediaanalysisd\n'
+  printf '40001 %s 46 10.0 /System/Library/PrivateFrameworks/PhotoAnalysis.framework/Versions/A/Support/photoanalysisd\n' "$ME"
+  printf '40002 %s 46 300.0 /Applications/Busy.app/Contents/MacOS/Busy\n' "$ME"
+} > "$FIX/ps.demote"
+DEMOTE_PS_CMD="cat $FIX/ps.demote"; TASKPOLICY_CMD="$FIX/tp.sh -b -p"
+printf '#!/bin/bash\necho "$@" >> %s/tp.log\n' "$FIX" > "$FIX/tp.sh"; chmod +x "$FIX/tp.sh"; rm -f "$FIX/tp.log"
+out=$(demote_background_daemons 1)
+check "a dry run demotes nothing"                     no    "$([ -s "$FIX/tp.log" ] && echo yes || echo no)"
+check "and says what it would do"                     yes   "$(has "$out" 'mediaanalysisd pid 87198 at 270.0% pri 58: would set background policy (dry run)')"
+demote_background_daemons 0 > "$FIX/demote.out"; out=$(cat "$FIX/demote.out")
+check "ours, listed, busy, normal priority: demoted"  "-b -p 87198" "$(head -1 "$FIX/tp.log" 2>/dev/null)"
+check "exactly one process was touched"               1     "$(grep -c . "$FIX/tp.log" | tr -d ' ')"
+check "one already at background priority is left"   yes   "$(has "$out" 'photoanalysisd pid 59525 at 120.0%: already background')"
+check "the summary counts one demoted"                yes   "$(has "$out" 'found 1, demoted 1')"
+check "it is ledgered"                                yes   "$(grep -q "background	87198	mediaanalysisd" "$STATE_DIR/daemon-demote.log" 2>/dev/null && echo yes || echo no)"
+DEMOTE_PS_CMD=true
+
 echo "3. limits: a limit at or over the share is a constraint, a zombie-holding parent is named"
 HEALTH_VERDICTS=""; LIMITS_CMD="echo 900 1000 10 100 5 3 4242 2"; out=$(check_limits; echo "V=$HEALTH_VERDICTS")
 check "open files at 90% is a constraint"             yes   "$(has "$out" '^limits open files 900 is 90% of kern.maxfiles 1000')"
@@ -286,7 +325,7 @@ if [ "$(uname)" = Darwin ]; then
         AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/none" AMUX_CLEANUP_LANE_TMP_ROOT="$FIX/none" AMUX_CLEANUP_USER_TMP="$FIX/none" \
         AMUX_CLEANUP_CHURN_ROOTS="$FIX/none" AMUX_CLEANUP_VM_LIST_CMD=true AMUX_CLEANUP_SESSIONS_CMD=false \
         AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 AMUX_CLEANUP_HISTORY_CMD=true AMUX_CLEANUP_CARD_CMD=true \
-        AMUX_CLEANUP_ESCALATE_CMD=true bash "$TICK" --dry-run 2>&1)
+        AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD=true bash "$TICK" --dry-run 2>&1)
   check "the tick prints the limits line"             yes   "$(has "$out" 'mac-cleanup: limits: open files 10/1000')"
   check "the zombie constraint reaches the assess stage" yes "$(has "$out" "constraint zombies .* would escalate (dry run)")"
   check "the done line carries the health counters"   yes   "$(has "$out" 'cpu_restarted=0 test_orphans=0 crash_pruned=0')"

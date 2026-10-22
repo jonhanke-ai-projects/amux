@@ -12,6 +12,7 @@ ok()  { pass=$((pass+1)); echo "PASS $1"; }
 bad() { fail=$((fail+1)); echo "FAIL $1"; }
 
 now=$(date +%s); old=$((now - 5*86400)); recent=$((now - 3600))
+day30h=$((now - 30*3600))   # idle under the normal 48h, over the tight 24h
 mkdir -p "$T/dev/a/target" "$T/dev/b/target" "$T/dev/c/target" "$T/dev/d/node_modules" \
          "$T/dev/e/target" "$T/dev/f/.venv" "$T/global/node_modules" \
          "$T/dev/g/.venv" "$T/dev/h/sub/target" "$T/dev/i/.venv" "$T/agents"
@@ -21,6 +22,9 @@ oldstamp=$(python3 -c 'import sys,time; print(time.strftime("%Y%m%d%H%M.%S", tim
 for d in "$T"/dev/{a,b,c,e}/target "$T/dev/d/node_modules" "$T/dev/f/.venv" "$T/global/node_modules" \
          "$T/dev/g/.venv" "$T/dev/h/sub/target" "$T/dev/i/.venv"; do echo x > "$d/f"; touch -t "$oldstamp" "$d/f" "$d"; done
 echo fresh > "$T/dev/e/target/new.o"   # scan says idle, disk says written now
+mkdir -p "$T/dev/t30/target"; echo x > "$T/dev/t30/target/f"
+d30=$(python3 -c 'import sys,time; print(time.strftime("%Y%m%d%H%M.%S", time.localtime(int(sys.argv[1]))))' "$day30h")
+touch -t "$d30" "$T/dev/t30/target/f" "$T/dev/t30/target"
 # In use without being written (momentbench-oss, 2026-10-21): a schedule runs
 # from g's folder, h's project carries a keep marker, a LaunchAgent runs i's venv.
 touch "$T/dev/h/.amux-keep"
@@ -53,6 +57,7 @@ finding() { # path category regenerable mtime protected
 mkscan() { # <fleet_measured> -> writes the fake's scan file
   cat > "$T/scan.json" <<EOF
 {"scan":{"id":"S1","status":"done"},"ownership":{"fleet_measured":$1},"findings":[
+$(finding "$T/dev/t30/target" build true $day30h null),
 $(finding "$T/dev/a/target" build true $old null),
 $(finding "$T/dev/b/target" build true $recent null),
 $(finding "$T/dev/c/target" build true $old '{"class":"worker","reason":"running"}'),
@@ -79,6 +84,7 @@ cat > "$T/batches.json" <<EOF
 {"batches":[
  {"id":"OWNOLD","session":"disk-reclaim-tick","status":"staged","created_at":$((now - 4*86400)),"bytes":1},
  {"id":"OWNNEW","session":"disk-reclaim-tick","status":"staged","created_at":$recent,"bytes":1},
+ {"id":"OWN8H","session":"disk-reclaim-tick","status":"staged","created_at":$((now - 8*3600)),"bytes":1},
  {"id":"PEEROLD","session":"amux-admin","status":"staged","created_at":$((now - 9*86400)),"bytes":1},
  {"id":"OWNGONE","session":"disk-reclaim-tick","status":"purged","created_at":$((now - 9*86400)),"bytes":1},
  {"id":"STALEOLD","session":"disk-reclaim-stale","status":"staged","created_at":$((now - 31*86400)),"bytes":1},
@@ -127,7 +133,7 @@ for _ in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
 API="http://127.0.0.1:$(cat "$T/port")"
 
 run() { : > "$T/posts.log"; : > "$T/deletes.log"; rm -f -- "$T/status.json"
-  HOME="$H" RECLAIM_API=$API RECLAIM_ROOTS="$T/dev" RECLAIM_TOOLS=0 RECLAIM_LOG="$T/tick.log" \
+  HOME="$H" RECLAIM_API=$API RECLAIM_ROOTS="$T/dev" RECLAIM_TOOLS="${RECLAIM_TOOLS:-0}" RECLAIM_LOG="$T/tick.log" \
     RECLAIM_STATUS_FILE="$T/status.json" RECLAIM_SCOPE_FILE="${SCOPE:-$T/no-scope}" \
     RECLAIM_MDLS="$T/mdls" RECLAIM_LSOF="$T/lsof" \
     RECLAIM_LAUNCH_AGENTS="$T/agents" RECLAIM_CRONTAB="cat $T/crontab" \
@@ -191,6 +197,37 @@ RECLAIM_STALE=0 run
 # ── schedule list unreadable: nothing moves ──
 mv "$T/schedules.json" "$T/schedules.off"; run; mv "$T/schedules.off" "$T/schedules.json"
 [ ! -s "$T/posts.log" ] && grep -q 'verdict=reclaim_tick_refs_unmeasured' "$T/out.txt" && ok "in use: no readable schedule list moves nothing and says so" || bad "in use: refs unmeasured"
+
+# ── pressure tiers (a quarantine frees nothing until its purge) ──
+mkscan true; run
+[ "$(posted "$T/dev/t30/target")" = 0 ] && ok "normal tier: a 30h-idle dir waits for 48h" || bad "normal tier keeps 30h-idle"
+grep -q 'OWN8H' "$T/deletes.log" && bad "normal tier must keep an 8h-old batch" || ok "normal tier keeps an 8h-old batch restorable"
+RECLAIM_FREE_KB=$((100 * 1048576)) run
+grep -q 'verdict=reclaim_tick_tight' "$T/out.txt" && ok "under 150G the run says it is tight" || bad "tight verdict"
+[ "$(posted "$T/dev/t30/target")" = 1 ] && ok "tight tier: a 30h-idle dir is picked (idle>=24h)" || bad "tight tier picks 30h-idle"
+grep -q 'OWN8H' "$T/deletes.log" && bad "tight tier must keep an 8h-old batch (24h window)" || ok "tight tier keeps an 8h-old batch (24h window)"
+RECLAIM_FREE_KB=$((40 * 1048576)) run
+grep -q 'verdict=reclaim_tick_critical' "$T/out.txt" && ok "under 60G the run says it is critical" || bad "critical verdict"
+grep -q 'OWN8H?confirm=OWN8H' "$T/deletes.log" && ok "critical tier purges an 8h-old batch (6h window)" || bad "critical tier purge"
+grep -q 'OWNNEW' "$T/deletes.log" && bad "critical tier must keep a 1h-old batch" || ok "critical tier still keeps a 1h-old batch"
+RECLAIM_FREE_KB=$((40 * 1048576)) RECLAIM_RETAIN_H=72 run
+grep -q 'OWN8H' "$T/deletes.log" && bad "an explicit RECLAIM_RETAIN_H must win" || ok "an explicit RECLAIM_RETAIN_H wins over the tier"
+
+# ── docker: every running VM, cache window by tier ──
+mkdir -p "$T/fakebin"
+printf '#!/bin/sh\necho "$@" >> "%s/docker.log"\nexit 0\n' "$T" > "$T/fakebin/docker"; chmod +x "$T/fakebin/docker"
+printf '%s\n' '{"name":"goal-shared","status":"Running","runtime":"docker"}' '{"name":"gs12-local","status":"Running","runtime":"docker"}' \
+  '{"name":"idle","status":"Stopped","runtime":"docker"}' '{"name":"k","status":"Running","runtime":"containerd"}' > "$T/colima.json"
+dockrun() { : > "$T/docker.log"; PATH="$T/fakebin:$PATH" RECLAIM_TOOLS=1 RECLAIM_DOCKER_CTX_CMD="cat $T/colima.json" run --dry-run "$@"; }
+dockrun
+grep -q 'docker --context colima-goal-shared builder prune -f --filter until=24h' "$T/out.txt" && grep -q 'context colima-gs12-local builder prune' "$T/out.txt" \
+  && ok "build cache is pruned in every running docker VM" || bad "every running VM"
+grep -qE 'colima-idle|colima-k ' "$T/out.txt" && bad "a stopped or non-docker VM must be skipped" || ok "a stopped or non-docker VM is skipped"
+grep -q 'builder prune' "$T/docker.log" && bad "a dry run must not prune" || ok "a dry run prunes nothing"
+RECLAIM_FREE_KB=$((100 * 1048576)) dockrun
+grep -q 'until=12h' "$T/out.txt" && ok "tight tier prunes build cache unused 12h" || bad "tight cache window"
+RECLAIM_FREE_KB=$((40 * 1048576)) dockrun
+grep -q 'until=6h' "$T/out.txt" && ok "critical tier prunes build cache unused 6h" || bad "critical cache window"
 
 # ── dry run ──
 run --dry-run
