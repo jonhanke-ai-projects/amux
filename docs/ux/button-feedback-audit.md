@@ -1302,6 +1302,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Ask | `_peekAskToggle` | onclick |
 | index.html | Ask about these messages | `_peekAskToggle` | onclick |
 | app.js | close | `_peekDeepClose` | onclick |
+| index.html | Expand | `_peekFocusBarExpand` | onclick |
 | index.html | Tap for layout debug | `_peekGeoDebug` | onclick |
 | index.html | All | `_peekLogsSetFilter` | onclick |
 | index.html | Errors | `_peekLogsSetFilter` | onclick |
@@ -1564,7 +1565,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | … | `toggleGridPane` | onclick |
 | index.html | Send command | `togglePeekCmd` | onclick |
 | index.html | Filter messages | `togglePeekFilters` | onclick |
-| index.html | Expand | `togglePeekFocus` | onclick |
 | index.html | Expand editor | `toggleSchedCmdFullscreen` | onclick |
 | index.html | A | `toggleSortMenu` | onclick |
 | index.html | Upload | `triggerExploreUpload` | onclick |

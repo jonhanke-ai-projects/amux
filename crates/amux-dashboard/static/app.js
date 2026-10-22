@@ -16972,7 +16972,7 @@ function _peekViewRemember() {
   const all = _peekViewsLoad();
   const prev = all[peekSession] || {};
   const wrap = document.getElementById('peek-split-wrap');
-  const entry = { tab: (typeof _peekTab === 'string' && _peekTab) || 'terminal', ts: Date.now() };
+  const entry = { tab: (typeof _peekTab === 'string' && _peekTab) || 'terminal', head: _peekHeadLevel(), ts: Date.now() };
   if (window.innerWidth <= 600) {
     // A phone has no split (the button opens the file explorer), so a narrow
     // window keeps whatever split the wide one chose.
@@ -17002,6 +17002,9 @@ function _peekViewApply(name) {
   const v = _peekViewGet(name);
   _peekViewApplying = true;
   try {
+    // The header stage this worker was left at, else the last one chosen.
+    const head = v && Number.isInteger(v.head) ? v.head : Number(localStorage.getItem('amux_peek_head') || 0);
+    _peekHeadSet(head, false);
     const wrap = document.getElementById('peek-split-wrap');
     const wantSplit = !!(v && v.split) && window.innerWidth > 600;
     if (wantSplit) {
@@ -20506,6 +20509,82 @@ function togglePeekFocus() {
     _peekCmdBeforeFocus = null;
   }
 }
+
+// HEADER GRIP (Ethan, 2026-10-22: "i want to be able to drag this up and down
+// and it reorientates/shrinks/collapses/moves the contents as its
+// expanded/contracted"). A short window gave the terminal one line under the
+// name, the ask, the task, the toolbar, the tabs and the folder bar. Dragging
+// the grip up steps the header down, live:
+//   0 full
+//   1 compact: the toolbar beside the name; the ask and task one line each
+//   2 minimal: the ask, task and folder bar fold away (the badge still says
+//     NEEDS INPUT); the tabs stay
+//   3 folded: one slim bar with the name, Expand and close
+// Remembered per worker with its tab, split and panes, and as the default.
+const _PEEK_HEAD_STEP_PX = 36;
+function _peekHeadLevel() {
+  const v = Number(document.getElementById('peek-overlay')?.dataset.head || 0);
+  return v >= 0 && v <= 3 ? v : 0;
+}
+function _peekHeadSet(level, remember = true) {
+  level = Math.max(0, Math.min(3, Math.round(Number(level) || 0)));
+  const ov = document.getElementById('peek-overlay');
+  if (!ov) return;
+  ov.dataset.head = String(level);
+  if (level === 3) {
+    const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
+    const t = document.getElementById('peek-focus-title');
+    if (t) t.textContent = s && s.task_name ? peekSession + ' \u2014 ' + s.task_name : (peekSession || '');
+  }
+  const g = document.getElementById('peek-head-grip');
+  if (g) g.setAttribute('aria-valuenow', String(3 - level));
+  if (remember) {
+    if (level) _peekHeadLastFolded = level;
+    try { localStorage.setItem('amux_peek_head', String(level)); } catch (e) {}
+    _peekViewRemember();
+  }
+}
+let _peekHeadLastFolded = 2;
+function _peekFocusBarExpand() {
+  const ov = document.getElementById('peek-overlay');
+  if (ov && ov.classList.contains('peek-focus')) { togglePeekFocus(); return; }
+  _peekHeadSet(0);
+}
+(function _peekHeadGripInit() {
+  const init = () => {
+    const g = document.getElementById('peek-head-grip');
+    if (!g || g._wired) return;
+    g._wired = true;
+    let startY = 0, startLevel = 0, dragging = false;
+    g.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      dragging = true; startY = e.clientY; startLevel = _peekHeadLevel();
+      g.classList.add('drag');
+      try { g.setPointerCapture(e.pointerId); } catch (_) {}
+      e.preventDefault();
+    });
+    g.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      // Up is smaller: every step of travel folds one stage, live.
+      const lvl = startLevel + Math.trunc((startY - e.clientY) / _PEEK_HEAD_STEP_PX);
+      if (lvl !== _peekHeadLevel()) _peekHeadSet(lvl, false);
+    });
+    const end = (e) => {
+      if (!dragging) return;
+      dragging = false; g.classList.remove('drag');
+      try { g.releasePointerCapture(e.pointerId); } catch (_) {}
+      if (_peekHeadLevel() !== startLevel) _peekHeadSet(_peekHeadLevel());
+    };
+    g.addEventListener('pointerup', end);
+    g.addEventListener('pointercancel', end);
+    g.addEventListener('dblclick', () => _peekHeadSet(_peekHeadLevel() ? 0 : _peekHeadLastFolded));
+    g.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') { e.preventDefault(); _peekHeadSet(_peekHeadLevel() + 1); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); _peekHeadSet(_peekHeadLevel() - 1); }
+    });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true }); else init();
+})();
 
 function togglePeekMenu() {
   const m = document.getElementById('peek-menu');

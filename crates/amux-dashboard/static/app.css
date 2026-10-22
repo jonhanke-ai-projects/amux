@@ -2668,6 +2668,26 @@
     border-bottom: 1px solid var(--border); flex-shrink: 0;
   }
   .peek-focus-bar { display: none; }
+  /* Header grip and its stages (2026-10-22). */
+  .peek-head-grip { flex-shrink:0; height:10px; margin:-2px 0 0; cursor:row-resize; display:flex; align-items:center; justify-content:center; touch-action:none; }
+  .peek-head-grip span { width:46px; height:4px; border-radius:2px; background:var(--border); transition:background 0.12s; }
+  .peek-head-grip:hover span, .peek-head-grip.drag span, .peek-head-grip:focus-visible span { background:var(--accent); }
+  .peek-head-grip:focus-visible { outline:none; }
+  body.peek-embed .peek-head-grip { display:none; }
+  #peek-overlay[data-head="1"] .overlay-header, #peek-overlay[data-head="2"] .overlay-header {
+    flex-direction:row !important; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:3px 10px !important; padding-bottom:3px !important; }
+  #peek-overlay[data-head="1"] #peek-title-row, #peek-overlay[data-head="2"] #peek-title-row { width:auto !important; flex:1 1 auto; justify-content:flex-start !important; }
+  #peek-overlay[data-head="1"] .peek-toolbar, #peek-overlay[data-head="2"] .peek-toolbar { order:2; flex:0 0 auto; }
+  /* One line each, ending in an ellipsis. Display is left alone, so a hidden
+     row stays hidden; its parts run inline on that one line. */
+  #peek-overlay[data-head="1"] #peek-needs-input-row, #peek-overlay[data-head="1"] #peek-task-row {
+    order:3; flex:1 1 100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #peek-overlay[data-head="1"] #peek-needs-input-row > *, #peek-overlay[data-head="1"] #peek-task-row > * { display:inline; margin:0 6px 0 0; }
+  #peek-overlay[data-head="2"] #peek-needs-input-row, #peek-overlay[data-head="2"] #peek-task-row,
+  #peek-overlay[data-head="2"] .peek-dir-bar { display:none !important; }
+  #peek-overlay[data-head="3"] .overlay-header, #peek-overlay[data-head="3"] .peek-tabs,
+  #peek-overlay[data-head="3"] .peek-dir-bar { display:none !important; }
+  #peek-overlay[data-head="3"] .peek-focus-bar { display:flex; align-items:center; gap:8px; padding:4px 12px; border-bottom:1px solid var(--border); flex-shrink:0; }
   .peek-focus-bar h3 { margin: 0; font-size: 0.85rem; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* Peek compact mode — when visual viewport is constrained (pinch zoom / keyboard) */

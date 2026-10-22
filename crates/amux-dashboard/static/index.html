@@ -3098,7 +3098,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Focus mode minimal bar (visible only in focus mode) -->
   <div class="peek-focus-bar" id="peek-focus-bar">
     <h3 id="peek-focus-title"></h3>
-    <button class="btn" onclick="togglePeekFocus()" title="Show controls">&#x25BE; Expand</button>
+    <button class="btn" onclick="_peekFocusBarExpand()" title="Show controls">&#x25BE; Expand</button>
     <button class="btn" onclick="closePeek()" style="font-size:1.1rem;line-height:1;padding:4px 8px;">&#x2715;</button>
   </div>
   <!-- Tab bar -->
@@ -3136,6 +3136,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <span id="peek-dir-branch" class="peek-dir-branch" style="display:none;"></span>
   </div>
   <!-- Split wrap: terminal + optional file browser side-by-side -->
+  <!-- Header grip: drag up to shrink the header in stages, down to expand (_peekHeadSet). -->
+  <div id="peek-head-grip" class="peek-head-grip" role="separator" aria-orientation="horizontal" tabindex="0"
+       aria-label="Header size: drag or use arrow keys" aria-valuemin="0" aria-valuemax="3" aria-valuenow="3"
+       title="Drag up to shrink the header, down to expand it. Double-click to fold or unfold."><span></span></div>
   <div id="peek-split-wrap" class="peek-split-wrap">
   <!-- Terminal panel -->
   <div id="peek-terminal-panel" class="peek-terminal-panel">
