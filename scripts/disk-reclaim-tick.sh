@@ -134,7 +134,7 @@ elif [ $((free0 / 1048576)) -lt "$TIGHT_GB" ]; then
 fi
 floor=$TIGHT_GB; [ "$tier" = critical ] && floor=$CRITICAL_GB
 [ "$tier" = normal ] || say "verdict=reclaim_tick_${tier} free $(gb "$free0") is under the ${floor}G floor: idle>=${IDLE_H}h, purge after ${RETAIN_H}h"
-say "start dry=$DRY free=$(gb "$free0") idle>=${IDLE_H}h retain=${RETAIN_H}h min=${MIN_MB}M cats=[$CATS] roots=[$ROOTS]"
+say "start dry=$DRY free=$(gb "$free0") free_src=${RECLAIM_FREE_KB:+override}${RECLAIM_FREE_KB:-df} tier=$tier idle>=${IDLE_H}h retain=${RETAIN_H}h min=${MIN_MB}M cats=[$CATS] roots=[$ROOTS]"
 say "stale class: on=$STALE unused>=${STALE_DAYS}d retain=${STALE_RETAIN_D}d min=${STALE_MIN_MB}M roots=[$STALE_ROOTS]"
 
 # ── 1. a scan ──────────────────────────────────────────────────────────────

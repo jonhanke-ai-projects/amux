@@ -133,6 +133,9 @@ for _ in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
 API="http://127.0.0.1:$(cat "$T/port")"
 
 run() { : > "$T/posts.log"; : > "$T/deletes.log"; rm -f -- "$T/status.json"
+  # The tier comes from free space. Pin it: a CI runner has well under 60G free,
+  # so the real df put every unpinned cell in the critical tier (8ac60690e red).
+  RECLAIM_FREE_KB="${FREE_KB:-$((500 * 1048576))}" \
   HOME="$H" RECLAIM_API=$API RECLAIM_ROOTS="$T/dev" RECLAIM_TOOLS="${RECLAIM_TOOLS:-0}" RECLAIM_LOG="$T/tick.log" \
     RECLAIM_STATUS_FILE="$T/status.json" RECLAIM_SCOPE_FILE="${SCOPE:-$T/no-scope}" \
     RECLAIM_MDLS="$T/mdls" RECLAIM_LSOF="$T/lsof" \
@@ -202,15 +205,15 @@ mv "$T/schedules.json" "$T/schedules.off"; run; mv "$T/schedules.off" "$T/schedu
 mkscan true; run
 [ "$(posted "$T/dev/t30/target")" = 0 ] && ok "normal tier: a 30h-idle dir waits for 48h" || bad "normal tier keeps 30h-idle"
 grep -q 'OWN8H' "$T/deletes.log" && bad "normal tier must keep an 8h-old batch" || ok "normal tier keeps an 8h-old batch restorable"
-RECLAIM_FREE_KB=$((100 * 1048576)) run
+FREE_KB=$((100 * 1048576)) run
 grep -q 'verdict=reclaim_tick_tight' "$T/out.txt" && ok "under 150G the run says it is tight" || bad "tight verdict"
 [ "$(posted "$T/dev/t30/target")" = 1 ] && ok "tight tier: a 30h-idle dir is picked (idle>=24h)" || bad "tight tier picks 30h-idle"
 grep -q 'OWN8H' "$T/deletes.log" && bad "tight tier must keep an 8h-old batch (24h window)" || ok "tight tier keeps an 8h-old batch (24h window)"
-RECLAIM_FREE_KB=$((40 * 1048576)) run
+FREE_KB=$((40 * 1048576)) run
 grep -q 'verdict=reclaim_tick_critical' "$T/out.txt" && ok "under 60G the run says it is critical" || bad "critical verdict"
 grep -q 'OWN8H?confirm=OWN8H' "$T/deletes.log" && ok "critical tier purges an 8h-old batch (6h window)" || bad "critical tier purge"
 grep -q 'OWNNEW' "$T/deletes.log" && bad "critical tier must keep a 1h-old batch" || ok "critical tier still keeps a 1h-old batch"
-RECLAIM_FREE_KB=$((40 * 1048576)) RECLAIM_RETAIN_H=72 run
+FREE_KB=$((40 * 1048576)) RECLAIM_RETAIN_H=72 run
 grep -q 'OWN8H' "$T/deletes.log" && bad "an explicit RECLAIM_RETAIN_H must win" || ok "an explicit RECLAIM_RETAIN_H wins over the tier"
 
 # ── docker: every running VM, cache window by tier ──
@@ -224,9 +227,9 @@ grep -q 'docker --context colima-goal-shared builder prune -f --filter until=24h
   && ok "build cache is pruned in every running docker VM" || bad "every running VM"
 grep -qE 'colima-idle|colima-k ' "$T/out.txt" && bad "a stopped or non-docker VM must be skipped" || ok "a stopped or non-docker VM is skipped"
 grep -q 'builder prune' "$T/docker.log" && bad "a dry run must not prune" || ok "a dry run prunes nothing"
-RECLAIM_FREE_KB=$((100 * 1048576)) dockrun
+FREE_KB=$((100 * 1048576)) dockrun
 grep -q 'until=12h' "$T/out.txt" && ok "tight tier prunes build cache unused 12h" || bad "tight cache window"
-RECLAIM_FREE_KB=$((40 * 1048576)) dockrun
+FREE_KB=$((40 * 1048576)) dockrun
 grep -q 'until=6h' "$T/out.txt" && ok "critical tier prunes build cache unused 6h" || bad "critical cache window"
 
 # ── dry run ──
