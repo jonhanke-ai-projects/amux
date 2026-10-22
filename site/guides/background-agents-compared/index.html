@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1e2330">
   <title>Background Coding Agents Compared: Cursor vs Claude Code vs Devin vs Copilot vs Codex (2026) &mdash; amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="The definitive comparison of every background AI coding agent in 2026. Cursor Background Agents, Claude Code Headless, Devin 2.0, GitHub Copilot Coding Agent, Codex CLI, OpenHands, Augment Code, and Windsurf — pricing, autonomy, sandboxing, and when to use each.">
+  <meta name="description" content="The definitive comparison of every background AI coding agent in 2026. Cursor Background Agents, Claude Code Headless, Devin 2.0, GitHub Copilot Coding Agent, Codex CLI, OpenHands, Augment Code, Windsurf and amux Cloud: pricing, autonomy, sandboxing, and when to use each.">
   <meta name="keywords" content="background coding agents, Cursor background agents, Claude Code headless, Devin 2.0, GitHub Copilot coding agent, Codex CLI background, autonomous coding agent, background AI agent comparison, assign ticket AI agent, headless coding agent 2026, AI agent background tasks, unattended coding agent">
   <link rel="canonical" href="https://amux.io/guides/background-agents-compared/">
   <meta property="og:title" content="Background Coding Agents Compared: Cursor vs Claude Code vs Devin vs Copilot vs Codex (2026)">
@@ -38,7 +38,7 @@
     "author":{"@type":"Organization","name":"amux","url":"https://amux.io"},
     "publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "datePublished":"2026-05-15",
-    "dateModified":"2026-05-15",
+    "dateModified":"2026-10-22",
     "mainEntityOfPage":"https://amux.io/guides/background-agents-compared/"
   }</script>
   <script type="application/ld+json">{
@@ -67,7 +67,7 @@
       {"@type":"Question","name":"Are background coding agents safe to use on production codebases?","acceptedAnswer":{"@type":"Answer","text":"Yes, with guardrails. Every major background agent now includes sandboxing: Cursor runs agents in isolated cloud VMs, Codex CLI uses OS-level filesystem restrictions with network disabled by default, Devin runs in a sandboxed environment, and Copilot Coding Agent operates in a GitHub-hosted container. For additional safety, run agents on feature branches (never main), require PR review before merging, use pre-commit hooks for linting and type checking, and monitor token spend. Tools like amux add a self-healing watchdog that restarts crashed agents and prevents runaway sessions."}},
       {"@type":"Question","name":"Can I run multiple background agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"Yes, and this is where the biggest productivity gains come from. Claude Code headless mode supports unlimited parallel sessions orchestrated by amux or custom scripts. Cursor Background Agents support running multiple tasks in parallel (each in its own VM). Devin supports multiple concurrent sessions. The key challenge is git conflict avoidance — each agent should work on its own branch or git worktree. amux handles this automatically with its conflict detection and worktree isolation."}},
       {"@type":"Question","name":"What is the difference between a background agent and a copilot?","acceptedAnswer":{"@type":"Answer","text":"A copilot (like GitHub Copilot's autocomplete or Cursor's inline suggestions) assists you while you code — it's reactive, waiting for your cursor position or explicit prompts. A background agent works independently — you assign a task and it executes autonomously, reading files, writing code, running commands, and creating PRs without your involvement. The shift from copilot to agent is the defining trend of 2026: developers are moving from typing with AI assistance to delegating entire tasks to AI agents."}},
-      {"@type":"Question","name":"How do I review code from background agents?","acceptedAnswer":{"@type":"Answer","text":"Treat agent PRs like PRs from a junior developer who works fast but misses edge cases. Review the diff, not the process. Key things to check: (1) Does it actually solve the issue? (2) Are there tests? (3) Do the tests pass? (4) Any security issues (hardcoded secrets, SQL injection, XSS)? (5) Does it introduce unnecessary dependencies? For teams running multiple agents, batch reviews in a morning session — amux's dashboard shows all agent sessions and their PR status in one view. See our guide on reviewing AI-generated code for a complete checklist."}}
+      {"@type":"Question","name":"How do I review code from background agents?","acceptedAnswer":{"@type":"Answer","text":"Treat agent PRs like PRs from a junior developer who works fast but misses edge cases. Review the diff, not the process. Key things to check: (1) Does it actually solve the issue? (2) Are there tests? (3) Do the tests pass? (4) Any security issues (hardcoded secrets, SQL injection, XSS)? (5) Does it introduce unnecessary dependencies? For teams running multiple agents, batch reviews in a morning session — amux's dashboard shows all agent sessions and their PR status in one view. See our guide on reviewing AI-generated code for a complete checklist."}},{"@type":"Question","name":"How do I keep a background agent running when my laptop is closed?","acceptedAnswer":{"@type":"Answer","text":"Run it somewhere that stays on. Hosted agents (Cursor, Devin, Copilot, Claude Code Routines) already run in the vendor's cloud. For a terminal agent like Claude Code or Codex CLI, move it to an always-on machine: a home server, a VPS, or an amux Cloud server at yourname.amux.io from $39/mo, where it keeps working overnight and you steer it from your phone."}}
     ]
   }</script>
 
@@ -165,7 +165,9 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Background Agents Compared</span></div>
 
     <h1>Background Coding Agents Compared: Assign a Ticket and Walk Away (2026)</h1>
-    <p class="subtitle">The defining workflow of 2026: assign an AI agent a task, close your laptop, and review the pull request tomorrow morning. But which agent? <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> ships background agents on cloud VMs with video playback. <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> runs headless from the terminal with unlimited parallel sessions. <a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a> dropped to $20/month. <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a>&rsquo;s coding agent creates PRs from issues. <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a> sandboxes everything. This guide compares 8 platforms on the dimensions that matter: pricing, autonomy level, sandboxing, parallel execution, and how you review the output.</p>
+    <p class="subtitle">The defining workflow of 2026: assign an AI agent a task, close your laptop, and review the pull request tomorrow morning. But which agent? <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> ships background agents on cloud VMs with video playback. <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> runs headless from the terminal with unlimited parallel sessions. <a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a> dropped to $20/month. <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a>&rsquo;s coding agent creates PRs from issues. <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a> sandboxes everything. This guide compares the main platforms on pricing, autonomy, sandboxing, parallel execution, and how you review the output. Updated October 2026.</p>
+
+    <p><strong>Short answer:</strong> a background coding agent takes a task, works on it without you watching, and hands back a pull request. Hosted agents (Cursor, Devin, Copilot, Claude Code Routines) run on the vendor&rsquo;s cloud and are the least setup. Terminal agents (Claude Code, Codex CLI, Gemini CLI) run on a machine you control and are the most flexible, but they stop when that machine sleeps. Putting them on an always-on server, such as your own <a href="/cloud/">amux Cloud</a> server, gives you both: your own agents and subscriptions, running overnight, steered from your phone.</p>
 
     <!-- ───────── TL;DR ───────── -->
     <div class="tldr">
@@ -176,7 +178,17 @@
       <p><strong>Best GitHub integration:</strong> <a href="https://github.com/features/copilot" target="_blank" rel="noopener">Copilot Coding Agent</a> &mdash; assign a GitHub issue, get a PR. Zero setup.</p>
       <p><strong>Strongest sandbox:</strong> <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a> &mdash; OS-level isolation, network disabled by default, filesystem restrictions</p>
       <p><strong>Best self-hosted/OSS:</strong> <a href="https://github.com/All-Hands-AI/OpenHands" target="_blank" rel="noopener">OpenHands</a> &mdash; MIT-licensed, bring your own LLM, full control</p>
+      <p><strong>Best for keeping your own agents running overnight:</strong> <a href="/cloud/">amux Cloud</a>: Claude Code, Codex or Gemini CLI on your own always-on server at <code>yourname.amux.io</code>, steered from your phone, from $39/mo</p>
       <p><strong>Best for parallel agent fleets:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> + <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> &mdash; 10+ agents in parallel with shared board, self-healing, cost tracking</p>
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=background-agents-compared">Start amux Cloud</a>
+        <a class="btn" href="/pricing/">See pricing</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=background-agents-compared" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo for agents across several client projects.</p>
     </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
@@ -320,6 +332,17 @@
             <td class="n">No</td>
             <td class="n">No</td>
           </tr>
+          <tr>
+            <td><a href="/cloud/" class="tl">amux Cloud</a></td>
+            <td>Your own dedicated server</td>
+            <td>$39/mo + your agent plan</td>
+            <td class="y">Whole server is yours</td>
+            <td class="y">Many sessions</td>
+            <td class="p">Via the agent</td>
+            <td class="p">Live terminal + logs</td>
+            <td class="p">OSS version, yes</td>
+            <td class="y">Full (REST API, board, scheduler)</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -385,6 +408,25 @@
         <li><strong>Limitations:</strong> Can&rsquo;t access local tools or services, limited to Anthropic&rsquo;s cloud runtime, less flexible than headless mode</li>
       </ul>
       <div class="tool-verdict"><strong>Best for:</strong> Teams that want managed background agents without self-hosting. Good for scheduled tasks (nightly code reviews, dependency updates). See our <a href="/guides/claude-code-routines/">Routines vs self-hosted comparison</a>.</div>
+    </div>
+
+    <!-- amux Cloud -->
+    <div class="tool-card">
+      <h3><a href="/cloud/">amux Cloud</a> <span class="price-tag price-mid">$39/mo</span></h3>
+      <div class="tool-meta">
+        <span>Made by <a href="/">amux</a></span>
+        <span>Runs on: your own dedicated server</span>
+        <span>Agents: Claude Code, Codex, Gemini CLI</span>
+      </div>
+      <p>amux Cloud is the <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">open-source amux</a> control plane running on a server that belongs to you, at <code>yourname.amux.io</code>. The terminal agents above (Claude Code, Codex CLI, Gemini CLI) become background agents: they keep working after you close your laptop, and you check on them, answer their questions and assign the next task from your phone with the web app or the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a>.</p>
+      <ul>
+        <li><strong>Isolation:</strong> one dedicated server per customer, not a shared container</li>
+        <li><strong>Agents:</strong> you sign in with your own Claude, ChatGPT or Gemini account or an API key, so the model bill stays with the plan you already have</li>
+        <li><strong>Parallel:</strong> many agent sessions at once with a shared kanban board, a scheduler and self-healing restarts</li>
+        <li><strong>Plans:</strong> Solo $39/mo (4 vCPU, 8 GB RAM), Team $69/mo (8 vCPU, 16 GB RAM), Max $129/mo (16 vCPU, 32 GB RAM)</li>
+        <li><strong>Limitations:</strong> no built-in video replay; PRs come from the agent&rsquo;s own git and <code>gh</code> commands rather than a managed integration</li>
+      </ul>
+      <div class="tool-verdict"><strong>Best for:</strong> people who already use Claude Code or Codex and want them running overnight without leaving a laptop open. Freelancers and agencies with several client repos usually pick <a href="/start/?plan=team&amp;source=background-agents-compared">Team</a>. See <a href="/pricing/">pricing</a>.</div>
     </div>
 
     <!-- Devin -->
@@ -736,6 +778,7 @@
         <li><strong>Security is paramount and you need the strongest sandbox</strong> &rarr; <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a></li>
         <li><strong>You need full control, no vendor lock-in, self-hosted</strong> &rarr; <a href="https://github.com/All-Hands-AI/OpenHands" target="_blank" rel="noopener">OpenHands</a></li>
         <li><strong>You want 10+ agents running in parallel overnight</strong> &rarr; <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> + <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>. See <a href="/guides/agentmaxxing/">agentmaxxing guide</a>.</li>
+        <li><strong>You want your own Claude Code or Codex sessions to keep running while your laptop sleeps</strong> &rarr; <a href="/cloud/">amux Cloud</a></li>
         <li><strong>You want spec-driven orchestration for engineering teams</strong> &rarr; <a href="https://www.augmentcode.com/" target="_blank" rel="noopener">Augment Code Intent</a></li>
       </ul>
     </div>
@@ -782,6 +825,21 @@
     <div class="tool-card">
       <h3>How do I review code from background agents?</h3>
       <p>Treat agent PRs like PRs from a fast but inexperienced contributor. Review the diff, not the process. Check: (1) Does it solve the issue? (2) Are there tests? (3) Do tests pass? (4) Any security issues (hardcoded secrets, injection, XSS)? (5) Unnecessary dependencies? For teams running multiple agents, batch reviews in a morning session &mdash; <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>&rsquo;s dashboard shows all agent sessions and their PR status in one view. See our <a href="/guides/reviewing-ai-agent-code/">review playbook</a> for the complete checklist and triage workflow.</p>
+    </div>
+
+    <div class="tool-card">
+      <h3>How do I keep a background agent running when my laptop is closed?</h3>
+      <p>Run it somewhere that stays on. Hosted agents (Cursor, Devin, Copilot, Claude Code Routines) already run in the vendor&rsquo;s cloud. For a terminal agent like Claude Code or Codex CLI, move it to an always-on machine: a home server, a VPS, or an <a href="/cloud/">amux Cloud</a> server at <code>yourname.amux.io</code> from $39/mo, where it keeps working overnight and you steer it from your phone.</p>
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Or let amux Cloud run it for you</h3>
+      <p>Your agents keep running when your laptop sleeps, and you steer them from your phone with the web app or the iOS app. You get your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=background-agents-compared">Start amux Cloud</a>
+        <a class="btn" href="/pricing/">See pricing</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=background-agents-compared" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo for agents across several client projects.</p>
     </div>
 
   </main>
