@@ -8935,8 +8935,12 @@ print("%d requests from the owner over %g days (%d acks not counted): %d open, %
     ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
 if summary.get("held_by_ci"):
     g = summary["held_by_ci"]
+    # The gate's verdict words, said as what they mean. "none" read as nothing
+    # (2026-10-22): it is a tip whose required workflows did not all finish.
+    why = {"red": "red", "pending": "still running CI",
+           "none": "without a full CI verdict (a required workflow was skipped, cancelled or never ran)"}.get(g["tip_state"], g["tip_state"])
     print("held: %d landed request(s) are not live because main's tip %s is %s; the build stays on %s (%d newer commit(s) waiting). They go live when main is green." % (
-        g["requests"], g["tip"][:9], g["tip_state"], ("green " + g["target"][:9]) if g.get("target") else "its current image", g["held"]))
+        g["requests"], g["tip"][:9], why, ("green " + g["target"][:9]) if g.get("target") else "its current image", g["held"]))
 PY
 }
 
