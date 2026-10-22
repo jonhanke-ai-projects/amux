@@ -1114,7 +1114,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button id="files-lib-btn" onclick="_libOpen()" style="display:none;margin-left:auto;background:var(--accent);color:#000;border:none;border-radius:4px;font-size:0.7rem;font-weight:600;padding:3px 9px;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="View this folder as a searchable library">&#x1F4DA; Library</button>
   </div>
   <!-- Search: name filter by default; Contents = ripgrep FTS (AMUX-2420) -->
-  <div style="padding:5px 10px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);display:flex;gap:6px;align-items:center;">
+  <div class="files-search-row" style="padding:5px 10px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);display:flex;gap:6px;align-items:center;">
     <input id="files-search" type="search" placeholder="Search in this folder…" autocomplete="off"
       style="flex:1;min-width:0;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:4px 9px;font-size:0.8rem;color:var(--text);outline:none;"
       oninput="_filesSearchInput(this.value)"

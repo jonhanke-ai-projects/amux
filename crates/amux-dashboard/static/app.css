@@ -5521,6 +5521,13 @@
   body.embed #tag-filters,
   body.embed #offline-banner,
   body.embed #pinned-notes-home { display: none !important; }
+  /* A short Files embed (a split pane in a short window) gives its height to the
+     list: the Quick and search rows fold away, the toolbar and rows stay. At
+     1280x350 they took the whole pane and no row showed (b20e23647). */
+  @media (max-height: 420px) {
+    body.embed #files-bookmarks,
+    body.embed .files-search-row { display: none !important; }
+  }
   /* The JS sizes the active view to fill the iframe (position:fixed inset:0). */
   body.embed .embed-filled { position: fixed !important; inset: 0 !important; height: 100dvh !important;
     max-height: none !important; margin: 0 !important; z-index: 30; }

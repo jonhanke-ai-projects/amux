@@ -44,13 +44,17 @@ test('messages sent before the relaunch are not listed as taken by the new proce
   assert.ok(html.includes('pgvector counts'), 'a message the CURRENT process took mid-turn is still listed: ' + html);
 });
 
-test('without a relaunch the old behaviour holds: unechoed rows after the anchor are listed', () => {
+// Ethan, 2026-10-22 16:41: rows taken during an EARLIER turn piled up under
+// later prompts, out of order. The anchor is the newest printed prompt, so only
+// the turn it started is listed, with or without a relaunch.
+test('without a relaunch only the current turn is listed: an earlier turn\'s unprinted rows are not', () => {
   const html = render({created: at(9, 0), history, now: at(11, 8)});
-  assert.ok(html.includes('day of migration'), html);
+  assert.ok(!html.includes('day of migration'), html);
   assert.ok(html.includes('pgvector counts'), html);
 });
 
-test('a session with no session_created falls back to listing everything after the anchor', () => {
+test('a session with no session_created still lists the current turn after the newest printed prompt', () => {
   const html = render({created: 0, history, now: at(11, 8)});
-  assert.ok(html.includes('day of migration'), html);
+  assert.ok(!html.includes('day of migration'), html);
+  assert.ok(html.includes('pgvector counts'), html);
 });
