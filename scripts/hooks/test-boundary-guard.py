@@ -83,7 +83,8 @@ def run(example: str, home: str, env_extra: dict | None = None, registry: str = 
     return run_payload(payload(example), home, env_extra, registry)
 
 
-def conversation(home: str, name: str, running: int, finished: int = 0, stale: int = 0, no_meta_cold: int = 0) -> str:
+def conversation(home: str, name: str, running: int, finished: int = 0, stale: int = 0, no_meta_cold: int = 0,
+                 stopped: int = 0, resumed: int = 0) -> str:
     """A Claude Code conversation laid out as on disk, with subagent
     transcripts and meta files. Returns the transcript_path a hook gets."""
     root = os.path.join(home, "projects", name)
@@ -109,6 +110,14 @@ def conversation(home: str, name: str, running: int, finished: int = 0, stale: i
         agent(i, "done", {"requestShape": "background", "finished": True})
     for i in range(stale):
         os.utime(agent(i, "stale", {"requestShape": "background"}) + ".jsonl", (old, old))
+    interrupt = json.dumps({"type": "user", "message": {"role": "user", "content": [
+        {"type": "text", "text": "[Request interrupted by user]"}]}})
+    for i in range(stopped):  # TaskStop: the interrupt is the last entry and "finished" is never set
+        with open(agent(i, "stopped", {"requestShape": "background"}) + ".jsonl", "a") as fh:
+            fh.write(interrupt + "\n")
+    for i in range(resumed):  # stopped, then resumed: work appended after the interrupt
+        with open(agent(i, "resumed", {"requestShape": "background"}) + ".jsonl", "a") as fh:
+            fh.write(interrupt + "\n" + json.dumps({"type": "assistant", "message": {"role": "assistant"}}) + "\n")
     for i in range(no_meta_cold):
         os.utime(agent(i, "cold", None) + ".jsonl", (old, old))
     return tp
@@ -222,6 +231,16 @@ def main() -> int:
             hit = refused(ev, "running_cap")
             expect("subagents: control: the same agents written after the host started are refused",
                    code == 2 and bool(hit) and hit[0].get("ended_by_restart") == 0 and hit[0].get("host_start_measured") is True,
+                   f"exit {code} {ev}")
+            stp = conversation(home, "stopped", running=3, stopped=2)
+            code, ev = run_payload(agent_call(stp), home)
+            expect("subagents: stopped agents (interrupt last, no finished flag) are not counted",
+                   code == 0 and not refused(ev, "running_cap"), f"exit {code} {ev}")
+            stp = conversation(home, "resumed", running=3, resumed=1)
+            code, ev = run_payload(agent_call(stp), home)
+            hit = refused(ev, "running_cap")
+            expect("subagents: control: an agent resumed after its interrupt counts again",
+                   code == 2 and bool(hit) and hit[0].get("running") == 4 and hit[0].get("ended_by_stop") == 0,
                    f"exit {code} {ev}")
             code, ev = run_payload({**agent_call(tp), "tool_name": "Task"}, home)
             expect("subagents: the Task spelling is capped the same", code == 2 and bool(refused(ev, "running_cap")), f"exit {code}")

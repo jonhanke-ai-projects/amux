@@ -544,6 +544,40 @@ def host_process_start() -> float | None:
     return None
 
 
+def ended_by_stop(path: str) -> bool:
+    """True when the transcript's last entry is the interrupt a stop writes.
+
+    TaskStop never sets "finished" in the meta, so a stopped agent read as
+    running until its transcript aged past `stale_s` (30 min). Measured
+    2026-10-22: mxp-gs12 stopped a subagent at 23:25:59Z to free a slot for
+    critical-path work and the cap still refused the new one. The stop does
+    write a final user entry "[Request interrupted by user]"; a resumed agent
+    appends after it, so only the last entry is read.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 8192))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    lines = [ln for ln in tail.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    try:
+        last = json.loads(lines[-1])
+    except ValueError:
+        return False
+    msg = last.get("message") or {}
+    if last.get("type") != "user" or msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    texts = [content] if isinstance(content, str) else [
+        c.get("text", "") for c in (content or []) if isinstance(c, dict) and c.get("type") == "text"]
+    return any(t.startswith("[Request interrupted by user") for t in texts)
+
+
 def count_running_subagents(transcript_path: str, cfg: dict, now: float | None = None,
                             host_start: float | None = None) -> dict:
     """Running subagents of the conversation behind `transcript_path`."""
@@ -568,6 +602,7 @@ def count_running_subagents(transcript_path: str, cfg: dict, now: float | None =
         return {"measured": False, "why_unmeasured": f"cannot list {subs}: {e}", "n_considered": 0}
     running: list[str] = []
     ended_by_restart = 0
+    ended_by_stop_n = 0
     for n in names:
         stem = n[:-len(".jsonl")]
         try:
@@ -587,10 +622,14 @@ def count_running_subagents(transcript_path: str, cfg: dict, now: float | None =
         if live and host_start is not None and mtime < host_start - 2:
             ended_by_restart += 1  # last written before this process started: the restart ended it
             continue
+        if live and ended_by_stop(os.path.join(subs, n)):
+            ended_by_stop_n += 1  # stopped: TaskStop writes the interrupt and never sets "finished"
+            continue
         if live:
             running.append(stem)
     return {"measured": True, "running": len(running), "n_considered": len(names), "running_ids": sorted(running)[:12],
-            "ended_by_restart": ended_by_restart, "host_start_measured": host_start is not None}
+            "ended_by_restart": ended_by_restart, "ended_by_stop": ended_by_stop_n,
+            "host_start_measured": host_start is not None}
 
 
 def usage_headroom() -> dict:
@@ -645,7 +684,8 @@ def check_subagents(b: dict, tool: str, transcript_path: str) -> tuple[int, str]
     head = usage_headroom() if floor > 0 else {"measured": False, "why_unmeasured": "headroom floor off"}
     base = {"boundary": b.get("id"), "tool": tool, "limit": limit, "min_headroom_pct": floor,
             "running": count.get("running"), "running_ids": count.get("running_ids"),
-            "ended_by_restart": count.get("ended_by_restart"), "host_start_measured": count.get("host_start_measured"),
+            "ended_by_restart": count.get("ended_by_restart"), "ended_by_stop": count.get("ended_by_stop"),
+            "host_start_measured": count.get("host_start_measured"),
             "measured": bool(count.get("measured")), "n_considered": count.get("n_considered", 0),
             "headroom_pct": head.get("headroom_pct"), "headroom_measured": bool(head.get("measured")),
             "window": head.get("window"), "resets_at": head.get("resets_at")}
