@@ -1436,6 +1436,71 @@ async fn send_literal(name: &str, text: &str) -> bool {
     matches!(tmux(&["send-keys", "-t", &pt, "-l", text]).await, Some(o) if o.status.success())
 }
 
+/// Pastes `text` into the lane's composer through a named tmux buffer and
+/// `paste-buffer -p` (py:25630): a newline in it does not submit, and a
+/// trailing @-mention does not pick a file.
+async fn paste_into_composer(name: &str, text: &str) -> Result<(), &'static str> {
+    let buf_name = format!("amux-{}-{}", name, (now_f64() * 1000.0) as i64);
+    let tmp = std::env::temp_dir().join(format!("{buf_name}.txt"));
+    if std::fs::write(&tmp, text.as_bytes()).is_err() {
+        return Err("could not stage paste buffer");
+    }
+    let tmp_s = tmp.to_string_lossy().into_owned();
+    let ptq = pt(name);
+    let ok1 = matches!(tmux(&["load-buffer", "-b", &buf_name, &tmp_s]).await, Some(o) if o.status.success());
+    let ok2 = ok1
+        && matches!(
+            tmux(&["paste-buffer", "-p", "-b", &buf_name, "-t", &ptq]).await,
+            Some(o) if o.status.success()
+        );
+    let _ = tmux(&["delete-buffer", "-b", &buf_name]).await;
+    let _ = std::fs::remove_file(&tmp);
+    if ok2 { Ok(()) } else { Err("paste-buffer failed") }
+}
+
+/// Whether the lane's transcript has any record written at or after `since`:
+/// proof its reader works, so a message missing from it is missing.
+fn jsonl_live_since(name: &str, since: f64) -> bool {
+    let Some(path) = session_jsonl_path(name) else {
+        return false;
+    };
+    jsonl_records_since(&iter_jsonl_tail(&path, 262_144), since)
+}
+
+/// The scan behind `jsonl_live_since`, pure so a planted transcript tests it.
+pub(crate) fn jsonl_records_since(recs: &[Value], since: f64) -> bool {
+    recs.iter().any(|r| r["timestamp"].as_str().and_then(parse_iso8601).is_some_and(|ts| ts >= since))
+}
+
+/// What the held-message watcher does when the composer is empty after its
+/// grace: `Lost` when the transcript is live and does not have the message.
+/// An empty composer alone is not a delivery (MSG-92727, 2026-10-22: the
+/// owner's queued message read "Cleared" four times, then the watcher called
+/// the empty box "resolved", and the message never reached the worker).
+#[derive(Debug, PartialEq)]
+pub(crate) enum EmptyComposer {
+    /// Inside the grace: a restoration may still be on its way.
+    Wait,
+    /// The transcript is live and lacks the message: send it again, once.
+    Redeliver,
+    /// Already sent again, still missing after its own grace.
+    Lost,
+    /// No live transcript to check against: nothing proves it lost.
+    LeftUnverified,
+}
+
+pub(crate) fn empty_composer_verdict(now: f64, grace_until: f64, redelivered_at: Option<f64>, transcript_live: bool) -> EmptyComposer {
+    if now < grace_until {
+        return EmptyComposer::Wait;
+    }
+    match (transcript_live, redelivered_at) {
+        (false, _) => EmptyComposer::LeftUnverified,
+        (true, None) => EmptyComposer::Redeliver,
+        (true, Some(at)) if now < at + 30.0 => EmptyComposer::Wait,
+        (true, Some(_)) => EmptyComposer::Lost,
+    }
+}
+
 async fn sleep_ms(ms: u64) {
     tokio::time::sleep(Duration::from_millis(ms)).await;
 }
@@ -14389,25 +14454,9 @@ async fn send_text_inner_bound(
         sleep_ms(60).await;
     }
     if use_paste {
-        // Named tmux buffer + paste-buffer -p (py:25630). Also the picker-safe
-        // path — see `use_paste` above.
-        let buf_name = format!("amux-{}-{}", name, (now_f64() * 1000.0) as i64);
-        let tmp = std::env::temp_dir().join(format!("{buf_name}.txt"));
-        if std::fs::write(&tmp, staged.as_bytes()).is_err() {
-            return (false, "could not stage paste buffer".into());
-        }
-        let tmp_s = tmp.to_string_lossy().into_owned();
-        let ptq = pt(name);
-        let ok1 = matches!(tmux(&["load-buffer", "-b", &buf_name, &tmp_s]).await, Some(o) if o.status.success());
-        let ok2 = ok1
-            && matches!(
-                tmux(&["paste-buffer", "-p", "-b", &buf_name, "-t", &ptq]).await,
-                Some(o) if o.status.success()
-            );
-        let _ = tmux(&["delete-buffer", "-b", &buf_name]).await;
-        let _ = std::fs::remove_file(&tmp);
-        if !ok2 {
-            return (false, "paste-buffer failed".into());
+        // Picker-safe and newline-safe: see `use_paste` above.
+        if let Err(why) = paste_into_composer(name, &staged).await {
+            return (false, why.into());
         }
     } else if !send_literal(name, &staged).await {
         return (false, "send-keys failed".into());
@@ -14806,6 +14855,7 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
     tokio::spawn(async move {
         let started = now_f64();
         let deadline = started + 1800.0;
+        let mut redelivered_at: Option<f64> = None;
         let verdict: &'static str = loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if now_f64() > deadline {
@@ -14830,10 +14880,26 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
                     }
                 }
                 ComposerState::Empty | ComposerState::Placeholder(_) => {
-                    if now_f64() < started + grace_s {
-                        continue; // a restoration may still be on its way
+                    let live = sent_at > 0.0 && jsonl_live_since(&name, sent_at);
+                    match empty_composer_verdict(now_f64(), started + grace_s, redelivered_at, live) {
+                        EmptyComposer::Wait => continue,
+                        EmptyComposer::LeftUnverified => break "direct_draft_left_composer",
+                        EmptyComposer::Lost => break "direct_draft_lost",
+                        EmptyComposer::Redeliver => {
+                            if detect_claude_status(&raw) == "active" || pane_bar_says_generating(&raw) {
+                                continue; // send it at the next idle look
+                            }
+                            redelivered_at = Some(now_f64());
+                            tracing::warn!(session = %name, preview = %chars_truncate(&text, 80), measured = true, n_considered = 1,
+                                verdict = "direct_draft_lost_redelivering",
+                                "the composer is empty but the live transcript never got the message; sending it again, once");
+                            if paste_into_composer(&name, &close_trailing_mention(&text)).await.is_ok() {
+                                sleep_ms(300).await;
+                                send_key(&name, "Enter").await;
+                            }
+                            continue;
+                        }
                     }
-                    break "direct_draft_left_composer";
                 }
                 // A full-screen view or the background manager: keep waiting.
                 ComposerState::NotVisible | ComposerState::BackgroundManager => continue,
@@ -21889,7 +21955,7 @@ mod rate_limit_hold_tests {
         let hold = body.find("rate_limit_hold_for(name,").expect("send path must call the hold");
         let esc = body.find("send_key(name, \"Escape\").await;\n            esc_at").unwrap();
         let clear = body.find("send_key(name, \"C-u\")").unwrap();
-        let paste = body.find("\"paste-buffer\"").unwrap();
+        let paste = body.find("paste_into_composer(name,").unwrap();
         assert!(hold < esc && hold < clear && hold < paste);
         // And after the menu is answered, which is itself the way out of a limit.
         let menu = body.find("session.rate_limit_answered").unwrap();
@@ -50426,6 +50492,48 @@ with open(sys.argv[3],'ab',buffering=0) as log:
             jsonl_records_have(&with_it, GHOST, sent_at),
             "post-send user message IS evidence"
         );
+    }
+
+    // MSG-92727 (2026-10-22): the owner's queued message read "Cleared" four
+    // times, the watcher called the empty box resolved, and the message never
+    // reached the worker. The transcript recorded the next prompt 1.2s later,
+    // so it was live and the message was provably missing.
+    #[test]
+    fn an_empty_composer_with_a_live_transcript_missing_the_message_is_lost_not_resolved() {
+        use EmptyComposer::*;
+        // Inside the grace, wait whatever the transcript says.
+        assert_eq!(empty_composer_verdict(100.0, 190.0, None, true), Wait);
+        // Past it, live transcript without the message: send it again.
+        assert_eq!(empty_composer_verdict(200.0, 190.0, None, true), Redeliver);
+        // Sent again: wait for that send's own grace, then call it lost.
+        assert_eq!(empty_composer_verdict(210.0, 190.0, Some(200.0), true), Wait);
+        assert_eq!(empty_composer_verdict(231.0, 190.0, Some(200.0), true), Lost);
+        // No live transcript: nothing proves it lost, and nothing is resent.
+        assert_eq!(empty_composer_verdict(200.0, 190.0, None, false), LeftUnverified);
+    }
+
+    #[test]
+    fn a_transcript_is_live_when_it_has_any_record_since_the_send() {
+        let recs = vec![
+            json!({"type": "assistant", "timestamp": "2026-10-22T11:17:19.000Z"}),
+            json!({"type": "user", "timestamp": "2026-10-22T11:17:29.990Z", "message": {"role": "user", "content": "/e2e-test it"}}),
+        ];
+        let sent = parse_iso8601("2026-10-22T11:17:26.900Z").unwrap();
+        assert!(jsonl_records_since(&recs, sent), "the /e2e-test prompt after the send proves the reader works");
+        assert!(!jsonl_records_since(&recs[..1], sent), "only records before the send prove nothing");
+        assert!(!jsonl_records_have(&recs, "still buggy mac os", sent), "and the lost message is not in it");
+    }
+
+    #[test]
+    fn the_held_message_watcher_resends_a_lost_message_instead_of_calling_it_resolved() {
+        let src = include_str!("session_verbs.rs");
+        let body = &src[src.find("fn spawn_direct_draft_idle_submit(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("empty_composer_verdict("), "the watcher must decide an empty composer with the transcript");
+        assert!(body.contains("EmptyComposer::Redeliver =>") && body.contains("paste_into_composer("), "a lost message is sent again");
+        assert!(body.contains(r#"break "direct_draft_lost""#), "and named lost if it still does not arrive");
+        let resolved = &body[body.find("held direct message resolved").unwrap().saturating_sub(400)..];
+        assert!(!resolved[..400].contains("direct_draft_lost"), "lost is never logged as resolved");
     }
 
     #[test]
