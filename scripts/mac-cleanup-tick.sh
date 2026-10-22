@@ -150,6 +150,11 @@ FSEVENTSD_CMD=${AMUX_CLEANUP_FSEVENTSD_CMD:-fseventsd_reading}
 # after 20261021-135901 with nothing new and nothing a lane could do).
 FSEVENTSD_PID_CMD=${AMUX_CLEANUP_FSEVENTSD_PID_CMD:-pgrep -x fseventsd}
 FSEVENTSD_SPIN_REMIND_H=${AMUX_CLEANUP_FSEVENTSD_SPIN_REMIND_H:-24}
+# Churn this many times the floor on an already-escalated pid is a new cause and
+# escalates; less is ordinary work on top of the same stuck process (RCA
+# fseventsd 20261022-075928: 228 events in 20s from cargo builds, floor 134,
+# re-escalated pid 34409 as "stop the churn" while it was the stuck thread).
+FSEVENTSD_CHURN_NEW_X=${AMUX_CLEANUP_FSEVENTSD_CHURN_NEW_X:-5}
 # APFS local snapshots pin deleted blocks, so a reaper can delete 50 GB and free
 # nothing until they expire (DESKT-26 measured exactly that: a thin returned
 # 68.7 GB). Thinning is BOUNDED and disk-triggered because these snapshots are
@@ -3175,15 +3180,17 @@ if [ -n "$fse_reading" ]; then
     fse_pid=$($FSEVENTSD_PID_CMD 2>/dev/null | head -1 || true)
     fse_esc_pid=$(state_get "$STATE_DIR/state" esc_fseventsd_pid || true)
     fse_esc_at=$(state_get "$STATE_DIR/state" esc_fseventsd || true)
-    if [ "${fse_spin:-0}" = 1 ] && [ -n "$fse_pid" ] && [ "$fse_pid" = "$fse_esc_pid" ] \
-       && [ $(( $(date +%s) - ${fse_esc_at:-0} )) -lt $(( FSEVENTSD_SPIN_REMIND_H * 3600 )) ]; then
-      echo "mac-cleanup:   fseventsd pid $fse_pid is the process the last fseventsd escalation named $(( ($(date +%s) - fse_esc_at) / 60 ))m ago and it is still spinning: the owner's restart is pending (sudo killall fseventsd); not escalated again until a new pid or ${FSEVENTSD_SPIN_REMIND_H}h (verdict=fseventsd_spin_owner_pending)"
+    fse_feed_n=${fse_top%% *}; case "$fse_feed_n" in ''|*[!0-9]*) fse_feed_n=0 ;; esac
+    if [ -n "$fse_pid" ] && [ "$fse_pid" = "$fse_esc_pid" ] \
+       && [ $(( $(date +%s) - ${fse_esc_at:-0} )) -lt $(( FSEVENTSD_SPIN_REMIND_H * 3600 )) ] \
+       && { [ "${fse_spin:-0}" = 1 ] || [ "$fse_feed_n" -lt $(( churn_floor * FSEVENTSD_CHURN_NEW_X )) ]; }; then
+      echo "mac-cleanup:   fseventsd pid $fse_pid (${fse_gb}G) is the process the last fseventsd escalation named $(( ($(date +%s) - fse_esc_at) / 60 ))m ago and it is still hot$( [ "${fse_spin:-0}" = 1 ] || echo ", with churn under ${FSEVENTSD_CHURN_NEW_X}x the floor"): the owner's restart is pending (sudo killall fseventsd, which also returns its memory); not escalated again until a new pid, churn over ${FSEVENTSD_CHURN_NEW_X}x the floor, or ${FSEVENTSD_SPIN_REMIND_H}h (verdict=fseventsd_spin_owner_pending)"
       reported=$((reported+1))
     elif [ "${fse_spin:-0}" = 1 ]; then
       fse_verdict="fseventsd at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_CPU_PCT}%) holding ${fse_gb}G with no file churn to feed it ($fse_top): a stuck fseventsd thread, not a writer; the owner restarts it with sudo killall fseventsd (launchd brings it back, no reboot)"
     else
-      echo "mac-cleanup:   fseventsd remedy: stop the churn; only a reboot returns its memory (owner runs: sudo fdesetup authrestart)"
-      fse_verdict="fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_REBOOT_GB}G or ${FSEVENTSD_CPU_PCT}%); stop the file churn feeding it, then only a reboot returns the memory. Top feed: $fse_top"
+      echo "mac-cleanup:   fseventsd remedy: stop the churn, then the owner runs sudo killall fseventsd to return its memory (launchd restarts it; no reboot)"
+      fse_verdict="fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_REBOOT_GB}G or ${FSEVENTSD_CPU_PCT}%); stop the file churn feeding it, then sudo killall fseventsd returns its memory (launchd restarts it, no reboot). Top feed: $fse_top"
     fi
   else
     echo "mac-cleanup: fseventsd ${fse_gb}G ${fse_cpu:-?}% CPU, under the ${FSEVENTSD_REBOOT_GB}G/${FSEVENTSD_CPU_PCT}% thresholds"

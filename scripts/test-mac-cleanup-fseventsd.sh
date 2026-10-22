@@ -131,6 +131,20 @@ if [ "$(uname)" = Darwin ]; then
   check "a new pid spinning is escalated"                "2" "$(fse_sent)"
   out=$(AMUX_CLEANUP_FSEVENTSD_SPIN_REMIND_H=0 spin 51234)
   check "past the reminder window the same pid escalates" "3" "$(fse_sent)"
+
+  echo "3d. the escalated pid with ordinary churn stays the owner's; heavy churn is a new cause (RCA fseventsd 20261022-075928)"
+  # Cargo builds wrote 228 events in 20s on top of the stuck pid 34409 (14G),
+  # and the tick re-escalated it as "stop the churn".
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log"
+  churn() { TICK_REC="$REC3" AMUX_CLEANUP_FSEVENTSD_PID_CMD="echo $1" AMUX_CLEANUP_ESCALATE_COOLDOWN_H=0 AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP" tick "echo 14 102"; }
+  out=$(AMUX_CLEANUP_FSEVENTSD_CHURN_NEW_X=100 churn 34409)
+  check "first sight escalates"                          "1" "$(fse_sent)"
+  check "its remedy returns memory without a reboot"     "yes" "$(grep -q 'sudo killall fseventsd returns its memory' "$FIX/sent.log" "$FIX/sent.msg" 2>/dev/null; has "$out" 'sudo killall fseventsd to return its memory')"
+  out=$(AMUX_CLEANUP_FSEVENTSD_CHURN_NEW_X=100 churn 34409)
+  check "same pid, churn under the bar: owner pending"   "yes" "$(has "$out" 'with churn under 100x the floor.*verdict=fseventsd_spin_owner_pending')"
+  check "and not escalated again"                        "1" "$(fse_sent)"
+  out=$(churn 34409)
+  check "same pid, churn at 5x the floor: a new cause, escalated" "2" "$(fse_sent)"
 else
   echo "  skip (the end-to-end tick needs macOS)"
 fi
