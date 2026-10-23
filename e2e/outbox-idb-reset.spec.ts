@@ -13,10 +13,11 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
     if (/outbox_upload_list_timeout|idb_connection_reset/.test(b)) { try { beacons.push(JSON.parse(b)); } catch { /* not JSON */ } }
   });
   await page.goto('/');
-  await page.waitForFunction(() => typeof (window as any)._upqListBounded === 'function' && typeof (window as any)._idb?.reset === 'function');
+  await page.waitForFunction(() => typeof (window as any)._upqListBounded === 'function' && typeof (0, eval)('_idb')?.reset === 'function');
   // Count opens, then make the next getUploads hang the way the dead handle did.
   const opensBefore = await page.evaluate(async () => {
     const g = window as any;
+    g._idb = (0, eval)('_idb');           // a top-level const, not a window property
     g.__opens = 0;
     const open = indexedDB.open.bind(indexedDB);
     (indexedDB as any).open = (...a: any[]) => { g.__opens++; return open(...a); };

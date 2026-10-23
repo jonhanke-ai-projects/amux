@@ -15546,13 +15546,43 @@ function _prefetchOrder() {
   return running.sort((a, b) => rank(a) - rank(b) || (b.last_activity || 0) - (a.last_activity || 0));
 }
 
+// AUTOMATIC PASSES RUN AT MOST ONCE PER _PREFETCH_MIN_GAP_MS, ACROSS WINDOWS.
+// The schedule says every 10 minutes, plus 8s after load and 4s after an
+// `online` event. On 2026-10-23 the Mac app's window ran a full pass (a 200-line
+// peek of all 43 workers) every 10-60s and twelve more windows ran their own,
+// 9,005 peeks in 15 minutes, which held amux-server-rs over 300% CPU on two
+// cleanup ticks. Live terminals change, so the 304 that made a re-sync "~free"
+// almost never happens. The saved copies live in shared IndexedDB, so one
+// window's pass serves them all: the last automatic pass is shared through
+// localStorage. A skipped trigger is counted by name and beaconed
+// (offline_prefetch_throttled), so a trigger that keeps firing is visible.
+const _PREFETCH_MIN_GAP_MS = 10 * 60 * 1000;
+const _PREFETCH_LAST_KEY = 'amux_offline_prefetch_last';
+const _prefetchSkipped = {};
+function _prefetchThrottled(trigger) {
+  let last = 0;
+  try { last = Number(localStorage.getItem(_PREFETCH_LAST_KEY)) || 0; } catch (_) {}
+  const age = Date.now() - last;
+  // 30s of slack, so the 10-minute interval itself is never skipped for a pass
+  // that started a few seconds late.
+  if (age >= _PREFETCH_MIN_GAP_MS - 30000 || age < 0) return false;
+  const n = (_prefetchSkipped[trigger] = (_prefetchSkipped[trigger] || 0) + 1);
+  if (n === 1 || n % 20 === 0) {
+    try { window._clientDebug?.('offline-prefetch', {verdict: 'offline_prefetch_throttled', measured: true, n_considered: n,
+      trigger, skipped: n, last_pass_age_ms: age}); } catch (_) {}
+  }
+  return true;
+}
+
 // Sync every running session's scrollback. Unchanged sessions cost 0 bytes
 // (304). Throttled so a weak link isn't hit with 49 parallel requests.
-async function _offlinePrefetch(manual) {
+async function _offlinePrefetch(manual, trigger = 'manual') {
   if (_prefetchRunning) return;
+  if (!manual && _prefetchThrottled(trigger)) return;
   if (typeof online !== 'undefined' && !online) { if (manual) showToast('Offline — connect to sync'); return; }
   if (!manual && !_linkIsCheap()) return;    // never auto-blast on 2g/3g/saveData
   _prefetchRunning = true; _prefetchAbort = false;
+  if (!manual) { try { localStorage.setItem(_PREFETCH_LAST_KEY, String(Date.now())); } catch (_) {} }
   await _peekIndexLoad();
   const list = _prefetchOrder();
   let fetched = 0, unchanged = 0, bytes = 0, done = 0;
@@ -48876,10 +48906,10 @@ _idb.get('drafts').then(val => {
 // then top up on a good link. Re-syncs are ~free (304s), so this is cheap.
 _peekIndexLoad().then(() => {
   try { render(); } catch(e) {}
-  setTimeout(() => { try { _offlinePrefetch(false); } catch(e) {} }, 8000);
+  setTimeout(() => { try { _offlinePrefetch(false, 'boot'); } catch(e) {} }, 8000);
 });
-setInterval(() => { try { _offlinePrefetch(false); } catch(e) {} }, 10 * 60 * 1000);
-window.addEventListener('online', () => setTimeout(() => { try { _offlinePrefetch(false); } catch(e) {} }, 4000));
+setInterval(() => { try { _offlinePrefetch(false, 'interval'); } catch(e) {} }, 10 * 60 * 1000);
+window.addEventListener('online', () => setTimeout(() => { try { _offlinePrefetch(false, 'online'); } catch(e) {} }, 4000));
 
 _idb.get('offline_queue').then(async val => {
   if (val && localStorage.getItem('amux_offline_queue') === null && val.length) {
