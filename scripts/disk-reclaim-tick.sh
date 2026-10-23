@@ -131,6 +131,11 @@ gb() { awk -v k="${1:-0}" 'BEGIN{printf "%.1fG", k/1048576}'; }
 TIGHT_GB=${RECLAIM_TIGHT_FREE_GB:-150}
 CACHE_H=${RECLAIM_DOCKER_CACHE_H:-24}                # docker build cache unused this long is pruned
 DOCKER_CTX_CMD=${RECLAIM_DOCKER_CTX_CMD:-colima list --json}
+VM_FULL_PCT=${RECLAIM_VM_FULL_PCT:-85}
+vm_docker_pct() { # <context>: percent used of the VM's /var/lib/docker, colima contexts only
+  case "$1" in colima-*) timeout 20 colima ssh -p "${1#colima-}" -- df --output=pcent /var/lib/docker 2>/dev/null | tail -1 ;; esac
+}
+VM_PCT_CMD=${RECLAIM_VM_PCT_CMD:-vm_docker_pct}
 CRITICAL_GB=${RECLAIM_CRITICAL_FREE_GB:-60}
 
 if [ -z "$API" ]; then say "verdict=reclaim_tick_unmeasured why=no amux url"; exit 1; fi
@@ -470,7 +475,15 @@ for l in sys.stdin:
   [ -n "$ctxs" ] || ctxs=default
   for ctx in $ctxs; do
     if [ "$(left)" -ge 10 ] && timeout "$(cap 20)" docker --context "$ctx" info >/dev/null 2>&1; then
-      tool "docker[$ctx] build cache >${CACHE_H}h" docker --context "$ctx" builder prune -f --filter "until=${CACHE_H}h"
+      # A VM can fill from the inside while the Mac still has room: 2026-10-23
+      # gs12-local reached 92% (128G of 147G) on 56G of build cache under a day
+      # old, with the Mac over the tight floor, so the host-free tiers kept the
+      # 24h window. A VM at VM_FULL_PCT or more gets the 6h window.
+      ch=$CACHE_H; pct=$($VM_PCT_CMD "$ctx" 2>/dev/null | tr -dc '0-9')
+      if [ -n "$pct" ] && [ "$pct" -ge "$VM_FULL_PCT" ] && [ "$ch" -gt 6 ]; then
+        ch=6; say "verdict=reclaim_tick_vm_full docker[$ctx] disk ${pct}% used (>= ${VM_FULL_PCT}%): build cache unused 6h goes"
+      fi
+      tool "docker[$ctx] build cache >${ch}h" docker --context "$ctx" builder prune -f --filter "until=${ch}h"
       tool "docker[$ctx] dangling images" docker --context "$ctx" image prune -f
     else
       say "tool: docker[$ctx] not answering"

@@ -221,7 +221,8 @@ mkdir -p "$T/fakebin"
 printf '#!/bin/sh\necho "$@" >> "%s/docker.log"\nexit 0\n' "$T" > "$T/fakebin/docker"; chmod +x "$T/fakebin/docker"
 printf '%s\n' '{"name":"goal-shared","status":"Running","runtime":"docker"}' '{"name":"gs12-local","status":"Running","runtime":"docker"}' \
   '{"name":"idle","status":"Stopped","runtime":"docker"}' '{"name":"k","status":"Running","runtime":"containerd"}' > "$T/colima.json"
-dockrun() { : > "$T/docker.log"; PATH="$T/fakebin:$PATH" RECLAIM_TOOLS=1 RECLAIM_DOCKER_CTX_CMD="cat $T/colima.json" run --dry-run "$@"; }
+printf '#!/bin/sh\ncase "$1" in *gs12-local) echo " 92%%" ;; *) echo " 10%%" ;; esac\n' > "$T/vmpct.sh"; chmod +x "$T/vmpct.sh"
+dockrun() { : > "$T/docker.log"; PATH="$T/fakebin:$PATH" RECLAIM_TOOLS=1 RECLAIM_DOCKER_CTX_CMD="cat $T/colima.json" RECLAIM_VM_PCT_CMD="${VMPCT:-echo 10%}" run --dry-run "$@"; }
 dockrun
 grep -q 'docker --context colima-goal-shared builder prune -f --filter until=24h' "$T/out.txt" && grep -q 'context colima-gs12-local builder prune' "$T/out.txt" \
   && ok "build cache is pruned in every running docker VM" || bad "every running VM"
@@ -231,6 +232,10 @@ FREE_KB=$((100 * 1048576)) dockrun
 grep -q 'until=12h' "$T/out.txt" && ok "tight tier prunes build cache unused 12h" || bad "tight cache window"
 FREE_KB=$((40 * 1048576)) dockrun
 grep -q 'until=6h' "$T/out.txt" && ok "critical tier prunes build cache unused 6h" || bad "critical cache window"
+VMPCT="$T/vmpct.sh" dockrun
+grep -q 'context colima-gs12-local builder prune -f --filter until=6h' "$T/out.txt" && ok "a VM 85%+ full gets the 6h cache window" || bad "full VM gets 6h"
+grep -q 'context colima-goal-shared builder prune -f --filter until=24h' "$T/out.txt" && ok "a roomy VM beside it keeps 24h" || bad "roomy VM keeps 24h"
+grep -q 'verdict=reclaim_tick_vm_full docker\[colima-gs12-local\] disk 92%' "$T/out.txt" && ok "the full VM is named with its percent" || bad "vm_full verdict"
 
 # ── dry run ──
 run --dry-run
