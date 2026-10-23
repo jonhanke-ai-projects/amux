@@ -10,6 +10,10 @@ If Muse can write files on this Mac but not run commands, it appends
 {"id": "<command id>", "text": "<reply>"} to ~/.muse-cli/outbox.jsonl and
 each run here sends those back the same way (once each).
 
+When amux runs on this same Mac (~/.amux/endpoint.json exists and there is no
+amux.json), the inbox is already the local one, so there is nothing to fetch:
+each run only sends back the outbox replies, through the local server.
+
 Reads ~/.muse-cli/amux.json:
   {"url": "https://<server>:8824", "token": "<owner token>",
    "remote_inbox": "/Users/<you>/.muse-cli/inbox.jsonl"}   (remote_inbox optional)
@@ -67,7 +71,15 @@ def fetch(cfg: dict) -> str:
         return r.read().decode("utf-8", errors="replace")
 
 
+def amux_is_local() -> bool:
+    return os.path.exists(os.path.expanduser("~/.amux/endpoint.json"))
+
+
 def sync() -> int:
+    if not os.path.exists(CONFIG) and amux_is_local():
+        # Same Mac as amux: workers already queue into this inbox. Only the reply path needs work.
+        print(f"muse-sync: amux is local, inbox needs no copy; {send_outbox()} repl(ies) sent back")
+        return 0
     try:
         cfg = config()
     except (OSError, ValueError) as e:

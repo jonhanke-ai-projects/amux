@@ -48,8 +48,8 @@ function fixture(names = [], shared = {}) {
   };
   const ctx = vm.createContext(sandbox);
   // Load production dependencies too: replay must execute, not fail on a stale fixture.
-  for (const name of ['_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_DELIVERY_STEAL_MS', '_syncPhase']) vm.runInContext(declaration(name), ctx);
-  for (const name of ['_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_outboxDeliveryLock', '_mutateQueue', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
+  for (const name of ['_DELIVERY_STEAL_MS', '_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_syncPhase']) vm.runInContext(declaration(name), ctx);
+  for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -819,8 +819,7 @@ test('reconnect retries retain completed file checkmarks without uploading those
 
 test('a queue entry removed in another tab cannot earn an acknowledgement checkmark', async () => {
   const {ctx, stored, element} = fixture(); await enqueue(ctx);
-  // Deliveries take _outboxDeliveryLock (the stealing wrapper) since fb7fd14d8.
-  ctx._outboxLock=ctx._outboxDeliveryLock=async (name, work) => {if(name.startsWith('amux-outbox-delivery:')) stored.set('amux_offline_queue','[]'); return work();};
+  ctx._outboxDeliveryLock=async (name, work) => {if(name.startsWith('amux-outbox-delivery:')) stored.set('amux_offline_queue','[]'); return work();};
   await ctx.runSyncBanner();
   assert.equal(element('sync-title-text').textContent,'0 synced, 1 skipped');
   assert.doesNotMatch(element('sync-items').innerHTML,/sync-item done/);

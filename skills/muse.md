@@ -63,6 +63,23 @@ back any reply Muse appended to `~/.muse-cli/outbox.jsonl` (for when Muse can
 write files there but not run commands). Replies carry a stable `msg_id`, so a
 retry after a timeout is delivered once. Log: `~/.muse-cli/sync.log`.
 
+## When Muse can write files here but not run commands
+
+Muse may be able to write files on its paired Mac without being able to run a
+command there. Then it answers by appending `{"id": "<command id>", "text":
+"<reply>"}` to `~/.muse-cli/outbox.jsonl`, and `muse-sync` sends each line back
+once. On the Mac that runs amux, install it with no `amux.json`; it sees the local
+server and only forwards the outbox:
+
+```bash
+install -m 755 skills/muse/scripts/muse-sync.py ~/.local/bin/muse-sync
+muse-sync --install        # every minute, log ~/.muse-cli/sync.log
+```
+
+Keep amux's `muse-send` and `muse-reply` in `~/.local/bin`. A generic Muse
+installer that links its own copies there drops the `reply_to` field and the
+closing `muse-reply` line, so answers stop reaching the worker that asked.
+
 ## Muse sending work on its own
 
 Muse can start a thread with any worker, not only answer one:

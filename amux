@@ -5659,14 +5659,14 @@ for p in d.get("pins", []):
     names = [tags.get(t, t) for t in p.get("tags", [])]
     if want_group and want_group not in [x.lower() for x in names]: continue
     if want_status and (p.get("status") or "") != want_status: continue
-    if q and q not in (p.get("name", "") + " " + p.get("desc", "")).lower(): continue
+    if q and q not in " ".join([p.get("name", ""), p.get("desc", ""), p.get("notes", "")] + names).lower(): continue
     n += 1
     stars = "*" * (p.get("myRating") or 0)
     print("%-28s %-9s %-5s %s  [%s]" % (p["id"], p.get("status") or "-", stars, p.get("name", ""), ", ".join(names)))
 print("%d pin(s)" % n, file=sys.stderr)' "$@"
       ;;
     add)
-      [ $# -gt 0 ] || die "Usage: amux map add \"Name\" (lat=.. lng=.. | place=\"search text\") [group=A,B] [status=want|been|favorite|closed] [rating=1-5] [desc=..] [note=..] [at=YYYY-MM-DD[THH:MM]]"
+      [ $# -gt 0 ] || die "Usage: amux map add \"Name\" (lat=.. lng=.. | place=\"search text\") [group=A,B] [status=want|been|favorite|closed] [rating=1-5] [desc=..] [note=..] [thumb=IMAGE_URL] [at=YYYY-MM-DD[THH:MM]]"
       local map_json; map_json=$(_curl -sk "$AMUX_API/api/map") || die "amux map: the server did not answer"
       local place_q; place_q=$(python3 -c 'import sys
 for a in sys.argv[1:]:
@@ -5692,6 +5692,7 @@ for a in sys.argv[1:]:
             pin["tags"].append(by_name[g.lower()])
     elif k in ("note", "notes"): pin["notes"] = v
     elif k == "desc": pin["desc"] = v
+    elif k in ("thumb", "thumbnail"): pin["thumbnail"] = v
     elif k == "at": pin["eventAt"] = v
     elif k == "place": pass
     else: sys.exit("amux map: unknown field %r" % k)
@@ -5700,6 +5701,7 @@ if "lat" not in pin:
     if not found: sys.exit("amux map: give lat= and lng=, or place=\"...\" that the place search can find")
     r = found[0]; pin["lat"] = float(r["lat"]); pin["lng"] = float(r["lon"])
     if r.get("place_id"): pin["placeId"] = r["place_id"]
+    if r.get("photo_name"): pin["photoName"] = r["photo_name"]
     pin.setdefault("desc", r.get("display_name", ""))
     if not pin["name"]: pin["name"] = r.get("name", "Pin")
 print(json.dumps(pin))' "$@") || exit 1
@@ -5710,7 +5712,7 @@ if not d.get("ok"): print("error:", d.get("error", d), file=sys.stderr); sys.exi
 p = d["pin"]; print(p["id"], "added:", p.get("name"), "(%s, %s)" % (p["lat"], p["lng"]) + (" calendar " + p["calEventId"] if p.get("calEventId") else ""))'
       ;;
     set)
-      local pid="${1:-}"; [ -n "$pid" ] || die "Usage: amux map set PIN_ID status=been rating=5 [note=..] [desc=..] [at=..] [name=..]"
+      local pid="${1:-}"; [ -n "$pid" ] || die "Usage: amux map set PIN_ID status=been rating=5 [note=..] [desc=..] [thumb=IMAGE_URL] [at=..] [name=..]"
       shift; [ $# -gt 0 ] || die "amux map set: nothing to set. Give key=value pairs."
       local cur; cur=$(_curl -sk "$AMUX_API/api/map") || die "amux map: the server did not answer"
       local json; json=$(MAP_JSON="$cur" python3 -c '
@@ -5723,6 +5725,9 @@ for a in sys.argv[2:]:
     if k == "rating": p["myRating"] = int(v) if v else None
     elif k in ("status", "desc", "name"): p[k] = v
     elif k in ("note", "notes"): p["notes"] = v
+    elif k in ("thumb", "thumbnail"):
+        if v: p["thumbnail"] = v
+        else: p.pop("thumbnail", None)
     elif k == "at": p["eventAt"] = v
     else: sys.exit("amux map: unknown field %r" % k)
 print(json.dumps(p))' "$pid" "$@") || exit 1

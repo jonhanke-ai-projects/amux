@@ -1,17 +1,65 @@
 ---
-description: Send a message to a Codex chat by its name, or start a new named one, e.g. /codex #mxp onboarding flow <message> or /codex new thread <name>. Use when asked to send, relay or hand context to a Codex chat or thread, or to create one. Scripts: ~/.amux/scripts/codex-send.py <chat name> - and ~/.amux/scripts/codex-new.py <name> - (message on stdin).
-argument-hint: <chat name> [message]
+description: Work with Codex threads (Desktop app, CLI, exec, cloud). Read, list, search and monitor them (what is Codex doing, read a thread, what commands ran, what changed since, find the thread about X), send a message to a chat by name, or start a new named thread, e.g. /codex what is running, /codex read #mxp onboarding flow, /codex #mxp onboarding flow <message>, /codex new thread <name>. Scripts: ~/.amux/scripts/codex-skill.py (read-only, JSON), codex-send.py <chat> -, codex-new.py <name> - (message on stdin).
+argument-hint: <question about Codex work> | <chat name> [message] | new thread <name>
 allowed-tools: Bash
 ---
 
-# Send to a Codex chat
+# Codex threads: observe, send, start
 
 The request: **$ARGUMENTS**
 
-The sender is `~/.amux/scripts/codex-send.py`. It finds the Codex thread by name
-and runs `codex queue`. Do not look up thread ids by hand. Source of both scripts:
-`skills/codex.md` and `skills/codex/scripts/` in the amux repo; install with
+Three scripts, all under `~/.amux/scripts/`. Source: `skills/codex.md` and
+`skills/codex/scripts/` in the amux repo; install with
 `install -m 755 skills/codex/scripts/*.py ~/.amux/scripts/`.
+
+- A question about Codex work (what is running, read, list, search, status, what
+  changed, which failed): **section R**, `codex-skill.py`. Read-only.
+- A message for an existing chat: sections 1 to 4, `codex-send.py`.
+- A new chat or thread: section 0, `codex-new.py`.
+
+Never start, resume, steer, archive or interrupt a thread unless the request asks for it.
+
+## R. Observe: codex-skill.py
+
+Read-only JSON over every local thread, whichever app made it. Run
+`codex-skill.py capabilities` once if you need to know what this machine exposes.
+
+```bash
+CS=~/.amux/scripts/codex-skill.py
+$CS list --active                       # what is Codex doing right now
+$CS list --project mixpeek --days 14    # also --status, --source desktop|cli|exec|subagent, --keyword
+$CS status <thread>                     # state, recent turns, failures, last agent message
+$CS read <thread> [--since CKPT] [--types commandExecution] [--limit N] [--full]
+$CS events <thread> [--since CKPT]      # compact timeline: messages, commands (failed flag), tool calls
+$CS search "MXP-GS12" [--days 30]       # titles, messages, commands and tool outputs
+$CS watch <thread> --until-idle --duration 900   # NDJSON: item and status events, bounded
+```
+
+`<thread>` is a UUID, an exact name, or a fragment that fits one name. Exit 2 means
+no match or several; `candidates` lists them.
+
+How to read the answers:
+
+- **`status.basis`.** `observed` means a terminal record exists (`idle`,
+  `interrupted`, `failed`). `inferred` means the last turn has no end record and
+  the state comes from facts in `status.evidence`: `running` (rollout written in
+  the last 180s), `waiting` (a live process holds it open but is quiet, maybe an
+  approval), `abandoned` (no process holds it). Report inferred states as
+  inferred, with the evidence.
+- **Pending approvals and live events are not observable** for a thread another
+  process owns (the Desktop app's server is a private pipe). Say so; do not guess.
+- **`checkpoint`.** Save it and pass it as `--since` next time to get only new
+  items, with no repeats.
+- **`history_source`** says whether the API or the rollout file answered.
+  **`measured: false` or `ok: false`** means the data was not read. Report that
+  as unavailable, never as empty.
+- **Output is bounded.** Long strings are cut at `--max-chars` with a
+  `[... truncated, N chars total]` marker; secrets are replaced with `[REDACTED]`
+  and counted in `redactions`. Do not try to recover redacted values.
+
+Answer the user from these fields. Quote thread names and ids, and say which
+facts were observed and which were inferred. Full capability matrix, status
+table and schemas: `skills/codex/reference.md` in the amux repo.
 
 ## 0. A NEW thread: always named, never `codex exec`
 
