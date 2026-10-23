@@ -14633,7 +14633,20 @@ async fn send_text_inner_bound(
                 "queued (held in the input box; submitted automatically when this turn ends)".into(),
             );
         }
+        // Mid-turn "Confirmed" is unreliable: Claude Code can accept Enter,
+        // clear the composer, fire UserPromptSubmit, and then silently discard
+        // the prompt because a turn is in progress. Spawn the idle watcher as
+        // a safety net; it checks the JSONL transcript and redelivers if lost.
+        // Measured 2026-10-23 (amux-cloud): three owner messages delivered
+        // mid-turn, all three acknowledged with UserPromptSubmit, none appeared
+        // in the terminal. Worker went IDLE with no watcher to catch it.
+        spawn_direct_draft_idle_submit(name, &text, sent_at, 90.0);
         return send_outcome(second, generating, true);
+    }
+    if generating {
+        // Same safety net for a first-try mid-turn Confirmed (no retry needed
+        // but the verdict is equally untrustworthy while the lane is active).
+        spawn_direct_draft_idle_submit(name, &text, sent_at, 90.0);
     }
     send_outcome(first, generating, retried)
 }
