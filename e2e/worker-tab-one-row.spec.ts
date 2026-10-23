@@ -36,7 +36,8 @@ test('every worker tab has one control row above its content', async ({ page, re
         for (const c of Array.from(panel.children) as HTMLElement[]) {
           const r = c.getBoundingClientRect();
           if (!r.height || getComputedStyle(c).display === 'none' || getComputedStyle(c).position === 'absolute') continue;
-          if (r.height > 120) break;
+          // Content: anything tall, or the tab's list (which is short when empty).
+          if (r.height > 120 || /-list$/.test(c.id) || /(^| )(peek-tasks-list|tasks-list)( |$)/.test(String(c.className))) break;
           out.push({ id: c.id || String(c.className).split(' ')[0] || c.tagName, h: Math.round(r.height) });
         }
         return { panel: panel.id, out };

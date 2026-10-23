@@ -10334,13 +10334,12 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .row-note-body p{margin:6px 0 2px;}
 .peek-board-config .pbc-one{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap;}
 .peek-board-config .pbc-label{font-size:0.78rem;font-weight:600;color:var(--dim);}
-.peek-board-config .board-one-switch,.peek-board-config .board-one-inherit{min-height:36px;}
+.peek-board-config .board-one-switch,.peek-board-config .board-one-inherit{min-height:44px;}
 @media (max-width:600px){
   /* The Board toolbar is one row that scrolls sideways on a phone, like every
      tab's (css-mobile rule); search keeps a usable 160px instead of its own row. */
   #peek-issues-panel .peek-tasks-add{flex-wrap:nowrap !important;overflow-x:auto;-webkit-overflow-scrolling:touch;}
   #peek-issues-panel .peek-tasks-add > *{flex-shrink:0;}
   #peek-issues-panel .peek-tasks-add > .board-search-wrap{flex:1 0 160px !important;order:6;}
-  .peek-board-config .board-one-switch,.peek-board-config .board-one-inherit{min-height:44px;}
 }
 #peek-board-config.peek-board-config{flex-direction:row;align-items:center;padding:0;}
