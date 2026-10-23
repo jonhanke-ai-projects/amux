@@ -63,6 +63,11 @@ def follow(rpc, tid, hours=12):
     if os.fork():
         return
     os.setsid()
+    # Let go of the caller's stdio. Holding it kept `$(codex-new.py ...)` and any pipe blocked until
+    # the turn finished, so a caller that watched the thread only ever saw it idle (2026-10-23).
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
     logf = Path.home() / ".amux" / "logs" / f"codex-new-{tid}.log"
     end = time.time() + hours * 3600
     with logf.open("a") as out:
@@ -97,6 +102,7 @@ def main():
     a = ap.parse_args()
     msg = sys.stdin.read() if a.message == "-" else a.message
 
+    t0 = time.time()
     rows, _ = cs.threads()
     if any(cs.norm(n) == cs.norm(a.name) for _, n, _ in rows):
         print(f'codex-new: a live thread is already named "{a.name}"; send to it with codex-send.py', file=sys.stderr)
@@ -135,7 +141,8 @@ def main():
         follow(rpc, tid)
     else:
         rpc.close()
-    cs.log(chat=a.name, thread=tid, name=a.name, verdict="started", forked_from=a.fork or None, chars=len(msg))
+    cs.log(chat=a.name, thread=tid, name=a.name, verdict="started", forked_from=a.fork or None, chars=len(msg),
+           returned_after_s=round(time.time() - t0, 1))
     print(f'Started thread {tid} named "{a.name}"')
     return 0
 
