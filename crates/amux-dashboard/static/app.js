@@ -53879,25 +53879,151 @@ function _metricsSetMode(mode) {
   _metricsMode = mode;
   document.getElementById('metricsmode-system')?.classList.toggle('active', mode === 'system');
   document.getElementById('metricsmode-host')?.classList.toggle('active', mode === 'host');
+  document.getElementById('metricsmode-resources')?.classList.toggle('active', mode === 'resources');
   document.getElementById('metricsmode-disk')?.classList.toggle('active', mode === 'disk');
   const mc = document.getElementById('metrics-content');
   const hc = document.getElementById('host-content');
+  const rc = document.getElementById('resources-content');
   if (mc) mc.style.display = mode === 'system' ? '' : 'none';
-  // #reclaim-content is NOT toggled here (AMUX-4634). It lives in #disk-view
-  // since Disk Cleanup became its own tab (1a2963c8), and switchView('disk')
-  // never resets it, so hiding it from the Host or System mode left Disk
-  // Cleanup blank when opened from the Host panel's card.
   if (hc) hc.style.display = mode === 'host' ? '' : 'none';
-  // The worker sidebar only pairs with the System view; Host and Disk are host-wide.
+  if (rc) rc.style.display = mode === 'resources' ? '' : 'none';
   const sb = document.getElementById('metrics-sidebar');
   if (sb) sb.style.display = (mode === 'system') ? '' : 'none';
   if (mode === 'disk') _reclaimLoad(); else _reclaimStopPolling();
   if (mode === 'host') _hostLoad();
+  if (mode === 'resources') _resourcesLoad();
 }
 
-// ── Host analysis (Metrics ▸ Host) ──────────────────────────────────────────
+// ── Worker Resources (Metrics > Resources) ─────────────────────────────────
+let _resourcesData = null;
+let _resourcesLive = null;
+let _resourcesPoll = null;
+let _resourcesHours = 6;
+
+function _resourcesLoad() {
+  const el = document.getElementById('resources-content');
+  if (!el) return;
+  if (!_resourcesLive) el.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:40px;text-align:center;">Loading worker resources…</div>';
+  Promise.all([
+    fetch(API + '/api/metrics/workers/live').then(r => r.ok ? r.json() : null),
+    fetch(API + '/api/metrics/workers?since_h=' + _resourcesHours).then(r => r.ok ? r.json() : null),
+  ]).then(([live, hist]) => {
+    _resourcesLive = live;
+    _resourcesData = hist;
+    _resourcesRender();
+  }).catch(() => {
+    el.innerHTML = '<div style="color:var(--red);padding:20px;font-size:0.85rem;">Failed to load worker resources.</div>';
+  });
+  clearInterval(_resourcesPoll);
+  _resourcesPoll = setInterval(() => {
+    if (_metricsMode !== 'resources') { clearInterval(_resourcesPoll); _resourcesPoll = null; return; }
+    fetch(API + '/api/metrics/workers/live').then(r => r.ok ? r.json() : null).then(d => {
+      if (d) { _resourcesLive = d; _resourcesRender(); }
+    }).catch(() => {});
+  }, 30000);
+}
+
+function _resourcesRender() {
+  const el = document.getElementById('resources-content');
+  if (!el) return;
+  const live = _resourcesLive || {};
+  const hist = _resourcesData || {};
+  const workers = (live.workers || []).slice().sort((a, b) => b.rss_kb - a.rss_kb);
+  const config = {
+    max_concurrent_active: hist.max_concurrent_active || live.max_concurrent_active || null,
+    max_rss_mb: hist.max_rss_mb || null,
+  };
+  const summaries = hist.workers || [];
+
+  const rssLimit = config.max_rss_mb ? config.max_rss_mb * 1024 : 0;
+  let h = '';
+
+  // Header with totals
+  const totalRssMb = live.total_rss_mb || 0;
+  const totalCpu = live.total_cpu_pct || 0;
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px;">';
+  h += '<div style="display:flex;align-items:baseline;gap:16px;">';
+  h += '<span style="font-weight:600;font-size:0.95rem;">Worker Resources</span>';
+  h += '<span style="font-size:0.8rem;color:var(--dim);">' + workers.length + ' workers</span>';
+  h += '</div>';
+  h += '<div style="display:flex;align-items:center;gap:12px;">';
+  h += '<span style="font-size:0.8rem;">Total: <b>' + totalRssMb.toFixed(0) + ' MB</b> RSS, <b>' + totalCpu.toFixed(1) + '%</b> CPU</span>';
+  if (config.max_concurrent_active) h += '<span style="font-size:0.75rem;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">cap: ' + config.max_concurrent_active + ' concurrent</span>';
+  if (config.max_rss_mb) h += '<span style="font-size:0.75rem;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">RSS limit: ' + config.max_rss_mb + ' MB</span>';
+  h += '<select style="font-size:0.75rem;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;" onchange="_resourcesHours=+this.value;_resourcesLoad()">';
+  [1, 6, 24, 72, 168].forEach(v => {
+    const lbl = v < 24 ? v + 'h' : (v / 24) + 'd';
+    h += '<option value="' + v + '"' + (v === _resourcesHours ? ' selected' : '') + '>' + lbl + '</option>';
+  });
+  h += '</select>';
+  h += '<button class="btn" style="font-size:0.8rem;padding:4px 10px;" onclick="_resourcesLoad()">↻</button>';
+  h += '</div></div>';
+
+  // Live worker table
+  if (workers.length) {
+    h += '<div style="overflow-x:auto;padding:0 16px;">';
+    h += '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">';
+    h += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);">';
+    h += '<th style="padding:6px 8px;">Worker</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">RSS (MB)</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">CPU %</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Processes</th>';
+    h += '<th style="padding:6px 8px;width:200px;">RSS</th>';
+    h += '</tr></thead><tbody>';
+
+    const maxRss = Math.max(...workers.map(w => w.rss_kb), 1);
+    workers.forEach(w => {
+      const rssMb = w.rss_kb / 1024;
+      const pct = (w.rss_kb / maxRss) * 100;
+      const over = rssLimit && w.rss_kb > rssLimit;
+      const barColor = over ? 'var(--red)' : rssMb > 512 ? 'var(--yellow)' : 'var(--green)';
+      h += '<tr style="border-bottom:1px solid var(--border-dim, var(--border));">';
+      h += '<td style="padding:5px 8px;font-weight:500;white-space:nowrap;">' + esc(w.session) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;' + (over ? 'color:var(--red);font-weight:600;' : '') + '">' + rssMb.toFixed(0) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + w.cpu_pct.toFixed(1) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + w.n_procs + '</td>';
+      h += '<td style="padding:5px 8px;"><div style="height:10px;background:var(--border);border-radius:3px;overflow:hidden;"><div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + barColor + ';border-radius:3px;"></div></div></td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+  } else {
+    h += '<div style="color:var(--dim);padding:40px;text-align:center;font-size:0.85rem;">No workers detected. The sampling job runs every 30s.</div>';
+  }
+
+  // Historical summaries (peak usage over the selected window)
+  if (summaries.length) {
+    h += '<div style="padding:16px 16px 4px;font-weight:600;font-size:0.85rem;">Historical (past ' + _resourcesHours + 'h)</div>';
+    h += '<div style="overflow-x:auto;padding:0 16px 16px;">';
+    h += '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">';
+    h += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);">';
+    h += '<th style="padding:6px 8px;">Worker</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Peak RSS (MB)</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Avg RSS (MB)</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Peak CPU %</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Samples</th>';
+    h += '</tr></thead><tbody>';
+
+    summaries.slice().sort((a, b) => (b.peak_rss_kb || 0) - (a.peak_rss_kb || 0)).forEach(s => {
+      const peakMb = (s.peak_rss_kb || 0) / 1024;
+      const avgMb = (s.avg_rss_kb || 0) / 1024;
+      const over = rssLimit && s.peak_rss_kb > rssLimit;
+      h += '<tr style="border-bottom:1px solid var(--border-dim, var(--border));">';
+      h += '<td style="padding:5px 8px;font-weight:500;">' + esc(s.session) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;' + (over ? 'color:var(--red);' : '') + '">' + peakMb.toFixed(0) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + avgMb.toFixed(0) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + (s.peak_cpu_pct || 0).toFixed(1) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + (s.sample_count || 0) + '</td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+
+  el.innerHTML = h;
+}
+
+// ── Host analysis (Metrics > Host) ──────────────────────────────────────────
 // Renders GET /api/metrics/host, which runs the embedded, re-runnable
-// scripts/host-analysis.sh — one cross-platform source of truth for the host the
+// scripts/host-analysis.sh -- one cross-platform source of truth for the host the
 // server runs on (this Mac in dev, the Linux LXC in cloud).
 let _hostData = null;
 
