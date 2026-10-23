@@ -53,6 +53,9 @@ jobs:
       - name: Snap zones
         run: xcrun swiftc -parse-as-library -o /tmp/snapzones desktop/amux-snapzones.swift desktop/test/snapzones-test.swift && /tmp/snapzones
 
+      - name: 401 backoff
+        run: xcrun swiftc -parse-as-library -D AMUX_APP -o /tmp/backoff scripts/amux-menubar.swift desktop/test/unauthorized-backoff-test.swift -framework Cocoa -framework WebKit && /tmp/backoff
+
       - name: Zip
         run: ditto -c -k --keepParent Amux.app Amux-macOS.zip && ls -l Amux-macOS.zip
 

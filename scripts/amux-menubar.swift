@@ -58,6 +58,39 @@ func pollStats() -> SysStats {
     return s
 }
 
+// ── Refused-call backoff ──
+
+/// Waits out a 401 before asking again. A signed-out Mac app polled
+/// /api/pinned and /api/needs-input every 30s for three days and drew 4,579
+/// refusals a day (velocity audit 2026-10-23): the same anonymous or stale
+/// token is refused every time, so repeating it only adds noise. The wait
+/// starts at 30s and doubles to 10 minutes; a new token or a success ends it.
+struct UnauthorizedBackoff {
+    private(set) var until: Date?
+    private(set) var seconds: TimeInterval = 0
+    private(set) var refusedToken: String?
+
+    /// True while a call carrying `token` would repeat the refused one.
+    func holds(_ token: String?, now: Date = Date()) -> Bool {
+        guard let until = until, now < until else { return false }
+        return token == refusedToken
+    }
+
+    /// Records a 401 for `token`; returns the wait in seconds.
+    mutating func refused(_ token: String?, now: Date = Date()) -> Int {
+        seconds = min(max(30, seconds * 2), 600)
+        until = now.addingTimeInterval(seconds)
+        refusedToken = token
+        return Int(seconds)
+    }
+
+    mutating func reset() {
+        until = nil
+        seconds = 0
+        refusedToken = nil
+    }
+}
+
 // ── Menu bar controller ──
 
 class MenuBarController: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
@@ -73,6 +106,7 @@ class MenuBarController: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
     // Supplies the owner token for API calls. The app sets it (a remote server
     // refuses an anonymous request); the standalone readout talks to localhost.
     var authToken: ((@escaping (String?) -> Void) -> Void)?
+    var unauthorized = UnauthorizedBackoff()
 
     override convenience init() {
         self.init(apiBase: ProcessInfo.processInfo.environment["AMUX_URL"] ?? "https://localhost:8824")
@@ -165,12 +199,23 @@ class MenuBarController: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
     }
 
     func requestPinnedFiles(_ url: URL, token: String?) {
+        if unauthorized.holds(token) { return }
         var req = URLRequest(url: url)
         req.timeoutInterval = 5
         if let token = token { req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         let session = URLSession(configuration: .ephemeral, delegate: InsecureDelegate(), delegateQueue: nil)
-        session.dataTask(with: req) { [weak self] data, _, _ in
-            guard let data = data,
+        session.dataTask(with: req) { [weak self] data, resp, _ in
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if status == 401 {
+                    let wait = self.unauthorized.refused(token)
+                    NSLog("amux-menubar: verdict=native_api_backoff path=/api/pinned had_token=%d wait_s=%d", token == nil ? 0 : 1, wait)
+                } else if (200..<300).contains(status) {
+                    self.unauthorized.reset()
+                }
+            }
+            guard status != 401, let data = data,
                   let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
             else { return }
             var paths: [String] = []

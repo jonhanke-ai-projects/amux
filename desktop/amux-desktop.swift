@@ -930,6 +930,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // answered every one of them 401 missing_credential (2026-10-22: about seven
     // a minute from one laptop, so pins and the badge never loaded).
     var apiToken: String?
+    var unauthorized = UnauthorizedBackoff()
 
     func withAPIToken(_ go: @escaping (String?) -> Void) {
         if let t = apiToken { go(t); return }
@@ -944,6 +945,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func api(_ path: String, method: String = "GET", _ done: @escaping (Any?) -> Void) {
         guard let s = serverURL, let url = URL(string: normalized(s.absoluteString) + path) else { done(nil); return }
         withAPIToken { [weak self] token in
+            // A poll that would repeat a refused call waits out the backoff;
+            // a new token (the owner signed in) goes through at once.
+            if method == "GET", self?.unauthorized.holds(token) ?? false { done(nil); return }
             var req = URLRequest(url: url)
             req.httpMethod = method
             req.timeoutInterval = 8
@@ -956,8 +960,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                     // A refused token is stale (the owner rotated it): drop it so
                     // the next call reads the dashboard's current one.
                     if status == 401 {
-                        NSLog("amux-desktop: native_api_unauthorized path=%@ had_token=%d", path, token == nil ? 0 : 1)
+                        let wait = self?.unauthorized.refused(token) ?? 0
+                        NSLog("amux-desktop: native_api_unauthorized verdict=native_api_backoff path=%@ had_token=%d wait_s=%d", path, token == nil ? 0 : 1, wait)
                         self?.apiToken = nil
+                    } else if (200..<300).contains(status) {
+                        self?.unauthorized.reset()
                     }
                     done(obj)
                 }
