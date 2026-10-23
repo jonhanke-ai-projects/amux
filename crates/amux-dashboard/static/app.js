@@ -13381,6 +13381,7 @@ function setPeekTab(tab) {
   // Persist so an app-switch away and back lands on this tab, not the default.
   try { _savePeekState(); } catch(e) {}
   try { _peekViewRemember(); } catch(e) {}
+  _syncUrlHash();
   // The notes tab is gone; this flushed its pending save and called
   // _peekNotesSave(), which went with it. The branch never fired only because
   // _peekNotesSaveTimer is now never assigned non-null — so a single line
@@ -16576,6 +16577,7 @@ function openPeek(name, opts) {
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
   _peekViewApply(name);   // bring this worker's own tab + split back
   _savePeekState();
+  _syncUrlHash();
 }
 
 // Read-only terminal navigation. Never send terminal keys to choose a child:
@@ -16749,6 +16751,7 @@ function closePeek() {
   // localStorage copy exists only for eviction restore, and leaving it here
   // meant close -> background -> relaunch reopened what the user dismissed.
   try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
+  _syncUrlHash();
 }
 
 // ── Peek split pane (file browser) ──
@@ -16778,6 +16781,20 @@ function _savePeekState() {
     sessionStorage.removeItem('peekState');
     try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
   }
+}
+
+function _syncUrlHash() {
+  if (window._peekSplitChild || window._peekEmbed) return;
+  try {
+    let hash = '';
+    if (peekSession) {
+      hash = '#peek=' + encodeURIComponent(peekSession);
+      if (_peekTab && _peekTab !== 'terminal') hash += '&tab=' + encodeURIComponent(_peekTab);
+    } else if (activeView && activeView !== 'sessions') {
+      hash = '#view=' + encodeURIComponent(activeView);
+    }
+    history.replaceState(null, '', location.pathname + location.search + hash);
+  } catch (_) {}
 }
 
 // SIDE PANEL CHOICE (Ethan, 2026-10-08: "on non-mobile this button is actually
@@ -36656,6 +36673,7 @@ function switchView(view) {
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
+  if (!peekSession) _syncUrlHash();
   // ONE ROW PER VIEW: [domIdPrefix, tabName, display]. This was three PARALLEL
   // ARRAYS that had to stay index-aligned, and the alignment had already failed
   // once — the old comment recorded 18 display entries for 19 ids, so 'graph'
