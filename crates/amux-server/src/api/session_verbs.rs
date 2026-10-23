@@ -40683,10 +40683,12 @@ mod tests {
         // test it was written to satisfy went red on main and stayed red.
         // Counted again here rather than adjusted by hand: both new sites pass
         // the computed `skip_board`, which is the property below.
+        // 11 -> 12 at fb9e44cb3: a send with no worker identity is recorded
+        // under UNIDENTIFIED_SEND_ORIGIN, also passing the computed `skip_board`.
         assert_eq!(
             sites.len(),
-            11,
-            "the scan must see all 11 production call sites. A LOWER number means the detector \
+            12,
+            "the scan must see all 12 production call sites. A LOWER number means the detector \
              stopped matching rather than that the call sites went away, which is exactly how \
              the first two versions of this test passed a broken tree: one scanned a window \
              that excluded the send handlers, the other missed the multi-line spelling and left \
