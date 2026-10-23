@@ -1565,8 +1565,33 @@ self_verdict() { HEALTH_VERDICTS=$(printf '%s\nself %s\n' "$HEALTH_VERDICTS" "$1
 # elapsed, skipped arms) and fallback runs over the last 24h, plus whether the
 # schedule is still enabled. Each failing rule adds a "self ..." constraint, so it
 # escalates like any other class, with its own cooldown.
+# A fire that met a running tick lost nothing when the holder is another run of
+# this same schedule, started earlier and still writing its log: that run is the
+# hour's check, and its own outcome is counted above. Run logs are named after
+# their start in ms, so "started before and still writing at" is measurable.
+# Mac self RCA 20261023-145529: the desktop lane ran SCHED-465 by hand at
+# 12:47, 13:50 and 14:50 (source manual:desktop), the :55 cron fire met each one,
+# and all three read as lost work. A holder outside the scheduler (the launchd
+# fallback, a hand-run script, the 2026-10-15 duplicate ticks) has no run log
+# here, so it still counts. A log with a non-numeric name cannot be placed in
+# time and also still counts.
+self_coll_covered() { # <collision log> -> 0 if a tracked earlier run held the lock
+  local f=$1 t g b gs
+  t=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || return 1
+  for g in "$SELF_RUNS_DIR"/*.log; do
+    [ "$g" = "$f" ] && continue
+    b=${g##*/}; b=${b%.log}
+    case "$b" in ''|*[!0-9]*) continue ;; esac
+    gs=$((b / 1000))
+    [ "$gs" -lt "$t" ] || continue
+    grep -aq '^mac-cleanup: previous tick still running' "$g" 2>/dev/null && continue
+    [ "$(stat -c %Y "$g" 2>/dev/null || stat -f %m "$g" 2>/dev/null || echo 0)" -ge "$((t - 5))" ] && return 0
+  done
+  return 1
+}
+
 check_self_runs() {
-  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 n_coll=0 bad_new=0 ran since fb sum
+  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 n_coll=0 n_coll_cov=0 bad_new=0 ran since fb sum
   if ! en=$(sqlite3 -readonly -cmd '.timeout 5000' "$SELF_DB" \
       "SELECT enabled FROM schedules WHERE id='$SELF_SCHED_ID' AND deleted IS NULL" 2>/dev/null); then
     echo "mac-cleanup: self: run history UNMEASURED ($SELF_DB unreadable), judged nothing about this check (verdict=self_unmeasured)"
@@ -1597,7 +1622,10 @@ check_self_runs() {
     n_logs=$((n_logs+1))
     # The scheduler records a fire that met a running tick as ok, and it did no work
     # (2026-10-15: 5 of 19 "ok" runs, each blocked by a duplicate fallback tick).
-    if grep -aq '^mac-cleanup: previous tick still running' "$f" 2>/dev/null; then n_coll=$((n_coll+1)); continue; fi
+    if grep -aq '^mac-cleanup: previous tick still running' "$f" 2>/dev/null; then
+      if self_coll_covered "$f"; then n_coll_cov=$((n_coll_cov+1)); else n_coll=$((n_coll+1)); fi
+      continue
+    fi
     line=$(grep -a '^mac-cleanup: done ' "$f" 2>/dev/null | tail -1)
     if [ -z "$line" ]; then n_unfin=$((n_unfin+1)); continue; fi
     el=${line#*elapsed=}; el=${el%%s *}
@@ -1611,7 +1639,7 @@ check_self_runs() {
   done < <(find "$SELF_RUNS_DIR" -maxdepth 1 -type f -name '*.log' -mmin -1440 ! -mmin -10 2>/dev/null)
   since=$(date -v-24H '+%F %T' 2>/dev/null || date -d '24 hours ago' '+%F %T' 2>/dev/null)
   fb=$(awk -v s="$since" '/so launchd is$/ { if ($2" "$3 >= s) n++ } END { print n+0 }' "$SELF_FALLBACK_LOG" 2>/dev/null); fb=${fb:-0}
-  echo "mac-cleanup: self: $SELF_SCHED_ID last 24h: $((ok+bad)) finished runs, $ok ok, $bad not ok${sum:+ ($sum)}; newest $streak in a row not ok; $n_logs run log(s), $n_unfin killed before the done line, $n_coll found another tick running and did nothing, slowest ${slowest}s $(( slowest_age / 3600 ))h ago, slowest in the last $(( SELF_SLOW_RECENT_MIN / 60 ))h ${slow_recent}s (warn ${TICK_WARN_S}s, killed at 600s), $n_skip skipped arms for lack of time; the launchd fallback ran it ${fb}x"
+  echo "mac-cleanup: self: $SELF_SCHED_ID last 24h: $((ok+bad)) finished runs, $ok ok, $bad not ok${sum:+ ($sum)}; newest $streak in a row not ok; $n_logs run log(s), $n_unfin killed before the done line, $n_coll found another tick running and did nothing, $n_coll_cov met an earlier run of this schedule still working, slowest ${slowest}s $(( slowest_age / 3600 ))h ago, slowest in the last $(( SELF_SLOW_RECENT_MIN / 60 ))h ${slow_recent}s (warn ${TICK_WARN_S}s, killed at 600s), $n_skip skipped arms for lack of time; the launchd fallback ran it ${fb}x"
   [ "$streak" -ge "$SELF_FAIL_STREAK" ] && self_verdict "$streak runs in a row of $SELF_SCHED_ID did not finish ok ($sum)"
   # Raised again only when a failed run is NEWER than the last self escalation
   # (Mac self RCA 20261021-125823): the 06:52-09:54Z restart-loop failures, already
@@ -1633,6 +1661,7 @@ check_self_runs() {
   elif [ "$n_skip" -ge "$SELF_SKIP_24H" ]; then
     echo "mac-cleanup: self: all $n_skip runs that skipped arms in 24h predate the last self escalation, which already answered them; not raised again until a new one (verdict=self_skips_already_escalated)"
   fi
+  [ "$n_coll_cov" -gt 0 ] && echo "mac-cleanup: self: $n_coll_cov fire(s) of $SELF_SCHED_ID met an earlier run of the same schedule still working (a manual run shortly before the cron fire); that run did the hour's check, so they are not lost work (verdict=self_collision_covered)"
   [ "$n_coll" -ge "$SELF_COLLIDE_24H" ] && self_verdict "$n_coll fires of $SELF_SCHED_ID in 24h found another tick holding the lock and did no work (the scheduler records them as ok)"
   # Raised again only for a fallback run NEWER than the last self escalation.
   # Self RCA 20261018-165251: the same three runs (10-17 17:30 and 18:19, 10-18

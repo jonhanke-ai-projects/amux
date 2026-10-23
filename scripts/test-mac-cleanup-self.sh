@@ -120,6 +120,27 @@ out=$(stat() { gnu_stat "$@"; }; export -f stat; probe 2>&1 || true)
 check "an age read under GNU stat does not crash"     no  "$(has "$out" 'unbound variable')"
 check "and still judges the recent run"               yes "$(has "$out" 'slowest in the last 6h 481s')"
 
+echo "4d. a fire that met an earlier run of the same schedule lost nothing (RCA self 20261023-145529)"
+# Run logs are named after their start in ms. A manual run started 5 min before
+# the cron fire and still writing when it came is the hour's check.
+newdb 1 <<<"600|ok|"; newlogs
+for h in 1 2; do
+  c=$((NOW - h*3600)); addlog "$((c - 300))000" $((h*3600 - 60)) "$DONE"; addlog "${c}000" $((h*3600)) "$LOCKED"
+done
+out=$(probe)
+check "covered fires raise no constraint"             no  "$(has "$out" '^self 2 fires of SCHED-T in 24h found another tick')"
+check "they are counted apart, with a verdict"        yes "$(has "$out" '0 found another tick running and did nothing, 2 met an earlier run of this schedule still working')"
+check "and the verdict names why"                     yes "$(has "$out" 'verdict=self_collision_covered')"
+# The same two fires, but each earlier run had already finished: something
+# outside the schedule held the lock, which is the 2026-10-15 duplicate tick.
+newlogs
+for h in 1 2; do
+  c=$((NOW - h*3600)); addlog "$((c - 900))000" $((h*3600 + 300)) "$DONE"; addlog "${c}000" $((h*3600)) "$LOCKED"
+done
+out=$(probe)
+check "a holder outside the schedule still counts"    yes "$(has "$out" '^self 2 fires of SCHED-T in 24h found another tick holding the lock')"
+check "and is not called covered"                     no  "$(has "$out" 'verdict=self_collision_covered')"
+
 echo "5. the fallback's own log"
 newdb 1 <<<"600|ok|"; newlogs
 for h in 1 2 3; do echo "mac-cleanup-fallback: $(stamp $((NOW-h*3600))) last tick output is 90m old (over 80m): the amux scheduler is not running SCHED-T, so launchd is" >> "$FB"; done
