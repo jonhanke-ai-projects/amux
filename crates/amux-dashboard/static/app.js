@@ -37488,9 +37488,11 @@ function _mapRenderPins() {
     }).join('');
     const preview = pin.desc || pin.notes || '';
     const hasNotes = !!(pin.notes);
+    const thumb = _mapPinThumbUrl(pin, 120);
     const distLabel = (sortBy === 'distance' && ref) ? '<span class="map-pin-dist"> \u00B7 ' + _mapFmtDist(_mapDist(ref.lat,ref.lng,pin.lat,pin.lng)) + '</span>' : '';
     return '<div class="map-pin-item" onclick="_mapFlyToPin(\x27' + pin.id + '\x27)" ondblclick="_mapOpenPinModal(\x27' + pin.id + '\x27)">' +
       '<div class="map-pin-dot" style="background:' + color + '"></div>' +
+      (thumb ? '<img class="map-pin-thumb" src="' + escHtml(thumb) + '" alt="" loading="lazy" onerror="this.remove()">' : '') +
       '<div class="map-pin-info">' +
         '<div class="map-pin-name">' + escHtml(pin.name||'Unnamed') + distLabel + (hasNotes ? ' <span style="font-size:0.68rem;color:var(--dim);font-weight:400;">\uD83D\uDCDD</span>' : '') + '</div>' +
         _mapStatusLine(pin) +
@@ -37586,10 +37588,10 @@ function _mapRenderMarkers() {
       return tag ? '<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;font-weight:500;background:' + tag.color + ';color:#fff;">' + escHtml(tag.name) + '</span>' : '';
     }).join(' ');
     const notesPreview = pin.notes ? (pin.notes.length > 150 ? pin.notes.substring(0, 150) + '\u2026' : pin.notes) : '';
-    var _photo = _mapPhotoUrl(pin.photoName, 400);
+    var _photo = _mapPinThumbUrl(pin, 400);
     marker.bindPopup(
       '<div style="min-width:160px;max-width:280px;font-family:inherit;font-size:13px">' +
-        (_photo ? '<img src="' + _photo + '" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:6px;margin-bottom:6px" onerror="this.style.display=\x27none\x27">' : '') +
+        (_photo ? '<img src="' + escHtml(_photo) + '" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:6px;margin-bottom:6px" onerror="this.style.display=\x27none\x27">' : '') +
         '<div style="font-weight:600;margin-bottom:4px">' + escHtml(pin.name||'Unnamed') + '</div>' +
         _mapStatusLine(pin) +
         _mapMetaRow(pin) +
@@ -37862,6 +37864,7 @@ function _mapOpenPinModal(id, latlng) {
   document.getElementById('map-pin-name').value = pin ? (pin.name||'') : '';
   document.getElementById('map-pin-desc').value = pin ? (pin.desc||'') : '';
   document.getElementById('map-pin-notes').value = pin ? (pin.notes||'') : '';
+  document.getElementById('map-pin-thumb').value = pin ? (pin.thumbnail||'') : '';
   document.getElementById('map-pin-lat').value = pin ? pin.lat : (latlng ? latlng.lat.toFixed(6) : '');
   document.getElementById('map-pin-lng').value = pin ? pin.lng : (latlng ? latlng.lng.toFixed(6) : '');
   const hint = document.getElementById('map-pin-coords-hint');
@@ -37925,6 +37928,7 @@ function _mapSavePin() {
   const name = document.getElementById('map-pin-name').value.trim();
   const desc = document.getElementById('map-pin-desc').value.trim();
   const notes = document.getElementById('map-pin-notes').value.trim();
+  const thumbnail = document.getElementById('map-pin-thumb').value.trim();
   const lat = parseFloat(document.getElementById('map-pin-lat').value);
   const lng = parseFloat(document.getElementById('map-pin-lng').value);
   if (!name) { document.getElementById('map-pin-name').focus(); return; }
@@ -37945,6 +37949,7 @@ function _mapSavePin() {
   Object.assign(pin, { name: name, desc: desc, notes: notes, lat: lat, lng: lng, tags: tags, status: status,
     myRating: ratingV ? parseInt(ratingV, 10) : null, eventAt: eventAt });   // `rating` is Google's; keep it
   if (status && pin.statusSource) delete pin.statusSource;   // set by hand now
+  if (thumbnail) pin.thumbnail = thumbnail; else delete pin.thumbnail;
   window._mapPendingPlace = null;
   _mapClosePinModal();
   _mapPutPin(pin);
@@ -38911,6 +38916,14 @@ function _mapPlaceFields(r) {
 function _mapPhotoUrl(photoName, maxW) {
   if (!photoName || !_mapGoogleKey) return '';
   return 'https://places.googleapis.com/v1/' + photoName + '/media?maxWidthPx=' + (maxW || 400) + '&key=' + _mapGoogleKey;
+}
+
+// A pin's picture: its own `thumbnail` URL when set (amux map set ID thumb=...
+// or the editor's Thumbnail field), else the linked Google place's photo.
+function _mapPinThumbUrl(pin, maxW) {
+  var t = String(pin.thumbnail || '').trim();
+  if (/^https?:\/\//i.test(t)) return t;
+  return _mapPhotoUrl(pin.photoName, maxW);
 }
 
 // One-line rich metadata badge row (rating · price · open-now) for popups.
