@@ -1269,17 +1269,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- Tasks: every task name a worker's model gave its work, oldest first and
      numbered, as a List or a per-worker Timeline. Not board issues; a row links
      its messages and, when it came from one, its card (app.js _tasksLoad). -->
-<div id="tasks-view" class="tasks-scope" style="display:none;flex-direction:column;flex:1;min-height:0;">
+<div id="tasks-view" class="tasks-scope row-note-host" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <style>
-    .tasks-scope .tasks-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--border); }
+    .tasks-scope .tasks-bar { display:flex; flex-wrap:nowrap; overflow-x:auto; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--border); }
     .tasks-scope .tasks-bar .input { min-height:44px; }
-    .tasks-scope .tasks-bar .tasks-search { flex:1 1 200px; min-width:0; }
+    .tasks-scope .tasks-bar .tasks-search { flex:1 1 200px; min-width:160px; }
     .tasks-scope .task-row { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:6px; padding:8px 12px; background:var(--card); cursor:pointer; min-height:44px; display:flex; flex-direction:column; gap:4px; }
     .tasks-scope .task-title { font-size:0.9rem; font-weight:600; color:var(--text); word-break:break-word; }
     .tasks-scope .task-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:0.76rem; color:var(--dim); }
     .tasks-scope .task-current { color:var(--accent); }
     .tasks-scope .task-msgs { display:flex; flex-direction:column; gap:6px; }
-    .tasks-scope .tasks-count { font-size:0.8rem; color:var(--dim); padding:6px 12px 0; }
+    .tasks-scope .tasks-count { font-size:0.8rem; color:var(--dim); white-space:nowrap; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
     .tasks-scope .tasks-list { flex:1; min-height:0; overflow-y:auto; padding:6px 12px 12px; display:flex; flex-direction:column; gap:6px; }
     .tasks-scope .tasks-day { font-size:0.72rem; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 2px; }
     .tasks-scope .task-item { display:flex; gap:8px; align-items:flex-start; }
@@ -1299,10 +1299,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     .tasks-scope .tasks-empty { color:var(--dim); padding:24px 0; text-align:center; }
     .tasks-scope .tasks-pager { display:flex; gap:6px; align-items:center; justify-content:center; padding:8px 12px; border-top:1px solid var(--border); flex-wrap:wrap; }
     .tasks-scope .tasks-page { font-size:0.8rem; color:var(--dim); padding:0 6px; }
-    .tasks-scope .tasks-about { margin:0; padding:8px 12px; font-size:0.78rem; color:var(--dim); border-bottom:1px solid var(--border); }
-    .tasks-scope .tasks-about summary { cursor:pointer; min-height:28px; display:flex; align-items:center; gap:6px; }
-    .tasks-scope .tasks-about b { color:var(--text); font-weight:600; }
-    .tasks-scope .tasks-about p { margin:6px 0 2px; }
     .tasks-scope .tasks-seg { display:inline-flex; border:1px solid var(--border); border-radius:var(--radius-control, 6px); overflow:hidden; }
     .tasks-scope .tasks-seg button { background:none; border:none; color:var(--dim); padding:0 12px; min-height:44px; cursor:pointer; font-size:0.8rem; }
     .tasks-scope .tasks-seg button + button { border-left:1px solid var(--border); }
@@ -1357,23 +1353,26 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     .tasks-scope .task-handoff { font-size:0.8rem; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
     @media (max-width: 600px) {
       .tasks-scope .task-num { min-width:36px; font-size:0.68rem; }
-      .tasks-scope .tasks-bar .tasks-worker { flex:1 1 100%; }
+      .tasks-scope .tasks-bar .tasks-worker { flex:0 0 auto; max-width:45vw; }
+      .tasks-scope .tasks-bar .tasks-search { flex:1 0 160px; }
+      .tasks-scope .tasks-bar > * { flex-shrink:0; }
       .tasks-scope .task-link { min-height:32px; }
       .tasks-scope .tl-axis, .tasks-scope .tl-row { grid-template-columns:72px 1fr; }
       .tasks-scope .tl-tick:nth-child(2), .tasks-scope .tl-tick:nth-child(4) { display:none; }
     }
   </style>
-  <details class="tasks-about"><summary><b>These are tasks, not board issues.</b> <span>What to know</span></summary>
-      <p>A task is what each worker's model said it was working on, recorded each time its "Task:" line changed. The board is separate: a task links to a board card only when the worker took it from one, and workers with the board off have no cards at all.</p>
-      <p><span aria-hidden="true">&#x2709;</span> messages the worker received during the task · <span aria-hidden="true">&#x25A3;</span> its board card · open a task for its timeline of connections. Every link opens that thing on its own page.</p></details>
   <div class="tasks-bar">
     <select id="tasks-worker" class="input tasks-worker" onchange="_tasksFilter('main')" aria-label="Filter by worker"><option value="">All workers</option></select>
     <input id="tasks-search" class="input tasks-search" type="search" placeholder="Search tasks, cards and messages" aria-label="Search tasks" oninput="_tasksSearchInput('main')">
     <span class="tasks-seg" id="tasks-in" role="group" aria-label="Search in"><button type="button" data-in="all" aria-pressed="true" onclick="_tasksSetSearchIn('main','all')" title="Task names, card ids and the messages each task received">Everything</button><button type="button" data-in="names" aria-pressed="false" onclick="_tasksSetSearchIn('main','names')" title="Task names only">Names</button></span>
     <span class="tasks-seg" id="tasks-mode" role="group" aria-label="View"><button type="button" data-mode="list" aria-pressed="true" onclick="_tasksSetMode('main','list')">List</button><button type="button" data-mode="timeline" aria-pressed="false" onclick="_tasksSetMode('main','timeline')" title="A lane per worker, a bar per task">Timeline</button></span>
     <select id="tasks-range" class="input" onchange="_tasksLoad('main')" aria-label="Timeline window" hidden><option value="6">Last 6h</option><option value="24" selected>Last 24h</option><option value="72">Last 3 days</option><option value="168">Last 7 days</option></select>
+    <span id="tasks-count" class="tasks-count" role="status" aria-live="polite"></span>
+    <details class="tasks-about row-note"><summary class="btn" aria-label="These are tasks, not board issues. What to know" title="These are tasks, not board issues. What to know">&#x24D8;</summary>
+      <div class="row-note-body"><p><b>These are tasks, not board issues.</b></p>
+      <p>A task is what each worker's model said it was working on, recorded each time its "Task:" line changed. The board is separate: a task links to a board card only when the worker took it from one, and workers with the board off have no cards at all.</p>
+      <p><span aria-hidden="true">&#x2709;</span> messages the worker received during the task · <span aria-hidden="true">&#x25A3;</span> its board card · open a task for its timeline of connections. Every link opens that thing on its own page.</p></div></details>
   </div>
-  <div id="tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
   <div id="tasks-list" class="tasks-list"></div>
   <div id="tasks-pager" class="tasks-pager"></div>
 </div>
@@ -3270,13 +3269,19 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Steering queue panel -->
   <div id="peek-chat-panel" class="peek-tasks-panel"></div>
   <div id="peek-steering-panel" class="peek-tasks-panel">
-    <div style="flex-shrink:0;border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:rgba(255,255,255,0.02);">
-      <div onclick="var b=document.getElementById('peek-instructions-body');var c=document.getElementById('peek-instructions-caret');var v=b.style.display==='none';b.style.display=v?'':'none';c.textContent=v?'▾':'▸';" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;-webkit-user-select:none;">
-        <span id="peek-instructions-caret" style="font-size:0.7rem;color:var(--dim);display:inline-block;width:10px;">&#x25B8;</span>
-        <span style="font-size:0.8rem;font-weight:600;">Standing instructions</span>
-        <span style="font-size:0.68rem;color:var(--dim);flex:1;">Re-sent on (re)start — survives compaction.</span>
-      </div>
-      <div id="peek-instructions-body" style="display:none;margin-top:8px;">
+    <!-- ONE control row (Ethan, 2026-10-23). Standing instructions used to be a
+         row of its own above the queue bar; it is now a toggle in that bar and
+         its editor opens below it. -->
+    <div class="peek-tasks-add" style="gap:10px;align-items:center;">
+      <button type="button" class="btn" id="peek-instructions-toggle" aria-expanded="false" aria-controls="peek-instructions-body"
+        title="Standing instructions: re-sent on every (re)start, so they survive compaction"
+        onclick="var b=document.getElementById('peek-instructions-body');var v=b.style.display==='none';b.style.display=v?'':'none';this.setAttribute('aria-expanded',v);this.querySelector('span').textContent=v?'▾':'▸';"
+        style="font-size:0.8rem;padding:5px 12px;flex:none;"><span aria-hidden="true" style="font-size:0.7rem;color:var(--dim);">&#x25B8;</span> Standing instructions</button>
+      <span id="peek-steering-count" style="flex:1;min-width:0;font-size:0.82rem;color:var(--dim);align-self:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></span>
+      <button class="btn" style="font-size:0.8rem;padding:5px 12px;flex:none;" onclick="_steeringClearAll()">Clear all</button>
+    </div>
+    <div style="flex-shrink:0;">
+      <div id="peek-instructions-body" style="display:none;margin:0 0 8px;padding:10px;border:1px solid var(--border);border-radius:8px;">
         <textarea id="peek-instructions" rows="3" placeholder="e.g. Act autonomously — don't ask the user for permission or direction. Execute best practices for your mandate; pick the lowest-risk option. Record progress as evidence on your board items. Resolve project-local blockers and retain evidence on the task." style="width:100%;font-size:0.78rem;resize:vertical;box-sizing:border-box;"></textarea>
         <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;align-items:center;">
           <span id="peek-instructions-status" style="flex:1;font-size:0.7rem;color:var(--dim);"></span>
@@ -3284,10 +3289,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <button class="btn primary" style="font-size:0.75rem;padding:4px 12px;" onclick="event.stopPropagation();savePeekInstructions(true)" title="Save and send to the worker now">Save &amp; apply now</button>
         </div>
       </div>
-    </div>
-    <div class="peek-tasks-add" style="gap:10px;">
-      <span id="peek-steering-count" style="flex:1;font-size:0.82rem;color:var(--dim);align-self:center;"></span>
-      <button class="btn" style="font-size:0.8rem;padding:5px 12px;" onclick="_steeringClearAll()">Clear all</button>
     </div>
     <!-- ONE scroll region for the queue + sent history. The queue list carries
          flex:none so it sizes to its content; without this wrapper the panel is a
@@ -3307,7 +3308,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
   </div>
   <!-- Issues panel (board issues for this session) -->
-  <div id="peek-issues-panel" class="peek-tasks-panel">
+  <div id="peek-issues-panel" class="peek-tasks-panel row-note-host">
     <!-- ONE toolbar row (Ethan, 2026-08-09). Was two: controls above, filter +
          search below, costing a whole row of vertical space on a panel whose
          job is showing cards. The search input is the only elastic member
@@ -3326,6 +3327,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
            board is not what a per-worker button should ever do. -->
       <button id="piv-clear-board" class="btn danger" style="flex:0 0 auto;font-size:0.72rem;padding:4px 9px;" onclick="clearPeekBoard()" title="Move every card on this worker's board to Discarded">Clear board</button>
       <span id="peek-issues-count" style="flex:0 0 auto;font-size:0.78rem;color:var(--dim);align-self:center;white-space:nowrap;"></span>
+      <!-- This worker's Board switch, in the row (Ethan, 2026-10-23: one control
+           row per tab). Its description and any isolation note open from the
+           info button beside it. -->
+      <span id="peek-board-config" class="peek-board-config" style="display:none;flex:0 0 auto;"></span>
       <!-- Export THIS worker's board, FULL descriptions, straight from the
            server (AMUX-3868). Not the main Board tab's client-side export:
            that one can only carry desc_head, because GET /api/board never
@@ -3352,7 +3357,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
          session filter above, not by a separate code path. Stays its OWN row:
          chips wrap to arbitrary height, so folding them into the toolbar would
          reintroduce the second row it just lost, only unpredictably. -->
-    <div id="peek-board-config" class="peek-board-config" style="display:none;"></div>
     <div id="bf-chips-peek" style="display:none;flex-wrap:wrap;gap:6px;padding:0 10px 6px;"></div>
     <div class="peek-tasks-list" id="peek-issues-list"></div>
   </div>
@@ -3363,23 +3367,27 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   
   <!-- This worker's tasks, newest first and numbered: the Tasks view's list
        fixed to peekSession (app.js _tasksScopes.peek). -->
-  <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope" style="padding:0;gap:0;flex-direction:column;">
-    <details class="tasks-about"><summary><b>These are tasks, not board issues.</b> <span>What to know</span></summary>
-      <p>A task is what this worker's model said it was working on, recorded each time its "Task:" line changed. The board is separate: a task links to a board card only when the worker took it from one, and workers with the board off have no cards at all.</p>
-      <p><span aria-hidden="true">&#x2709;</span> messages the worker received during the task · <span aria-hidden="true">&#x25A3;</span> its board card · open a task for its timeline of connections. Every link opens that thing on its own page.</p></details>
+  <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope row-note-host" style="padding:0;gap:0;flex-direction:column;">
     <div class="tasks-bar">
       <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks, cards and messages" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">
       <span class="tasks-seg" id="peek-tasks-in" role="group" aria-label="Search in"><button type="button" data-in="all" aria-pressed="true" onclick="_tasksSetSearchIn('peek','all')" title="Task names, card ids and the messages each task received">Everything</button><button type="button" data-in="names" aria-pressed="false" onclick="_tasksSetSearchIn('peek','names')" title="Task names only">Names</button></span>
       <button type="button" class="btn" style="min-height:44px;" onclick="_tasksByWorker(peekSession)" title="This worker's tasks in the Tasks view, with its timeline">All tasks view</button>
+      <span id="peek-tasks-count" class="tasks-count" role="status" aria-live="polite"></span>
+      <details class="tasks-about row-note"><summary class="btn" aria-label="These are tasks, not board issues. What to know" title="These are tasks, not board issues. What to know">&#x24D8;</summary>
+        <div class="row-note-body"><p><b>These are tasks, not board issues.</b></p>
+      <p>A task is what this worker's model said it was working on, recorded each time its "Task:" line changed. The board is separate: a task links to a board card only when the worker took it from one, and workers with the board off have no cards at all.</p>
+      <p><span aria-hidden="true">&#x2709;</span> messages the worker received during the task · <span aria-hidden="true">&#x25A3;</span> its board card · open a task for its timeline of connections. Every link opens that thing on its own page.</p></div></details>
     </div>
-    <div id="peek-tasks-count" class="tasks-count" role="status" aria-live="polite"></div>
     <div id="peek-tasks-list" class="tasks-list"></div>
     <div id="peek-tasks-pager" class="tasks-pager"></div>
   </div>
   <div id="peek-messages-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
     <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
       <input type="search" id="peek-messages-search" placeholder="Search messages sent to this worker&hellip;" oninput="_peekMessagesRender()"
-        style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.82rem;color:var(--text);outline:none;">
+        style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.82rem;color:var(--text);outline:none;">
+      <!-- The kind chips ride in this row on wide screens (one control row per
+           tab, 2026-10-23); they scroll sideways when there are many. -->
+      <div id="peek-messages-filter" style="display:flex;gap:5px;flex:0 1 auto;min-width:0;max-width:50%;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;align-items:center;"></div>
       <input type="date" id="peek-msgs-date-jump" class="amux-dp pm-wide" onchange="_peekMsgsJumpToDate(this.value)" title="Jump to a date" style="font-size:0.8rem;padding:5px 7px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);color-scheme:dark;">
       <!-- Phone: the kind chips fold into this picker so search, filter and the
            menu share one row and the messages get the screen (2026-10-23). -->
@@ -3418,7 +3426,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div id="peek-ask-meta" style="font-size:0.7rem;color:var(--dim);margin-top:8px;"></div>
       <div id="peek-ask-answer" style="font-size:0.84rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin-top:6px;"></div>
     </div>
-    <div id="peek-messages-filter" style="display:flex;gap:5px;padding:0 10px 8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;"></div>
     <div id="pm-selbar" style="display:none;"></div>
     <div id="peek-messages-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px;"></div>
   </div>
@@ -3475,22 +3482,20 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-cost-body" style="flex:1;overflow-y:auto;padding:12px;"></div>
   </div>
   <!-- Memory editor panel -->
-  <div id="peek-memory-panel" class="peek-memory-editor">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;flex-wrap:wrap;gap:6px;">
+  <div id="peek-memory-panel" class="peek-memory-editor row-note-host">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;flex-wrap:nowrap;gap:6px;">
       <div class="board-detail-tabs" style="border-bottom:none;margin:0;min-width:0;overflow-x:auto;">
         <button class="board-detail-tab active" id="pm-tab-edit" onclick="peekMemoryTab('edit')">Worker</button>
         <button class="board-detail-tab" id="pm-tab-preview" onclick="peekMemoryTab('preview')">Preview</button>
         <button class="board-detail-tab" id="pm-tab-global" onclick="peekMemoryTab('global')" title="Global memory shared by all workers">Global</button>
         <button class="board-detail-tab" id="pm-tab-inherited" onclick="peekMemoryTab('inherited')" title="CLAUDE.md files this worker inherits from its directory chain — loaded by Claude Code, not composed by amux">Inherited</button>
       </div>
-      <div style="display:flex;gap:6px;margin-left:auto;">
+      <div style="display:flex;gap:6px;margin-left:auto;flex:none;align-items:center;">
+        <details class="row-note" id="peek-memory-note" hidden><summary class="btn" aria-label="Who receives this memory" title="Who receives this memory">&#x24D8;</summary><div class="row-note-body" id="peek-memory-shared"></div></details>
         <button class="btn" id="peek-memory-pull" onclick="pullPeekMemory()" title="Pull latest from Claude's memory file">↻</button>
         <button class="btn primary" id="peek-memory-save" onclick="savePeekMemory()">Save</button>
       </div>
     </div>
-    <div id="peek-memory-shared" style="display:none;flex-shrink:0;font-size:0.7rem;line-height:1.35;
-      color:#d29922;background:rgba(210,153,34,0.09);border:1px solid rgba(210,153,34,0.32);
-      border-radius:6px;padding:6px 8px;margin:6px 0 0;"></div>
     <textarea id="peek-memory-input" class="peek-memory-textarea"
       placeholder="No memory yet. Add notes, context, or conventions that Claude should always remember for this worker..."></textarea>
     <div id="peek-memory-preview" class="board-detail-preview md-content" style="display:none;flex:1;overflow-y:auto;min-height:0;"></div>
@@ -3556,17 +3561,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-shell-list"></div>
   </div>
   <div id="peek-schedules-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
-    <div style="padding:10px 12px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;">
-      <span style="font-weight:600;font-size:0.9rem;">Scheduler</span>
-      <span id="peek-sched-stats" style="font-size:0.7rem;color:var(--dim);flex:1;"></span>
-      <button class="btn" onclick="_peekNewSchedule()" style="font-size:0.78rem;padding:4px 10px;">+ New</button>
-    </div>
-    <div style="padding:8px 12px 0;flex-shrink:0;">
-      <div class="search-wrap" id="peek-sched-search-wrap" style="width:100%;">
+    <!-- ONE control row (Ethan, 2026-10-23): search, the counts and + New.
+         The "Scheduler" title repeated the tab's own name. -->
+    <div style="padding:8px 12px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:nowrap;overflow-x:auto;">
+      <div class="search-wrap" id="peek-sched-search-wrap" style="flex:1 1 200px;min-width:160px;">
         <input class="search-input" id="peek-sched-search" type="text" placeholder="Search schedules — title, command, cadence…" autocomplete="off"
           oninput="_peekSchedSearch=this.value;document.getElementById('peek-sched-search-wrap').classList.toggle('has-value',!!this.value);_peekRenderSchedules()">
         <button class="search-clear" onclick="document.getElementById('peek-sched-search').value='';_peekSchedSearch='';document.getElementById('peek-sched-search-wrap').classList.remove('has-value');_peekRenderSchedules()">&#x2715;</button>
       </div>
+      <span id="peek-sched-stats" style="font-size:0.7rem;color:var(--dim);white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;"></span>
+      <button class="btn" onclick="_peekNewSchedule()" style="font-size:0.78rem;padding:4px 10px;flex:none;min-height:36px;">+ New</button>
     </div>
     <div class="peek-tasks-list" id="peek-schedules-list" style="padding:10px 12px;"></div>
     <details id="peek-sched-runs-details" style="border-top:1px solid var(--border);padding:0 12px;padding-bottom:max(10px,env(safe-area-inset-bottom));flex-shrink:0;">

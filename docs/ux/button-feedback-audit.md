@@ -1091,6 +1091,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Select all | `` | onclick |
 | index.html | Select all | `` | onclick |
 | index.html | Sign out | `` | onclick |
+| index.html | Standing instructions: re-sent on every (re)star | `` | onclick |
 | index.html | Upload files | `` | onclick |
 | index.html | about-overlay | `` | onclick |
 | index.html | add-conn-form | `` | onclick |
@@ -1098,7 +1099,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | be-tag-wrap | `` | onclick |
 | index.html | brand-icon-drop | `` | onclick |
 | index.html | brand-logo-drop | `` | onclick |
-| index.html | div | `` | onclick |
 | index.html | eg-tag-wrap | `` | onclick |
 | index.html | settings-owner-link-url | `` | onclick |
 | index.html | Close player | `_abClose` | onclick |

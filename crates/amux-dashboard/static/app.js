@@ -14445,16 +14445,17 @@ function _peekBoardPolicySync() {
   el.style.display = show ? '' : 'none';
   if (!show) { el.innerHTML = ''; return; }
   const iso = !!s.isolated;
-  let h = '';
-  if (iso) {
-    h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
-  }
   const b = _boardOneState(s);
-  h += '<div class="pbc-one" data-session="' + esc(peekSession) + '">'
-    + '<span class="pbc-text"><span class="pbc-label">Board</span>'
-    + '<span class="pbc-help">' + esc(_BOARD_ONE_NOTE) + '</span>'
-    + (b.mode === 'partial' ? '<span class="pbc-why">Some board settings were turned on one by one. Switch it on or off to set them all.</span>' : '')
-    + '</span>' + _boardOneSwitchHTML(peekSession, s) + '</div>';
+  // One control row per tab: the switch sits in the Board toolbar, and what it
+  // does (plus why it is off for an isolated worker) opens from the info button.
+  const why = iso ? 'Isolated worker: board automation is off. Turn off isolation to use these.'
+    : (b.mode === 'partial' ? 'Some board settings were turned on one by one. Switch it on or off to set them all.' : '');
+  const h = '<span class="pbc-one" data-session="' + esc(peekSession) + '">'
+    + '<span class="pbc-label">Board</span>' + _boardOneSwitchHTML(peekSession, s)
+    + '<details class="row-note' + (why ? ' warn' : '') + '"><summary class="btn" aria-label="What the Board switch does" title="What the Board switch does">'
+    + (why ? '&#x26A0;' : '&#x24D8;') + '</summary><div class="row-note-body">'
+    + (why ? '<p class="pbc-note pbc-why"><b>' + esc(why) + '</b></p>' : '')
+    + '<p class="pbc-help">' + esc(_BOARD_ONE_NOTE) + '</p></div></details></span>';
   // Rebuild only when something changed: the panel was replaced on every board
   // refresh, several times a second, so a click could land on a box that was
   // about to be thrown away (an e2e click saw the node replaced 13 times).
@@ -15100,7 +15101,15 @@ function peekMemoryTab(tab) {
 // how tubescience displayed "# custom-plugins session memory".
 function _peekMemorySharedBanner(data) {
   const el = document.getElementById('peek-memory-shared');
-  if (!el) return;
+  const note = document.getElementById('peek-memory-note');
+  if (!el || !note) return;
+  // The note is an info button at the end of the Memory row (one control row
+  // per tab); an isolated worker's is a warning, since its text goes nowhere.
+  const show = (html, warn, label) => {
+    el.innerHTML = html; note.hidden = false; note.classList.toggle('warn', warn);
+    const sum = note.querySelector('summary');
+    sum.innerHTML = warn ? '&#x26A0;' : '&#x24D8;'; sum.title = label; sum.setAttribute('aria-label', label);
+  };
   const me = (sessions || []).find(x => x.name === peekSession) || {};
   const others = (data && data.shared_with) || [];
   // Two true statements replace one false one. This file is PER WORKER: it
@@ -15108,16 +15117,16 @@ function _peekMemorySharedBanner(data) {
   // e2e proved a peer in the same directory never received it. What IS shared
   // by directory is Claude Code's own auto-memory, which amux does not scope.
   if (me.isolated) {
-    el.style.display = '';
-    el.innerHTML = '<b>Isolated worker.</b> Scoped memory and rules never reach it, so this text is saved '
-      + 'but the worker does not receive it. Turn isolation off and restart to apply it.';
+    show('<b>Isolated worker.</b> Scoped memory and rules never reach it, so this text is saved '
+      + 'but the worker does not receive it. Turn isolation off and restart to apply it.', true,
+      'Isolated worker: this memory does not reach it');
     return;
   }
-  if (!others.length) { el.style.display = 'none'; el.textContent = ''; return; }
-  el.style.display = '';
-  el.innerHTML = '<b>Per worker.</b> Only ' + esc(peekSession || '') + ' receives this memory. Claude Code’s '
+  if (!others.length) { note.hidden = true; note.open = false; el.textContent = ''; return; }
+  show('<b>Per worker.</b> Only ' + esc(peekSession || '') + ' receives this memory. Claude Code’s '
     + 'own auto-memory for <code>' + esc(data.work_dir || '') + '</code> is separate and is shared with '
-    + others.map(n => '<b>' + esc(n) + '</b>').join(', ') + ', so anything a worker writes there reaches them too.';
+    + others.map(n => '<b>' + esc(n) + '</b>').join(', ') + ', so anything a worker writes there reaches them too.', false,
+    'Who receives this memory');
 }
 
 
@@ -56073,6 +56082,15 @@ function _tasksFilter(sc) {
 const _tasksSearchT = {};
 function _tasksSearchInput(sc) { clearTimeout(_tasksSearchT[sc]); _tasksSearchT[sc] = setTimeout(() => _tasksFilter(sc), 300); }
 // Search names only, or names, cards and messages (the default).
+// A .row-note panel (app.css) floats over the tab's content, so a click
+// elsewhere or Escape closes it, as any popover does.
+document.addEventListener('click', e => {
+  document.querySelectorAll('.row-note[open]').forEach(d => { if (!d.contains(e.target)) d.open = false; });
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.querySelectorAll('.row-note[open]').forEach(d => { d.open = false; });
+});
+
 function _tasksSetSearchIn(sc, where) {
   const s = _tasksScopes[sc];
   s.searchIn = where === 'names' ? 'names' : 'all';
