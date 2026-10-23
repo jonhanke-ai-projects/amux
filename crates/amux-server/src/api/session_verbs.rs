@@ -29869,6 +29869,10 @@ async fn send_post_detached(
     }
 }
 
+/// The recorded origin of a send that reached /send with no worker identity
+/// and no record_history: `amux send` from outside any worker, or a script.
+const UNIDENTIFIED_SEND_ORIGIN: &str = "api (no worker identity)";
+
 pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
     if let Some(refusal) = probe_refusal(state, name, headers, &body_str(body, "text")).await {
         return refusal;
@@ -30397,6 +30401,35 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
             // branch and the one the 37 reported cards came through.
             let row_id = cmd_hist_record_with_id(
                 state, name, &orig_text, "session", &origin, skip_board, meta,
+            )
+            .await;
+            if let Some(id) = queue_id.as_deref() {
+                link_queued_message(state, name, row_id, id).await;
+            }
+        } else {
+            // NO WORKER IDENTITY AND NO record_history: still a message.
+            //
+            // The dashboard sets record_history; a worker send carries its
+            // session header. `amux send` run outside any worker (the owner's
+            // Codex app, a shell, a script) carries neither, so none of the
+            // arms above ran and the delivered text had no row. The peek then
+            // had nothing to classify it by and showed "Unclassified" (Ethan,
+            // 2026-10-23, tubescience-parity: a Codex-sent recovery check at
+            // 21:03:30Z; its mxp-gs12 and mixpeek-cicd copies were unrecorded
+            // too). send_origin_for already delivered it as owner input, so it
+            // is recorded as owner input, with an origin that says how it came.
+            let agent = headers
+                .get(axum::http::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect::<String>();
+            tracing::warn!(session = name, user_agent = %agent, measured = true, n_considered = 1,
+                verdict = "send_unidentified_recorded",
+                "a send with no worker identity and no record_history was delivered; recorded as owner input via the API");
+            let row_id = cmd_hist_record_with_id(
+                state, name, &orig_text, "user", UNIDENTIFIED_SEND_ORIGIN, skip_board, meta,
             )
             .await;
             if let Some(id) = queue_id.as_deref() {
@@ -38247,6 +38280,35 @@ mod tests {
         assert!(seen.iter().any(|t| t.contains("Approved (NT-1)")), "the send recorded nothing to check: {seen:?}");
         assert!(seen.iter().all(|t| !t.contains("Approved (NT-1)") || t.contains("- notes-lane@chat: only if it never deletes TubeScience")),
             "an approval was recorded without the owner's note: {seen:?}");
+    }
+
+    /// A send with no worker identity and no record_history (`amux send` from
+    /// the owner's Codex app) left no cmd_history row, so the peek showed it
+    /// "Unclassified" (2026-10-23, tubescience-parity). It is recorded as owner
+    /// input with an origin that says it came through the API.
+    #[tokio::test]
+    async fn a_send_with_no_identity_and_no_record_history_is_still_recorded() {
+        let (state, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        // Paused, so the send queues instead of needing a live pane.
+        std::fs::write(sessions.join("unidentified-lane.env"), "CC_PAUSED=1\n").unwrap();
+        let text = "21:04Z independent recovery check: resume only dead jobs from durable checkpoints";
+        let resp = send_post(&state, "unidentified-lane", &HeaderMap::new(),
+            &json!({"text": text, "msg_id": "unidentified-1"})).await;
+        let status = resp.status();
+        let body = String::from_utf8_lossy(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap()).into_owned();
+        let conn = state.store.read().unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT type, COALESCE(origin,'') FROM cmd_history WHERE session='unidentified-lane' AND text LIKE '%independent recovery check%'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(rows.len(), 1, "an unidentified send must leave exactly one row: {rows:?} (send answered {status} {body})");
+        assert_eq!(rows[0], ("user".to_string(), UNIDENTIFIED_SEND_ORIGIN.to_string()));
     }
 
     /// AMUX-4661: STOPPED is a third state AMUX-4566's own check cannot see —

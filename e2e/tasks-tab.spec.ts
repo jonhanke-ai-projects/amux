@@ -103,7 +103,10 @@ test('Tasks lists the tasks a worker took on, in order, and a task opens its car
 
   // Each row says it links one message and its card; the explainer says these
   // are not board issues (Ethan, 2026-10-18).
-  await expect(page.locator('#tasks-view .tasks-about summary')).toContainText('not board issues');
+  // The explanation is an info button at the end of the search row (one control
+  // row, 2026-10-23): its label says it, and its panel opens with the detail.
+  await expect(page.locator('#tasks-view .tasks-about summary')).toHaveAttribute('aria-label', /not board issues/);
+  await expect(page.locator('#tasks-view .tasks-about .row-note-body')).toContainText('not board issues');
   // The server's count, so a wrong chip says whether the API or the render is wrong.
   const api = await page.evaluate(async ({ w, n }) => (await (await fetch('/api/task-history?order=asc&session=' + encodeURIComponent(w) + '&q=' + encodeURIComponent(n))).json()).tasks.map((t: any) => t.messages), { w: seed.worker, n: nonce });
   expect(api, JSON.stringify(api)).toEqual([expect.any(Number), 2]);
@@ -221,7 +224,7 @@ test("a worker's Tasks tab lists its tasks newest first, with links, never its m
   await page.locator('#peek-tab-tasks').click();
   await expect(page.locator('#peek-tab-tasks')).toHaveClass(/active/);
   const panel = page.locator('#peek-tasks-panel');
-  await expect(panel.locator('.tasks-about summary')).toContainText('not board issues');
+  await expect(panel.locator('.tasks-about summary')).toHaveAttribute('aria-label', /not board issues/);
   const items = panel.locator('.task-item');
   await expect(items).toHaveCount(2, { timeout: 15000 });
   expect(urls[0], 'the worker tab asks for newest first').toContain('order=desc');

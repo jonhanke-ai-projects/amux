@@ -1201,6 +1201,29 @@ function _outboxLock(name, work) {
   if (!navigator.locks) return Promise.reject(new Error('Safe pending-change storage is unavailable in this browser; keep your draft and use a secure connection'));
   return navigator.locks.request(name, work);
 }
+// A message's delivery lock, taken over from a holder that has stopped.
+// Every window of the Mac app shares one website data store and so one set of
+// web locks, and WebKit suspends a hidden or minimized window's script. A
+// window suspended mid-delivery kept amux-outbox-delivery:<id> forever, so the
+// visible window's message read "Awaiting server" until the app restarted
+// (Ethan, 2026-10-23: "specific to mac app - i try in browser and it works").
+// A delivery is bounded at 15s (_boundedMutationFetch), so a visible window
+// that has waited _DELIVERY_STEAL_MS takes the lock over (steal releases the
+// stalled holder). If that holder ever wakes it re-sends the same msg_id, which
+// the server de-duplicates (send_dedup). A hidden window never steals: it may be
+// the stalled one.
+const _DELIVERY_STEAL_MS = 30000;
+function _outboxDeliveryLock(name, work) {
+  if (!navigator.locks) return _outboxLock(name, work);
+  const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
+  if (!signal) return navigator.locks.request(name, work);
+  return navigator.locks.request(name, {signal}, work).catch(e => {
+    if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
+    if (document.hidden) return navigator.locks.request(name, work);
+    _outboxDiagnostic('outbox_delivery_lock_stolen', {waited_ms:_DELIVERY_STEAL_MS, lock:name.split(':')[0]});
+    return navigator.locks.request(name, {steal:true}, work);
+  });
+}
 // User intent has priority over reproducible offline caches. Safari's measured
 // 5.19 MB of caches left ~50 KB for the mandatory local send (AMUX-4417).
 // Retry the SAME atomic setItem after reclaiming caches; never prune drafts,
@@ -3956,11 +3979,21 @@ function _syncSetPhase(phase) { _syncPhase = phase; _syncPhaseAt = Date.now(); }
 // IndexedDB request that never completes (WebKit, after its storage process
 // restarts) must not hold the messages behind it. Past 5s this pass treats the
 // list as empty and says so; the uploads stay stored for the next pass.
+// A timed-out read also drops the IndexedDB connection, so the next pass opens
+// a fresh one instead of waiting 5s on the same dead handle again.
+// after_reset says whether that already happened since the last good read:
+// 1 on a later timeout means reopening did not help.
+let _upqResetSinceOk = false;
 function _upqListBounded(ms = 5000) {
   let timer;
   return Promise.race([
-    _upqList().catch(() => []),
-    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0}); resolve([]); }, ms); }),
+    _upqList().then(rows => { _upqResetSinceOk = false; return rows; }).catch(() => []),
+    new Promise(resolve => { timer = setTimeout(() => {
+      _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms, after_reset:_upqResetSinceOk ? 1 : 0, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0});
+      _idb.reset('upload_list_timeout');
+      _upqResetSinceOk = true;
+      resolve([]);
+    }, ms); }),
   ]).finally(() => clearTimeout(timer));
 }
 // A FROZEN HOLDER IS PRE-EMPTED, NOT WAITED OUT (Ethan, 2026-10-23: the Mac
@@ -3970,7 +4003,8 @@ function _upqListBounded(ms = 5000) {
 // tab waited the full 20s for it 115 times (verdict=outbox_replay_lock_stalled,
 // held=1, hidden=0) before sending what the user had just typed. A shown tab
 // now waits _SYNC_LOCK_STEAL_MS and then steals the lock (beaconed as
-// verdict=outbox_replay_lock_stolen); a hidden tab keeps the long wait. Both
+// verdict=outbox_replay_lock_stalled action=stole); a hidden tab keeps the
+// long wait and runs beside the holder (action=ran_unlocked). Both
 // are safe for one reason: every delivery re-reads the queue under its own
 // per-operation lock, and the server de-duplicates sends by msg_id. A holder
 // whose lock was stolen finishes its pass; only its lock promise rejects.
@@ -3992,10 +4026,12 @@ function _syncLockRequest(run) {
     if (hidden) {
       // Another window holds the replay lock and is not finishing (a suspended
       // WebKit window keeps it). Per-operation locks still serialise each write.
-      _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:1});
+      _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:1, action:'ran_unlocked'});
       return run();
     }
-    _outboxDiagnostic('outbox_replay_lock_stolen', {waited_ms:waitMs, held:nHeld, pending, hidden:0});
+    // A shown window takes the lock over, so the frozen holder stops blocking
+    // every later pass too.
+    _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:0, action:'stole'});
     return navigator.locks.request('amux-outbox-replay', {steal:true}, held);
   });
 }
@@ -4204,7 +4240,7 @@ async function _runSyncBanner(quiet = false) {
     item.status = 'running';
     renderBanner();
     _syncSetPhase('deliver');
-    await _outboxLock('amux-outbox-delivery:' + q.id, async () => {
+    await _outboxDeliveryLock('amux-outbox-delivery:' + q.id, async () => {
     const fresh = _readQueue().find(entry => entry.id === q.id);
     if (!fresh) { offlineQueue = _readQueue(); item.status = 'skipped'; item.label += ' — no longer queued in this tab'; skipped++; return; }
     Object.assign(q, fresh);
@@ -5312,7 +5348,7 @@ async function _outboxFetch(input, init) {
     return queued ? _outboxAccepted() : new Response('Queue unavailable', {status: 507});
   }).finally(() => { if (durableId) _outboxActive.delete(durableId); });
   };
-  return durableId ? _outboxLock('amux-outbox-delivery:' + durableId, deliver) : deliver();
+  return durableId ? _outboxDeliveryLock('amux-outbox-delivery:' + durableId, deliver) : deliver();
 }
 window.fetch = async function(input, init) {
   if (input instanceof Request) {
@@ -13408,6 +13444,7 @@ function setPeekTab(tab) {
   // Persist so an app-switch away and back lands on this tab, not the default.
   try { _savePeekState(); } catch(e) {}
   try { _peekViewRemember(); } catch(e) {}
+  _syncUrlHash();
   // The notes tab is gone; this flushed its pending save and called
   // _peekNotesSave(), which went with it. The branch never fired only because
   // _peekNotesSaveTimer is now never assigned non-null — so a single line
@@ -14511,16 +14548,17 @@ function _peekBoardPolicySync() {
   el.style.display = show ? '' : 'none';
   if (!show) { el.innerHTML = ''; return; }
   const iso = !!s.isolated;
-  let h = '';
-  if (iso) {
-    h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
-  }
   const b = _boardOneState(s);
-  h += '<div class="pbc-one" data-session="' + esc(peekSession) + '">'
-    + '<span class="pbc-text"><span class="pbc-label">Board</span>'
-    + '<span class="pbc-help">' + esc(_BOARD_ONE_NOTE) + '</span>'
-    + (b.mode === 'partial' ? '<span class="pbc-why">Some board settings were turned on one by one. Switch it on or off to set them all.</span>' : '')
-    + '</span>' + _boardOneSwitchHTML(peekSession, s) + '</div>';
+  // One control row per tab: the switch sits in the Board toolbar, and what it
+  // does (plus why it is off for an isolated worker) opens from the info button.
+  const why = iso ? 'Isolated worker: board automation is off. Turn off isolation to use these.'
+    : (b.mode === 'partial' ? 'Some board settings were turned on one by one. Switch it on or off to set them all.' : '');
+  const h = '<span class="pbc-one" data-session="' + esc(peekSession) + '">'
+    + '<span class="pbc-label">Board</span>' + _boardOneSwitchHTML(peekSession, s)
+    + '<details class="row-note' + (why ? ' warn' : '') + '"><summary class="btn" aria-label="What the Board switch does" title="What the Board switch does">'
+    + (why ? '&#x26A0;' : '&#x24D8;') + '</summary><div class="row-note-body">'
+    + (why ? '<p class="pbc-note pbc-why"><b>' + esc(why) + '</b></p>' : '')
+    + '<p class="pbc-help">' + esc(_BOARD_ONE_NOTE) + '</p></div></details></span>';
   // Rebuild only when something changed: the panel was replaced on every board
   // refresh, several times a second, so a click could land on a box that was
   // about to be thrown away (an e2e click saw the node replaced 13 times).
@@ -15166,7 +15204,15 @@ function peekMemoryTab(tab) {
 // how tubescience displayed "# custom-plugins session memory".
 function _peekMemorySharedBanner(data) {
   const el = document.getElementById('peek-memory-shared');
-  if (!el) return;
+  const note = document.getElementById('peek-memory-note');
+  if (!el || !note) return;
+  // The note is an info button at the end of the Memory row (one control row
+  // per tab); an isolated worker's is a warning, since its text goes nowhere.
+  const show = (html, warn, label) => {
+    el.innerHTML = html; note.hidden = false; note.classList.toggle('warn', warn);
+    const sum = note.querySelector('summary');
+    sum.innerHTML = warn ? '&#x26A0;' : '&#x24D8;'; sum.title = label; sum.setAttribute('aria-label', label);
+  };
   const me = (sessions || []).find(x => x.name === peekSession) || {};
   const others = (data && data.shared_with) || [];
   // Two true statements replace one false one. This file is PER WORKER: it
@@ -15174,16 +15220,16 @@ function _peekMemorySharedBanner(data) {
   // e2e proved a peer in the same directory never received it. What IS shared
   // by directory is Claude Code's own auto-memory, which amux does not scope.
   if (me.isolated) {
-    el.style.display = '';
-    el.innerHTML = '<b>Isolated worker.</b> Scoped memory and rules never reach it, so this text is saved '
-      + 'but the worker does not receive it. Turn isolation off and restart to apply it.';
+    show('<b>Isolated worker.</b> Scoped memory and rules never reach it, so this text is saved '
+      + 'but the worker does not receive it. Turn isolation off and restart to apply it.', true,
+      'Isolated worker: this memory does not reach it');
     return;
   }
-  if (!others.length) { el.style.display = 'none'; el.textContent = ''; return; }
-  el.style.display = '';
-  el.innerHTML = '<b>Per worker.</b> Only ' + esc(peekSession || '') + ' receives this memory. Claude Code’s '
+  if (!others.length) { note.hidden = true; note.open = false; el.textContent = ''; return; }
+  show('<b>Per worker.</b> Only ' + esc(peekSession || '') + ' receives this memory. Claude Code’s '
     + 'own auto-memory for <code>' + esc(data.work_dir || '') + '</code> is separate and is shared with '
-    + others.map(n => '<b>' + esc(n) + '</b>').join(', ') + ', so anything a worker writes there reaches them too.';
+    + others.map(n => '<b>' + esc(n) + '</b>').join(', ') + ', so anything a worker writes there reaches them too.', false,
+    'Who receives this memory');
 }
 
 
@@ -15536,25 +15582,47 @@ function _prefetchOrder() {
   return running.sort((a, b) => rank(a) - rank(b) || (b.last_activity || 0) - (a.last_activity || 0));
 }
 
+// AUTOMATIC PASSES RUN AT MOST ONCE PER _PREFETCH_MIN_GAP_MS, ACROSS WINDOWS.
+// The schedule says every 10 minutes, plus 8s after load and 4s after an
+// `online` event. On 2026-10-23 the Mac app's window ran a full pass (a 200-line
+// peek of all 43 workers) every 10-60s and twelve more windows ran their own,
+// 9,005 peeks in 15 minutes, which held amux-server-rs over 300% CPU on two
+// cleanup ticks. Live terminals change, so the 304 that made a re-sync "~free"
+// almost never happens. The saved copies live in shared IndexedDB, so one
+// window's pass serves them all: the last automatic pass is shared through
+// localStorage. A skipped trigger is counted by name and beaconed
+// (offline_prefetch_throttled), so a trigger that keeps firing is visible.
+const _PREFETCH_MIN_GAP_MS = 10 * 60 * 1000;
+const _PREFETCH_LAST_KEY = 'amux_offline_prefetch_last';
+const _prefetchSkipped = {};
+function _prefetchThrottled(trigger) {
+  let last = 0;
+  try { last = Number(localStorage.getItem(_PREFETCH_LAST_KEY)) || 0; } catch (_) {}
+  const age = Date.now() - last;
+  // 30s of slack, so the 10-minute interval itself is never skipped for a pass
+  // that started a few seconds late.
+  if (age >= _PREFETCH_MIN_GAP_MS - 30000 || age < 0) return false;
+  const n = (_prefetchSkipped[trigger] = (_prefetchSkipped[trigger] || 0) + 1);
+  if (n === 1 || n % 20 === 0) {
+    try { window._clientDebug?.('offline-prefetch', {verdict: 'offline_prefetch_throttled', measured: true, n_considered: n,
+      trigger, skipped: n, last_pass_age_ms: age}); } catch (_) {}
+  }
+  return true;
+}
+
 // Sync every running session's scrollback. Unchanged sessions cost 0 bytes
 // (304). Throttled so a weak link isn't hit with 49 parallel requests.
-async function _offlinePrefetch(manual) {
+async function _offlinePrefetch(manual, trigger = 'manual') {
   if (_prefetchRunning) return;
+  if (!manual && _prefetchThrottled(trigger)) return;
   if (typeof online !== 'undefined' && !online) { if (manual) showToast('Offline — connect to sync'); return; }
   if (!manual && !_linkIsCheap()) return;    // never auto-blast on 2g/3g/saveData
-  // ONE TAB SAVES FOR THE DEVICE (2026-10-23). The copies live in IndexedDB,
-  // which every tab of this origin shares, yet every tab ran this pass at boot
-  // and every 10 min: ten Mac app tabs fetched ~46 workers' scrollback ten
-  // times over, again on every version reload, on a host already at load 20+.
-  // An automatic pass now runs only in a shown tab, and not when another tab
-  // ran one in the last 9 min. A manual run always goes.
-  if (!manual) {
-    if (typeof document !== 'undefined' && document.hidden) return;
-    const at = Number(localStorage.getItem('amux_offline_prefetch_at') || 0);
-    if (Date.now() - at < 9 * 60 * 1000) return;
-    try { localStorage.setItem('amux_offline_prefetch_at', String(Date.now())); } catch (e) {}
-  }
+  // A HIDDEN TAB NEVER STARTS ONE (2026-10-23). The copies live in IndexedDB,
+  // shared by every tab, so the shown tab's pass serves them all; ten Mac app
+  // tabs each fetched ~46 workers' scrollback on a host already at load 20+.
+  if (!manual && typeof document !== 'undefined' && document.hidden) return;
   _prefetchRunning = true; _prefetchAbort = false;
+  if (!manual) { try { localStorage.setItem(_PREFETCH_LAST_KEY, String(Date.now())); } catch (_) {} }
   await _peekIndexLoad();
   const list = _prefetchOrder();
   let fetched = 0, unchanged = 0, bytes = 0, done = 0;
@@ -16615,6 +16683,7 @@ function openPeek(name, opts) {
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
   _peekViewApply(name);   // bring this worker's own tab + split back
   _savePeekState();
+  _syncUrlHash();
 }
 
 // Read-only terminal navigation. Never send terminal keys to choose a child:
@@ -16788,6 +16857,7 @@ function closePeek() {
   // localStorage copy exists only for eviction restore, and leaving it here
   // meant close -> background -> relaunch reopened what the user dismissed.
   try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
+  _syncUrlHash();
 }
 
 // ── Peek split pane (file browser) ──
@@ -16817,6 +16887,20 @@ function _savePeekState() {
     sessionStorage.removeItem('peekState');
     try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
   }
+}
+
+function _syncUrlHash() {
+  if (window._peekSplitChild || window._peekEmbed) return;
+  try {
+    let hash = '';
+    if (peekSession) {
+      hash = '#peek=' + encodeURIComponent(peekSession);
+      if (_peekTab && _peekTab !== 'terminal') hash += '&tab=' + encodeURIComponent(_peekTab);
+    } else if (activeView && activeView !== 'sessions') {
+      hash = '#view=' + encodeURIComponent(activeView);
+    }
+    history.replaceState(null, '', location.pathname + location.search + hash);
+  } catch (_) {}
 }
 
 // SIDE PANEL CHOICE (Ethan, 2026-10-08: "on non-mobile this button is actually
@@ -16876,6 +16960,7 @@ function _peekSplitRenderPanes() {
   if (!host || !peekSession) return;
   const opts = _peekSplitViewOptions();
   const optHtml = opts.map(([v, l]) => '<option value="' + esc(v) + '">' + esc(l) + '</option>').join('');
+  host.querySelectorAll('.psp-drag-handle').forEach(h => h.remove());
   while (host.children.length > _peekSplitPanes.length) host.lastElementChild.remove();
   _peekSplitPanes.forEach((view, i) => {
     let pane = host.children[i];
@@ -16914,7 +16999,61 @@ function _peekSplitRenderPanes() {
       if (!switched) frame.src = src;
     }
   });
+  // Insert drag handles between panes and apply saved sizes
+  const allPanes = [...host.querySelectorAll('.psp-pane')];
+  for (let j = 1; j < allPanes.length; j++) {
+    const h = document.createElement('div');
+    h.className = 'psp-drag-handle';
+    host.insertBefore(h, allPanes[j]);
+    _pspDragInit(h, j - 1, j, allPanes);
+  }
+  _pspApplySizes(allPanes);
   host.dataset.panes = String(_peekSplitPanes.length);
+}
+
+let _pspFlexGrow = null;
+function _pspApplySizes(panes) {
+  if (!_pspFlexGrow || _pspFlexGrow.length !== _peekSplitPanes.length) {
+    try { _pspFlexGrow = JSON.parse(localStorage.getItem('amux_psp_sizes')); } catch (_) {}
+    if (!Array.isArray(_pspFlexGrow) || _pspFlexGrow.length !== _peekSplitPanes.length) _pspFlexGrow = null;
+  }
+  if (!_pspFlexGrow) return;
+  panes.forEach((p, i) => { p.style.flex = (_pspFlexGrow[i] || 1) + ' 1 0px'; });
+}
+function _pspDragInit(handle, aboveIdx, belowIdx, panes) {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    handle.setPointerCapture(e.pointerId);
+    const host = document.getElementById('psp-panes');
+    const aboveH = panes[aboveIdx].getBoundingClientRect().height;
+    const belowH = panes[belowIdx].getBoundingClientRect().height;
+    const pairH = aboveH + belowH;
+    const startY = e.clientY;
+    if (!_pspFlexGrow) _pspFlexGrow = panes.map(() => 1);
+    const pairGrow = _pspFlexGrow[aboveIdx] + _pspFlexGrow[belowIdx];
+    host.querySelectorAll('.psp-frame').forEach(f => { f.style.pointerEvents = 'none'; });
+    const onMove = (ev) => {
+      const dy = ev.clientY - startY;
+      const newAboveH = Math.max(60, Math.min(pairH - 60, aboveH + dy));
+      const ratio = newAboveH / pairH;
+      _pspFlexGrow[aboveIdx] = ratio * pairGrow;
+      _pspFlexGrow[belowIdx] = (1 - ratio) * pairGrow;
+      panes[aboveIdx].style.flex = _pspFlexGrow[aboveIdx] + ' 1 0px';
+      panes[belowIdx].style.flex = _pspFlexGrow[belowIdx] + ' 1 0px';
+    };
+    const onUp = () => {
+      handle.classList.remove('dragging');
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      host.querySelectorAll('.psp-frame').forEach(f => { f.style.pointerEvents = ''; });
+      try { localStorage.setItem('amux_psp_sizes', JSON.stringify(_pspFlexGrow)); } catch (_) {}
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  });
 }
 function _peekSplitSetPane(i, view) {
   if (!view || i < 0 || i >= _peekSplitPanes.length) return;
@@ -16927,6 +17066,7 @@ function _peekSplitAddPane() {
   const used = new Set(_peekSplitPanes);
   const next = ['files', 'messages', 'chat', 'terminal'].find(v => !used.has(v)) || 'terminal';
   _peekSplitPanes.push(next);
+  _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
   _peekSplitPersist();
   _peekSplitRenderPanes();
 }
@@ -16936,6 +17076,7 @@ function _peekSplitClosePane(i) {
     return;
   }
   _peekSplitPanes.splice(i, 1);
+  _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
   _peekSplitPersist();
   _peekSplitRenderPanes();
 }
@@ -36638,6 +36779,7 @@ function switchView(view) {
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
+  if (!peekSession) _syncUrlHash();
   // ONE ROW PER VIEW: [domIdPrefix, tabName, display]. This was three PARALLEL
   // ARRAYS that had to stay index-aligned, and the alignment had already failed
   // once — the old comment recorded 18 display entries for 19 ids, so 'graph'
@@ -47912,6 +48054,18 @@ const _idb = (() => {
     });
   }
   return {
+    // Drop the connection so the next call opens a fresh one. A connection
+    // whose storage process went away can hang every request without an
+    // error or onclose (WebKit; the Mac app logged 1,331 upload-list timeouts
+    // in a day, every outbox pass after the first one on the same handle).
+    reset: (reason) => {
+      const had = !!db;
+      try { if (db) db.close(); } catch (_) {}
+      db = null;
+      try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+        body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+      return had;
+    },
     // Cache callers are best-effort; pending work uses the strict methods below.
     set: (key, val) => _CACHE_KEY.test(String(key)) ? setCache(String(key), val)
       : transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
@@ -48839,10 +48993,10 @@ _idb.get('drafts').then(val => {
 // then top up on a good link. Re-syncs are ~free (304s), so this is cheap.
 _peekIndexLoad().then(() => {
   try { render(); } catch(e) {}
-  setTimeout(() => { try { _offlinePrefetch(false); } catch(e) {} }, 8000);
+  setTimeout(() => { try { _offlinePrefetch(false, 'boot'); } catch(e) {} }, 8000);
 });
-setInterval(() => { try { _offlinePrefetch(false); } catch(e) {} }, 10 * 60 * 1000);
-window.addEventListener('online', () => setTimeout(() => { try { _offlinePrefetch(false); } catch(e) {} }, 4000));
+setInterval(() => { try { _offlinePrefetch(false, 'interval'); } catch(e) {} }, 10 * 60 * 1000);
+window.addEventListener('online', () => setTimeout(() => { try { _offlinePrefetch(false, 'online'); } catch(e) {} }, 4000));
 
 _idb.get('offline_queue').then(async val => {
   if (val && localStorage.getItem('amux_offline_queue') === null && val.length) {
@@ -56332,6 +56486,15 @@ function _tasksFilter(sc) {
 const _tasksSearchT = {};
 function _tasksSearchInput(sc) { clearTimeout(_tasksSearchT[sc]); _tasksSearchT[sc] = setTimeout(() => _tasksFilter(sc), 300); }
 // Search names only, or names, cards and messages (the default).
+// A .row-note panel (app.css) floats over the tab's content, so a click
+// elsewhere or Escape closes it, as any popover does.
+document.addEventListener('click', e => {
+  document.querySelectorAll('.row-note[open]').forEach(d => { if (!d.contains(e.target)) d.open = false; });
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.querySelectorAll('.row-note[open]').forEach(d => { d.open = false; });
+});
+
 function _tasksSetSearchIn(sc, where) {
   const s = _tasksScopes[sc];
   s.searchIn = where === 'names' ? 'names' : 'all';

@@ -2964,6 +2964,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxDeliveryLock": {
+      "kind": "command._outboxDeliveryLock",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxDiagnostic": {
       "kind": "command._outboxDiagnostic",
       "feedback_required": true,

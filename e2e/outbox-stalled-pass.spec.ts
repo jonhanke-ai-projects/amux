@@ -55,7 +55,7 @@ test('another window holding the replay lock does not hold the message, and a sh
   const t0 = Date.now();
   await expect.poll(() => posts.includes('m-stall'), { timeout: 15_000 }).toBe(true);
   expect(Date.now() - t0).toBeLessThan(10_000);
-  await expect.poll(() => beacons.some(b => b.verdict === 'outbox_replay_lock_stolen' && b.held === 1)).toBe(true);
+  await expect.poll(() => beacons.some(b => b.verdict === 'outbox_replay_lock_stalled' && b.action === 'stole' && b.held === 1)).toBe(true);
   await other.close();
 });
 
