@@ -719,6 +719,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         pinsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refreshPins() }
         pollNeedsInput()
         needsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.pollNeedsInput() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in self?.reportResources() }
+        resourcesTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.reportResources() }
         NSApp.activate(ignoringOtherApps: true)
         // `amux amux://worker/x` on the command line, once the pins are known.
         let links = CommandLine.arguments.dropFirst().compactMap { URL(string: $0) }.filter { $0.scheme == "amux" }
@@ -921,6 +923,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         case "settings": showSettings(nil)
         default: openWindow(url: nil, frame: nil)
         }
+    }
+
+    // ── Resource report (Ethan, 2026-10-23: "macos app is still so much slower
+    // than browser") ──
+    // Every native tab is its own WebKit process running the whole dashboard,
+    // and the page cannot see its own memory in WebKit. So the app measures
+    // what each tab's process holds, with the machine's swap and memory
+    // pressure, and sends it every 10 minutes as kind=desktop-resources
+    // through a dashboard page (the page's beacon path needs no token). A
+    // verdict of memory_pressure says the tabs are pushing this Mac into swap.
+    var resourcesTimer: Timer?
+
+    func footprintMB(_ pid: pid_t) -> Int? {
+        var info = rusage_info_v2()
+        let r = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V2, $0) }
+        }
+        return r == 0 ? Int(info.ri_phys_footprint / 1_048_576) : nil
+    }
+
+    func reportResources() {
+        let pidKey = NSSelectorFromString("_webProcessIdentifier")
+        var seen = Set<pid_t>(), tabs: [[String: Any]] = [], total = 0, shown = 0
+        for c in controllers {
+            let w = c.window
+            let visible = (w?.isVisible ?? false) && (w?.occlusionState.contains(.visible) ?? false)
+            if visible { shown += 1 }
+            var row: [String: Any] = ["shown": visible ? 1 : 0]
+            if c.webView.responds(to: pidKey), let pid = (c.webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0 {
+                if let mb = footprintMB(pid) {
+                    row["mb"] = mb
+                    if seen.insert(pid).inserted { total += mb }
+                }
+            }
+            tabs.append(row)
+        }
+        var swap = xsw_usage(), size = MemoryLayout<xsw_usage>.size
+        let swapMB = sysctlbyname("vm.swapusage", &swap, &size, nil, 0) == 0 ? Int(swap.xsu_used / 1_048_576) : -1
+        var level: Int32 = 0, lsize = MemoryLayout<Int32>.size
+        let pressure = sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &lsize, nil, 0) == 0 ? Int(level) : -1
+        let ramMB = Int(ProcessInfo.processInfo.physicalMemory / 1_048_576)
+        let measured = !seen.isEmpty
+        let payload: [String: Any] = [
+            "kind": "desktop-resources", "measured": measured, "n_considered": tabs.count,
+            "why_unmeasured": measured ? "" : "no tab exposed its web process",
+            "tabs": tabs.count, "shown": shown, "web_processes": seen.count, "web_mb_total": total,
+            "tab_mb": tabs.compactMap { $0["mb"] as? Int }, "ram_mb": ramMB, "swap_used_mb": swapMB,
+            "pressure_level": pressure, "app_mb": footprintMB(getpid()) ?? -1,
+            "verdict": pressure >= 2 ? "memory_pressure" : (measured ? "ok" : "unmeasured"),
+        ]
+        NSLog("amux-desktop: desktop-resources tabs=%d web_mb_total=%d swap_used_mb=%d pressure=%d", tabs.count, total, swapMB, pressure)
+        guard let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8),
+              let c = controllers.first(where: { $0.webView.url.map(isServerURL) ?? false }) else { return }
+        c.webView.evaluateJavaScript("fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))}).catch(()=>{}); 0", completionHandler: nil)
     }
 
     // ── Native API calls (pins, the dock badge, the menu bar) ──
