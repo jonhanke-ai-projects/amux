@@ -7083,10 +7083,32 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
     // gating inside drive_lane) matters: the idle-drain arm stamps its nudge
     // backoff BEFORE sending, so a mid-lane skip would advance it for nothing.
     let lanes = if crate::runtime_jobs::host_guard::admit_automation("board-dispatch") { fleet.lanes() } else { Vec::new() };
+    let max_concurrent = crate::runtime_jobs::worker_resources::max_concurrent();
+    let mut concurrent_active = 0u64;
+    if max_concurrent > 0 {
+        if let Ok(conn) = state.store.read() {
+            concurrent_active = conn.query_row(
+                "SELECT COUNT(DISTINCT session) FROM issues WHERE status = 'doing' AND session IS NOT NULL AND session != ''",
+                [], |r| r.get::<_, i64>(0),
+            ).unwrap_or(0) as u64;
+        }
+    }
     for lane in lanes {
+        if max_concurrent > 0 && concurrent_active >= max_concurrent {
+            let trace = LaneTrace::skip(
+                &lane,
+                "concurrent-cap",
+                format!("{concurrent_active} workers already active (cap {max_concurrent})"),
+            );
+            report.lanes.push(trace);
+            continue;
+        }
         let trace = drive_lane(state, fleet, &lane).await;
         match trace.outcome.as_str() {
-            "assigned" => report.assigned += 1,
+            "assigned" => {
+                report.assigned += 1;
+                concurrent_active += 1;
+            }
             "skipped" => {}
             _ => report.nudged += 1,
         }
