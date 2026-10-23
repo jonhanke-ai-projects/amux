@@ -382,6 +382,9 @@ VM_EVENTS_CMD=${AMUX_CLEANUP_VM_EVENTS_CMD:-docker --context colima-PROFILE even
 # 18:06Z this tick stopped goal-shared under memory pressure with
 # gs12-restore's gr98 stack in it, blocking every lane's local proofs.
 VM_PS_CMD=${AMUX_CLEANUP_VM_PS_CMD:-docker --context colima-PROFILE ps --format \{\{.Names\}\}}
+# Which container inside a VM writes its disk (the RCA bundle's writers list).
+# Prints "S<TAB>name<TAB>blockio" and "I<TAB>/name<TAB>startedAt" lines.
+VM_WRITERS_CMD=${AMUX_CLEANUP_VM_WRITERS_CMD:-vm_writers_raw PROFILE}
 VM_IDLE_IGNORE=${AMUX_CLEANUP_VM_IDLE_IGNORE:-gs12-pypi-cache}
 VM_STOP_CMD=${AMUX_CLEANUP_VM_STOP_CMD:-colima stop -p PROFILE}
 # Docker Desktop runs its own VM that `colima list` never shows. On 2026-10-05
@@ -2298,6 +2301,51 @@ classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swa
   }'
 }
 
+# THE VM DISK IS THE WRITER THE HOST SEES; THE WRITER IS A CONTAINER INSIDE IT.
+# RCA 20261022-200009: the bundle named colima-goal-shared's datadisk and no
+# lane, and it took an hour to find ts-dropin-mx rewriting a 2.6G MVS snapshot
+# every ~6 min (4.3G/min, 1102G in 28h). Each container's block writes over
+# its uptime name it at once.
+vm_writers_raw() { # <profile>
+  local ctx="colima-$1" ids
+  ids=$(perl -e 'alarm 20; exec @ARGV' docker --context "$ctx" ps -q 2>/dev/null) || return 0
+  [ -n "$ids" ] || return 0
+  perl -e 'alarm 40; exec @ARGV' docker --context "$ctx" stats --no-stream --format '{{.Name}}	{{.BlockIO}}' 2>/dev/null | sed 's/^/S	/'
+  # shellcheck disable=SC2086  # ids is a word list
+  perl -e 'alarm 20; exec @ARGV' docker --context "$ctx" inspect -f '{{.Name}}	{{.State.StartedAt}}' $ids 2>/dev/null | sed 's/^/I	/'
+}
+vm_container_writers() { # <profile> [now_epoch]: the top 3 by write rate, one bundle line each
+  local p=$1 now=${2:-$(date +%s)}
+  ${VM_WRITERS_CMD//PROFILE/$p} 2>/dev/null | python3 -c '
+import sys, re, datetime
+prof, now = sys.argv[1], float(sys.argv[2])
+U = {"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}
+def size(t):
+    m = re.match(r"\s*([\d.]+)\s*([kKMGT]?B)", t)
+    return float(m.group(1)) * U[m.group(2)] if m else 0.0
+wrote, started = {}, {}
+for line in sys.stdin:
+    f = line.rstrip("\n").split("\t")
+    if len(f) == 3 and f[0] == "S" and "/" in f[2]:
+        wrote[f[1]] = size(f[2].split("/")[1])
+    elif len(f) == 3 and f[0] == "I":
+        try:
+            t = datetime.datetime.fromisoformat(re.sub(r"(\.\d{6})\d*", r"\1", f[2]).replace("Z", "+00:00"))
+            started[f[1].lstrip("/")] = t.timestamp()
+        except ValueError:
+            pass
+rows = []
+for n, w in wrote.items():
+    up_h = (now - started[n]) / 3600 if n in started else 0
+    if up_h > 0 and w > 0:
+        rows.append((w / 1e9 / up_h, w / 1e9, up_h, n))
+rows.sort(reverse=True)
+for i, (rate, gb, up, n) in enumerate(rows[:3]):
+    tag = " (verdict=vm_container_writer)" if i == 0 else ""
+    print(f"- inside colima-{prof}: {n} wrote {gb:.0f}G in {up:.1f}h ({rate:.1f}G/h){tag}")
+' "$p" "$now"
+}
+
 # Burn rate from the host-metrics history (5-minute samples), by least squares
 # over the window. Two readings 15 minutes apart are noise: round 2 of DESKT-57
 # read 65 G/h off exactly that while a peer's delete sat in the window. Prints
@@ -3383,12 +3431,18 @@ else
         wleft=$(( wdeadline - $(date +%s) )); if [ "$wleft" -le 0 ]; then echo "SEARCH-CUT $r" >&2; continue; fi
         wslice=$(( wleft / (wn - wi + 1) )); [ "$wslice" -ge 3 ] || wslice=3
         { perl -e 'alarm shift; exec @ARGV' "$wslice" find "$r" -xdev \( -name node_modules -o -name .git -o -name deps -o -name incremental -o -name .fingerprint -o -name build \) -prune -o -type f -size +500M -mmin -60 -exec stat -f '%b %z %N' {} + 2>/dev/null; } 2>/dev/null || echo "SEARCH-CUT $r" >&2
-      done 2>"$STATE_DIR/writers.cut" | sort -u | sort -rn | head -15 | awk '{a=$1*512/2^30; z=$2/2^30; $1=$2=""; sub(/^  /,""); printf "- %.1fG allocated (%.1fG apparent) %s\n", a, z, $0}'
+      done 2>"$STATE_DIR/writers.cut" | sort -u | sort -rn | head -15 | awk '{a=$1*512/2^30; z=$2/2^30; $1=$2=""; sub(/^  /,""); printf "- %.1fG allocated (%.1fG apparent) %s\n", a, z, $0}' > "$STATE_DIR/writers.list"
+      cat "$STATE_DIR/writers.list"
+      for vp in $(sed -n 's#.*/_disks/colima-\([^/ ]*\)/datadisk.*#\1#p' "$STATE_DIR/writers.list" | sort -u); do
+        vw=$(vm_container_writers "$vp")
+        if [ -n "$vw" ]; then echo "Inside the colima-$vp VM disk, by write rate since each container started:"; echo "$vw"; fi
+      done
       if [ -s "$STATE_DIR/writers.cut" ]; then echo "(search budget of ${WRITERS_BUDGET_S}s: $(grep -c . "$STATE_DIR/writers.cut") of ${#wlist[@]} root(s) not fully searched: $(sed 's/^SEARCH-CUT //' "$STATE_DIR/writers.cut" | tr '\n' ' '))"; fi
       echo "(allocated is what the disk actually holds; a sparse VM disk's apparent size is its ceiling, not its use)"
     fi
     echo; echo "## Full tick output"; echo "~/.amux/logs/mac-cleanup-tick.last"
   } > "$bundle"
+  grep -a 'verdict=vm_container_writer' "$bundle" | sed 's/^- /mac-cleanup: disk writer /' 
   while IFS= read -r v; do
     cls=${v%% *}
     if [ "$DRY" = "1" ]; then echo "mac-cleanup: constraint $v — would escalate (dry run)"; continue; fi

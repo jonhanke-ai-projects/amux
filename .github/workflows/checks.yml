@@ -388,6 +388,7 @@ jobs:
           ./scripts/test-mac-cleanup-lane-tmp.sh
           ./scripts/test-mac-cleanup-vmcpu.sh
           ./scripts/test-mac-cleanup-vmhog.sh
+          ./scripts/test-mac-cleanup-writers.sh
       - name: the scheduled disk reclaim moves only idle, unowned build output, through the server (SCHED-783)
         run: |
           set -uo pipefail
