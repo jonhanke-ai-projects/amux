@@ -3,6 +3,14 @@ name: rust
 # Grows stages as phases land: Playwright golden scenarios, perf baselines,
 # migration rehearsal. Every stage here must be able to FAIL (ethos rule 7).
 on:
+  # A manual run of main's tip (full suite, as on a push). Deploys take the
+  # newest commit where rust is green, and the push filter below skips docs
+  # and site commits. So after one red run (2026-10-23: c5aba6e5e, two iOS
+  # flakes that pass locally), every later non-Rust commit leaves main with
+  # no green rust run newer than the last deploy, and the builder logs
+  # ci_gate_held_back until somebody happens to push Rust. Dispatch is the
+  # way out: gh workflow run rust.yml --ref main.
+  workflow_dispatch:
   push:
     branches: [main]
     # `amux` + `scripts/**` are here so the CLI gates below (shellcheck + the AF-78
