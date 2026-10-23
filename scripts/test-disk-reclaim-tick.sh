@@ -221,7 +221,8 @@ mkdir -p "$T/fakebin"
 printf '#!/bin/sh\necho "$@" >> "%s/docker.log"\nexit 0\n' "$T" > "$T/fakebin/docker"; chmod +x "$T/fakebin/docker"
 printf '%s\n' '{"name":"goal-shared","status":"Running","runtime":"docker"}' '{"name":"gs12-local","status":"Running","runtime":"docker"}' \
   '{"name":"idle","status":"Stopped","runtime":"docker"}' '{"name":"k","status":"Running","runtime":"containerd"}' > "$T/colima.json"
-dockrun() { : > "$T/docker.log"; PATH="$T/fakebin:$PATH" RECLAIM_TOOLS=1 RECLAIM_DOCKER_CTX_CMD="cat $T/colima.json" run --dry-run "$@"; }
+printf '#!/bin/sh\ncase "$1" in *gs12-local) echo " 92%%" ;; *) echo " 10%%" ;; esac\n' > "$T/vmpct.sh"; chmod +x "$T/vmpct.sh"
+dockrun() { : > "$T/docker.log"; PATH="$T/fakebin:$PATH" RECLAIM_TOOLS=1 RECLAIM_DOCKER_CTX_CMD="cat $T/colima.json" RECLAIM_VM_PCT_CMD="${VMPCT:-echo 10%}" run --dry-run "$@"; }
 dockrun
 grep -q 'docker --context colima-goal-shared builder prune -f --filter until=24h' "$T/out.txt" && grep -q 'context colima-gs12-local builder prune' "$T/out.txt" \
   && ok "build cache is pruned in every running docker VM" || bad "every running VM"
@@ -231,6 +232,10 @@ FREE_KB=$((100 * 1048576)) dockrun
 grep -q 'until=12h' "$T/out.txt" && ok "tight tier prunes build cache unused 12h" || bad "tight cache window"
 FREE_KB=$((40 * 1048576)) dockrun
 grep -q 'until=6h' "$T/out.txt" && ok "critical tier prunes build cache unused 6h" || bad "critical cache window"
+VMPCT="$T/vmpct.sh" dockrun
+grep -q 'context colima-gs12-local builder prune -f --filter until=6h' "$T/out.txt" && ok "a VM 85%+ full gets the 6h cache window" || bad "full VM gets 6h"
+grep -q 'context colima-goal-shared builder prune -f --filter until=24h' "$T/out.txt" && ok "a roomy VM beside it keeps 24h" || bad "roomy VM keeps 24h"
+grep -q 'verdict=reclaim_tick_vm_full docker\[colima-gs12-local\] disk 92%' "$T/out.txt" && ok "the full VM is named with its percent" || bad "vm_full verdict"
 
 # ── dry run ──
 run --dry-run
@@ -250,6 +255,27 @@ limit=$(sed -nE 's/^pub const SHELL_TIMEOUT_S: u64 = ([0-9]+);.*/\1/p' crates/am
 wait_s=$(sed -nE 's/^SCAN_WAIT_S=\$\{RECLAIM_SCAN_WAIT_S:-([0-9]+)\}.*/\1/p' "$TICK")
 [ -n "$limit" ] && [ -n "$wait_s" ] && [ $((wait_s + 240)) -le "$limit" ] \
   && ok "the default scan wait (${wait_s}s) leaves 240s of the scheduler's ${limit}s for the rest" || bad "scan wait ${wait_s:-?}s vs scheduler limit ${limit:-?}s"
+
+# ── one deadline for the whole run (SCHED-783, 2026-10-23 12:12) ──
+# A prune that outlasts the run's share is stopped, the steps after it are
+# skipped and counted, and the run still reaches its summary inside the budget.
+# Every tool here is a fake: a real npm or brew must never run from this suite.
+mkdir -p "$T/slowbin"
+printf '#!/bin/sh\nsleep 30\n' > "$T/slowbin/uv"
+for b in npm pnpm brew xcrun docker; do printf '#!/bin/sh\necho "%s $*" >> "%s/tools.log"\n' "$b" "$T" > "$T/slowbin/$b"; done
+chmod +x "$T/slowbin"/*; : > "$T/tools.log"; mkscan true
+t0=$SECONDS
+PATH="$T/slowbin:$PATH" RECLAIM_TOOLS=1 RECLAIM_DOCKER_CTX_CMD="cat $T/colima.json" RECLAIM_DEADLINE_S=16 RECLAIM_RESERVE_S=2 run
+took=$((SECONDS - t0))
+grep -q 'tool: uv cache prune stopped at its .*verdict=reclaim_tool_timeout' "$T/out.txt" \
+  && ok "a prune past the run deadline is stopped and says so" || { bad "slow prune stopped"; grep 'tool:' "$T/out.txt"; }
+grep -q 'tool: brew cleanup skipped.*verdict=reclaim_deadline_skip' "$T/out.txt" && ! grep -q '^brew' "$T/tools.log" \
+  && ok "steps with no time left are skipped, not started" || { bad "deadline skip"; grep 'tool:' "$T/out.txt"; }
+[ "$(cat "$T/rc")" = 0 ] && grep -qE 'done dry=0 .*deadline_skipped=[1-9]' "$T/out.txt" && [ "$took" -lt 25 ] \
+  && ok "the run still ends with its summary inside the deadline (${took}s)" || { bad "summary inside deadline (${took}s rc=$(cat "$T/rc"))"; tail -3 "$T/out.txt"; }
+deadline=$(sed -nE 's/^DEADLINE_S=\$\{RECLAIM_DEADLINE_S:-([0-9]+)\}.*/\1/p' "$TICK")
+[ -n "$limit" ] && [ -n "$deadline" ] && [ "$deadline" -lt "$limit" ] \
+  && ok "the run deadline (${deadline}s) is under the scheduler's ${limit}s" || bad "deadline ${deadline:-?}s vs scheduler ${limit:-?}s"
 
 # ── no rm on a candidate, ever ──
 grep -nE '(^|[^a-z_])rm ' "$TICK" | grep -v -- '"${WORK:?}"' | grep -v '^[0-9]*:#' > "$T/rm.txt" || true

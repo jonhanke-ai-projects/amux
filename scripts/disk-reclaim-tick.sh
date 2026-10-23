@@ -89,6 +89,19 @@ SCAN_WAIT_S=${RECLAIM_SCAN_WAIT_S:-300}
 SCAN_POLL_S=${RECLAIM_SCAN_POLL_S:-30}
 RECHECK_S=${RECLAIM_RECHECK_S:-60}       # per-path budget for the on-disk idle recheck
 TOOLS=${RECLAIM_TOOLS:-1}                # 0 skips step 5 (the test suite sets it)
+# ONE deadline for the whole run, under the scheduler's 600s shell timeout
+# (SHELL_TIMEOUT_S). Each step's own cap (a 900s tool prune, an 1800s
+# quarantine) used to be bigger than the whole budget, so a slow brew cleanup
+# under load ran into the kill at 12:12 on 2026-10-23 and the run ended with no
+# summary and a failure notice. Every bounded step now takes the smaller of its
+# own cap and what is left, and a step with too little left is skipped and
+# counted (verdict=reclaim_deadline_skip), so the run always reaches "done".
+DEADLINE_S=${RECLAIM_DEADLINE_S:-540}
+RESERVE_S=${RECLAIM_RESERVE_S:-15}       # kept back for the summary and status file
+RUN_T0=$SECONDS
+deadline_skipped=0
+left() { echo $((DEADLINE_S - RESERVE_S - (SECONDS - RUN_T0))); }
+cap() { local l; l=$(left); [ "$l" -lt "$1" ] && echo "$l" || echo "$1"; }   # <own cap> -> bounded seconds
 LOG=${RECLAIM_LOG:-$HOME/.amux/logs/disk-reclaim-tick.log}
 # The tick's last run as JSON. /api/reclaim/quarantine returns it as
 # "scheduled", which is what Metrics > Disk Cleanup draws.
@@ -118,6 +131,11 @@ gb() { awk -v k="${1:-0}" 'BEGIN{printf "%.1fG", k/1048576}'; }
 TIGHT_GB=${RECLAIM_TIGHT_FREE_GB:-150}
 CACHE_H=${RECLAIM_DOCKER_CACHE_H:-24}                # docker build cache unused this long is pruned
 DOCKER_CTX_CMD=${RECLAIM_DOCKER_CTX_CMD:-colima list --json}
+VM_FULL_PCT=${RECLAIM_VM_FULL_PCT:-85}
+vm_docker_pct() { # <context>: percent used of the VM's /var/lib/docker, colima contexts only
+  case "$1" in colima-*) timeout 20 colima ssh -p "${1#colima-}" -- df --output=pcent /var/lib/docker 2>/dev/null | tail -1 ;; esac
+}
+VM_PCT_CMD=${RECLAIM_VM_PCT_CMD:-vm_docker_pct}
 CRITICAL_GB=${RECLAIM_CRITICAL_FREE_GB:-60}
 
 if [ -z "$API" ]; then say "verdict=reclaim_tick_unmeasured why=no amux url"; exit 1; fi
@@ -158,6 +176,7 @@ except Exception: pass')
   if [ -n "$scan_id" ]; then
     say "scan: started $scan_id, waiting up to ${SCAN_WAIT_S}s"
     t0=$SECONDS; st=running
+    SCAN_WAIT_S=$(cap "$SCAN_WAIT_S")
     while [ "$st" = running ] && [ $((SECONDS - t0)) -lt "$SCAN_WAIT_S" ]; do
       sleep "$SCAN_POLL_S"
       st=$(api "/api/reclaim/scan/$scan_id?limit=1" 60 | python3 -c 'import json,sys
@@ -288,7 +307,7 @@ EOF
   quarantine() { # <session> <paths file> -> "moved refused batch" on stdout
     python3 -c 'import json,sys; print(json.dumps({"paths":[l.rstrip("\n") for l in open(sys.argv[1]) if l.strip()],"scan_id":sys.argv[2]}))' \
       "$2" "$scan_id" > "$WORK/req.json"
-    curl -sk --max-time 1800 -H "X-Amux-Session: $1" -X POST -H 'Content-Type: application/json' \
+    curl -sk --max-time "$(cap 1800)" -H "X-Amux-Session: $1" -X POST -H 'Content-Type: application/json' \
       --data-binary @"$WORK/req.json" "$API/api/reclaim/quarantine" > "$WORK/q.json"
     cat > "$WORK/reply.py" <<'PY'
 import json, sys
@@ -410,7 +429,8 @@ for b in d.get("batches") or []:
 while read -r bid bbytes bsess; do
   [ -n "$bid" ] || continue
   if [ "$DRY" = 1 ]; then say "purge: dry run, would purge batch $bid ($(gb $((bbytes/1024))))"; continue; fi
-  code=$(curl -sk --max-time 1800 -o "$WORK/purge.json" -w '%{http_code}' -X DELETE \
+  if [ "$(left)" -lt 10 ]; then deadline_skipped=$((deadline_skipped+1)); say "purge: batch $bid left for the next run, run deadline reached (verdict=reclaim_deadline_skip)"; continue; fi
+  code=$(curl -sk --max-time "$(cap 1800)" -o "$WORK/purge.json" -w '%{http_code}' -X DELETE \
     -H "X-Amux-Session: $bsess" "$API/api/reclaim/quarantine/$bid?confirm=$bid")
   case "$code" in
     2??) purged=$((purged+1)); say "purge: batch $bid ($(gb $((bbytes/1024))))" ;;
@@ -423,15 +443,24 @@ tool() { # <label> <cmd...>: run if installed, bounded, report the df delta
   local label=$1; shift
   command -v "$1" >/dev/null 2>&1 || { say "tool: $label not installed"; return 0; }
   if [ "$DRY" = 1 ]; then say "tool: dry run, would run: $*"; return 0; fi
-  local b a rc=0
-  b=$(free_kb); timeout 900 "$@" >/dev/null 2>&1 || rc=$?; a=$(free_kb)
-  say "tool: $label rc=$rc freed $(gb $((a - b)))"
+  local b a rc=0 t
+  t=$(cap 900)
+  if [ "$t" -lt 10 ]; then
+    deadline_skipped=$((deadline_skipped+1))
+    say "tool: $label skipped, ${t}s left of the ${DEADLINE_S}s run deadline (verdict=reclaim_deadline_skip)"
+    return 0
+  fi
+  b=$(free_kb); timeout "$t" "$@" >/dev/null 2>&1 || rc=$?; a=$(free_kb)
+  if [ "$rc" = 124 ]; then
+    say "tool: $label stopped at its ${t}s share of the run deadline, freed $(gb $((a - b))) (verdict=reclaim_tool_timeout)"
+  else
+    say "tool: $label rc=$rc freed $(gb $((a - b)))"
+  fi
 }
 if [ "$TOOLS" = 1 ]; then
   tool "uv cache prune" uv cache prune
   tool "npm cache verify" npm cache verify
   tool "pnpm store prune" pnpm store prune
-  tool "brew cleanup" brew cleanup -s --prune=30
   tool "unavailable simulators" xcrun simctl delete unavailable
   # Every running Docker engine, not only the current context. 2026-10-22 the
   # goal-shared Colima VM was the Mac's biggest writer (datadisk 134G -> 159G in
@@ -445,17 +474,28 @@ for l in sys.stdin:
     if d.get("status") == "Running" and d.get("runtime", "docker") == "docker": print("colima-" + d["name"])' 2>/dev/null)
   [ -n "$ctxs" ] || ctxs=default
   for ctx in $ctxs; do
-    if docker --context "$ctx" info >/dev/null 2>&1; then
-      tool "docker[$ctx] build cache >${CACHE_H}h" docker --context "$ctx" builder prune -f --filter "until=${CACHE_H}h"
+    if [ "$(left)" -ge 10 ] && timeout "$(cap 20)" docker --context "$ctx" info >/dev/null 2>&1; then
+      # A VM can fill from the inside while the Mac still has room: 2026-10-23
+      # gs12-local reached 92% (128G of 147G) on 56G of build cache under a day
+      # old, with the Mac over the tight floor, so the host-free tiers kept the
+      # 24h window. A VM at VM_FULL_PCT or more gets the 6h window.
+      ch=$CACHE_H; pct=$($VM_PCT_CMD "$ctx" 2>/dev/null | tr -dc '0-9')
+      if [ -n "$pct" ] && [ "$pct" -ge "$VM_FULL_PCT" ] && [ "$ch" -gt 6 ]; then
+        ch=6; say "verdict=reclaim_tick_vm_full docker[$ctx] disk ${pct}% used (>= ${VM_FULL_PCT}%): build cache unused 6h goes"
+      fi
+      tool "docker[$ctx] build cache >${ch}h" docker --context "$ctx" builder prune -f --filter "until=${ch}h"
       tool "docker[$ctx] dangling images" docker --context "$ctx" image prune -f
     else
       say "tool: docker[$ctx] not answering"
     fi
   done
+  # Last: the slowest prune (82s on a calm morning, still running 6 min in under
+  # load on 2026-10-23), so the quick ones never wait behind it.
+  tool "brew cleanup" brew cleanup -s --prune=30
 fi
 
 free1=$(free_kb)
-say "done dry=$DRY picked=$picked moved=$moved refused=$refused stale_picked=$s_picked stale_moved=$s_moved kept_in_use=$n_inuse purged=$purged free $(gb "$free0") -> $(gb "$free1") (df delta $(gb $((free1 - free0))))"
+say "done dry=$DRY picked=$picked moved=$moved refused=$refused stale_picked=$s_picked stale_moved=$s_moved kept_in_use=$n_inuse purged=$purged deadline_skipped=$deadline_skipped elapsed=$((SECONDS - RUN_T0))s/${DEADLINE_S}s free $(gb "$free0") -> $(gb "$free1") (df delta $(gb $((free1 - free0))))"
 
 # The run, for Metrics > Disk Cleanup (served as "scheduled" by GET
 # /api/reclaim/quarantine). Every value is this run's; written to a temp file
