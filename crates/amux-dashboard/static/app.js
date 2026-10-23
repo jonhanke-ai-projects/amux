@@ -1200,6 +1200,29 @@ function _outboxLock(name, work) {
   if (!navigator.locks) return Promise.reject(new Error('Safe pending-change storage is unavailable in this browser; keep your draft and use a secure connection'));
   return navigator.locks.request(name, work);
 }
+// A message's delivery lock, taken over from a holder that has stopped.
+// Every window of the Mac app shares one website data store and so one set of
+// web locks, and WebKit suspends a hidden or minimized window's script. A
+// window suspended mid-delivery kept amux-outbox-delivery:<id> forever, so the
+// visible window's message read "Awaiting server" until the app restarted
+// (Ethan, 2026-10-23: "specific to mac app - i try in browser and it works").
+// A delivery is bounded at 15s (_boundedMutationFetch), so a visible window
+// that has waited _DELIVERY_STEAL_MS takes the lock over (steal releases the
+// stalled holder). If that holder ever wakes it re-sends the same msg_id, which
+// the server de-duplicates (send_dedup). A hidden window never steals: it may be
+// the stalled one.
+const _DELIVERY_STEAL_MS = 30000;
+function _outboxDeliveryLock(name, work) {
+  if (!navigator.locks) return _outboxLock(name, work);
+  const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
+  if (!signal) return navigator.locks.request(name, work);
+  return navigator.locks.request(name, {signal}, work).catch(e => {
+    if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
+    if (document.hidden) return navigator.locks.request(name, work);
+    _outboxDiagnostic('outbox_delivery_lock_stolen', {waited_ms:_DELIVERY_STEAL_MS, lock:name.split(':')[0]});
+    return navigator.locks.request(name, {steal:true}, work);
+  });
+}
 // User intent has priority over reproducible offline caches. Safari's measured
 // 5.19 MB of caches left ~50 KB for the mandatory local send (AMUX-4417).
 // Retry the SAME atomic setItem after reclaiming caches; never prune drafts,
@@ -3951,11 +3974,21 @@ function _syncSetPhase(phase) { _syncPhase = phase; _syncPhaseAt = Date.now(); }
 // IndexedDB request that never completes (WebKit, after its storage process
 // restarts) must not hold the messages behind it. Past 5s this pass treats the
 // list as empty and says so; the uploads stay stored for the next pass.
+// A timed-out read also drops the IndexedDB connection, so the next pass opens
+// a fresh one instead of waiting 5s on the same dead handle again.
+// after_reset says whether that already happened since the last good read:
+// 1 on a later timeout means reopening did not help.
+let _upqResetSinceOk = false;
 function _upqListBounded(ms = 5000) {
   let timer;
   return Promise.race([
-    _upqList().catch(() => []),
-    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms}); resolve([]); }, ms); }),
+    _upqList().then(rows => { _upqResetSinceOk = false; return rows; }).catch(() => []),
+    new Promise(resolve => { timer = setTimeout(() => {
+      _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms, after_reset:_upqResetSinceOk ? 1 : 0});
+      _idb.reset('upload_list_timeout');
+      _upqResetSinceOk = true;
+      resolve([]);
+    }, ms); }),
   ]).finally(() => clearTimeout(timer));
 }
 function _syncLockRequest(run) {
@@ -3968,8 +4001,11 @@ function _syncLockRequest(run) {
     // WebKit window keeps it). Per-operation locks still serialise each write.
     let held = -1, pending = -1;
     try { const q = await navigator.locks.query(); held = (q.held || []).filter(l => l.name === 'amux-outbox-replay').length; pending = (q.pending || []).filter(l => l.name === 'amux-outbox-replay').length; } catch (_) {}
-    _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:_SYNC_LOCK_WAIT_MS, held, pending, hidden:document.hidden ? 1 : 0});
-    return run();
+    _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:_SYNC_LOCK_WAIT_MS, held, pending, hidden:document.hidden ? 1 : 0,
+      action: document.hidden ? 'ran_unlocked' : 'stole'});
+    // A visible window takes the lock over, so the stalled holder stops
+    // blocking every later pass too; a hidden one runs beside it as before.
+    return document.hidden ? run() : navigator.locks.request('amux-outbox-replay', {steal:true}, run);
   });
 }
 function runSyncBanner(quiet = false) {
@@ -4177,7 +4213,7 @@ async function _runSyncBanner(quiet = false) {
     item.status = 'running';
     renderBanner();
     _syncSetPhase('deliver');
-    await _outboxLock('amux-outbox-delivery:' + q.id, async () => {
+    await _outboxDeliveryLock('amux-outbox-delivery:' + q.id, async () => {
     const fresh = _readQueue().find(entry => entry.id === q.id);
     if (!fresh) { offlineQueue = _readQueue(); item.status = 'skipped'; item.label += ' — no longer queued in this tab'; skipped++; return; }
     Object.assign(q, fresh);
@@ -5285,7 +5321,7 @@ async function _outboxFetch(input, init) {
     return queued ? _outboxAccepted() : new Response('Queue unavailable', {status: 507});
   }).finally(() => { if (durableId) _outboxActive.delete(durableId); });
   };
-  return durableId ? _outboxLock('amux-outbox-delivery:' + durableId, deliver) : deliver();
+  return durableId ? _outboxDeliveryLock('amux-outbox-delivery:' + durableId, deliver) : deliver();
 }
 window.fetch = async function(input, init) {
   if (input instanceof Request) {
@@ -47902,6 +47938,18 @@ const _idb = (() => {
     tx.objectStore('uploadChunks').delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]));
   }));
   return {
+    // Drop the connection so the next call opens a fresh one. A connection
+    // whose storage process went away can hang every request without an
+    // error or onclose (WebKit; the Mac app logged 1,331 upload-list timeouts
+    // in a day, every outbox pass after the first one on the same handle).
+    reset: (reason) => {
+      const had = !!db;
+      try { if (db) db.close(); } catch (_) {}
+      db = null;
+      try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+        body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+      return had;
+    },
     // Cache callers are best-effort; pending work uses the strict methods below.
     set: (key, val) => transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
     update: (key, mutate) => transaction('kv', os => {
