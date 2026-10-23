@@ -6063,11 +6063,12 @@ function fetchSessions() {
 function _scheduleSessionInvalidation() {
   // A busy fleet can emit faster than 400ms indefinitely. Debouncing by
   // resetting this timer starved status/queue reads while SSE looked healthy.
+  if (document.hidden) _sessionChangesWhileHidden++;
   if (_invSessTimer) return;
   _invSessTimer = setTimeout(() => {
     _invSessTimer = null;
     fetchSessions();
-  }, 400);
+  }, document.hidden ? _HIDDEN_SESSIONS_MS : 400);
 }
 async function _fetchSessionsOnce() {
   const snapshotEpoch = _sessionsSnapshotEpoch;
@@ -38899,6 +38900,28 @@ async function fetchLogs() {
   } catch(e) {}
 }
 
+// Export what the open Logs tab shows. Raw Logs re-reads the server's largest
+// tail (5,000 lines) so the file is more than the 300 on screen; the line
+// filter still applies.
+async function logsExport() {
+  const day = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  if (_logsSubtab === 'raw') {
+    let lines = _logsRawLines;
+    try {
+      const r = await fetch(API + '/api/logs/raw?lines=5000');
+      if (r.ok) lines = (await r.json()).lines || lines;
+    } catch (e) {}
+    const filt = (document.getElementById('raw-filter')?.value || '').toLowerCase();
+    const out = lines.map(_stripAnsi).filter(l => !filt || l.toLowerCase().includes(filt));
+    _mdaiSaveBlob(out.join('\n') + '\n', 'text/plain;charset=utf-8', 'amux-logs-' + day + '.log');
+  } else if (_logsSubtab === 'activity') {
+    _mdaiSaveBlob(JSON.stringify(_logsActivityVisible(), null, 2), 'application/json', 'amux-activity-' + day + '.json');
+  } else {
+    const el = document.getElementById('logs-' + _logsSubtab + '-body');
+    _mdaiSaveBlob((el?.innerText || '') + '\n', 'text/plain;charset=utf-8', 'amux-' + _logsSubtab + '-' + day + '.txt');
+  }
+}
+
 async function fetchRawLogs() {
   try {
     const r = await fetch(API + '/api/logs/raw?lines=300');
@@ -38952,9 +38975,8 @@ function _togglePayload(rowEl) {
   if (caret) caret.textContent = pay.classList.contains('open') ? '\u25be' : '\u25b8';
 }
 
-function renderActivity() {
-  const el = document.getElementById('logs-activity-body');
-  if (!el) return;
+// The events the Activity tab shows: its filter and search applied.
+function _logsActivityVisible() {
   let evts = _logsEvents.slice();
   // Hide pure GET reads unless http filter is active
   if (_logsFilter !== 'http') evts = evts.filter(e => !(e.type === 'http' && e.action === 'get'));
@@ -38971,6 +38993,13 @@ function renderActivity() {
       e.type.toLowerCase().includes(q)
     );
   }
+  return evts;
+}
+
+function renderActivity() {
+  const el = document.getElementById('logs-activity-body');
+  if (!el) return;
+  const evts = _logsActivityVisible();
   if (!evts.length) {
     el.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--dim);font-size:0.85rem;">' +
       (_logsFilter || logsSearchQuery ? 'No matching events' : 'No events yet \u2014 activity will appear as you use amux') + '</div>';
@@ -48035,6 +48064,28 @@ let _sseFallback = false;
 let _pollTimer = null;
 
 let _invBoardTimer = null;
+// What a hidden tab skipped. Every Mac app tab and every background browser
+// tab runs this whole page, and each one used to re-read the board and the
+// worker list on every change (2026-10-22: one Mac app with ten tabs sent 590
+// requests a minute, four identical 3.8s board reads at once). A hidden tab now
+// counts board changes and reads them once when shown, and reads the worker
+// list at most every _HIDDEN_SESSIONS_MS so notifications still arrive while
+// the whole app is in the background.
+let _boardChangesWhileHidden = 0;
+let _sessionChangesWhileHidden = 0;
+const _HIDDEN_SESSIONS_MS = 15000;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  const board = _boardChangesWhileHidden, workers = _sessionChangesWhileHidden;
+  if (!board && !workers) return;
+  _boardChangesWhileHidden = 0;
+  _sessionChangesWhileHidden = 0;
+  if (board) _cdcBoardUpdate();
+  if (_invSessTimer) { clearTimeout(_invSessTimer); _invSessTimer = null; fetchSessions(); }
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'hidden-tab-catchup', verdict: 'reads_deferred_while_hidden',
+      measured: true, n_considered: board + workers, board_changes: board, session_changes: workers, ver: APP_VER }) }).catch(() => {});
+});
 let _invSessTimer = null;
 let _invMessagesTimer = null;
 let _cdcSeq = 0;
@@ -48088,6 +48139,34 @@ async function _cdcBoardUpdate() {
     _nudgeWorkersOnBoardChange();
   } catch (e) { fetchBoard(); }
 }
+
+// A hidden tab waits for its reload until it is shown: every Mac app tab and
+// background browser tab reloaded at once on each server build, and each
+// reload re-reads the board and the fleet (2026-10-22: 24 page loads in ten
+// minutes from one laptop). Shown, it reloads at once, before you act on it.
+let _verReloadWhenShown = '';
+function _reloadForServerVersion(v, delayMs) {
+  if (document.hidden) { _verReloadWhenShown = v; return; }
+  const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
+  if (Date.now() - last <= 600000) return;
+  sessionStorage.setItem('amux_ver_reload', String(Date.now()));
+  console.warn('amux: server is v' + v + ', client is v' + APP_VER + ' — updating');
+  // Nudge the SW first (it skipWaiting()s + claims on install), so the
+  // reload serves the NEW shell in one cycle instead of two.
+  const _upd = (navigator.serviceWorker && navigator.serviceWorker.getRegistration)
+    ? navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {})
+    : Promise.resolve();
+  _upd.finally(() => setTimeout(() => location.reload(), delayMs));
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !_verReloadWhenShown) return;
+  const v = _verReloadWhenShown;
+  _verReloadWhenShown = '';
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'version-reload', verdict: 'reload_deferred_until_shown', measured: true,
+      n_considered: 1, server_ver: v, ver: APP_VER }) }).catch(() => {});
+  _reloadForServerVersion(v, 0);
+});
 
 function connectSSE() {
   if (_sseFallback || _sse) return;
@@ -48199,7 +48278,8 @@ function connectSSE() {
           // Coalesced per key so an event burst is one fetch.
           if (key === 'board') {
             clearTimeout(_invBoardTimer);
-            _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
+            if (document.hidden) _boardChangesWhileHidden++;
+            else _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
           }
           if (key === 'sessions') {
             _scheduleSessionInvalidation();
@@ -48236,20 +48316,7 @@ function connectSSE() {
         // code (SW app shells live for DAYS in PWAs / Chrome app-mode windows and
         // old poll loops have hammered the server before) — reload to pick up the
         // new shell. Rate-limited so a broken SW can't cause a reload storm.
-        if (msg.v && typeof APP_VER !== 'undefined' && msg.v !== APP_VER) {
-          const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
-          if (Date.now() - last > 600000) {
-            sessionStorage.setItem('amux_ver_reload', String(Date.now()));
-            console.warn('amux: server is v' + msg.v + ', client is v' + APP_VER + ' — updating');
-            // Nudge the SW first (it skipWaiting()s + claims on install), so the
-            // reload serves the NEW shell in one cycle instead of two.
-            const _upd = (navigator.serviceWorker && navigator.serviceWorker.getRegistration)
-              ? navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {})
-              : Promise.resolve();
-            _upd.finally ? _upd.finally(() => setTimeout(() => location.reload(), 2500))
-                         : setTimeout(() => location.reload(), 2500);
-          }
-        }
+        if (msg.v && typeof APP_VER !== 'undefined' && msg.v !== APP_VER) _reloadForServerVersion(msg.v, 2500);
       }
     } catch(err) { console.error('SSE parse:', err); }
   };
