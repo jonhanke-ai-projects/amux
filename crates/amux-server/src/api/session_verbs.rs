@@ -20794,7 +20794,7 @@ fn credential_preflight_from(n: usize, gaps: &[(&'static str, Vec<&'static str>)
 }
 
 fn fleet_roster() -> String {
-    let mut rows: Vec<(String, String, String)> = Vec::new();
+    let mut lanes: Vec<(String, std::collections::HashMap<String, String>)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(sessions_dir()) {
         let mut names: Vec<String> = rd
             .flatten()
@@ -20816,47 +20816,115 @@ fn fleet_roster() -> String {
             // shared file. A lane identifies itself by $AMUX_SESSION, which it
             // always has; the file cannot know who is reading it.
             let env = crate::config::parse_env_file(&sessions_dir().join(format!("{other}.env")));
-            if env.get("CC_ARCHIVED").map(|v| v == "1").unwrap_or(false) {
-                continue;
-            }
-            // ISOLATED (AMUX-3232): a raw agent is undiscoverable to peers, so it
-            // never appears in the fleet roster written into every OTHER worker's
-            // shared memory table. Same skip as archived.
-            if env_flag_on(env.get("CC_ISOLATED").map(String::as_str)) {
-                continue;
-            }
-            let groups = env
-                .get("CC_TAGS")
-                .map(|t| {
-                    t.split([',', ' '])
-                        .map(str::trim)
-                        .filter(|x| !x.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            let desc = env.get("CC_DESC").cloned().unwrap_or_default();
-            rows.push((other, groups, desc));
+            lanes.push((other, env.into_iter().collect()));
         }
+    }
+    let open = super::worker_messaging::all_open_inbound_groups(&crate::config::amux_home());
+    render_fleet_roster(&lanes, &open)
+}
+
+/// The longest description the roster prints. Descriptions are meant to be one
+/// sentence; the old 90-character cell cut most of them mid-word, so a reader
+/// routing work saw "…and the daily aud" and had to guess the rest.
+const ROSTER_DESC_MAX: usize = 300;
+
+/// The roster, from the lanes' env maps and the open groups. Pure, so a test can
+/// hand it a fleet instead of depending on whatever this machine runs.
+///
+/// Three things a lane needs to place every other lane, all on the page it
+/// already reads: what each one owns (the full description), which groups it is
+/// in with the open-inbound ones marked (those take messages from anyone), and
+/// which lanes the owner paired with CC_PEERS. A pairing crosses group and
+/// isolation boundaries, so it is listed even when one side is isolated: the
+/// owner configured that reach, and the non-isolated half cannot use a channel
+/// it does not know exists. Isolated lanes are otherwise still left out
+/// (AMUX-3232).
+fn render_fleet_roster(
+    lanes: &[(String, std::collections::HashMap<String, String>)],
+    open_groups: &[String],
+) -> String {
+    let flag = |env: &std::collections::HashMap<String, String>, k: &str| {
+        env_flag_on(env.get(k).map(String::as_str))
+    };
+    let list = |env: &std::collections::HashMap<String, String>, k: &str| -> Vec<String> {
+        env.get(k)
+            .map(|t| {
+                t.split([',', ' '])
+                    .map(|x| x.trim().trim_matches('"').to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let live: Vec<&(String, std::collections::HashMap<String, String>)> =
+        lanes.iter().filter(|(_, env)| !flag(env, "CC_ARCHIVED")).collect();
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    for (name, env) in &live {
+        // ISOLATED (AMUX-3232): a raw agent is undiscoverable to peers, so it
+        // never gets a row in the table written into every OTHER worker's
+        // shared memory. Same skip as archived. Its owner pairings still show
+        // below the table.
+        if flag(env, "CC_ISOLATED") {
+            continue;
+        }
+        let groups = list(env, "CC_TAGS")
+            .into_iter()
+            .map(|g| if open_groups.contains(&g) { format!("{g} (open)") } else { g })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let desc = env.get("CC_DESC").cloned().unwrap_or_default();
+        rows.push((name.clone(), groups, desc));
     }
     if rows.is_empty() {
         return String::new();
     }
-    let mut out = String::from(FLEET_ROSTER_HEADER);
-    for (n, g, d) in rows.iter().take(120) {
-        let cell = |s: &str, max: usize| {
-            let escaped = s.replace('|', "\\|").replace('\n', " ");
-            let trimmed = escaped.chars().take(max).collect::<String>();
-            if trimmed.is_empty() {
-                "—".to_string()
-            } else {
-                trimmed
+    // Bilateral only: one side naming the other opens nothing (bilateral_peers).
+    let mut pairs: Vec<String> = Vec::new();
+    for (i, (a, ea)) in live.iter().enumerate() {
+        let ap: Vec<String> = list(ea, "CC_PEERS").iter().map(|x| x.to_lowercase()).collect();
+        for (b, eb) in live.iter().skip(i + 1) {
+            let bp: Vec<String> = list(eb, "CC_PEERS").iter().map(|x| x.to_lowercase()).collect();
+            if ap.contains(&b.to_lowercase()) && bp.contains(&a.to_lowercase()) {
+                let iso = |e: &std::collections::HashMap<String, String>| {
+                    if flag(e, "CC_ISOLATED") { " (isolated)" } else { "" }
+                };
+                pairs.push(format!("`{a}`{} ↔ `{b}`{}", iso(ea), iso(eb)));
             }
-        };
+        }
+    }
+    let mut out = String::from(FLEET_ROSTER_HEADER);
+    let cell = |s: &str, max: usize| {
+        let escaped = s.replace('|', "\\|").replace('\n', " ");
+        let escaped = escaped.trim();
+        if escaped.is_empty() {
+            return "—".to_string();
+        }
+        if escaped.chars().count() <= max {
+            return escaped.to_string();
+        }
+        // Cut at a word boundary and SAY it was cut, so a reader never takes a
+        // fragment for the whole sentence.
+        let head: String = escaped.chars().take(max).collect();
+        let head = head.rsplit_once(' ').map(|(h, _)| h).unwrap_or(&head);
+        format!("{head}…")
+    };
+    for (n, g, d) in rows.iter().take(120) {
         // Three columns (orchestration contract rule 13, AH-385): the
         // provider/model and workspace columns doubled the roster for facts a
         // lane rarely needs and can read from `amux ls`.
-        out.push_str(&format!("| `{}` | {} | {} |\n", cell(n, 64), cell(g, 60), cell(d, 90)));
+        out.push_str(&format!(
+            "| `{}` | {} | {} |\n",
+            cell(n, 64),
+            cell(g, 80),
+            cell(d, ROSTER_DESC_MAX)
+        ));
+    }
+    if !pairs.is_empty() {
+        out.push_str(&format!(
+            "\nPaired peers (CC_PEERS on both sides, set by the owner): {}. A pair may message \
+             each other across groups and isolation.\n",
+            pairs.join(", ")
+        ));
     }
     out.push_str(&roster_footer(rows.len()));
     out
@@ -54579,6 +54647,40 @@ mod roster_tests {
                 "credentials must precede the roster: {pre} vs {roster}"
             );
         }
+    }
+
+    /// Ethan, 2026-10-23: "make sure groups, names, descriptions and any other
+    /// distinguishing characteristics are easily discoverable so that agents
+    /// understand everyone's place". Each assertion names one rule.
+    #[test]
+    fn the_roster_places_every_lane_with_full_desc_open_groups_and_pairs() {
+        let lane = |kv: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
+            kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        let long = "Owns amux friction triage: frustrations.md entries, harness-level fixes, \
+                    and the daily audit of the owner's amux development velocity.";
+        let lanes = vec![
+            ("amux-frustrations".to_string(), lane(&[("CC_TAGS", "amux"), ("CC_DESC", long)])),
+            ("gone".to_string(), lane(&[("CC_ARCHIVED", "1"), ("CC_DESC", "retired lane")])),
+            ("helper".to_string(), lane(&[("CC_ISOLATED", "1"), ("CC_TAGS", "amux, admin"),
+                ("CC_DESC", "secret lane"), ("CC_PEERS", "\"parity,one-sided\"")])),
+            ("one-sided".to_string(), lane(&[("CC_TAGS", "gtm")])),
+            ("parity".to_string(), lane(&[("CC_TAGS", "ts"), ("CC_PEERS", "helper"),
+                ("CC_DESC", "x".repeat(400).as_str())])),
+        ];
+        let r = super::render_fleet_roster(&lanes, &["amux".to_string()]);
+        assert!(r.contains(long), "a one-sentence description prints whole: {r}");
+        assert!(r.contains("| amux (open) |"), "an open-inbound group is marked: {r}");
+        assert!(!r.contains("retired lane"), "archived lanes stay out: {r}");
+        assert!(!r.contains("secret lane") && !r.contains("| `helper`"),
+            "an isolated lane gets no row: {r}");
+        assert!(r.contains("`helper` (isolated) ↔ `parity`"),
+            "an owner pairing is listed even across isolation: {r}");
+        assert!(!r.contains("↔ `one-sided`"), "a one-sided CC_PEERS opens nothing: {r}");
+        assert!(r.contains("…") && !r.contains(&"x".repeat(301)),
+            "an over-long description is cut visibly: {r}");
+        assert_eq!(super::render_fleet_roster(&lanes[1..3], &[]), "",
+            "no visible lane means no table");
     }
 
     /// Empty means EMPTY — a single-worker install must not get a table header
