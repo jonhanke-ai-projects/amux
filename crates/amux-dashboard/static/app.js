@@ -1908,9 +1908,12 @@ async function modelLogin(provider) {
   const a = kit && kit.CLI_LOGINS[provider];
   if (!a) { showToast('Sign-in is not available in this build'); return; }
   modelLoginCancel(true);
-  const run = _modelLogin = { provider, raw: '', id: null, done: false };
+  const run = _modelLogin = { provider, raw: '', id: null, done: false, exited: false, codeSent: false, wasSignedIn: false };
   _mlShow({ status: 'Starting ' + a.label + ' sign-in…' });
   try {
+    // Already signed in means this is "Switch account": the identity check alone would
+    // finish it at once, so it also waits for the CLI to exit (_mlSignedIn).
+    try { run.wasSignedIn = a.done((await (await fetch(API + '/api/identity')).json()).model_auth); } catch (e) {}
     const r = await fetch(API + '/api/terminal/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cols: 400, rows: 40 }) });          // wide, so links are not wrapped
     const d = await r.json();
@@ -1933,28 +1936,28 @@ async function _mlInput(run, text) {
 
 async function _mlPollOutput(run) {
   const kit = window.AmuxState.cliLogin, a = kit.CLI_LOGINS[run.provider];
-  let savedToken = false;
   while (_modelLogin === run && !run.done) {
     try {
       const r = await fetch(API + '/api/terminal/' + run.id + '/output?wait=25');
       const d = await r.json();
       if (d.data) run.raw += decodeURIComponent(escape(atob(d.data)));
       const p = kit.parseLogin(run.provider, run.raw);
-      if (p.token && a.saveEnv && !savedToken) {
-        savedToken = true;
-        const body = {}; body[a.saveEnv] = p.token;
-        const s = await fetch('/api/settings/env', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!s.ok) { _mlShow({ status: 'Signed in, but saving the token failed.', error: 'HTTP ' + s.status }); return; }
-      }
       if (_modelLogin !== run || run.done) return;
+      if (d.alive === false) {
+        run.exited = true;
+        // The CLI writes its login and then exits; give the files a moment to land.
+        for (let i = 0; i < 4; i++) {
+          if (await _mlSignedIn(run)) return;
+          await new Promise(res => setTimeout(res, 1000));
+        }
+        _mlShow({ status: a.label + ' sign-in stopped before finishing.', error: 'The sign-in exited. Try again, or use an API key below.' });
+        return;
+      }
+      if (run.codeSent) { _mlShow({ status: 'Checking…', url: p.url }); continue; }
       const status = p.code ? 'Open the page, sign in, and enter the code below.' :
         p.needsCode ? 'Open the page, sign in, then paste the code it shows you.' :
         p.url ? 'Open the page and sign in.' : 'Waiting for ' + a.label + '…';
       _mlShow({ status, url: p.url, code: p.code, needsCode: p.needsCode });
-      if (d.alive === false && !run.done) {
-        _mlShow({ status: a.label + ' sign-in stopped before finishing.', error: 'The sign-in exited. Try again, or use an API key below.' });
-        return;
-      }
     } catch (e) {
       await new Promise(res => setTimeout(res, 1500));
     }
@@ -1963,23 +1966,34 @@ async function _mlPollOutput(run) {
 
 async function _mlPollIdentity(run) {
   const a = window.AmuxState.cliLogin.CLI_LOGINS[run.provider];
-  for (let i = 0; i < 200 && _modelLogin === run; i++) {         // about 10 minutes
+  for (let i = 0; i < 200 && _modelLogin === run && !run.done; i++) {         // about 10 minutes
     await new Promise(res => setTimeout(res, 3000));
-    try {
-      const d = await (await fetch(API + '/api/identity')).json();
-      if (a.done(d.model_auth)) {
-        run.done = true;
-        _mlShow(null);
-        modelLoginCancel(true);
-        const m = _mlEl('apikey-setup-modal'); if (m) m.style.display = 'none';
-        const banner = _mlEl('no-apikey-banner'); if (banner) banner.style.display = 'none';
-        showToast(a.label + ' is connected. Your workers can use it now.');
-        if (document.getElementById('settings-usage-body')) loadUsage();   // the row stops saying "Connect account"
-        return;
-      }
-    } catch (e) {}
+    if (await _mlSignedIn(run)) return;
   }
-  if (_modelLogin === run) _mlShow({ status: a.label + ' sign-in did not finish.', error: 'Try again, or use an API key below.' });
+  if (_modelLogin === run && !run.done) _mlShow({ status: a.label + ' sign-in did not finish.', error: 'Try again, or use an API key below.' });
+}
+
+// True once the server reports the provider signed in by THIS run, and then finishes it:
+// clears what the adapter says the new sign-in replaces, closes the window, refreshes usage.
+async function _mlSignedIn(run) {
+  const a = window.AmuxState.cliLogin.CLI_LOGINS[run.provider];
+  if (run.done || _modelLogin !== run || ((run.wasSignedIn || a.waitForExit) && !run.exited)) return false;
+  let d;
+  try { d = await (await fetch(API + '/api/identity')).json(); } catch (e) { return false; }
+  if (!a.done(d.model_auth) || run.done || _modelLogin !== run) return false;
+  run.done = true;
+  if (a.clearEnv && a.clearEnv.length) {
+    const body = {}; a.clearEnv.forEach(k => { body[k] = ''; });
+    const s = await fetch(API + '/api/settings/env', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+    if (!s || !s.ok) console.warn('[model-login] signed in, but clearing ' + a.clearEnv.join(', ') + ' failed (HTTP ' + (s ? s.status : 'network') + ')');
+  }
+  _mlShow(null);
+  modelLoginCancel(true);
+  const m = _mlEl('apikey-setup-modal'); if (m) m.style.display = 'none';
+  const banner = _mlEl('no-apikey-banner'); if (banner) banner.style.display = 'none';
+  showToast(a.label + ' is connected. Your workers can use it now.');
+  if (document.getElementById('settings-usage-body')) loadUsage();   // the row stops saying "Connect account"
+  return true;
 }
 
 // Settings > Account > usage: "Sign in with <provider>" runs the same sign-in as the
@@ -2002,6 +2016,7 @@ async function modelLoginSubmitCode() {
     await _mlInput(run, code);
     await new Promise(res => setTimeout(res, 400));
     await _mlInput(run, '\r');
+    run.codeSent = true;
     inp.value = '';
     _mlEl('model-login-err').textContent = '';
     _mlEl('model-login-status').textContent = 'Checking…';
