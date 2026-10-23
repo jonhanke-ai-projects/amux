@@ -19,7 +19,9 @@ export const CLI_LOGINS = {
     // ~/.claude/.credentials.json whose scopes include user:profile, so Settings can
     // show plan usage. `claude setup-token`, used before, printed an inference-only
     // token: usage read "Not reported" and the server kept running on an API key.
-    command: 'BROWSER=false claude auth login --claudeai',
+    // `exec` so the CLI's exit ends the terminal: the dashboard sees it on the next output
+    // poll. Run inside the shell, the shell outlived it and the window sat at "Checking…".
+    command: 'exec env BROWSER=false claude auth login --claudeai',
     url: /https:\/\/claude\.(?:com|ai)\/\S*?oauth\/authorize\S*/,
     codePrompt: /Paste\s*code\s*here/i,
     // A saved setup-token outranks the login in Claude Code, and nothing refreshes the
