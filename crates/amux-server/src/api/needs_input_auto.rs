@@ -574,7 +574,9 @@ pub fn category_of(item: &Value) -> String {
 /// owner's own `prod_data` switch decides it (off by default). 2026-10-02: the
 /// policy approved MO-4149 (disable a webhook in the owner's org), MO-4150
 /// (TubeScience ts-api replicas) and MO-4160 (promote through the TubeScience
-/// production ring), all filed as "other".
+/// production ring), all filed as "other". 2026-10-23: MF-4425, "May I set
+/// role=admin on the creating user in each of the 37 production orgs", was
+/// approved three times because no verb in the list wrote a role.
 fn effective_category(item: &Value) -> String {
     // The structured ask_type outranks keyword scoring (contract rule 11).
     match item["ask_type"].as_str().unwrap_or("") {
@@ -588,7 +590,7 @@ fn effective_category(item: &Value) -> String {
     }
     let t = ask_text(item).to_ascii_lowercase();
     let hit = |re: &str| regex::Regex::new(re).map(|r| r.is_match(&t)).unwrap_or(false);
-    let action = r"\b(disabl|delet|drop|purg|remov|migrat|mov|retir|backfill|overwrit|restor|promot|roll ?out|rollout|scal|replica|deploy|cut ?over|rotat)\w*";
+    let action = r"\b(disabl|delet|drop|purg|remov|migrat|mov|retir|backfill|overwrit|restor|promot|roll ?out|rollout|scal|replica|deploy|cut ?over|rotat|set|grant|revok|assign|writ|updat|chang|modif|elevat|demot|insert)\w*";
     let target = r"\b(production|prod\b|prod plane|customer|tenant|tubescience|primis|live (data|plane|cluster)|your own org)";
     if hit(action) && hit(target) {
         tracing::info!(target: "amux::needs_input_auto", verdict = "scored_as_prod_data",
@@ -1283,6 +1285,12 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
     // worker saying the ladder failed, so it stays with the owner.
     let sent_back_keys: HashSet<String> =
         ledger.iter().filter(|e| e.outcome == "sent_back").map(|e| e.key.clone()).collect();
+    // Approved once already: the worker re-asking after a policy approval is
+    // the worker declining it (MF-4425, 2026-10-23: one card approved three
+    // times in 15 minutes, each re-ask a new question hash), so it is the
+    // owner's.
+    let approved_keys: HashSet<String> =
+        ledger.iter().filter(|e| e.outcome == "approved").map(|e| e.key.clone()).collect();
 
     let mut skips = Vec::new();
     // Snoozed items are never touched: first seen snoozed means never
@@ -1316,6 +1324,12 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
                     "needs-input auto: already sent back once; the re-ask stays with the owner");
                 Decision::Never("sent_back_once")
             }
+            Decision::Approve if approved_keys.contains(&key) => {
+                tracing::info!(verdict = "needs_input_auto_skipped_category", key = %key, worker = %worker,
+                    reason = "approved_once",
+                    "needs-input auto: approved once already; the worker re-asked, so the re-ask stays with the owner");
+                Decision::Never("approved_once")
+            }
             d => d,
         };
         match decision {
@@ -1337,6 +1351,7 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
                     "public_surface" => "a new endpoint or public surface: yours by the repo rule",
                     "owner_control_decision" => "fleet control, priorities and reversals of owner actions require an owner decision",
                     "sent_back_once" => "sent back once already; the worker re-asked, so it is yours",
+                    "approved_once" => "approved by the policy once already; the worker re-asked, so it is yours",
                     "scope_decision" => "a scope or deadline decision stays with you (contract rule 11)",
                     "explicit_approval_required" => "this ask requires explicit approval; automatic approval does not cover it",
                     "owner_noted" => "you added a note to this ask; your answer carries it, the policy does not answer over you",
