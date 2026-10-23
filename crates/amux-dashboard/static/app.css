@@ -8584,8 +8584,12 @@ body.light .bd-answer-head { color: #bc4c00; }
 /* Split panes (2026-10-22): 1-3 panes beside the worker page, stacked, each its
    own view picker over the embedded page. */
 .psp-panes { flex:1; min-height:0; display:flex; flex-direction:column; }
-.psp-pane { flex:1 1 0; min-height:0; display:flex; flex-direction:column; border-top:1px solid var(--border); }
+.psp-pane { flex:1 1 0; min-height:60px; display:flex; flex-direction:column; border-top:1px solid var(--border); overflow:hidden; }
 .psp-pane:first-child { border-top:0; }
+.psp-drag-handle { flex-shrink:0; height:6px; cursor:row-resize; background:var(--border); position:relative; touch-action:none; user-select:none; -webkit-user-select:none; }
+.psp-drag-handle:hover, .psp-drag-handle.dragging { background:var(--accent); }
+.psp-drag-handle::after { content:''; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:32px; height:2px; border-radius:1px; background:var(--dim); opacity:0.5; }
+.psp-drag-handle:hover::after, .psp-drag-handle.dragging::after { opacity:1; background:var(--on-accent); }
 .psp-pane-bar { display:flex; gap:6px; align-items:center; padding:5px 8px; border-bottom:1px solid var(--border); flex-shrink:0; }
 .psp-pane-view { flex:0 1 220px; min-width:0; font-size:0.75rem; padding:3px 8px; min-height:30px; }
 .psp-pane-spacer { flex:1; }

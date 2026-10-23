@@ -16837,6 +16837,7 @@ function _peekSplitRenderPanes() {
   if (!host || !peekSession) return;
   const opts = _peekSplitViewOptions();
   const optHtml = opts.map(([v, l]) => '<option value="' + esc(v) + '">' + esc(l) + '</option>').join('');
+  host.querySelectorAll('.psp-drag-handle').forEach(h => h.remove());
   while (host.children.length > _peekSplitPanes.length) host.lastElementChild.remove();
   _peekSplitPanes.forEach((view, i) => {
     let pane = host.children[i];
@@ -16875,7 +16876,61 @@ function _peekSplitRenderPanes() {
       if (!switched) frame.src = src;
     }
   });
+  // Insert drag handles between panes and apply saved sizes
+  const allPanes = [...host.querySelectorAll('.psp-pane')];
+  for (let j = 1; j < allPanes.length; j++) {
+    const h = document.createElement('div');
+    h.className = 'psp-drag-handle';
+    host.insertBefore(h, allPanes[j]);
+    _pspDragInit(h, j - 1, j, allPanes);
+  }
+  _pspApplySizes(allPanes);
   host.dataset.panes = String(_peekSplitPanes.length);
+}
+
+let _pspFlexGrow = null;
+function _pspApplySizes(panes) {
+  if (!_pspFlexGrow || _pspFlexGrow.length !== _peekSplitPanes.length) {
+    try { _pspFlexGrow = JSON.parse(localStorage.getItem('amux_psp_sizes')); } catch (_) {}
+    if (!Array.isArray(_pspFlexGrow) || _pspFlexGrow.length !== _peekSplitPanes.length) _pspFlexGrow = null;
+  }
+  if (!_pspFlexGrow) return;
+  panes.forEach((p, i) => { p.style.flex = (_pspFlexGrow[i] || 1) + ' 1 0px'; });
+}
+function _pspDragInit(handle, aboveIdx, belowIdx, panes) {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    handle.setPointerCapture(e.pointerId);
+    const host = document.getElementById('psp-panes');
+    const aboveH = panes[aboveIdx].getBoundingClientRect().height;
+    const belowH = panes[belowIdx].getBoundingClientRect().height;
+    const pairH = aboveH + belowH;
+    const startY = e.clientY;
+    if (!_pspFlexGrow) _pspFlexGrow = panes.map(() => 1);
+    const pairGrow = _pspFlexGrow[aboveIdx] + _pspFlexGrow[belowIdx];
+    host.querySelectorAll('.psp-frame').forEach(f => { f.style.pointerEvents = 'none'; });
+    const onMove = (ev) => {
+      const dy = ev.clientY - startY;
+      const newAboveH = Math.max(60, Math.min(pairH - 60, aboveH + dy));
+      const ratio = newAboveH / pairH;
+      _pspFlexGrow[aboveIdx] = ratio * pairGrow;
+      _pspFlexGrow[belowIdx] = (1 - ratio) * pairGrow;
+      panes[aboveIdx].style.flex = _pspFlexGrow[aboveIdx] + ' 1 0px';
+      panes[belowIdx].style.flex = _pspFlexGrow[belowIdx] + ' 1 0px';
+    };
+    const onUp = () => {
+      handle.classList.remove('dragging');
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      host.querySelectorAll('.psp-frame').forEach(f => { f.style.pointerEvents = ''; });
+      try { localStorage.setItem('amux_psp_sizes', JSON.stringify(_pspFlexGrow)); } catch (_) {}
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  });
 }
 function _peekSplitSetPane(i, view) {
   if (!view || i < 0 || i >= _peekSplitPanes.length) return;
@@ -16888,6 +16943,7 @@ function _peekSplitAddPane() {
   const used = new Set(_peekSplitPanes);
   const next = ['files', 'messages', 'chat', 'terminal'].find(v => !used.has(v)) || 'terminal';
   _peekSplitPanes.push(next);
+  _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
   _peekSplitPersist();
   _peekSplitRenderPanes();
 }
@@ -16897,6 +16953,7 @@ function _peekSplitClosePane(i) {
     return;
   }
   _peekSplitPanes.splice(i, 1);
+  _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
   _peekSplitPersist();
   _peekSplitRenderPanes();
 }
