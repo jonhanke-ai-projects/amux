@@ -15527,6 +15527,18 @@ async function _offlinePrefetch(manual) {
   if (_prefetchRunning) return;
   if (typeof online !== 'undefined' && !online) { if (manual) showToast('Offline — connect to sync'); return; }
   if (!manual && !_linkIsCheap()) return;    // never auto-blast on 2g/3g/saveData
+  // ONE TAB SAVES FOR THE DEVICE (2026-10-23). The copies live in IndexedDB,
+  // which every tab of this origin shares, yet every tab ran this pass at boot
+  // and every 10 min: ten Mac app tabs fetched ~46 workers' scrollback ten
+  // times over, again on every version reload, on a host already at load 20+.
+  // An automatic pass now runs only in a shown tab, and not when another tab
+  // ran one in the last 9 min. A manual run always goes.
+  if (!manual) {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    const at = Number(localStorage.getItem('amux_offline_prefetch_at') || 0);
+    if (Date.now() - at < 9 * 60 * 1000) return;
+    try { localStorage.setItem('amux_offline_prefetch_at', String(Date.now())); } catch (e) {}
+  }
   _prefetchRunning = true; _prefetchAbort = false;
   await _peekIndexLoad();
   const list = _prefetchOrder();
