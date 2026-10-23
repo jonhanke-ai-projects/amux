@@ -10024,6 +10024,8 @@ function _renderReviewSection() {
   if (!el) return;
   const allReview = sessions.filter(s => s.lifecycle === 'review' && !s.archived && !s.project).filter(_workerListFilterPass);
   if (!allReview.length) { el.innerHTML = ''; return; }
+  const _q = searchQuery.toLowerCase().trim();
+  if (_q && !allReview.some(s => s.name.toLowerCase().includes(_q) || (s.dir||'').toLowerCase().includes(_q) || (s.desc||'').toLowerCase().includes(_q) || (s.task_name||'').toLowerCase().includes(_q) || (s.tags||[]).some(t=>t.toLowerCase().includes(_q)))) { el.innerHTML = ''; return; }
   const q = searchQuery.toLowerCase().trim();
   const review = q ? allReview.filter(s =>
     s.name.toLowerCase().includes(q) ||
@@ -10085,6 +10087,7 @@ function _renderPausedSection() {
     (s.desc || '').toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q))
   ) : allPaused;
+  if (q && !paused.length) { el.innerHTML = ''; return; }
   const showExpanded = pausedExpanded;
   const label = q && paused.length !== allPaused.length
     ? `${paused.length} of ${allPaused.length} paused`
@@ -10201,6 +10204,7 @@ function _renderExpiredSection() {
     w.parent.toLowerCase().includes(q) ||
     w.cards.some(c => (c.title || '').toLowerCase().includes(q))
   ) : workers;
+  if (q && !filtered.length) { el.innerHTML = ''; return; }
   const label = q && filtered.length !== workers.length
     ? `${filtered.length} of ${workers.length} expired`
     : `${workers.length} expired`;
@@ -10275,6 +10279,7 @@ function _renderArchivedSectionBody() {
     (s.creator || '').toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q))
   ) : allArchived;
+  if (q && !archived.length) { el.innerHTML = ''; return; }
   // Only expand when the user has explicitly toggled it open — never auto-expand
   // on search. The footer still shows "N of M archived" so matches are discoverable.
   const showExpanded = archivedExpanded;
