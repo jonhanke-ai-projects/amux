@@ -42,12 +42,13 @@
     addEventListener('pagehide', flush);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
     setInterval(() => {
-      if (!st.written && !st.skipped_identical && !st.deferred) return;
+      if (!st.written && !st.skipped_identical && !st.deferred && !st.idb_written && !st.idb_coalesced) return;
       const top = Object.entries(st.by_key).sort((a, b) => b[1] - a[1]).slice(0, 5);
       try { fetch('/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
         body: JSON.stringify({ kind: 'localstorage-writes', measured: true, n_considered: st.written + st.skipped_identical + st.deferred, window_s: 600,
-          written: st.written, written_bytes: st.written_bytes, skipped_identical: st.skipped_identical, deferred: st.deferred, top_keys: top }) }).catch(() => {}); } catch (e) {}
-      st.written = st.written_bytes = st.skipped_identical = st.deferred = 0; st.by_key = {};
+          written: st.written, written_bytes: st.written_bytes, skipped_identical: st.skipped_identical, deferred: st.deferred, top_keys: top,
+          idb_written: st.idb_written || 0, idb_coalesced: st.idb_coalesced || 0, hidden: document.hidden ? 1 : 0 }) }).catch(() => {}); } catch (e) {}
+      st.written = st.written_bytes = st.skipped_identical = st.deferred = st.idb_written = st.idb_coalesced = 0; st.by_key = {};
     }, 600000);
   } catch (e) {}
 })();
@@ -3731,11 +3732,15 @@ function _toggleOfflineQueue() {
 // This keeps the actual bytes in IDB and replays the upload on reconnect, so a
 // recording made on a phone with no signal survives until it can be sent.
 const _UPQ_KEY = 'upload_queue';
+let _upqLegacyEmpty = false;
 
 async function _upqList() {
   const current = (await _idb.getUploads()).filter(row => row.surface === 'directory');
   // Retain pre-upgrade entries until they have actually been delivered.
-  const legacy = (await _idb.get(_UPQ_KEY)) || [];
+  // Nothing adds to that key any more, so once it reads empty this tab stops
+  // reading it: the read shares the kv store with every cache write.
+  const legacy = _upqLegacyEmpty ? [] : ((await _idb.get(_UPQ_KEY)) || []);
+  if (!legacy.length) _upqLegacyEmpty = true;
   return [...current, ...legacy.map(row => ({...row,
     blob:row.bytes ? new Blob([row.bytes], {type:row.mime}) : row.blob}))];
 }
@@ -3940,21 +3945,43 @@ function _upqListBounded(ms = 5000) {
   let timer;
   return Promise.race([
     _upqList().catch(() => []),
-    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms}); resolve([]); }, ms); }),
+    new Promise(resolve => { timer = setTimeout(() => { _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0}); resolve([]); }, ms); }),
   ]).finally(() => clearTimeout(timer));
 }
+// A FROZEN HOLDER IS PRE-EMPTED, NOT WAITED OUT (Ethan, 2026-10-23: the Mac
+// app is "so much slower than browser"). macOS freezes the JavaScript of a
+// native tab that is not in front, so a background tab that took this lock
+// keeps it for as long as it stays in the back. On 2026-10-23 a shown Mac app
+// tab waited the full 20s for it 115 times (verdict=outbox_replay_lock_stalled,
+// held=1, hidden=0) before sending what the user had just typed. A shown tab
+// now waits _SYNC_LOCK_STEAL_MS and then steals the lock (beaconed as
+// verdict=outbox_replay_lock_stolen); a hidden tab keeps the long wait. Both
+// are safe for one reason: every delivery re-reads the queue under its own
+// per-operation lock, and the server de-duplicates sends by msg_id. A holder
+// whose lock was stolen finishes its pass; only its lock promise rejects.
+const _SYNC_LOCK_STEAL_MS = 1500;
 function _syncLockRequest(run) {
   if (!navigator.locks) return run();
   _syncSetPhase('replay_lock_wait');
-  const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_SYNC_LOCK_WAIT_MS) : undefined;
-  return navigator.locks.request('amux-outbox-replay', signal ? {signal} : {}, run).catch(async e => {
+  const hidden = typeof document !== 'undefined' && !!document.hidden;
+  const waitMs = hidden ? _SYNC_LOCK_WAIT_MS : _SYNC_LOCK_STEAL_MS;
+  let granted = false;
+  const held = () => { granted = true; return run(); };
+  const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(waitMs) : undefined;
+  return navigator.locks.request('amux-outbox-replay', signal ? {signal} : {}, held).catch(async e => {
     if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
-    // Another window holds the replay lock and is not finishing (a suspended
-    // WebKit window keeps it). Per-operation locks still serialise each write.
-    let held = -1, pending = -1;
-    try { const q = await navigator.locks.query(); held = (q.held || []).filter(l => l.name === 'amux-outbox-replay').length; pending = (q.pending || []).filter(l => l.name === 'amux-outbox-replay').length; } catch (_) {}
-    _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:_SYNC_LOCK_WAIT_MS, held, pending, hidden:document.hidden ? 1 : 0});
-    return run();
+    // Our own lock was stolen by a shown tab after we started: the pass ran.
+    if (granted) return undefined;
+    let nHeld = -1, pending = -1;
+    try { const q = await navigator.locks.query(); nHeld = (q.held || []).filter(l => l.name === 'amux-outbox-replay').length; pending = (q.pending || []).filter(l => l.name === 'amux-outbox-replay').length; } catch (_) {}
+    if (hidden) {
+      // Another window holds the replay lock and is not finishing (a suspended
+      // WebKit window keeps it). Per-operation locks still serialise each write.
+      _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:1});
+      return run();
+    }
+    _outboxDiagnostic('outbox_replay_lock_stolen', {waited_ms:waitMs, held:nHeld, pending, hidden:0});
+    return navigator.locks.request('amux-outbox-replay', {steal:true}, held);
   });
 }
 function runSyncBanner(quiet = false) {
@@ -47811,9 +47838,56 @@ const _idb = (() => {
     tx.objectStore('uploads').delete(id);
     tx.objectStore('uploadChunks').delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]));
   }));
+  // CACHE WRITES ARE COALESCED (Ethan, 2026-10-23: the Mac app "is still so
+  // much slower than browser"). Every tab wrote the whole sessions list (~2MB)
+  // on each change and a worker's peek history on every poll. WebKit runs an
+  // origin's IndexedDB transactions through one storage process, so ten native
+  // tabs queued megabytes of structured clones ahead of the outbox's read of
+  // pending uploads, which then hit its 5s timeout on 903 passes in one day
+  // (verdict=outbox_upload_list_timeout). A rebuildable cache key is now
+  // written at most once per 30s with its latest value, never while the tab is
+  // hidden (it flushes on hide), and get() returns the pending value meanwhile.
+  // Pending work (offline_queue, drafts, uploads) is written at once. Counts
+  // ride the kind=localstorage-writes beacon as idb_written / idb_coalesced.
+  const _CACHE_KEY = /^(sessions_cache|schedules_all|peek_index|peek_|chat_)/;
+  const _CACHE_MS = 30000;
+  const cachePending = new Map(), cacheLast = new Map();
+  const st = (typeof window !== 'undefined' && window._lsWrites) || {};
+  st.idb_written = st.idb_written || 0; st.idb_coalesced = st.idb_coalesced || 0;
+  const putNow = (key, val) => { st.idb_written++; cacheLast.set(key, Date.now());
+    return transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)); };
+  let cacheTimer = null;
+  const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  const flushCache = force => {
+    clearTimeout(cacheTimer); cacheTimer = null;
+    const now = Date.now();
+    let wait = _CACHE_MS;
+    for (const [key, val] of [...cachePending]) {
+      const due = (cacheLast.get(key) || 0) + _CACHE_MS - now;
+      if (force || due <= 0) { cachePending.delete(key); putNow(key, val); }
+      else wait = Math.min(wait, due);
+    }
+    if (cachePending.size && !isHidden()) cacheTimer = setTimeout(flushCache, wait);
+  };
+  const setCache = (key, val) => {
+    const hidden = isHidden();
+    if (hidden || cachePending.has(key) || Date.now() - (cacheLast.get(key) || 0) < _CACHE_MS) st.idb_coalesced++;
+    cachePending.set(key, val);
+    // A hidden tab holds its value until it is shown or unloads.
+    if (!hidden) { clearTimeout(cacheTimer); cacheTimer = setTimeout(flushCache, 0); }
+    return Promise.resolve();
+  };
+  if (typeof document !== 'undefined' && typeof addEventListener === 'function') {
+    addEventListener('pagehide', () => { if (cachePending.size) flushCache(true); });
+    document.addEventListener('visibilitychange', () => {
+      if (!cachePending.size) return;
+      if (isHidden()) flushCache(true); else flushCache();
+    });
+  }
   return {
     // Cache callers are best-effort; pending work uses the strict methods below.
-    set: (key, val) => transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
+    set: (key, val) => _CACHE_KEY.test(String(key)) ? setCache(String(key), val)
+      : transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
     update: (key, mutate) => transaction('kv', os => {
       const request = os.get(key);
       request.onsuccess = () => {
@@ -47854,7 +47928,7 @@ const _idb = (() => {
       tx.oncomplete = () => resolve(request.result);
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
     })),
-    get: (key) => withDb(d => new Promise((resolve) => {
+    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key)) : withDb(d => new Promise((resolve) => {
       const tx = d.transaction('kv', 'readonly');
       const req = tx.objectStore('kv').get(key);
       req.onsuccess = () => resolve(req.result);
