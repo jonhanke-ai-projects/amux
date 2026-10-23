@@ -486,6 +486,9 @@ fn production_and_customer_changes_are_judged_as_prod_data() {
         assert_eq!(never_reason(&it), None, "{id}: not a never-rule");
         assert_eq!(decide(&Policy::default(), &it), Decision::SkipCategory("prod_data".into()), "{id}");
     }
+    // 2026-10-23, verbatim: a role write in 37 customer orgs, filed as other.
+    let roles = item("card", "decision", "other", "May I set role=admin on the creating user in each of the 37 production orgs that have no admin user (all 37 creators are currently member; 30 of the orgs hold admin-permission keys), so their keys keep working when the owner-role key clamp returns?");
+    assert_eq!(decide(&Policy::default(), &roles), Decision::SkipCategory("prod_data".into()), "MF-4425");
     let local = item("card", "decision", "decision", "Want me to scale the local kind cluster to three nodes for the soak, or keep one?");
     assert_eq!(decide(&Policy::default(), &local), Decision::Approve, "a local change names no production or customer target");
 }
@@ -698,4 +701,36 @@ async fn an_owner_note_on_the_card_holds_the_policy_through_the_job() {
     let _ = crate::api::board::patch_item(State(st.clone()), axum::extract::Path("NOTE-2".to_string()), h,
         Json(json!({"desc_append": "peer context"}))).await;
     assert!(!card(&st, "NOTE-2").log.unwrap_or_default().contains("owner note on the open ask"));
+}
+
+#[tokio::test]
+async fn a_card_approved_once_is_the_owners_when_the_worker_reasks() {
+    let st = state();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    std::fs::create_dir_all(home.join("email-approvals")).unwrap();
+    let now = now_f64();
+    let mock = Arc::new(Mock::default());
+    tick_with(&mock, &st, &home, now).await; // empty baseline
+
+    seed(&st, "RE-1", "lane-a", "decision", "Rename the cache flag to cache_ttl?", now);
+    let rep = tick_with(&mock, &st, &home, now + 60.0).await;
+    assert_eq!(rep.approved, ["RE-1"]);
+    assert_eq!(card(&st, "RE-1").status, "todo");
+
+    // The worker declines the policy's answer and re-asks with new words.
+    st.store
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE issues SET status='needsyou', ask_question='Rename the cache flag to cache_ttl? (A policy approval arrived; I need your own yes.)' WHERE id='RE-1'",
+                [],
+            )?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        })
+        .unwrap();
+    let rep = tick_with(&mock, &st, &home, now + 120.0).await;
+    assert!(rep.approved.is_empty(), "{rep:?}");
+    assert_eq!(card(&st, "RE-1").status, "needsyou");
+    assert_eq!(outcomes(&st)["RE-1"], "never");
 }
