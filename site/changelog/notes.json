@@ -1,5 +1,82 @@
 [
   {
+    "hash": "c5aba6e5eee052d666b7a141ce67c126feab40dd",
+    "short": "c5aba6e5",
+    "title": "More room for messages on your phone",
+    "date": "2026-10-23",
+    "type": "fix",
+    "tags": [
+      "phone",
+      "messages",
+      "dashboard"
+    ],
+    "description": "A worker's Messages tab on a phone used about a third of the screen for search, filters and three header lines per message. The search row now fits, and each message takes far less space, so you read the conversation instead of the chrome around it."
+  },
+  {
+    "hash": "b20e23647eb9ac753cae0893ba5cd38c923f73a4",
+    "short": "b20e2364",
+    "title": "Split view with two to four panes",
+    "date": "2026-10-22",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "split-view",
+      "workers"
+    ],
+    "description": "Next to a worker's page you can now open one to three more panes, stacked. Each pane shows the same worker page on a view you pick from its dropdown, such as Chat, Terminal, Messages or Files, so you can watch a terminal while reading the conversation."
+  },
+  {
+    "hash": "70adf4bbe77e161fb95cfd9aa3339bcbf051e96a",
+    "short": "70adf4bb",
+    "title": "Fold the worker header to give the terminal room",
+    "date": "2026-10-22",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "workers",
+      "layout"
+    ],
+    "description": "Drag the grip under a worker's header upward and the header folds in stages: the toolbar moves up beside the name, then the extra lines collapse. In a short window that turns a one-line terminal into a usable one. The fold is saved per worker, so a saved workspace comes back the same way."
+  },
+  {
+    "hash": "1849d2a2428f194373a4d6cf4794fe064e044f59",
+    "short": "1849d2a2",
+    "title": "Refresh keeps you where you were",
+    "date": "2026-10-22",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "navigation",
+      "mac-app"
+    ],
+    "description": "Reloading the dashboard now returns you to the worker, tab, card, file or view you were on. Before, a page opened from a link went back to that link on refresh, and every Mac app window went back to where it was at launch."
+  },
+  {
+    "hash": "20721db881b494109c1f102437851dd655dd666e",
+    "short": "20721db8",
+    "title": "Update the Mac app from Settings",
+    "date": "2026-10-22",
+    "type": "feat",
+    "tags": [
+      "mac-app",
+      "updates"
+    ],
+    "description": "The Mac app has a new Settings > Updates panel. It checks the latest desktop release on GitHub, downloads it, verifies the bundle and its signature, swaps it in place and relaunches. No more downloading a zip by hand to stay current."
+  },
+  {
+    "hash": "628fe6097f0d47ccac928cf3a23c7458ea6f8c65",
+    "short": "628fe609",
+    "title": "Attachments never block a send",
+    "date": "2026-10-22",
+    "type": "fix",
+    "tags": [
+      "attachments",
+      "messages",
+      "reliability"
+    ],
+    "description": "If the browser's local storage stalls while saving an attached screenshot, amux now gives up on the local copy after a few seconds and uploads straight from memory. Before, the attachment could sit at Saving locally and the message could not be sent."
+  },
+  {
     "hash": "a7e6c828f1ee39a3cf345ac31f6ef5d5f6f32217",
     "short": "a7e6c828",
     "title": "A lost message gets sent again",

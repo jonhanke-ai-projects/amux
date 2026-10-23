@@ -492,6 +492,6 @@ AI agent server sizing guide + EXP-069 | /guides/ai-agent-server-sizing/
 | concierge goal measurement | site.js | H | shipped 2026-10-21 (Schedule a meeting sends cta_click goal=concierge) |
 | best app to control Claude Code from phone / run coding agents from your phone (roundup) | /guides/best-phone-apps-for-coding-agents-2026/ | H | shipped 2026-10-22 (299507601): amux, Claude Code Remote Control, Codex in ChatGPT, Happy, Paseo, HAPI, SSH+tmux; Cloud blocks with source=best-phone-apps-for-coding-agents-2026 |
 | background coding agents compared (Cloud CTA) | /guides/background-agents-compared/ | H | enriched 2026-10-22 (24aee8f87): short answer, amux Cloud row and card, Cloud blocks; EXP-146 scores 2026-10-29 (baseline 0/32 GH, 0/32 /start/ over 30 days) |
-| amux vs Happy (Happy Coder alternative) | /compare/amux-vs-happy/ | H | todo: Happy has ~24k stars and ranks for "Claude Code mobile app"; compare shape converts |
+| amux vs Happy (Happy Coder alternative) | /compare/amux-vs-happy/ | H | shipped 2026-10-23 (f6bf7bf59): Happy facts from its README and docs; Cloud blocks with source=amux-vs-happy; Team pitch |
 | amux vs Paseo | /compare/amux-vs-paseo/ | M | todo |
 | Cloud block on /glossary/agent-multiplexer/ (27.6% GH, 0% /start/ over 30 days, no Cloud block) | /glossary/agent-multiplexer/ | H | todo: next Job 2 candidate |
