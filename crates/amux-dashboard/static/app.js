@@ -13361,6 +13361,8 @@ function _peekChatMenuItem(s) {
 
 function setPeekTab(tab) {
   _peekTab = tab;
+  // CSS reads this to drop chrome a tab does not use (phone real estate).
+  const _po = document.getElementById('peek-overlay'); if (_po) _po.dataset.peekTab = tab;
   // Persist so an app-switch away and back lands on this tab, not the default.
   try { _savePeekState(); } catch(e) {}
   try { _peekViewRemember(); } catch(e) {}
@@ -24804,7 +24806,7 @@ function _msgDeliveryChip(e) {
     label = 'direct?'; color = 'var(--dim)'; bg = 'rgba(139,148,158,0.12)';
     title = 'Delivery path not recorded for this message (predates delivery metadata) — inferred from its type';
   }
-  return '<span title="' + title + '" style="display:inline-block;font-size:0.66rem;font-weight:600;'
+  return '<span' + (label === 'direct' ? ' class="msg-deliv-direct"' : '') + ' title="' + title + '" style="display:inline-block;font-size:0.66rem;font-weight:600;'
        + 'padding:1px 6px;border-radius:3px;background:' + bg + ';color:' + color + ';margin-right:6px;">'
        + label + '</span>';
 }
@@ -25029,7 +25031,7 @@ function _msgCardChips(message) {
 // so nothing downstream has to know which surface it came from.
 function _msgCtxPeek() {
   return { sel: _pmSel, key: _pmKey, toggle: '_pmSelToggle', resend: '_pmResend',
-           searchId: 'peek-messages-search', rowClass: '',
+           searchId: 'peek-messages-search', rowClass: 'pm-row', ownTab: true,
            target: () => (typeof peekSession !== 'undefined' ? peekSession : '') };
 }
 function _msgCtxHistory() {
@@ -25231,12 +25233,16 @@ function _cmdHistItemHTML(e, ctx) {
   const originTxt = (kind === 'human' || sender)
     ? ''   // delivery chip below carries direct/queued for every kind now
     : (origin ? ' &middot; ' + _linkifyScheduleIds(origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32)) : '');
-  const senderTag = _msgSenderTag(sender, origin, !!session);
-  const tag = `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;">${km.label}${originTxt}</span>`;
+  // In a worker's own Messages tab every row is "-> this worker", and under a
+  // kind filter every row wears that kind's badge: both repeat the screen.
+  const _ownTarget = !!(ctx.ownTab && session && typeof peekSession !== 'undefined' && session === peekSession);
+  const _kindIsFilter = !!(ctx.ownTab && typeof _peekMsgFilter !== 'undefined' && _peekMsgFilter === kind && !originTxt);
+  const senderTag = _msgSenderTag(sender, origin, !!session && !_ownTarget);
+  const tag = _kindIsFilter ? '' : `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;">${km.label}${originTxt}</span>`;
   // On the global Messages page the worker name OPENS THAT WORKER and does
   // nothing else; the row's own click inserts the text into its composer, and
   // a click on the name used to fall through to that (Ethan, 2026-10-11).
-  const sessTag = !session ? '' : ctx.onOpen
+  const sessTag = (!session || _ownTarget) ? '' : ctx.onOpen
     ? `<button type="button" class="msg-sess-link" onclick="event.stopPropagation();openPeek('${escJs(session)}')" title="Open ${esc(session)}">${esc(session)}</button>`
     : `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`;
   const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
@@ -25261,7 +25267,7 @@ function _cmdHistItemHTML(e, ctx) {
   const _matches = _mq && safe.toLowerCase().includes(_mq.trim().toLowerCase());
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
-  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu">${ctx.ownTab ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)">${_psel ? 'Unselect' : 'Select'}</button><button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgToggleCollapse(this.closest('[data-msg-key]').querySelector('.msg-caret'),&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? 'Expand' : 'Collapse'}</button>${_mid ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_copyMsgId('${esc(_mid)}')">Copy MSG-${esc(_mid)}</button>` : ''}` : ''}<button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
 }
 // The sender half of "owner → cowork-bot". `owner` is the server's own login
 // (no team-member or gateway identity on the send); the tooltip says so, and
@@ -25350,6 +25356,7 @@ function _peekMessagesBadge() {
 // 753 schedule vs 2784 human across the fleet, but concentrated on a handful
 // of sessions where they bury everything you typed).
 let _peekMsgFilter = 'human';   // all | human | session | schedule
+let _pmBarReported = '';        // worker whose wrapped toolbar was already beaconed
 function _peekMsgSetFilter(k) {
   if (_peekMsgFilter === k) return;
   _peekMsgFilter = k;
@@ -25382,6 +25389,11 @@ function _peekMsgRenderChips(items) {
   // reads as "this kind does not exist" rather than "none here".
   const chips = [['all','All']].concat(
     _MSG_KIND_ORDER.map(k => [k, (_MSG_KIND[k]||{}).label || k]));
+  const pick = document.getElementById('peek-msgs-kind');
+  if (pick) {
+    pick.innerHTML = chips.map(([k,lbl]) => `<option value="${k}"${_peekMsgFilter === k ? ' selected' : ''}>${esc(lbl)} ${_n(k)}</option>`).join('');
+    pick.value = _peekMsgFilter;
+  }
   bar.innerHTML = chips.map(([k,lbl]) => {
     const on = _peekMsgFilter === k;
     const km = _MSG_KIND[k];
@@ -25427,6 +25439,20 @@ function _peekMessagesRender() {
       </div>
     </div>`;
   }).join('');
+  // Phone real estate (2026-10-23): search, kind and menu share one row, and
+  // the row does not wrap, so a control that comes back into it squeezes the
+  // search field (a date trigger losing its class did: "Search messages ser").
+  // Say so once per worker so a sweep sees it before the owner's screenshot.
+  try {
+    const bar = document.querySelector('#peek-messages-panel .peek-tasks-add');
+    const srch = document.getElementById('peek-messages-search');
+    if (bar && srch && window.innerWidth <= 600 && bar.offsetWidth && _pmBarReported !== peekSession) {
+      const w = srch.offsetWidth, share = w / bar.offsetWidth;
+      if (share < 0.4) { _pmBarReported = peekSession; window._clientDebug && window._clientDebug('peek-msgs-search-squeezed',
+        { measured: true, n_considered: Array.from(bar.children).filter(c => c.offsetWidth).length, search_px: w,
+          bar_px: bar.offsetWidth, session: peekSession, verdict: 'peek_msgs_search_squeezed' }); }
+    }
+  } catch (_) {}
   const cnt = document.getElementById('peek-messages-count');
   if (cnt) {
     const isFallback = !_peekMsgRows || _peekMsgRowsFor !== peekSession;
@@ -25462,6 +25488,7 @@ function _peekMessagesRender() {
   const _pmKeys = items.map(_pmKey);
   const _pmSelVis = _pmKeys.filter(k => _pmSel.has(k));
   const pbar = document.getElementById('pm-selbar');
+  document.getElementById('peek-messages-panel')?.classList.toggle('pm-selecting', _pmSelVis.length > 0);
   if (pbar) {
     if (_pmSelVis.length) {
       pbar.innerHTML =
@@ -59821,6 +59848,10 @@ function _dpEnhance(input) {
   const trigger = document.createElement('button');
   trigger.type = 'button';
   trigger.className = 'amux-dp-trigger';
+  // Carry the input's layout classes (pm-wide, ...) so a rule that hides or
+  // places the field still reaches the button that stands in for it. Without
+  // this the phone's "Pick a date" sat in the Messages search row (2026-10-23).
+  input.classList.forEach(c => { if (c !== 'amux-dp' && c !== 'input' && c !== 'amux-dp-native') trigger.classList.add(c); });
   trigger.setAttribute('aria-haspopup', 'dialog');
   // Copy layout sizing so the trigger occupies the same slot as the input it
   // replaced (appearance itself is uniform, from .amux-dp-trigger CSS).

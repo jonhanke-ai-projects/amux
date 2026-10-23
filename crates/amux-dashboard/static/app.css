@@ -8377,6 +8377,9 @@ body.light .bd-answer-head { color: #bc4c00; }
 /* Worker Messages tab: Ask and Export sit in the row on wide screens and fold
    into an ellipsis menu on a phone. */
 #peek-messages-panel .pm-more { display: none; margin-left: 0; flex: 0 0 auto; }
+#peek-msgs-kind { display: none; }
+.pm-menu-phone { display: none !important; }
+@media (max-width: 600px) { .pm-menu-phone { display: block !important; } }
 @media (max-width: 600px) {
   #peek-messages-panel .pm-wide { display: none; }
   #peek-messages-panel .pm-more { display: block; }
@@ -8386,6 +8389,29 @@ body.light .bd-answer-head { color: #bc4c00; }
   #peek-messages-search { min-width: 150px !important; }
   #peek-messages-count { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #peek-messages-panel .pm-date-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; font-size: .8rem; color: var(--text); min-height: 44px; }
+  /* One toolbar row: search, kind picker, menu. The count repeats the
+     picker's own number, and the chip row is the picker, so both go. */
+  #peek-messages-panel .peek-tasks-add { padding: 6px 8px !important; gap: 6px !important; }
+  #peek-messages-search { min-width: 0 !important; min-height: 44px; font-size: 16px !important; }
+  #peek-messages-count, #peek-messages-filter { display: none !important; }
+  #peek-msgs-kind { display: block; flex: 0 0 auto; max-width: 34%; text-overflow: ellipsis; min-height: 44px; font-size: 0.85rem; padding: 0 8px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+  /* Rows: the text gets the full width. Checkbox and caret move into the row
+     menu (Select / Collapse), the id into "Copy MSG-n", the menu button sits
+     in the header's corner, and the green "direct" chip (the normal path) is
+     dropped the way the confirmed submit chip already is. */
+  #peek-messages-list { padding: 6px !important; gap: 6px !important; }
+  #peek-messages-list .pm-row { padding: 8px 10px !important; display: block !important; }
+  #peek-messages-list .pm-row .msg-caret,
+  #peek-messages-list .pm-row .msg-id-badge,
+  #peek-messages-list .pm-row .msg-deliv-direct { display: none !important; }   /* beats the chip's inline display */
+  #peek-messages-panel:not(.pm-selecting) .pm-row .pm-check { display: none; }
+  #peek-messages-list .pm-row .pm-check { float: left; margin: 2px 8px 0 0; }
+  #peek-messages-list .pm-row .pm-actions { position: absolute; top: 0; right: 0; }
+  #peek-messages-list .pm-row .pm-dots { min-width: 44px; min-height: 40px; border: 0; background: transparent; padding: 0; }
+  #peek-messages-list .pm-row .msg-menu { right: 0; left: auto; }
+  #peek-messages-list .pm-row > div:first-of-type > div:first-child { padding-right: 36px; }
+  #peek-messages-list .pm-row .msg-body { font-size: 0.95rem; }
   #peek-messages-panel .pm-date-item input { font-size: .8rem; padding: 4px 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
 }
 
@@ -10193,4 +10219,100 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .pages-bar-actions .btn { min-height:44px; flex:1 1 auto; }
   .pages-title { max-width:60vw; }
   .pages-row-when { display:none; }
+}
+
+/* Phone real estate per worker tab (Ethan, 2026-10-23: "analyze every tab
+   contents for the most important part"). Each tab's content is what it is
+   for; chrome that serves another tab goes. The filter, up/down and Find
+   drive the terminal's output only (their own footer says so), so they leave
+   every other tab. The folder path is context for the terminal, Shell,
+   Transcript, Commits and Worktree; the rest show their own content. A tab
+   absent from both lists keeps everything, so a new tab is never stripped. */
+@media (max-width: 600px) {
+  #peek-overlay[data-peek-tab="simple"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="chat"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="converse"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="steering"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="schedules"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="shell"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="scope"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="messages"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="tasks"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="dictation"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="readalouds"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="issues"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="cost"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="transcript"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="commits"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="memory"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="git"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="logs"] #peek-msg-nav,
+  #peek-overlay[data-peek-tab="simple"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="chat"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="converse"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="steering"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="schedules"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="shell"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="scope"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="messages"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="tasks"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="dictation"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="readalouds"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="issues"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="cost"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="transcript"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="commits"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="memory"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="git"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="logs"] #peek-find-toggle,
+  #peek-overlay[data-peek-tab="simple"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="chat"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="converse"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="steering"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="schedules"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="shell"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="scope"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="messages"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="tasks"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="dictation"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="readalouds"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="issues"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="cost"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="transcript"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="commits"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="memory"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="git"] #peek-search-wrap,
+  #peek-overlay[data-peek-tab="logs"] #peek-search-wrap { display: none !important; }
+  #peek-overlay[data-peek-tab="simple"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="chat"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="converse"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="steering"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="schedules"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="scope"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="messages"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="tasks"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="dictation"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="readalouds"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="issues"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="cost"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="memory"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="logs"] .peek-dir-bar { display: none !important; }
+  #peek-overlay[data-peek-tab="simple"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="chat"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="converse"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="steering"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="schedules"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="shell"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="scope"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="messages"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="tasks"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="dictation"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="readalouds"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="issues"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="cost"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="transcript"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="commits"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="memory"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="git"] .peek-toolbar,
+  #peek-overlay[data-peek-tab="logs"] .peek-toolbar { justify-content: flex-end; }
 }
