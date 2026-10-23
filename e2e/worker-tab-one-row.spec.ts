@@ -45,7 +45,7 @@ test('every worker tab has one control row above its content', async ({ page, re
       expect(rows, `${tab}: a panel is showing`).not.toBeNull();
       report.push(`${tab} [${rows!.panel}]: ${rows!.out.map(r => `${r.id} ${r.h}px`).join(', ')}`);
       expect(rows!.out.length, `${tab}: one control row, got ${JSON.stringify(rows!.out)}`).toBeLessThanOrEqual(1);
-      if (rows!.out.length) expect(rows!.out[0].h, `${tab}: the row does not wrap`).toBeLessThanOrEqual(66);
+      if (rows!.out.length) expect(rows!.out[0].h, `${tab}: the row does not wrap`).toBeLessThanOrEqual(72);   // 44px targets + padding; a wrapped row is over 100px
     }
     testInfo.annotations.push({ type: 'rows', description: report.join(' | ') });
 
