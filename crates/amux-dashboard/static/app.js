@@ -13537,7 +13537,9 @@ function _steerQueueFor(sess) {
       const body = JSON.parse(q.options.body);
       if (body.msg_id && known.has(body.msg_id)) return [];
       return [{id:q.id, transport_id:body.msg_id, text:body.text, queued_at:q.timestamp/1000,
-        pending:true, local:true, error:q.error || '', guard:''}];
+        pending:true, local:true, error:q.error || '', guard:'',
+        attempted: !!(q.attempted_at || q.attempts || !q.not_attempted),
+        decision: q.needs_decision || '', checking: !q.needs_decision && _outboxUncertainMessage(q)}];
     } catch (_) { return []; }
   });
   return server.concat(local);
@@ -13545,6 +13547,18 @@ function _steerQueueFor(sess) {
 
 function _steerHumanCount(sess) {
   return _steerQueueFor(sess).filter(m => !m.system).length;
+}
+
+// A message saved on this device that has sat in the Queued list for 10+
+// minutes is reported once per message, so a sweep sees stuck sends before
+// the owner screenshots them (2026-10-23: one sat 4h as "Needs review").
+const _steerStuckReported = new Set();
+function _steerReportStuck(m, ps) {
+  const age_ms = Date.now() - (m.queued_at || 0) * 1000;
+  if (age_ms < 600000 || _steerStuckReported.has(m.id)) return;
+  _steerStuckReported.add(m.id);
+  try { window._clientDebug?.('steer-pending-stuck', {verdict: 'steer_pending_stuck', measured: true, n_considered: 1,
+    age_ms, state: ps.label, decision: m.decision || '', error: String(m.error || '').slice(0, 200), session: peekSession}); } catch (_) {}
 }
 
 function _steeringRender() {
@@ -13567,8 +13581,18 @@ function _steeringRender() {
     const sysTag = m.system ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(148,163,184,0.15);color:var(--dim);margin-right:6px;">SYSTEM${m.guard ? ' · ' + esc(m.guard) : ''}</span>` : '';
     const hasDelay = m.deliver_at > Date.now() / 1000 && !m.system;
     const delayTag = hasDelay ? `<button type="button" class="steer-delay-tag" style="font-size:0.68rem;font-weight:600;padding:1px 6px;border:0;border-radius:3px;background:rgba(99,102,241,0.15);color:var(--accent,#6366f1);margin-right:6px;cursor:pointer;" onclick="_steeringSetDelay('${m.id}',0)" title="Delivered at the worker's first turn boundary after ${esc(new Date(m.deliver_at * 1000).toLocaleString())}. Click to remove the delay.">${esc(_steerDeliverLabel(m.deliver_at))} ✕</button>` : '';
-    const pendTag = m.pending ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${m.error ? 'Needs review' : online ? 'Awaiting server' : 'Saved offline'}</span>` : '';
-    const dis = m.pending ? 'disabled style="opacity:0.5;font-size:0.7rem;padding:2px 8px;"' : 'style="font-size:0.7rem;padding:2px 8px;"';
+    const ps = m.local ? _pendingMsgState(m) : null;
+    const pendTag = ps ? `<span class="steer-pending-state" style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${esc(ps.label)}</span><span class="steer-pending-note" style="font-size:0.7rem;color:var(--dim);">${esc(ps.note)}${m.error && m.decision ? ': ' + esc(m.error) : ''}</span>` : '';
+    if (ps) _steerReportStuck(m, ps);
+    // A server row that is still pending has nothing to act on yet; a row saved
+    // on this device always does (send again, or remove it).
+    const dis = m.pending && !m.local ? 'disabled style="opacity:0.5;font-size:0.7rem;padding:2px 8px;"' : 'style="font-size:0.7rem;padding:2px 8px;"';
+    const sendBtn = m.local
+      ? `<button class="btn primary steer-pending-retry" ${dis} onclick="_outboxRetryNow('${escJs(m.id)}')">${esc(ps.retry)}</button>`
+      : `<button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>`;
+    const cancelBtn = m.local
+      ? `<button class="btn steer-pending-remove" ${dis} onclick="_outboxRemoveMessage('${escJs(m.id)}')" title="Remove from this device" aria-label="Remove from this device">✕</button>`
+      : `<button class="btn" ${dis} onclick="_steeringCancel('${m.id}')">✕</button>`;
     const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery" aria-label="Delay delivery">⏱</button>` : '';
     return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid ${hasDelay ? 'rgba(99,102,241,0.25)' : m.pending ? 'rgba(210,153,34,0.45)' : 'var(--border)'};border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
       <div style="flex:1;min-width:0;">
@@ -13579,9 +13603,9 @@ function _steeringRender() {
         ${m.waiting_for ? `<div class="steer-waiting" style="font-size:0.75rem;color:var(--yellow,#d29922);margin-top:2px;">Waiting for ${esc(m.waiting_for)}</div>` : ''}
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;">
-        ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:0.75rem;color:var(--dim);">Automatic next turn</span>' : `<button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>`}
+        ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:0.75rem;color:var(--dim);">Automatic next turn</span>' : sendBtn}
         ${delayBtn}
-        <button class="btn" ${dis} onclick="_steeringCancel('${m.id}')">✕</button>
+        ${cancelBtn}
       </div>
     </div>`;
   };
@@ -25307,6 +25331,20 @@ function _pendingSendsFor(session) {
   });
   return out;
 }
+// One wording for a message saved on this device, wherever it is listed (the
+// Messages tab and the Queued list). Every such row can be sent again or
+// removed (Ethan, 2026-10-03); the Queued list used to say "Needs review" or
+// "Awaiting server" and disable both buttons (2026-10-23).
+function _pendingMsgState(p) {
+  const [label, note] = p.decision === 'refused' ? ['Not sent', 'the worker did not accept it']
+    : p.decision === 'unconfirmed' ? ['Not confirmed', 'it may already be with the worker; check its terminal']
+    : p.decision === 'stale' ? ['Not sent', 'saved on this device and never sent']
+    : p.checking ? ['Awaiting confirmation', 'may already be with the worker']
+    : p.attempted ? ['Awaiting confirmation', 'may already be with the worker']
+    : ['Saved on this device', online ? 'waiting to sync' : 'waiting for connection'];
+  const retry = p.checking ? 'Check again' : p.decision || p.attempted ? 'Send again' : 'Send now';
+  return {label, note, retry};
+}
 function _pendingMessageProjection(history, pending) {
   const grouped = pending.map(p => ({...p, local_notes:[]}));
   const normalized = text => String(text || '').replace(/^\[\d{1,2}:\d{2} [AP]M\]\s*/, '').trim();
@@ -25421,13 +25459,7 @@ function _peekMessagesRender() {
     const ts = p.ts ? new Date(p.ts).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
     const safe = _hlSearch(p.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'), q);
     // Every pending row can be sent again or removed (Ethan, 2026-10-03).
-    const [label, note] = p.decision === 'refused' ? ['Not sent', 'the worker did not accept it']
-      : p.decision === 'unconfirmed' ? ['Not confirmed', 'it may already be with the worker; check its terminal']
-      : p.decision === 'stale' ? ['Not sent', 'saved on this device and never sent']
-      : p.checking ? ['Awaiting confirmation', 'may already be with the worker']
-      : p.attempted ? ['Awaiting confirmation', 'may already be with the worker']
-      : ['Saved on this device', online ? 'waiting to sync' : 'waiting for connection'];
-    const retryLabel = p.checking ? 'Check again' : p.decision || p.attempted ? 'Send again' : 'Send now';
+    const {label, note, retry: retryLabel} = _pendingMsgState(p);
     const id = escJs(p.id);
     return `<div class="pending-msg" data-pending-id="${esc(p.id)}" data-decision="${esc(p.decision || '')}" style="padding:8px 12px;background:rgba(210,153,34,0.07);border:1px solid rgba(210,153,34,0.45);border-radius:6px;font-size:0.85rem;color:var(--text);">
       <div style="min-width:0;word-break:break-word;line-height:1.45;">
