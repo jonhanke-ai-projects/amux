@@ -7,21 +7,23 @@ import { CLI_LOGINS, parseLogin, stripAnsi } from '../crates/amux-dashboard/stat
 
 const fx = (name) => readFileSync(new URL(`./fixtures/cli-login/${name}`, import.meta.url), 'utf8');
 
-test('claude 2.1.299: whole link from the OSC 8 hyperlink, waits for a pasted code', () => {
-  const r = parseLogin('claude', fx('claude-2.1.299.txt'));
+test('claude 2.1.291 auth login: whole link from the OSC 8 hyperlink, waits for a pasted code', () => {
+  // Recorded on an amux Cloud server (2026-10-23); code_challenge and state redacted.
+  const r = parseLogin('claude', fx('claude-auth-login-2.1.291.txt'));
   assert.match(r.url, /^https:\/\/claude\.com\/cai\/oauth\/authorize\?code=true&client_id=/);
   assert.match(r.url, /redirect_uri=https%3A%2F%2Fplatform\.claude\.com%2Foauth%2Fcode%2Fcallback/);
-  assert.match(r.url, /&state=/, 'the link must be complete, not cut at a wrap');
+  // The /login scopes: user:profile is what the plan-usage endpoint needs.
+  assert.match(r.url, /scope=[^&]*user%3Aprofile/);
+  assert.match(r.url, /&state=redacted$/, 'the link must be complete, not cut at a wrap');
   assert.equal(r.needsCode, true);
   assert.equal(r.code, null);
-  assert.equal(r.token, null);
 });
 
-test('claude: the printed token is captured and ends the wait for a code', () => {
-  const raw = fx('claude-2.1.299.txt') + '\r\n\x1b[32mYour OAuth token (valid for 1 year):\x1b[39m\r\n\r\nsk-ant-oat01-' + 'A'.repeat(40) + '\r\n';
-  const r = parseLogin('claude', raw);
-  assert.equal(r.token, 'sk-ant-oat01-' + 'A'.repeat(40));
-  assert.equal(r.needsCode, false);
+test('claude: the sign-in is /login, not an inference-only setup-token', () => {
+  assert.match(CLI_LOGINS.claude.command, /\bclaude auth login --claudeai$/);
+  assert.doesNotMatch(CLI_LOGINS.claude.command, /setup-token/);
+  assert.deepEqual(CLI_LOGINS.claude.clearEnv, ['CLAUDE_CODE_OAUTH_TOKEN']);
+  assert.equal(CLI_LOGINS.claude.waitForExit, true);
 });
 
 test('claude: a link wrapped by the terminal without a hyperlink is joined back together', () => {
@@ -45,13 +47,16 @@ test('gemini 0.64.0: Google link and the authorization-code prompt', () => {
 
 test('nothing is invented from unrelated output', () => {
   for (const p of Object.keys(CLI_LOGINS)) {
-    assert.deepEqual(parseLogin(p, 'bash: command not found\r\n'), { url: null, code: null, needsCode: false, token: null });
+    assert.deepEqual(parseLogin(p, 'bash: command not found\r\n'), { url: null, code: null, needsCode: false });
   }
 });
 
 test('done() reads the server identity model_auth shape', () => {
   const a = { claude: { subscription_token: false, oauth: false }, codex: { signed_in: true }, gemini: { signed_in: false } };
   assert.equal(CLI_LOGINS.claude.done(a), false);
+  // A saved setup-token alone is not this sign-in: it reports no usage.
+  assert.equal(CLI_LOGINS.claude.done({ claude: { subscription_token: true, oauth: false } }), false);
+  assert.equal(CLI_LOGINS.claude.done({ claude: { subscription_token: false, oauth: true } }), true);
   assert.equal(CLI_LOGINS.codex.done(a), true);
   assert.equal(CLI_LOGINS.gemini.done(a), false);
   assert.equal(stripAnsi('\x1b[1mbold\x1b[0m\r\n'), 'bold\n');

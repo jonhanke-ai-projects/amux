@@ -2,8 +2,8 @@
 //
 // The dashboard runs a CLI's login command in a server terminal (/api/terminal)
 // and reads its output. This module turns that raw terminal output into what a
-// person needs: the sign-in link, a device code to type elsewhere, whether the
-// CLI is waiting for a pasted code, and (Claude) the token it printed.
+// person needs: the sign-in link, a device code to type elsewhere, and whether the
+// CLI is waiting for a pasted code.
 //
 // Each adapter is checked against recorded output of the CLI version the cloud
 // image pins (e2e/fixtures/cli-login, e2e/cli-login.test.mjs), so a CLI update
@@ -14,13 +14,22 @@ const GEMINI_SETTINGS = '{"security":{"auth":{"selectedType":"oauth-personal"}}}
 export const CLI_LOGINS = {
   claude: {
     label: 'Claude',
-    // setup-token prints a one-year subscription token instead of storing it; amux saves it.
-    command: 'BROWSER=false claude setup-token',
+    // The same sign-in as /login on a laptop (Ethan, 2026-10-23: the cloud should have
+    // "the same usage login stuff as local"). It stores a refreshable login in
+    // ~/.claude/.credentials.json whose scopes include user:profile, so Settings can
+    // show plan usage. `claude setup-token`, used before, printed an inference-only
+    // token: usage read "Not reported" and the server kept running on an API key.
+    command: 'BROWSER=false claude auth login --claudeai',
     url: /https:\/\/claude\.(?:com|ai)\/\S*?oauth\/authorize\S*/,
     codePrompt: /Paste\s*code\s*here/i,
-    token: /sk-ant-oat01-[A-Za-z0-9_-]{20,}/,
-    saveEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
-    done: (a) => !!(a && a.claude && (a.claude.subscription_token || a.claude.oauth)),
+    // A saved setup-token outranks the login in Claude Code, and nothing refreshes the
+    // login's access token while workers use the other one, so it is cleared once the
+    // login is in place.
+    clearEnv: ['CLAUDE_CODE_OAUTH_TOKEN'],
+    // It exits once the login is written; finishing earlier would delete the terminal
+    // while ~/.claude.json may still be half written.
+    waitForExit: true,
+    done: (a) => !!(a && a.claude && a.claude.oauth),
   },
   codex: {
     label: 'ChatGPT',
@@ -76,6 +85,5 @@ export function parseLogin(provider, raw) {
     if (m) url = joinWrapped(text, m.index);
   }
   const code = a.code ? ((a.code.exec(text) || [])[0] || null) : null;
-  const token = a.token ? ((a.token.exec(text) || [])[0] || null) : null;
-  return { url, code, needsCode: !!(a.codePrompt && a.codePrompt.test(text.replace(/\s+/g, ' ')) && !token), token };
+  return { url, code, needsCode: !!(a.codePrompt && a.codePrompt.test(text.replace(/\s+/g, ' '))) };
 }

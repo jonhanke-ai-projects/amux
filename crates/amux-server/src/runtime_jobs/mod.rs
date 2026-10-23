@@ -102,6 +102,7 @@ pub mod telegram_poll;
 pub mod telegram_relay;
 pub mod token_ledger;
 pub mod tunnel;
+pub mod worker_resources;
 
 pub use scheduler::{
     firing_enabled, run_scheduler, scheduler_tick, DueRuns, DurableSchedule, ExprParseError,

@@ -137,6 +137,7 @@ pub mod ids {
     pub const BOARD_HYGIENE: &str = "board-hygiene";
     pub const RECORDINGS_TRANSCRIBE: &str = "recordings-transcribe";
     pub const MODEL_CATALOG_REFRESH: &str = "model-catalog-refresh";
+    pub const WORKER_RESOURCES: &str = "worker-resources";
     pub const CAPTURE_RECONCILE: &str = "capture-reconcile";
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
