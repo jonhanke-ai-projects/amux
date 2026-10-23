@@ -33,7 +33,11 @@ $CS read <thread> [--since CKPT] [--types commandExecution] [--limit N] [--full]
 $CS events <thread> [--since CKPT]      # compact timeline: messages, commands (failed flag), tool calls
 $CS search "MXP-GS12" [--days 30]       # titles, messages, commands and tool outputs
 $CS watch <thread> --until-idle --duration 900   # NDJSON: item and status events, bounded
+$CS export [<thread>...] [--recent 5] [--exclude REGEX] [--out FILE]   # markdown transcripts
 ```
+
+`export --out` replaces the file atomically, so a fetch-only `.mdai` can show it
+with no model call: `fetch: https://localhost:8824/api/file/raw?path=<FILE>`.
 
 `<thread>` is a UUID, an exact name, or a fragment that fits one name. Exit 2 means
 no match or several; `candidates` lists them.

@@ -1111,6 +1111,114 @@ def cmd_watch(a):
     return 0
 
 
+def md_fence(text, lang=""):
+    text = text or ""
+    fence = "```"
+    while fence in text:
+        fence += "`"
+    return f"{fence}{lang}\n{text.rstrip()}\n{fence}"
+
+
+def md_item(rec):
+    """One normalised item as markdown. Messages in full; tool output as cut by norm_item."""
+    k, at = rec["kind"], (rec.get("completed_at") or rec.get("started_at") or "")[:19].replace("T", " ")
+    if k == "userMessage":
+        extra = f" (+{', '.join(rec['attachments'])})" if rec.get("attachments") else ""
+        return f"#### User, {at}{extra}\n\n{rec.get('text') or ''}"
+    if k == "agentMessage":
+        phase = f" ({rec['phase']})" if rec.get("phase") and rec["phase"] != "final_answer" else ""
+        return f"#### Codex, {at}{phase}\n\n{rec.get('text') or ''}"
+    if k == "commandExecution":
+        head = f"**Command**, {at}, exit {rec.get('exit_code')}"
+        if rec.get("duration_ms") is not None:
+            head += f", {rec['duration_ms'] / 1000:.1f}s"
+        out = md_fence(rec.get("command") or "", "bash")
+        if rec.get("output"):
+            out += "\n\nOutput:\n\n" + md_fence(rec["output"])
+        return head + "\n\n" + out
+    if k == "mcpToolCall":
+        body = md_fence(json.dumps(rec.get("arguments"), ensure_ascii=False, indent=1) if rec.get("arguments") is not None else "", "json")
+        res = rec.get("error") or rec.get("result")
+        if res is not None:
+            body += "\n\nResult:\n\n" + md_fence(res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, indent=1))
+        return f"**Tool** `{rec.get('server')}/{rec.get('tool')}`, {at}, {rec.get('status')}\n\n{body}"
+    if k == "reasoning":
+        summ = [x.get("text", x) if isinstance(x, dict) else x for x in rec.get("summary") or []]
+        return f"_Reasoning, {at}:_ " + " ".join(str(x) for x in summ) if summ else None
+    if k == "fileChange":
+        ch = (rec.get("detail") or {}).get("changes") or []
+        paths = [f"`{c.get('path')}` ({c.get('kind', {}).get('type') if isinstance(c.get('kind'), dict) else c.get('kind', '')})"
+                 for c in ch if isinstance(c, dict)]
+        return f"**File change**, {at}: " + (", ".join(paths) or "(no paths recorded)")
+    if k == "webSearch":
+        return f"**Web search**, {at}: {(rec.get('detail') or {}).get('query', '')}"
+    if k == "contextCompaction":
+        return f"_Context compacted, {at}_"
+    return f"**{k}**, {at}\n\n" + md_fence(json.dumps(rec.get("detail"), ensure_ascii=False, indent=1)[:2000], "json")
+
+
+def cmd_export(a):
+    """Markdown transcripts, newest thread first. Messages are complete; tool outputs are cut at
+    --output-chars. With --out the file is replaced atomically and a JSON summary is printed."""
+    if a.threads:
+        tids = [resolve(x) for x in a.threads]
+    else:
+        rows = discover(a.days, scan=a.scan)
+        rx = re.compile(a.exclude, re.I) if a.exclude else None
+        tids = [t["id"] for t in rows if not (rx and rx.search(t.get("name") or ""))][:a.recent]
+    parts, summary = [], []
+    for tid in tids:
+        t = read_thread(tid)
+        meta = thread_meta(t, state_rows([tid]).get(tid))
+        st = thread_status(tid, meta["rollout_path"], queued_counts([tid]).get(tid, 0))
+        entries, ck, more = fetch_items(tid, None, a.max_items, path=meta["rollout_path"])
+        recs = []
+        for e in entries:
+            r = norm_item(e, a.output_chars)
+            if r.get("kind") in ("userMessage", "agentMessage"):
+                r = norm_item(e, 0)          # messages are never cut
+            recs.append(r)
+        lines = [f"## {meta['name'] or meta['title_preview'][:80] or tid}", "",
+                 f"- id: `{tid}`", f"- source: {meta['source']} ({meta['originator'] or 'no originator'})",
+                 f"- status: **{st['state']}** ({st['basis']}): {st['detail']}",
+                 f"- created {meta['created_at']}, updated {meta['updated_at']}",
+                 f"- cwd: `{meta['cwd']}`"]
+        if meta["repository"]:
+            lines.append(f"- repo: {meta['repository']} @ {meta['branch'] or '?'}")
+        counts = {}
+        for r in recs:
+            counts[r["kind"]] = counts.get(r["kind"], 0) + 1
+        lines.append(f"- items: {len(recs)} ({', '.join(f'{k} {v}' for k, v in sorted(counts.items()))}), "
+                     f"history from {history_source(tid)}" + (f"; first {a.max_items} only" if more else ""))
+        lines.append("")
+        turn = None
+        for r in recs:
+            if r.get("turn_id") != turn:
+                turn = r.get("turn_id")
+                lines += ["---", "", f"### Turn `{turn}`", ""]
+            block = md_item(r)
+            if block:
+                lines += [block, ""]
+        parts.append("\n".join(lines))
+        summary.append({"id": tid, "name": meta["name"], "items": len(recs), "truncated_items": more,
+                        "status": st["state"], "updated_at": meta["updated_at"]})
+    doc = (f"# Codex threads: {len(tids)} most recent\n\n"
+           f"Generated {now_iso()} by `codex-skill export`. Messages are complete; command and tool "
+           f"outputs over {a.output_chars} characters are cut and marked. Secrets are replaced with "
+           f"[REDACTED] ({RED.hits} so far). Reasoning is encrypted by Codex, so only summaries appear.\n\n"
+           + "\n\n".join(parts) + "\n")
+    if not a.out:
+        sys.stdout.write(doc)
+        return 0
+    out = Path(a.out).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp")
+    tmp.write_text(doc, encoding="utf-8")
+    os.replace(tmp, out)              # readers (an open MDAI tab) never see half a file
+    return emit(envelope("export", ok=True, measured=True, path=str(out), bytes=len(doc.encode()),
+                         threads=summary))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="codex-skill", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1155,6 +1263,15 @@ def main(argv=None):
     c.add_argument("--max-threads", type=int, default=300)
     c.add_argument("--max-items", type=int, default=5000, help="items scanned per thread")
     c.add_argument("--titles-only", action="store_true")
+    c = sub.add_parser("export", help="markdown transcripts")
+    c.add_argument("threads", nargs="*", help="threads to export; default the --recent newest")
+    c.add_argument("--recent", type=int, default=5)
+    c.add_argument("--exclude", help="regex on thread names to skip when picking --recent")
+    c.add_argument("--days", type=float, default=30)
+    c.add_argument("--scan", type=int, default=500)
+    c.add_argument("--max-items", type=int, default=20000)
+    c.add_argument("--output-chars", type=int, default=3000, help="cut command/tool output at N chars")
+    c.add_argument("--out", help="write the markdown here (atomic replace) and print a JSON summary")
     c = sub.add_parser("watch")
     c.add_argument("threads", nargs="*")
     c.add_argument("--active", action="store_true")
@@ -1171,7 +1288,7 @@ def main(argv=None):
         ap.error("watch needs a thread or --active")
     try:
         return {"capabilities": cmd_capabilities, "list": cmd_list, "read": cmd_read, "status": cmd_status,
-                "events": cmd_events, "search": cmd_search, "watch": cmd_watch}[a.cmd](a)
+                "events": cmd_events, "search": cmd_search, "watch": cmd_watch, "export": cmd_export}[a.cmd](a)
     except Fail as e:
         return emit(envelope(a.cmd, ok=False, measured=False, error=e.code, message=e.message, **clip(e.extra, 500)), e.exit_code)
     except KeyboardInterrupt:

@@ -21,7 +21,7 @@
       "properties": {
         "tool": {"const": "codex-skill"},
         "version": {"type": "string"},
-        "command": {"enum": ["capabilities", "list", "read", "status", "events", "search", "watch"]},
+        "command": {"enum": ["capabilities", "list", "read", "status", "events", "search", "watch", "export"]},
         "generated_at": {"$ref": "#/$defs/iso"},
         "ok": {"type": "boolean"},
         "measured": {"type": "boolean", "description": "false when the probe could not run; never read an empty result without it"},
