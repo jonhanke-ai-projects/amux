@@ -1022,6 +1022,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 
 | file | control | handler | wiring |
 |---|---|---|---|
+| app.js | ${_psel ? Unselect : Select} | `` | onclick |
 | app.js | ${_workerLifecyclePending.get(s.name) \|\| (s.runn | `` | onclick |
 | app.js | ${caret} | `` | onclick |
 | app.js | ${esc(path)} | `` | onclick |
@@ -1141,6 +1142,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | … | `_connTab` | onclick |
 | index.html | Link | `_copyFileDeeplink` | onclick |
 | index.html | Path | `_copyFilePath` | onclick |
+| app.js | Copy MSG-${esc(_mid)} | `_copyMsgId` | onclick |
 | app.js | MSG-${esc(_mid)} | `_copyMsgId` | onclick |
 | index.html | Copy | `_copyOwnerLink` | onclick |
 | app.js | ${id} | `_copySchedId` | onclick |
@@ -1288,6 +1290,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy text | `_msgCopyBtn` | onclick |
 | app.js | Actions | `_msgMenu` | onclick |
 | app.js | ${_collapsed ?  : } | `_msgToggleCollapse` | onclick |
+| app.js | ${_collapsed ? Expand : Collapse} | `_msgToggleCollapse` | onclick |
 | app.js | ni-approve-all | `_niApproveAllArm` | onclick |
 | app.js | Cancel | `_niApproveAllCancel` | onclick |
 | app.js | Approve  always | `_niShowPanel` | onclick |
