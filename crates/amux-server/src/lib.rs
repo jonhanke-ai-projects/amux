@@ -671,6 +671,7 @@ async fn async_main() {
     drop(runtime_jobs::host_metrics::spawn(state.clone()));
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
     drop(runtime_jobs::host_guard::spawn());
+    drop(runtime_jobs::worker_resources::spawn(state.clone()));
     drop(runtime_jobs::goal_keeper::spawn(state.clone()));
     drop(runtime_jobs::task_titles::spawn(state.clone()));
     // Record tab transcripts (AMUX-4624): the folder is the work list, so a
