@@ -182,6 +182,39 @@ pub fn sample_workers() -> Vec<WorkerSnapshot> {
     by_worker.into_values().collect()
 }
 
+/// Store one tick's samples and prune past retention. `write_async` already
+/// runs this inside the writer's BEGIN IMMEDIATE, so it must not open its own
+/// transaction: the first version did, and every batch failed with "cannot
+/// start a transaction within a transaction", leaving the table empty.
+fn insert_samples(
+    conn: &rusqlite::Connection,
+    snapshots: &[WorkerSnapshot],
+    retain: u64,
+) -> rusqlite::Result<WriteOutcome> {
+    for s in snapshots {
+        conn.execute(
+            "INSERT INTO worker_resource_samples \
+             (session, rss_kb, cpu_pct, n_procs, n_threads) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                s.session,
+                s.rss_kb as i64,
+                s.cpu_pct,
+                s.n_procs,
+                s.n_threads
+            ],
+        )?;
+    }
+    conn.execute(
+        "DELETE FROM worker_resource_samples WHERE ts < datetime('now', ?1)",
+        [format!("-{retain} days")],
+    )?;
+    Ok(WriteOutcome {
+        applied: true,
+        events: vec![],
+    })
+}
+
 async fn tick(state: AppState) {
     let snapshots = tokio::task::spawn_blocking(sample_workers)
         .await
@@ -213,32 +246,7 @@ async fn tick(state: AppState) {
     let retain = retain_days();
     let outcome = state
         .store
-        .write_async(move |conn| {
-            let tx = conn.unchecked_transaction()?;
-            for s in &snapshots {
-                tx.execute(
-                    "INSERT INTO worker_resource_samples \
-                     (session, rss_kb, cpu_pct, n_procs, n_threads) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![
-                        s.session,
-                        s.rss_kb as i64,
-                        s.cpu_pct,
-                        s.n_procs,
-                        s.n_threads
-                    ],
-                )?;
-            }
-            tx.execute(
-                "DELETE FROM worker_resource_samples WHERE ts < datetime('now', ?1)",
-                [format!("-{retain} days")],
-            )?;
-            tx.commit()?;
-            Ok(WriteOutcome {
-                applied: true,
-                events: vec![],
-            })
-        })
+        .write_async(move |conn| insert_samples(conn, &snapshots, retain))
         .await;
 
     if let Err(e) = outcome {
@@ -287,5 +295,32 @@ mod tests {
     #[test]
     fn max_concurrent_defaults_to_zero() {
         assert_eq!(max_concurrent_active(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_tick_batch_is_stored_through_the_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("wr.db")).unwrap();
+        let snaps = vec![WorkerSnapshot {
+            session: "w1".into(),
+            rss_kb: 2048,
+            cpu_pct: 1.5,
+            n_procs: 3,
+            n_threads: 9,
+        }];
+        store
+            .write_async(move |conn| insert_samples(conn, &snaps, 7))
+            .await
+            .expect("the batch must commit inside the writer's transaction");
+        let n: i64 = store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM worker_resource_samples WHERE session='w1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }
