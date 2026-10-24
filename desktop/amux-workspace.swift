@@ -618,9 +618,26 @@ extension AppDelegate {
         var zone: (zone: SnapZone, frame: NSRect)? = nil
         var pane: PaneDropTarget? = nil
         var at = Pointer.location
+        var sawDown = false
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] t in
             guard let self = self else { t.invalidate(); return }
+            if !Pointer.buttonDown, !sawDown {
+                // The tear was seen only after the drop: AppKit's tab drag gives
+                // the app no events, and the press monitor missed the press
+                // (Ethan, 2026-10-23 21:00: "im dragging tabs nothing is
+                // happening"). The pointer is where the tab was dropped, and
+                // AppKit puts the window the tab became with its title bar under
+                // it. A tab moved by the menu or a shortcut lands elsewhere and
+                // is not docked.
+                let torn = candidates.filter { w in
+                    (abs(w.frame.minX - source.minX) > 1 || abs(w.frame.maxY - source.maxY) > 1)
+                        && w.frame.insetBy(dx: -8, dy: -8).contains(at) && at.y >= w.frame.maxY - 80
+                }
+                if !torn.isEmpty { pane = self.paneDropTarget(at: at, excluding: torn) }
+                if let p = pane { dlog("verdict=tab_pane_drop_found_at_release zone=\(p.name)") }
+            }
             if Pointer.buttonDown {
+                sawDown = true
                 at = Pointer.location
                 // Over an amux window's content: a pane of that window. The torn
                 // window follows the pointer, so it is not the one under it.
@@ -736,7 +753,12 @@ extension AppDelegate {
         case "/press-tab": press(true)          // the mouse-down that starts a tab drag
         case "/press-content": press(false)     // a click in the page, which must not
         // What AppKit does with a tab dropped outside every tab bar.
-        case "/tear-tab": arrangeTarget?.moveTabToNewWindow(nil)
+        // ?x=&y= puts the new window's title bar at that point, as AppKit
+        // does with a tab dropped there.
+        case "/tear-tab":
+            let w = arrangeTarget
+            w?.moveTabToNewWindow(nil)
+            if let w = w, q.contains(where: { $0.name == "x" }) { w.setFrameTopLeftPoint(NSPoint(x: num("x") - w.frame.width / 2, y: num("y") + 14)) }
         // A real drop: the button comes up and AppKit splits the tab off in the same instant.
         // ?title= drops that tab of the group rather than the one showing.
         case "/drop-tab":

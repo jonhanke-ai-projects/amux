@@ -227,6 +227,38 @@ try:
 finally:
     app.stop()
 
+print("11. the press never reaches the app and the tear is seen after the drop: still a pane")
+app = App()
+try:
+    st = app.state()
+    cx, cy, cw, ch = rect(st["content_frame"])
+    app.send("activate", 0.3)
+    # A real tab drag: AppKit's drag session gives the app no events, so all it
+    # sees is the button already up, the pointer where the tab was dropped, and
+    # a new window there.
+    x, y = cx + cw * 0.1, cy + ch * 0.5
+    app.send(f"pointer?x={x}&y={y}&down=0", 0.1)
+    app.send(f"tear-tab?x={x}&y={y}", 1.5)
+    st = app.state()
+    g = grid_window(st)
+    check("the dropped tab became the left pane", g is not None and g["grid"] == "r0.500(0,1)" and g["panes"][0] == "Messages", str(st["windows"]))
+    check("it says it found the pane at the release", "verdict=tab_pane_drop_found_at_release zone=left" in log())
+finally:
+    app.stop()
+
+print("12. a tab moved to a new window by the menu, pointer over a page: not docked")
+app = App()
+try:
+    st = app.state()
+    cx, cy, cw, ch = rect(st["content_frame"])
+    app.send("activate", 0.3)
+    app.send(f"pointer?x={cx + cw * 0.5}&y={cy + ch * 0.4}&down=0", 0.1)
+    app.send("tear-tab", 1.5)
+    st = app.state()
+    check("no grid: the moved tab is its own window", grid_window(st) is None and any(w["tabs"] == 1 for w in st["windows"]), str(st["windows"]))
+finally:
+    app.stop()
+
 print("10. the window's own page closed: the next pane takes the window")
 app = App()
 try:
