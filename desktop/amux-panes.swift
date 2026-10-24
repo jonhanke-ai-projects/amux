@@ -431,18 +431,26 @@ extension AppDelegate {
     }
 
     /// The window a tab tore off into, finished by a drop on a pane zone.
-    func finishPaneDrop(_ drop: PaneDropTarget, at p: NSPoint, from group: [NSWindow], source: NSRect) {
+    func finishPaneDrop(_ drop: PaneDropTarget, at p: NSPoint, from group: [NSWindow], source: NSRect, pressed: NSWindow? = nil) {
         let alone = group.filter { w in controllers.contains { $0.window === w } && w.isVisible && (w.tabbedWindows?.count ?? 1) == 1 }
-        guard let tw = alone.first(where: { abs($0.frame.minX - source.minX) > 1 || abs($0.frame.maxY - source.maxY) > 1 }),
-              let torn = controllers.first(where: { $0.window === tw }) else {
-            dlog("verdict=tab_drag_not_torn_off zone=pane")
+        // The window the tab became, when AppKit tore it off. Dropped on a
+        // window's own page AppKit cancels the drag instead and the tab stays
+        // in the bar (Ethan, 2026-10-24 08:07: zone=pane, then
+        // tab_drag_not_torn_off, five times): then the pressed tab is the one.
+        let tornOff = alone.first(where: { abs($0.frame.minX - source.minX) > 1 || abs($0.frame.maxY - source.maxY) > 1 })
+        guard let tw = tornOff ?? pressed, let torn = controllers.first(where: { $0.window === tw }) else {
+            dlog("verdict=tab_drag_not_torn_off zone=pane pressed=\(pressed == nil ? 0 : 1)")
             return
         }
+        if tornOff == nil { dlog("verdict=tab_pane_drop_from_bar") }
         // Dropped on the window it came from: that window is now whichever of
         // its tabs is showing.
         var host = drop.host
         if host === torn {
-            guard let w = group.first(where: { $0 !== tw && $0.isVisible && ($0.tabGroup?.selectedWindow === $0 || $0.tabbedWindows == nil) }),
+            // Still in the bar (no tear): the tab beside it takes the window.
+            let others = group.filter { w in w !== tw && controllers.contains { $0.window === w } }
+            guard let w = others.first(where: { $0.isVisible && ($0.tabGroup?.selectedWindow === $0 || $0.tabbedWindows == nil) })
+                    ?? (tornOff == nil ? others.first : nil),
                   let h = controllers.first(where: { $0.window === w }) else { dlog("verdict=pane_dock_refused reason=no_host"); return }
             host = h
         }

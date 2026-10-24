@@ -665,7 +665,11 @@ extension AppDelegate {
               let group = w.tabbedWindows, group.count > 1, !w.styleMask.contains(.fullScreen),
               e.locationInWindow.y >= (w.contentView?.frame.maxY ?? .infinity) else { return }
         let source = w.frame
-        dlog("verdict=tab_press_tracked tabs=\(group.count) button_down=\(Pointer.buttonDown ? 1 : 0)")
+        // The tab under the press: a drop on a window's own page is cancelled
+        // by AppKit and the tab goes back to the bar, so docking it needs to
+        // know which tab it was.
+        let pressed = tabWindow(at: e.locationInWindow, in: w, group: group)
+        dlog("verdict=tab_press_tracked tabs=\(group.count) button_down=\(Pointer.buttonDown ? 1 : 0) tab=\(pressed.map { g in controllers.first { $0.window === g }?.pageTitle ?? "?" } ?? "-")")
         tabDragTimer?.invalidate()
         // The last place the drag was seen with the button down: a real drop
         // lands there, and AppKit may already have split the tab off (and
@@ -698,7 +702,7 @@ extension AppDelegate {
             if let p = pane {
                 self.lastTabPlaced = Date()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    self?.finishPaneDrop(p, at: at, from: group, source: source)
+                    self?.finishPaneDrop(p, at: at, from: group, source: source, pressed: pressed)
                 }
                 return
             }
@@ -714,6 +718,40 @@ extension AppDelegate {
         }
         RunLoop.main.add(t, forMode: .common)
         tabDragTimer = t
+    }
+
+    /// Which tab of `group` is at `p` (window coordinates) in `w`'s tab bar:
+    /// from AppKit's own tab buttons when it has them, else the bar split
+    /// evenly. Tabs are laid out in tabbedWindows order.
+    func tabWindow(at p: NSPoint, in w: NSWindow, group: [NSWindow]) -> NSWindow? {
+        guard group.count > 1 else { return nil }
+        let buttons = tabButtonFrames(in: w)
+        if buttons.count == group.count, let i = buttons.firstIndex(where: { $0.minX <= p.x && p.x < $0.maxX }) { return group[i] }
+        let plus: CGFloat = 28   // the bar's + button
+        let width = (w.frame.width - plus) / CGFloat(group.count)
+        guard width > 0 else { return nil }
+        let i = Int(p.x / width)
+        dlog("verdict=tab_index_by_geometry buttons=\(buttons.count) tabs=\(group.count) kinds=\(Set(tabButtons(in: w).map { $0.name }).sorted().joined(separator: ","))")
+        return i >= 0 && i < group.count ? group[i] : nil
+    }
+
+    /// AppKit's tab buttons in `w`'s tab bar, left to right, in window coordinates.
+    func tabButtonFrames(in w: NSWindow) -> [NSRect] { tabButtons(in: w).map { $0.frame } }
+
+    /// The views behind tabButtonFrames, with their class names (for the log).
+    func tabButtons(in w: NSWindow) -> [(name: String, frame: NSRect)] {
+        guard let frameView = w.contentView?.superview else { return [] }
+        var buttons: [(name: String, frame: NSRect)] = []
+        func walk(_ v: NSView) {
+            let name = String(describing: type(of: v))
+            // The bar's + button is a tab-bar button too; it opens a tab, it is not one.
+            if (name.contains("TabButton") || name == "NSTabBarItemView") && !name.contains("New") && !name.contains("Add") {
+                buttons.append((name, v.convert(v.bounds, to: nil))); return
+            }
+            v.subviews.forEach(walk)
+        }
+        walk(frameView)
+        return buttons.sorted { $0.frame.minX < $1.frame.minX }
     }
 
     func placeTornTab(from group: [NSWindow], source: NSRect, zone: (zone: SnapZone, frame: NSRect)?) {
@@ -746,7 +784,14 @@ extension AppDelegate {
         func num(_ k: String) -> CGFloat { CGFloat(Double(q.first { $0.name == k }?.value ?? "") ?? 0) }
         func press(_ inTabBar: Bool) {
             guard let w = arrangeTarget, let cv = w.contentView else { return }
-            let p = inTabBar ? NSPoint(x: cv.frame.midX, y: cv.frame.maxY + 8) : NSPoint(x: cv.frame.midX, y: cv.frame.midY)
+            var p = inTabBar ? NSPoint(x: cv.frame.midX, y: cv.frame.maxY + 8) : NSPoint(x: cv.frame.midX, y: cv.frame.midY)
+            // ?title= presses that tab's own button in AppKit's tab bar.
+            if inTabBar, let t = q.first(where: { $0.name == "title" })?.value, let group = w.tabbedWindows,
+               let i = group.firstIndex(where: { tw in controllers.first { $0.window === tw }?.pageTitle == t }) {
+                let b = tabButtonFrames(in: w)
+                if b.count == group.count { p = NSPoint(x: b[i].midX, y: b[i].midY) }
+                dlog("verdict=test_press_tab title=\(t) buttons=\(b.count) tabs=\(group.count)")
+            }
             if let e = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                           windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { tabPressed(e) }
         }

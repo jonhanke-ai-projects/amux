@@ -308,6 +308,31 @@ finally:
     for o in overlays:
         o.terminate()
 
+for case, title, fx, want_first in [("14. AppKit cancels a drop on the page (no tear): the pressed hidden tab becomes the pane", "Calendar", 0.9, False),
+                                    ("15. the showing tab, dropped on its own page with no tear: it becomes the pane, the next tab keeps the window", "Messages", 0.1, True)]:
+    print(case)
+    app = App()
+    try:
+        st = app.state()
+        cx, cy, cw, ch = rect(st["content_frame"])
+        app.send("activate", 0.3)
+        app.send(f"pointer?x={src[0] + src[2] / 2}&y={src[1] + src[3] - 10}&down=1", 0.1)
+        app.send(f"press-tab?title={title}", 0.1)
+        app.send(f"pointer?x={cx + cw * fx}&y={cy + ch * 0.5}&down=1", 0.5)
+        mid = app.state()
+        check("the preview shows during the drag", mid["preview"], mid["preview_frame"])
+        # The release, and no tear: AppKit put the tab back in the bar.
+        app.send(f"pointer?x={cx + cw * fx}&y={cy + ch * 0.5}&down=0", 1.5)
+        app.send("pointer-clear", 0.2)
+        st = app.state()
+        g = grid_window(st)
+        side = 0 if want_first else 1
+        check(f"{title} is the {'left' if want_first else 'right'} pane", g is not None and g["grid"] == "r0.500(0,1)" and g["panes"][side] == title, str(st["windows"]))
+        check("the press named the tab from AppKit's tab buttons", f"test_press_tab title={title} buttons=5 tabs=5" in log(), "")
+        check("it says the drop came from the bar", "verdict=tab_pane_drop_from_bar" in log())
+    finally:
+        app.stop()
+
 print("12. a tab moved to a new window by the menu, pointer over a page: not docked")
 app = App()
 try:
