@@ -57318,6 +57318,9 @@ function _dbSetMode(mode) {
     if (ta && !ta.value.trim() && _dbTable) ta.value = 'SELECT * FROM ' + _dbTable + ' LIMIT 100;';
     setTimeout(() => ta && ta.focus(), 30);
   }
+  if (mode === 'ask') {
+    setTimeout(() => { const inp = document.getElementById('db-ask-input'); if (inp) inp.focus(); }, 30);
+  }
 }
 
 async function _dbLoadData() {
@@ -57468,6 +57471,210 @@ async function _sqlRun() {
     status.classList.add('err'); status.textContent = 'Request failed: ' + e.message;
     results.innerHTML = '<div style="padding:16px;color:#f85149;font-size:0.82rem;font-family:var(--mono);white-space:pre-wrap;">' + esc(e.message) + '</div>';
   }
+}
+
+// ── Text-to-SQL (Ask pane) ────────────────────────────────────────────────────
+let _dbAskTurns = [];
+let _dbAskBusy = false;
+
+async function _dbAskRun() {
+  if (_dbAskBusy) return;
+  const inp = document.getElementById('db-ask-input');
+  const question = (inp ? inp.value : '').trim();
+  if (!question) return;
+  _dbAskBusy = true;
+  const sendBtn = document.getElementById('db-ask-send');
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '…'; }
+  if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+
+  const hist = document.getElementById('db-ask-history');
+  const empty = hist ? hist.querySelector('.db-ask-empty') : null;
+  if (empty) empty.remove();
+
+  // Show loading indicator
+  const loadId = 'db-ask-load-' + Date.now();
+  if (hist) hist.insertAdjacentHTML('beforeend',
+    '<div id="' + loadId + '" class="db-ask-turn"><div class="db-ask-q"><div class="db-ask-q-icon">Q</div><span>' +
+    esc(question) + '</span></div><div class="db-ask-loading"><span class="dot">●</span> ' +
+    '<span class="dot">●</span> <span class="dot">●</span> Generating SQL…</div></div>');
+  const loadEl = document.getElementById(loadId);
+  if (hist) hist.scrollTop = hist.scrollHeight;
+
+  const history = _dbAskTurns.map(t => ({
+    question: t.question, sql: t.sql,
+    rowcount: t.rowcount, error: t.error
+  }));
+
+  try {
+    const resp = await fetch(API + '/api/sql/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, history }),
+    });
+    const d = await resp.json();
+    if (!resp.ok && !d.sql) throw new Error(d.error || ('HTTP ' + resp.status));
+    const turn = { question, sql: d.sql || '', columns: d.columns, rows: d.rows,
+      rowcount: d.rowcount, error: d.error, via: d.via, ms: d.ms, model_ms: d.model_ms, query_ms: d.query_ms,
+      truncated: d.truncated };
+    _dbAskTurns.push(turn);
+    if (loadEl) loadEl.remove();
+    _dbAskRenderTurn(turn, _dbAskTurns.length - 1);
+  } catch (e) {
+    const turn = { question, sql: '', error: e.message };
+    _dbAskTurns.push(turn);
+    if (loadEl) loadEl.remove();
+    _dbAskRenderTurn(turn, _dbAskTurns.length - 1);
+  } finally {
+    _dbAskBusy = false;
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Ask'; }
+    if (hist) hist.scrollTop = hist.scrollHeight;
+  }
+}
+
+function _dbAskRenderTurn(turn, idx) {
+  const hist = document.getElementById('db-ask-history');
+  if (!hist) return;
+  const id = 'db-ask-turn-' + idx;
+  let html = '<div class="db-ask-turn" id="' + id + '">';
+  html += '<div class="db-ask-q"><div class="db-ask-q-icon">Q</div><span>' + esc(turn.question) + '</span></div>';
+
+  if (turn.sql) {
+    html += '<div class="db-ask-sql-wrap">' +
+      '<pre class="db-ask-sql-code" id="db-ask-sql-pre-' + idx + '" onclick="_dbAskEditSql(' + idx + ')">' +
+      '<code class="language-sql">' + esc(turn.sql) + '</code></pre>' +
+      '<textarea class="db-ask-sql-edit" id="db-ask-sql-edit-' + idx +
+      '" spellcheck="false" style="display:none;" onblur="_dbAskFinishEdit(' + idx + ')">' +
+      esc(turn.sql) + '</textarea>';
+    html += '<div class="db-ask-sql-actions">' +
+      '<button class="btn" onclick="_dbAskCopySql(' + idx + ')" title="Copy SQL">Copy</button>' +
+      '<button class="btn" onclick="_dbAskRerun(' + idx + ')" title="Edit and re-run">Re-run</button>' +
+      '<button class="btn" onclick="_dbAskToQuery(' + idx + ')" title="Open in Query pane">Query</button>' +
+      '</div></div>';
+  }
+
+  if (turn.error && !turn.columns) {
+    html += '<div class="db-ask-err">' + esc(turn.error) + '</div>';
+  } else if (turn.columns && turn.rows) {
+    html += '<div class="db-ask-result-grid" id="db-ask-grid-' + idx + '"></div>';
+    html += '<div class="db-ask-meta">';
+    html += '<span>' + turn.rowcount + (turn.truncated ? '+ (capped)' : '') + ' row' + (turn.rowcount === 1 ? '' : 's') + '</span>';
+    if (turn.ms != null) html += '<span>' + turn.ms + 'ms total</span>';
+    if (turn.model_ms != null) html += '<span>model ' + turn.model_ms + 'ms</span>';
+    if (turn.query_ms != null) html += '<span>query ' + turn.query_ms + 'ms</span>';
+    if (turn.via) html += '<span>via ' + esc(turn.via) + '</span>';
+    if (turn.error) html += '<span style="color:#f85149;">' + esc(turn.error) + '</span>';
+    html += '</div>';
+  }
+  html += '</div>';
+  hist.insertAdjacentHTML('beforeend', html);
+
+  if (turn.columns && turn.rows) {
+    const grid = document.getElementById('db-ask-grid-' + idx);
+    if (grid) _dbRenderGrid(grid, turn.columns, turn.rows, false);
+  }
+  const pre = document.getElementById('db-ask-sql-pre-' + idx);
+  if (pre && typeof hljs !== 'undefined') {
+    hljs.highlightElement(pre.querySelector('code'));
+  }
+}
+
+function _dbAskEditSql(idx) {
+  const pre = document.getElementById('db-ask-sql-pre-' + idx);
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!pre || !ta) return;
+  pre.style.display = 'none';
+  ta.style.display = '';
+  ta.focus();
+}
+
+function _dbAskFinishEdit(idx) {
+  const pre = document.getElementById('db-ask-sql-pre-' + idx);
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!pre || !ta) return;
+  ta.style.display = 'none';
+  pre.style.display = '';
+  const code = pre.querySelector('code');
+  if (code) {
+    code.textContent = ta.value;
+    code.removeAttribute('data-highlighted');
+    if (typeof hljs !== 'undefined') hljs.highlightElement(code);
+  }
+}
+
+function _dbAskCopySql(idx) {
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!ta) return;
+  navigator.clipboard.writeText(ta.value).then(() => {
+    if (typeof showToast === 'function') showToast('SQL copied');
+  });
+}
+
+function _dbAskRerun(idx) {
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!ta) return;
+  ta.removeAttribute('readonly');
+  ta.focus();
+  const sql = ta.value.trim();
+  if (!sql) return;
+  const status = document.getElementById('sql-status');
+  if (status) { status.classList.remove('err'); status.textContent = 'Re-running…'; }
+  _sqlFetchJson(API + '/api/sql', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql, write: false }),
+  }).then(d => {
+    _dbAskTurns[idx].sql = sql;
+    _dbAskTurns[idx].columns = d.columns;
+    _dbAskTurns[idx].rows = d.rows;
+    _dbAskTurns[idx].rowcount = d.rowcount;
+    _dbAskTurns[idx].error = null;
+    const grid = document.getElementById('db-ask-grid-' + idx);
+    if (grid) _dbRenderGrid(grid, d.columns, d.rows, false);
+    const turnEl = document.getElementById('db-ask-turn-' + idx);
+    if (turnEl) {
+      const meta = turnEl.querySelector('.db-ask-meta');
+      if (meta) meta.innerHTML = '<span>' + d.rowcount + ' row' + (d.rowcount === 1 ? '' : 's') + '</span><span>' + d.ms + 'ms</span><span>manual re-run</span>';
+      const errEl = turnEl.querySelector('.db-ask-err');
+      if (errEl) errEl.remove();
+      if (!grid) {
+        const wrap = turnEl.querySelector('.db-ask-sql-wrap');
+        if (wrap) {
+          wrap.insertAdjacentHTML('afterend', '<div class="db-ask-result-grid" id="db-ask-grid-' + idx + '"></div>');
+          const newGrid = document.getElementById('db-ask-grid-' + idx);
+          if (newGrid) _dbRenderGrid(newGrid, d.columns, d.rows, false);
+        }
+      }
+    }
+    if (status) status.textContent = d.rowcount + ' row' + (d.rowcount === 1 ? '' : 's') + ' · ' + d.ms + 'ms';
+  }).catch(e => {
+    _dbAskTurns[idx].error = e.message;
+    if (status) { status.classList.add('err'); status.textContent = e.message; }
+    const turnEl = document.getElementById('db-ask-turn-' + idx);
+    if (turnEl) {
+      let errEl = turnEl.querySelector('.db-ask-err');
+      if (!errEl) {
+        const wrap = turnEl.querySelector('.db-ask-sql-wrap');
+        if (wrap) wrap.insertAdjacentHTML('afterend', '<div class="db-ask-err"></div>');
+        errEl = turnEl.querySelector('.db-ask-err');
+      }
+      if (errEl) errEl.textContent = e.message;
+    }
+  });
+}
+
+function _dbAskToQuery(idx) {
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!ta) return;
+  const editor = document.getElementById('sql-editor');
+  if (editor) editor.value = ta.value;
+  _dbSetMode('query');
+}
+
+function _dbAskClear() {
+  _dbAskTurns = [];
+  const hist = document.getElementById('db-ask-history');
+  if (hist) hist.innerHTML = '<div class="db-ask-empty">Ask a question about your data in plain English.<br>' +
+    'e.g. <code>How many board cards were created this week?</code><br>' +
+    'or <code>Show the top 10 sessions by message count</code></div>';
 }
 
 // ── Notes tab ─────────────────────────────────────────────────────────────────

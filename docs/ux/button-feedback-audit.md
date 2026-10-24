@@ -152,6 +152,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | button | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | cv-all-item | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Send | `_cvSend` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js | Re-run | `_dbAskRerun` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Ask | `_dbAskRun` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ? | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | button | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Refresh | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
@@ -1157,6 +1159,10 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | button | `_cvToggleSec` | onclick |
 | index.html | cv-people-sec | `_cvToggleSec` | onclick |
 | index.html | Collapse the sidebar | `_cvToggleSide` | onclick |
+| app.js | Copy | `_dbAskCopySql` | onclick |
+| app.js | + | `_dbAskEditSql` | onclick |
+| app.js | Query | `_dbAskToQuery` | onclick |
+| index.html | Ask | `_dbSetMode` | onclick |
 | index.html | Data | `_dbSetMode` | onclick |
 | index.html | Query | `_dbSetMode` | onclick |
 | index.html | Structure | `_dbSetMode` | onclick |
