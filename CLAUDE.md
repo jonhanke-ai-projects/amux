@@ -93,16 +93,25 @@ Verify a hook by what it WROTE, not by the settings file.
 
 ## Workflow
 
+- **Everything on main: no branches, no forks** (Ethan, 2026-10-24). A task is done when it
+  is on `origin/main`. Work in a detached worktree at `origin/main`, commit, then
+  `git fetch origin main && git rebase origin/main && git push origin HEAD:main` (retry on a
+  lost race). The pre-commit hook refuses a commit onto a branch that has forked from
+  `origin/main` (`fork_commit`), because those commits can never deploy.
+- **Only main deploys.** The builder activates the newest `origin/main` commit that passed
+  CI (`rust` and `checks`), within about a minute. A local commit, a branch, a fork or a
+  hand-built binary deploys nothing and is replaced. Never copy a build over
+  `~/.local/bin/amux-server-rs`: on 2026-10-24 a hand build of a two-week-old fork ran the
+  Mac for hours. Settings shows what the server runs against main (`GET /api/pull`).
 - **No auto-pull.** Shared checkout; the freshness hook reports staleness, the human decides.
   Asked to bring a checkout current, run `amux sync-checkout` (`--check` to only report): it
   fast-forwards when nothing can be lost and otherwise names the blockers in seconds. Do not
   diff the tree by hand.
-- **Commit after every completed task.** Committing deploys locally (builder adopts within ~60s).
 - **Bash CLI ships via `make install-cli`** (also part of `install.sh`).
   `check-and-commit.sh` checks saves; installation validates the exact published bytes.
-  Server ships on COMMIT via the auto-builder.
+  The server ships when its commit is on origin/main and passes CI.
 - **`CARGO_TARGET_DIR=~/.amux/rust-build-target`** -- one shared build dir, never per-session.
-- **Bracket measurements with `/health`'s `build`** -- the builder swaps the binary on any commit.
+- **Bracket measurements with `/health`'s `build`** -- the builder swaps the binary when main moves.
   Use `commit` for "did source change?", `build` for "same process image?".
 - **Pre-fix specimen: `<your-sha>^`**, never `HEAD~1` (shared checkout).
 - **Client version is derived; do not bump it.** app.js/sw.js hold `__AMUX_ASSET_VER__`;

@@ -38,6 +38,41 @@ set -e
 ROOT="$(git rev-parse --show-toplevel)"
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
 
+# EVERYTHING ON MAIN: refuse a commit onto a fork (Ethan, 2026-10-24: "no
+# branches, no forks, everything main"). The shared checkout's main forked from
+# origin on 2026-10-07 and took ~90 commits over two weeks, 1300 behind origin,
+# none pushable and none reaching anyone; a server hand-built from it then ran
+# the Mac. Being ahead (commits not pushed yet) or a little behind (a race) is
+# normal. Being far behind while also ahead means these commits will never
+# fast-forward onto main, so stop here, where the fix is one rebase.
+# AMUX_FORK_BEHIND_MAX (default 30) is the "far" line; AMUX_ALLOW_FORK_COMMIT=<why>
+# commits anyway and logs the reason.
+if git rev-parse --verify -q origin/main >/dev/null 2>&1 && git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  _fk_behind=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+  _fk_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+  _fk_max=${AMUX_FORK_BEHIND_MAX:-30}
+  if [ "$_fk_behind" -gt "$_fk_max" ] && [ "$_fk_ahead" -gt 0 ]; then
+    _fk_base=$(git merge-base HEAD origin/main 2>/dev/null)
+    _fk_when=$(git log -1 --format=%cd --date=short "$_fk_base" 2>/dev/null)
+    if [ -n "${AMUX_ALLOW_FORK_COMMIT:-}" ]; then
+      echo "amux: WARN fork_commit_allowed behind=$_fk_behind ahead=$_fk_ahead reason=${AMUX_ALLOW_FORK_COMMIT} measured=true" >&2
+    else
+      cat >&2 <<EOF_FORK
+amux: REFUSED fork_commit behind=$_fk_behind ahead=$_fk_ahead measured=true
+This branch forked from origin/main on ${_fk_when:-?} ($_fk_base): it has $_fk_ahead commit(s)
+origin lacks and lacks $_fk_behind of origin's. A commit here cannot reach main and
+cannot deploy (the Mac's builder deploys origin/main only).
+Put the work on main instead:
+  git fetch origin main
+  git worktree add --detach /tmp/onmain-\$\$ origin/main   # or rebase this branch onto origin/main
+  # re-apply your change there, commit, then: git push origin HEAD:main
+Commit here anyway: AMUX_ALLOW_FORK_COMMIT="<why>" git commit ...
+EOF_FORK
+      exit 1
+    fi
+  fi
+fi
+
 # ── RECORD WHAT THIS COMMIT IS SUPPOSED TO CONTAIN (AF-565) ──────────────────
 #
 # For a pathspec commit (`git commit -- <paths>`) git builds a TEMPORARY index

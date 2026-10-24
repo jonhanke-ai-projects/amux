@@ -49682,6 +49682,7 @@ function openAbout() {
     if (v) v.innerHTML = 'v' + APP_VER + ' &#x21BB;';
   } catch (e) {}
   document.getElementById('about-overlay').classList.add('active');
+  _loadServerDeployStatus();
   document.getElementById('add-server-form').style.display = 'none';
   renderServerList();
   renderDebugInfo();
@@ -52635,6 +52636,26 @@ function forceUpdate() {
   });
 }
 
+// What the server runs against main (GET /api/pull). Ethan, 2026-10-24: "i
+// should easily keep the mac server up to date". The sentence is the server's;
+// this only colours it, so the card can never claim more than was measured.
+function _renderServerDeployStatus(d) {
+  const el = document.getElementById('server-deploy-status');
+  if (!el || !d || !d.summary) return;
+  el.textContent = d.summary;
+  el.dataset.state = d.state || '';
+  el.style.color = d.state === 'current' ? 'var(--green)'
+    : (d.state === 'off_main' || d.state === 'unmeasured') ? 'var(--red)' : 'var(--dim)';
+}
+async function _loadServerDeployStatus() {
+  const el = document.getElementById('server-deploy-status');
+  if (!el || window._cloudEmail) return;
+  try {
+    const r = await fetch(API + '/api/pull');
+    if (r.ok) _renderServerDeployStatus(await r.json());
+  } catch (e) { /* the card keeps its last line; the button still works */ }
+}
+
 async function pullFromRemote(btn) {
   const el = document.getElementById('pull-status');
   btn.disabled = true; btn.textContent = '⏳ Pulling...';
@@ -52653,8 +52674,10 @@ async function pullFromRemote(btn) {
     try { d = JSON.parse(body); } catch (_) { /* handled below, with the status */ }
 
     if (d) {
-      el.textContent = d.output || (d.ok ? 'Up to date' : 'Failed');
-      el.style.color = d.ok ? 'var(--green)' : 'var(--red)';
+      if (d.deploy) _renderServerDeployStatus(d.deploy);
+      el.textContent = (d.output || (d.ok ? 'Fetched' : 'Failed'))
+        + (d.builder ? (d.builder.kicked ? '\nBuilder started.' : '\nBuilder not started: ' + (d.builder.why || 'unknown')) : '');
+      el.style.color = d.ok ? 'var(--dim)' : 'var(--red)';
       if (d.ok && !(d.output || '').includes('Already up to date')) {
         setTimeout(() => forceUpdate(), 1500);
       }
