@@ -5567,7 +5567,7 @@ USAGE
   # shellcheck disable=SC2064
   trap "rm -f '$resp'" EXIT
   # Sent gzipped: a board with years of history is hundreds of MB of JSON.
-  local gz; gz=$(mktemp -t amuxmove) || die "amux import: no temp file"
+  local gz; gz=$(mktemp -t amuxmove.XXXXXX) || die "amux import: no temp file"
   # shellcheck disable=SC2064  # expanded now on purpose: the paths are locals
   # Expanded now on purpose: both paths are locals, gone by the time EXIT fires.
   # shellcheck disable=SC2064
@@ -9042,12 +9042,21 @@ _sync_checkout_override() { # <remote> <branch|""> <check 0|1>
   # The backup: HEAD's history plus a snapshot of the whole working tree, built
   # in a private index so the shared one is not touched until the reset.
   local idx tree snap ref
+  # The snapshot is a commit, so it needs an identity. A box where git cannot
+  # name the user (a CI runner whose account has no full name, a fresh
+  # machine) gets "amux" for this one commit rather than stopping with
+  # "empty ident name". A configured identity is used as is.
+  local who=()
+  if ! { git var GIT_AUTHOR_IDENT && git var GIT_COMMITTER_IDENT; } >/dev/null 2>&1; then
+    who=(GIT_AUTHOR_NAME=amux GIT_AUTHOR_EMAIL=amux@localhost GIT_COMMITTER_NAME=amux GIT_COMMITTER_EMAIL=amux@localhost)
+    _so_log "verdict=override_backup_ident_fallback measured=true (git has no usable identity here; the backup commit is authored as amux)"
+  fi
   # A template with X's: GNU mktemp refuses `-t name` without them (CI, Linux).
   idx="$(mktemp "${TMPDIR:-/tmp}/amux-override-idx.XXXXXX")"
   cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true
   GIT_INDEX_FILE="$idx" git -C "$top" add -A . 2>/dev/null \
     && tree="$(GIT_INDEX_FILE="$idx" git write-tree)" \
-    && snap="$(git commit-tree "$tree" -p "$head" -m "amux sync-checkout --override: local state of $top before matching $remote/$branch ($ahead commit(s), $dirty path(s))")"
+    && snap="$(env ${who[@]+"${who[@]}"} git commit-tree "$tree" -p "$head" -m "amux sync-checkout --override: local state of $top before matching $remote/$branch ($ahead commit(s), $dirty path(s))")"
   rm -f "$idx"
   if [ -z "${snap:-}" ]; then _so_log "verdict=backup_failed measured=true override=1 (nothing was changed)"; return 1; fi
   ref="refs/amux/pre-override/$(date -u +%Y%m%dT%H%M%SZ)"

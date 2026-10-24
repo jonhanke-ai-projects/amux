@@ -18,7 +18,10 @@ g clone -q -b main "$T/up.git" "$T/me" 2>/dev/null
 cd "$T/me"
 echo mine >> f && g commit -qam "local commit"
 echo dirty >> f; echo new > untracked.txt; echo ignored > junk.log; echo '*.log' > .git/info/exclude
-run() { HOME="$T/home" "$AMUX" sync-checkout "$@" 2>&1; }
+# Empty name variables make git refuse every identity, the way a CI runner
+# whose account has no full name does (2026-10-24: checks red on "empty ident
+# name"). The fixture's own commits above use `g`, which runs outside this.
+run() { HOME="$T/home" GIT_AUTHOR_NAME="" GIT_COMMITTER_NAME="" "$AMUX" sync-checkout "$@" 2>&1; }
 
 echo "1. --check reports and changes nothing"
 out=$(run --override --check)

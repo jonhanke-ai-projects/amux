@@ -10,7 +10,7 @@ TO="${FUNNEL_MAIL_TO:-ethan@mixpeek.com}"
 FROM="${FUNNEL_MAIL_FROM:-ethan@mixpeek.com}"
 AMUX_BIN="${AMUX_BIN:-$(command -v amux || echo "$HOME/.local/bin/amux")}"
 U="$("$AMUX_BIN" url)"
-WORK="$(mktemp -d -t funnel)"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d -t funnel.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
 git -C "$REPO" fetch -q origin main
 git -C "$REPO" show origin/main:scripts/site-funnel.py > "$WORK/site-funnel.py"
 # PostHog answers 503/504 now and then; three tries a minute apart.

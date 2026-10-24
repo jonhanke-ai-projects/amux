@@ -30,7 +30,7 @@ test('the dashboard reads the slim worker list and other callers keep the full o
     // first appear on a later read (an SSE invalidation refetches it).
     await expect.poll(() => seen.filter(s => Array.isArray(s.rows) && s.rows.some((r: any) => r.name === name)).length,
       { timeout: 30_000 }).toBeGreaterThan(0);
-    const dash = seen.find(s => s.rows.some((r: any) => r.name === name));
+    const dash = seen.find(s => Array.isArray(s.rows) && s.rows.some((r: any) => r.name === name));
     expect(dash.view).toBe('dashboard');
 
     const full = await (await request.get('/api/sessions', { headers: auth })).json();
