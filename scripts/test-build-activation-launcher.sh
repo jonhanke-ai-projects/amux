@@ -166,7 +166,8 @@ cat > "$TMP/fetch" <<EOF
 #!/usr/bin/env bash
 v=\$(awk -v s="\$1" '\$1==s {print \$2}' "$FETCHED" | tail -1)
 case "\$v" in red) c=failure ;; *) c=success ;; esac
-printf '{"workflow_runs":[{"name":"rust","status":"completed","conclusion":"%s","created_at":"1"},{"name":"checks","status":"completed","conclusion":"success","created_at":"1"}]}' "\$c"
+case "\$v" in green2) a=2 ;; *) a=1 ;; esac
+printf '{"workflow_runs":[{"name":"rust","status":"completed","conclusion":"%s","created_at":"1","run_attempt":%s,"head_sha":"%s"},{"name":"checks","status":"completed","conclusion":"success","created_at":"1","run_attempt":1}]}' "\$c" "\$a" "\$1"
 EOF
 chmod +x "$TMP/fetch"
 run_cached() {
@@ -196,7 +197,7 @@ expect grep -q "repo=$WORK sha=$RERUN" "$TRACE"
 REVIVED=$(commit_next revived)
 echo "{\"commit_full\":\"$RERUN\"}" > "$TMP/health.json"
 echo none > "$CACHE/$REVIVED"
-echo "$REVIVED green" >> "$FETCHED"
+echo "$REVIVED green2" >> "$FETCHED"
 : > "$TRACE"
 run_cached env AMUX_CI_RED_RECHECK_S=3600
 expect test "$(cat "$CACHE/$REVIVED")" = none
@@ -204,6 +205,9 @@ expect test "$(grep -c "sha=$REVIVED" "$TRACE")" = 0
 run_cached env AMUX_CI_RED_RECHECK_S=0
 expect test "$(cat "$CACHE/$REVIVED")" = green
 expect grep -q "repo=$WORK sha=$REVIVED" "$TRACE"
+# It went green on a re-run, which the builder log says once, by commit.
+expect grep -q "WARN CI-GATE ${REVIVED:0:9} green only after a re-run (rust attempt 2) verdict=ci_green_after_rerun" "$LOG"
+expect test "$(grep -c "ci_green_after_rerun" "$LOG")" = 1
 
 # A GATE THAT CANNOT MEASURE HEALS ITS OWN LAUNCHER (2026-10-16): 162e78e03
 # broke the CI judge, every pass refused as unmeasured, and the fixed launcher

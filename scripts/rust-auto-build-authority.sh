@@ -85,6 +85,10 @@ for w in need:
     else: states.append("red")
 for v in ("red","pending","none"):
     if v in states: print(v); raise SystemExit
+# Green only on a re-run means a flaky test let it through: say so where a
+# sweep looks (the builder log), once per commit, since green is cached.
+again=[w+" attempt "+str(r.get("run_attempt",1)) for w in need for r in [sorted([x for x in runs if x["name"]==w], key=lambda x: x["created_at"])[-1]] if r.get("run_attempt",1)>1]
+if again: print("WARN CI-GATE "+runs[0].get("head_sha","?")[:9]+" green only after a re-run ("+", ".join(again)+") verdict=ci_green_after_rerun", file=sys.stderr)
 print("green")'
 }
 ci_verdict() {   # green | red | pending | none | unmeasured
@@ -109,7 +113,7 @@ ci_verdict() {   # green | red | pending | none | unmeasured
       fi ;;
   esac
   local token v
-  v=$(ci_runs_json "$sha" | ci_judge_runs 2>/dev/null) || v=unmeasured
+  v=$(ci_runs_json "$sha" | ci_judge_runs 2>>"$LOG") || v=unmeasured
   # "none" is only final once the commit is old enough that CI would have started.
   if [ "$v" = green ] || [ "$v" = red ] || { [ "$v" = none ] && \
      [ $(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") )) -gt 3600 ]; }; then

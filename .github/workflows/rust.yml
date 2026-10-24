@@ -58,8 +58,14 @@ on:
 # could never clear. For pushes to main GitHub now lets the running run finish
 # and keeps ONE pending run, which a newer push replaces, so every completed
 # run judges a recent head. Pull requests still cancel their own stale runs.
+#
+# A RE-RUN IS NEVER REPLACED (2026-10-24). "Re-run failed jobs" queues attempt
+# 2 into the same group, where the next push's run replaced it as the one
+# pending run: 68ade32c3's and 31351128f's re-runs were cancelled after 27
+# minutes each. A re-run attempt gets its own group, so it runs beside the
+# queue; it re-runs only the failed jobs, so it costs one or two shards.
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
+  group: rust-${{ github.event.pull_request.number || github.ref }}${{ github.run_attempt > 1 && format('-attempt-{0}', github.run_attempt) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

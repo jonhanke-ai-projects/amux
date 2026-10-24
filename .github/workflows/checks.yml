@@ -14,13 +14,21 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 20, not 10 (2026-10-24). The job is ~90 serial steps; passing runs took a
+    # median of 9 minutes, so 28 of the last 100 main runs hit the 10-minute
+    # limit and read as "cancelled". The deploy gate needs checks green on the
+    # same commit as rust, and only 7 of those 100 commits had both, so the Mac
+    # stayed 79 commits behind main. checks runs beside rust (16-25 min), so a
+    # longer budget does not slow a deploy. The last step warns at 15 minutes.
+    timeout-minutes: 20
     steps:
       # Full history: the client-version guard below diffs against the push's
       # base, which a shallow clone cannot reach.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Start the job clock
+        run: echo "CHECKS_T0=$(date +%s)" >> "$GITHUB_ENV"
       - name: Browser evidence and lifecycle cleanup controls (AF-768, AF-773)
         run: |
           npm ci --ignore-scripts
@@ -931,3 +939,12 @@ jobs:
           # normal checkout, which is exactly how this went unnoticed. Both
           # directions confirmed to fail before wiring in.
           ./scripts/test-install-hooks-worktree.sh
+      # Says when the job is near its budget, before it starts timing out again.
+      - name: Job time against its 20-minute budget
+        if: always()
+        run: |
+          used=$(( $(date +%s) - CHECKS_T0 ))
+          echo "verdict=checks_duration seconds=$used budget=1200 measured=true"
+          if [ "$used" -gt 900 ]; then
+            echo "::warning title=checks_near_timeout::checks took ${used}s of its 1200s budget; split it or speed up its slowest steps"
+          fi
