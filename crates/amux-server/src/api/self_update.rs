@@ -54,7 +54,7 @@ fn activation_ref() -> String {
     std::env::var("AMUX_RS_ACTIVATION_REF").unwrap_or_else(|_| "origin/main".into())
 }
 
-fn gate_state() -> Option<serde_json::Value> {
+pub(crate) fn gate_state() -> Option<serde_json::Value> {
     let path = std::env::var("AMUX_ACTIVATION_GATE_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| crate::api::session_verbs::home().join(".amux/activation-gate.json"));

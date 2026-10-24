@@ -19,9 +19,9 @@ printf '#!/bin/sh\necho "export GH_TOKEN=stub"\n' > "$FIX/home/.amux/github-app/
 cat > "$BIN/gh" <<'EOF'
 #!/bin/sh
 case "$*" in
-  *workflows/rust.yml/runs*) printf '101\tfailure\tabc123def456\thttps://example/run/101\n' ;;
+  *workflows/rust.yml/runs*) printf '%s\n' "${RUST_ROW:-$(printf '101\tfailure\tabc123def456\thttps://example/run/101')}" ;;
   *workflows/checks.yml/runs*) printf '' ;;
-  *runs/101/jobs*) printf '7\n' ;;
+  *runs/*/jobs*) printf '7\n' ;;
   # "1) [ios-safari] " is 16 bytes and the filler 72, so the 3-byte "›" sits at
   # bytes 89-91: a byte-counting cut at 90 splits it (the 13:31 failure).
   *jobs/7/logs*) printf '2026-10-16T17:00:00.0000000Z   1) [ios-safari] e2e/draw-tab.spec.ts:460:5 Draw live mode is zen mode inside the amux sh\342\200\272 tail\n' ;;
@@ -78,6 +78,36 @@ rm -f "$FIX/state.json" "$FIX/sends"
 out=$(run 9 || true)
 check "both tries are named"                   yes "$(has "$out" '(try 2): send refused')"
 check "it is counted undelivered"              yes "$(has "$out" '"alerts_not_delivered":1')"
+
+echo "3. one card per red stretch: the next red run appends, the green run closes it"
+# A board that accepts: POST makes AMUX-1, GET says it is open, PATCH is logged.
+cat > "$BIN/curl" <<'CURL'
+#!/bin/sh
+out=""; body=""; method=GET; url=""; while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; -d) body=$2; shift ;; -X) method=$2; shift ;; http*) url=$1 ;; esac; shift; done
+case "$method" in
+  POST) printf '%s\n' "$body" >> "$CARD_BODIES"; printf '{"id":"AMUX-1","card_created":true}' > "$out"; printf 201 ;;
+  PATCH) printf '%s %s\n' "$url" "$body" >> "$PATCHES"; [ -n "$out" ] && printf '{}' > "$out"; printf 200 ;;
+  GET) printf '{"id":"AMUX-1","status":"%s"}' "$(cat "$CARD_STATUS")" ;;
+esac
+CURL
+chmod +x "$BIN/curl"
+rm -f "$FIX/state.json" "$FIX/sends" "$FIX/bodies" "$FIX/patches"; echo todo > "$FIX/card_status"
+run3() { PATCHES="$FIX/patches" CARD_STATUS="$FIX/card_status" RUST_ROW="$1" run 1; }
+out=$(run3 "$(printf '201\tfailure\taaa111aaa111\thttps://example/run/201')")
+check "the first red run files one card"      1 "$(grep -c . "$FIX/bodies")"
+check "the card id is remembered"             AMUX-1 "$(python3 -c "import json; print(json.load(open('$FIX/state.json'))['rust.yml'].get('card',''))")"
+out=$(run3 "$(printf '202\tfailure\tbbb222bbb222\thttps://example/run/202')")
+check "a second red run files no new card"    1 "$(grep -c . "$FIX/bodies")"
+check "it is appended to the open card"       yes "$(has "$(cat "$FIX/patches")" 'AMUX-1 {"desc_append": "Still red: rust on bbb222bbb')"
+check "the append is counted"                 yes "$(has "$out" '"cards_appended":1')"
+out=$(run3 "$(printf '203\tsuccess\tccc333ccc333\thttps://example/run/203')")
+check "the green run closes the card"         yes "$(has "$(tail -1 "$FIX/patches")" '"status": "done", "evidence": "main rust is green again at ccc333ccc: https://example/run/203"')"
+check "the close is counted"                  yes "$(has "$out" '"cards_closed":1')"
+check "the stretch is forgotten"              "" "$(python3 -c "import json; print(json.load(open('$FIX/state.json'))['rust.yml'].get('card',''))")"
+echo discarded > "$FIX/card_status"
+python3 -c "import json; p='$FIX/state.json'; s=json.load(open(p)); s['rust.yml']['card']='AMUX-1'; json.dump(s,open(p,'w'))"
+out=$(run3 "$(printf '204\tfailure\tddd444ddd444\thttps://example/run/204')")
+check "a retired card is not written into"    2 "$(grep -c . "$FIX/bodies")"
 
 [ "$fails" = 0 ] || { echo "--- last script output ---"; printf '%s\n' "$out" | tail -20; }
 if [ "$fails" = 0 ]; then echo "PASS: main-ci-watch — all checks passed"; else echo "main-ci-watch: $fails check(s) FAILED"; exit 1; fi
