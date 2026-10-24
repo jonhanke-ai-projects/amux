@@ -197,7 +197,8 @@ test.describe('desktop split', () => {
     // Pane 2 goes to Chat through its dropdown, then to Steering: tab to tab on
     // the same worker switches the pane's own page without reloading it.
     const second = panes.nth(1);
-    const inner = page.frameLocator('#psp-panes .psp-pane:nth-child(2) .psp-frame');
+    // nth(1) of the panes, not :nth-child(2): drag handles sit between panes.
+    const inner = second.locator('.psp-frame').contentFrame();
     await second.locator('.psp-pane-view').selectOption('chat');
     await expect(second.locator('.psp-frame')).toHaveAttribute('src', /peekTab=chat/);
     await expect(inner.locator('#peek-overlay')).toHaveClass(/active/, { timeout: 15000 });
