@@ -128,6 +128,7 @@ pub mod ids {
     pub const MAC_HEALTH: &str = "mac-health";
     pub const ACCOUNTABILITY_NUDGE: &str = "accountability-nudge";
     pub const CONTEXT_HEALTH: &str = "context-health";
+    pub const SUBSCRIPTION_RELAUNCH: &str = "subscription-relaunch";
     pub const DISK_WATCH: &str = "disk-watch";
     pub const STATUS_HISTORY: &str = "status-history";
     pub const BROWSER_LOGIN_SYNC: &str = "browser-login-sync";
@@ -185,6 +186,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::MAC_HEALTH,
     ids::ACCOUNTABILITY_NUDGE,
     ids::CONTEXT_HEALTH,
+    ids::SUBSCRIPTION_RELAUNCH,
     ids::DISK_WATCH,
     ids::HOST_METRICS,
     ids::TRACE_ARCHIVE,
@@ -715,6 +717,14 @@ pub const CATALOG: &[Doc] = &[
         env: NO_ENV,
         pref: None,
         detail: Some("/api/debug/context-health"),
+    },
+    Doc {
+        id: ids::SUBSCRIPTION_RELAUNCH,
+        name: "Subscription relaunch",
+        purpose: "Relaunches, at an idle boundary and on the same conversation, Claude workers that started before the host's Claude sign-in and still run on ANTHROPIC_API_KEY.",
+        env: NO_ENV,
+        pref: None,
+        detail: None,
     },
     Doc {
         id: ids::DISK_WATCH,

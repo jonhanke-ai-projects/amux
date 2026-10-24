@@ -11330,6 +11330,19 @@ pub(crate) fn is_provider_composer_hint(line: &str) -> bool {
     )
 }
 
+/// How far back an empty send looks for a delivered message that the input
+/// box appears to hold again.
+const EMPTY_SEND_RESUBMIT_WINDOW_MS: i64 = 30 * 60 * 1000;
+
+/// True when `typed` (a [`ComposerState::Typed`] text, whitespace removed) is
+/// the start of a message already delivered to the worker. Too short a text
+/// says nothing about where it came from, so it never matches.
+fn typed_is_delivered_message(typed: &str, delivered: &[String]) -> bool {
+    let typed = typed.trim_end_matches('\u{2026}');
+    typed.chars().count() >= 12
+        && delivered.iter().any(|d| d.split_whitespace().collect::<String>().starts_with(typed))
+}
+
 pub(crate) fn empty_send_plan(raw_frame: &str) -> EmptySendPlan {
     match composer_state(raw_frame) {
         ComposerState::Typed(_) => EmptySendPlan::PressEnter,
@@ -13881,6 +13894,42 @@ async fn send_text_inner_bound(
         //    it, so fall through and submit the suggestion as text.
         match empty_send_plan(&pane) {
             EmptySendPlan::PressEnter => {
+                // ENTER MUST NOT RESUBMIT A MESSAGE THAT WAS ALREADY DELIVERED.
+                // 2026-10-24 18:30:22: an empty send from the desktop app found
+                // the owner's 18:27 message (delivered, and being worked on) read
+                // as typed in amux-cloud's input box, pressed Enter, and the lane
+                // received it a second time mid-turn. Ethan: "not sure why that
+                // was retried thats a bug". Whatever put the text there (Claude
+                // Code restoring it, or the transcript's echo read as the
+                // composer), Enter on it can only produce a duplicate.
+                let typed = match composer_state(&pane) {
+                    ComposerState::Typed(t) => t,
+                    _ => String::new(),
+                };
+                let (sess, since) = (name.to_string(), now_i64() * 1000 - EMPTY_SEND_RESUBMIT_WINDOW_MS);
+                let recent: Vec<String> = state
+                    .store
+                    .read_async(move |conn| {
+                        let mut st = conn.prepare(
+                            "SELECT text FROM cmd_history WHERE session=?1 AND ts > ?2 ORDER BY ts DESC LIMIT 20",
+                        )?;
+                        let rows = st.query_map(rusqlite::params![sess, since], |r| r.get::<_, String>(0))?;
+                        Ok(rows.filter_map(Result::ok).collect())
+                    })
+                    .await
+                    .unwrap_or_default();
+                if typed_is_delivered_message(&typed, &recent) {
+                    tracing::warn!(
+                        session = %name, measured = true, n_considered = recent.len(),
+                        verdict = "empty_send_resubmit_refused",
+                        "empty send: the input box shows a message this worker already received; \
+                         did not press Enter, which would deliver it twice"
+                    );
+                    return (
+                        false,
+                        "the input box shows a message this worker already received; not sending it again".into(),
+                    );
+                }
                 let (ok, msg) = send_keys_op(name, "Enter").await;
                 tracing::info!(
                     session = %name, ok, detail = %msg,
@@ -51518,6 +51567,29 @@ mod composer_state_tests {
     }
 
     #[test]
+    fn only_a_real_key_in_the_tmux_env_needs_a_relaunch() {
+        assert!(tmux_env_holds_api_key("ANTHROPIC_API_KEY=sk-ant-fake\n"));
+        assert!(!tmux_env_holds_api_key("ANTHROPIC_API_KEY=\n"), "the OAuth suppression is empty");
+        assert!(!tmux_env_holds_api_key("-ANTHROPIC_API_KEY\n"));
+        assert!(!tmux_env_holds_api_key(""));
+    }
+
+    #[test]
+    fn an_empty_send_does_not_resubmit_a_delivered_message() {
+        let delivered = vec![
+            "two issues with the sandbox cloud amux\n\n⏺ API Error: 400 You have reached".to_string(),
+        ];
+        // The box as composer_state reports it: whitespace removed, the first
+        // wrapped line or the whole text.
+        assert!(typed_is_delivered_message("twoissueswiththesandboxcloudamux", &delivered));
+        assert!(typed_is_delivered_message("twoissueswiththesandbox…", &delivered));
+        // A new draft, or one too short to say where it came from, is sent.
+        assert!(!typed_is_delivered_message("anewquestionaboutthesandbox", &delivered));
+        assert!(!typed_is_delivered_message("two", &delivered));
+        assert!(!typed_is_delivered_message("twoissueswiththesandboxcloudamux", &[]));
+    }
+
+    #[test]
     fn a_dim_suggestion_is_not_pending_input() {
         assert_eq!(
             composer_state(LIVE_PLACEHOLDER),
@@ -58107,4 +58179,89 @@ mod codex_saved_key_login_tests {
 /// subscription, so an API key must not be offered to it as well.
 fn claude_subscription_token_saved() -> bool {
     super::settings::effective_env(&home(), "CLAUDE_CODE_OAUTH_TOKEN").is_some_and(|v| !v.trim().is_empty())
+}
+
+/// True when this host's Claude is signed in to a subscription: a `claude auth
+/// login` account in ~/.claude.json, or a token the dashboard saved. The same
+/// rule a worker launch uses to drop ANTHROPIC_API_KEY, shared so the server's
+/// own Claude calls (mdai runs, helper answers) agree with the workers. On the
+/// sandbox (2026-10-24) a workspace key past its spend limit kept failing every
+/// .mdai run while the signed-in subscription had usage left.
+pub(crate) fn claude_subscription_signed_in() -> bool {
+    std::fs::read_to_string(PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .is_some_and(|v| py_truthy(&v["oauthAccount"]))
+        || claude_subscription_token_saved()
+}
+
+/// `tmux show-environment <s> ANTHROPIC_API_KEY` names a real key. The empty
+/// `ANTHROPIC_API_KEY=` is how an OAuth launch suppresses one, `-NAME` is an
+/// unset, and tmux answers "unknown variable" when it was never set.
+fn tmux_env_holds_api_key(show_env: &str) -> bool {
+    show_env
+        .lines()
+        .any(|l| l.trim().strip_prefix("ANTHROPIC_API_KEY=").is_some_and(|v| !v.trim().is_empty()))
+}
+
+/// Relaunch running Claude workers that still run on ANTHROPIC_API_KEY now
+/// that the host's Claude is signed in to a subscription.
+///
+/// A launch drops the key when a subscription is signed in, but a worker
+/// started BEFORE the sign-in keeps the key it was given until it restarts. On
+/// the sandbox (2026-10-24) mtp-demo hit "API Error: 400 You have reached your
+/// specified workspace API usage limits" nine times after Ethan had signed in
+/// with usage to spare, and nothing would ever have moved it.
+///
+/// Bounded: only at an idle boundary with no child work
+/// ([`stop_verified_worker`] refuses otherwise), the start resumes the same
+/// conversation, at most one attempt per worker per hour, and never an isolated
+/// worker (its owner drives it directly). Returns (considered, relaunched).
+pub(crate) async fn relaunch_key_workers_onto_subscription(state: &AppState) -> (usize, usize) {
+    static TRIED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+        std::sync::LazyLock::new(Default::default);
+    if !claude_subscription_signed_in() {
+        return (0, 0);
+    }
+    let (mut considered, mut relaunched) = (0, 0);
+    for name in running_workers().await {
+        let cfg = parse_env(&name);
+        if provider_of(&cfg) != "claude" || env_flag_on(cfg.get("CC_ISOLATED")) {
+            continue;
+        }
+        let Some(out) = tmux(&["show-environment", "-t", &st(&name), "ANTHROPIC_API_KEY"]).await else {
+            continue;
+        };
+        if !tmux_env_holds_api_key(&String::from_utf8_lossy(&out.stdout)) || !is_running(&name).await {
+            continue;
+        }
+        considered += 1;
+        {
+            let mut tried = TRIED.lock().unwrap_or_else(|e| e.into_inner());
+            if tried.get(&name).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3600)) {
+                continue;
+            }
+            tried.insert(name.clone(), std::time::Instant::now());
+        }
+        let stopped = {
+            let lock = session_op_lock(&name);
+            let _held = lock.lock().await;
+            stop_verified_worker(state, &name).await
+        };
+        if let Err(why) = stopped {
+            tracing::info!(session = %name, why = %why, measured = true, n_considered = 1,
+                verdict = "subscription_relaunch_deferred",
+                "worker still runs on ANTHROPIC_API_KEY after the Claude sign-in; relaunch waits for an idle boundary");
+            TRIED.lock().unwrap_or_else(|e| e.into_inner()).remove(&name);
+            continue;
+        }
+        let (ok, detail) = start_session_as("subscription-relaunch", state, &name, "", false).await;
+        tracing::warn!(session = %name, ok, detail = %detail, measured = true, n_considered = 1,
+            verdict = "subscription_relaunch",
+            "relaunched a worker that was started before the Claude sign-in and still used ANTHROPIC_API_KEY");
+        if ok {
+            relaunched += 1;
+        }
+    }
+    (considered, relaunched)
 }

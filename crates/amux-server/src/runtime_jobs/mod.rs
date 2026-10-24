@@ -58,6 +58,7 @@ pub mod cdc_poller;
 pub mod codex_ledger;
 pub mod commit_mention_notes;
 pub mod context_health;
+pub mod subscription_relaunch;
 pub mod converse_retention;
 pub mod contract_watch;
 pub mod land_queue;

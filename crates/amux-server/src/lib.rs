@@ -689,6 +689,7 @@ async fn async_main() {
     // worse than raw claude" was invisible for months is that nothing counted
     // how many times a lane's conversation had been summarized away.
     drop(runtime_jobs::context_health::spawn());
+    drop(runtime_jobs::subscription_relaunch::spawn(state.clone()));
     // Example invocations for every skill, ready before the first `/`.
     crate::api::skill_examples::spawn_warmer(state.clone());
     // Recompose every lane's MEMORY.md once per boot (contract rule 13). A new
