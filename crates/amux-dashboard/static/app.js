@@ -8161,7 +8161,12 @@ function render() {
   // be un-hidden. Pruning a vanished group waits for real data: a restored
   // view must not be wiped by the empty list that precedes the first fetch.
   const allTags = [...new Set([...liveTags, ...hiddenTags])].sort();
-  if (activeTag && !_initialLoad && sessions.length && !liveTags.has(activeTag)) activeTag = '';
+  // Pruned only when NO worker has the group. A group whose workers are all
+  // paused or archived still filters the Paused and Archived sections, and
+  // checking live workers only reset that filter on the next render
+  // (worker-section-scope, CI f2bb59c75: "2 paused", then "5 paused").
+  if (activeTag && !_initialLoad && sessions.length && !liveTags.has(activeTag)
+      && !sessions.some(s => (s.tags || []).includes(activeTag))) activeTag = '';
   // Pills FILTER the worker list. Nothing more.
   //
   // The "\u25c9 Global" pill and the group-scope band that used to sit under this
@@ -46038,15 +46043,21 @@ async function updateBoardItem(id, changes) {
   saveBoardCache();
   renderBoard();
   const before = _boardPatchChain.get(id);
-  const turn = (before || Promise.resolve()).catch(() => {}).then(() => _updateBoardItemSend(id, changes, prev, !!before));
+  // The earlier edit's reply is the card it saved, so its rev is the one this
+  // edit must carry. Read from boardItems instead, a board refresh landing
+  // between the two (a snapshot without the card, or from before the reply)
+  // sent the stale rev and the second edit drew a 409 (dashboard-race-guards).
+  const turn = (before || Promise.resolve()).catch(() => {}).then(res => _updateBoardItemSend(id, changes, prev, !!before, res && res.rev));
   _boardPatchChain.set(id, turn);
   turn.finally(() => { if (_boardPatchChain.get(id) === turn) _boardPatchChain.delete(id); });
   return turn;
 }
-async function _updateBoardItemSend(id, changes, prev, queued) {
-  // The rev the card has NOW: after an earlier edit's reply, that is its rev.
+async function _updateBoardItemSend(id, changes, prev, queued, savedRev) {
+  // The rev the card has NOW: the earlier edit's reply when there was one,
+  // else what this tab holds.
   const cur = boardItems.find(i => i.id === id);
-  if (prev && changes.expect_rev === undefined) changes = { ...changes, expect_rev: (queued && cur && cur.rev != null) ? cur.rev : prev.rev };
+  const queuedRev = savedRev != null ? savedRev : (cur && cur.rev != null ? cur.rev : null);
+  if (prev && changes.expect_rev === undefined) changes = { ...changes, expect_rev: (queued && queuedRev != null) ? queuedRev : prev.rev };
   if (queued) { try { window._clientDebug?.('board-race', {verdict: 'board_edit_serialized', measured: true, n_considered: 1, id}); } catch (_) {} }
   const r = await apiCall(API + '/api/board/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},

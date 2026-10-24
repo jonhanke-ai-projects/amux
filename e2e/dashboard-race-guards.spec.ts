@@ -61,6 +61,12 @@ test('a new note saved twice quickly is one note, and the second save carries th
 test('two quick edits to one card both land: the second carries the rev the first returned', async ({ page }) => {
   const patches: any[] = [];
   let rev = 7;
+  // The server's copy of the card. The board list serves it too: a refresh
+  // from the real server has no RACE-1 and used to drop the injected card
+  // mid-test, so the second edit lost the first one's rev (CI f2bb59c75,
+  // desktop and mobile: expect_rev [7, 7]).
+  const saved: any = { id: 'RACE-1', title: 'race card', status: 'todo', session: '', rev };
+  await page.route(/\/api\/board\?archived=0/, r => r.fulfill({ json: [{ ...saved }] }));
   await page.route(/\/api\/board\/RACE-1$/, async r => {
     if (r.request().method() !== 'PATCH') return r.fallback();
     const body = JSON.parse(r.request().postData() || '{}');
@@ -68,7 +74,10 @@ test('two quick edits to one card both land: the second carries the rev the firs
     await slow(400);
     if (body.expect_rev !== undefined && body.expect_rev !== rev) return r.fulfill({ status: 409, json: { error: 'rev conflict' } });
     rev += 1;
-    await r.fulfill({ json: { id: 'RACE-1', title: 'race card', status: body.status || 'doing', session: body.session || '', rev } });
+    if (body.status) saved.status = body.status;
+    if (body.session !== undefined) saved.session = body.session;
+    saved.rev = rev;
+    await r.fulfill({ json: { ...saved } });
   });
   await boot(page);
   const result = await page.evaluate(async () => {
@@ -90,6 +99,10 @@ test('a slow full-board load does not wipe an edit made while it loaded', async 
     await r.fulfill({ json: [{ id: 'RACE-2', title: 'old title', status: 'todo', rev: 1 }] });
   });
   await page.route(/\/api\/board\/RACE-2$/, r => r.fulfill({ json: { id: 'RACE-2', title: 'new title', status: 'todo', rev: 2 } }));
+  // The regular board poll serves the server's copy (after the edit): a read
+  // from the real server has no RACE-2 and dropped the injected card, so the
+  // final lookup found nothing (2 of 3 local runs on main, "reading 'title'").
+  await page.route(/\/api\/board\?archived=0/, r => r.fulfill({ json: [{ id: 'RACE-2', title: 'new title', status: 'todo', rev: 2 }] }));
   const superseded: string[] = [];
   page.on('request', r => { const b = r.postData() || ''; if (b.includes('board_full_load_superseded')) superseded.push(b); });
   await boot(page);

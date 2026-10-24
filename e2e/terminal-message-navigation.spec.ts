@@ -608,6 +608,12 @@ async function filterSpecimen(page: Page) {
   // Only fires when a board refresh happens during the test, which is the race
   // this stub exists for and is not guaranteed in any given run.
   allowUnusedRoute(page, BOARD_LIST);
+  // A board read that began at page load, before the route above existed, could
+  // still land after the push below and replace boardItems without the card
+  // (mobile CI f2bb59c75: Board references "0", the prompts still on screen).
+  // One read through the route first: fetchBoard drops any older read that
+  // finishes after a newer one has applied.
+  await page.evaluate(() => (window as any).fetchBoard());
   await page.evaluate(() => {
     // Board references count only for a prefix the loaded board uses. The
     // shared e2e server's board holds whatever earlier specs created, so name
