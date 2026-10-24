@@ -22,7 +22,7 @@ tab bar), because macOS refuses this agent synthetic mouse events. A pane's
 header drag and its buttons go through the same handlers a click reaches
 (amux://test/pane-*), not through a real mouse.
 """
-import json, os, signal, subprocess, sys, tempfile, time
+import json, os, re, signal, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "Amux.app")
@@ -60,8 +60,33 @@ def log():
 
 assert sh("xcrun", "swiftc", "-O", "-o", os.path.join(TMP, "wsctl"), os.path.join(HERE, "wsctl.swift")).returncode == 0
 url = sh("amux", "url").stdout.strip() or "https://localhost:8824"
-d0 = json.loads(sh(os.path.join(TMP, "wsctl"), "displays").stdout.splitlines()[0])
+
+
+def displays():
+    return [json.loads(l) for l in sh(os.path.join(TMP, "wsctl"), "displays").stdout.splitlines() if l.strip()]
+
+
+# The test copy's windows float above everything, so on the owner's screen a
+# click of theirs lands on them and moves them mid-case (2026-10-24 07:4x). A
+# virtual display (vdisplay.m, as workspace-e2e.py uses) keeps them out of
+# reach. PANE_E2E_MAIN_DISPLAY=1 runs on the main display instead.
+vdisp = None
+before = displays()
+d0 = before[0]
+if os.environ.get("PANE_E2E_MAIN_DISPLAY") != "1":
+    assert sh("clang", "-fobjc-arc", "-o", os.path.join(TMP, "vdisplay"), os.path.join(HERE, "vdisplay.m"),
+              "-framework", "Foundation", "-framework", "CoreGraphics").returncode == 0
+    vdisp = subprocess.Popen([os.path.join(TMP, "vdisplay"), "amux-pane-e2e", "4343", "1920", "1080"], stdout=subprocess.PIPE)
+    end = time.time() + 15
+    new = []
+    while not new and time.time() < end:
+        time.sleep(0.5)
+        new = [d for d in displays() if d["uuid"] not in {x["uuid"] for x in before}]
+    assert new, "the virtual display did not connect"
+    d0 = new[0]
+    time.sleep(2)
 vx, vy, vw, vh = rect(d0["visible"])
+print(f"display: {d0.get('name')} {d0['visible']}")
 src = (vx + vw * 0.08, vy + vh * 0.08, vw * 0.7, vh * 0.8)
 src_s = "{{%d, %d}, {%d, %d}}" % src
 TABS = ["board", "calendar", "map", "sessions", "messages"]
@@ -105,7 +130,12 @@ class App:
 
 def grid_window(st):
     g = [w for w in st["windows"] if "grid" in w]
-    return g[0] if g else None
+    if not g:
+        return None
+    # Fractions to two places: a divider lands on a whole point, so an odd
+    # height gives 0.501 for an even split.
+    g[0]["grid"] = re.sub(r"([rc])(\d\.\d+)", lambda m: m.group(1) + "%.3f" % round(float(m.group(2)), 2), g[0]["grid"])
+    return g[0]
 
 
 def drag_tab(app, title, x, y):
@@ -241,10 +271,42 @@ try:
     app.send(f"tear-tab?x={x}&y={y}", 1.5)
     st = app.state()
     g = grid_window(st)
-    check("the dropped tab became the left pane", g is not None and g["grid"] == "r0.500(0,1)" and g["panes"][0] == "Messages", str(st["windows"]))
+    # Which tab /tear-tab takes is the window in front, which varies when the
+    # test copy cannot become the active app; the drop point decides the side.
+    check("the dropped tab became the left pane", g is not None and g["grid"] == "r0.500(0,1)" and st["hidden_panes"] == 1, str(st["windows"]))
     check("it says it found the pane at the release", "verdict=tab_pane_drop_found_at_release zone=left" in log())
 finally:
     app.stop()
+
+print("13. system overlays over the window (as in a real drag): the pane is still found")
+# Another process's windows above amux: one at the Dock's layer covering the
+# display, one at the dragging level under the pointer (the tab's drag image).
+assert sh("xcrun", "swiftc", "-O", "-o", os.path.join(TMP, "overlay"), os.path.join(HERE, "overlay.swift")).returncode == 0
+overlays = []
+app = App()
+try:
+    st = app.state()
+    cx, cy, cw, ch = rect(st["content_frame"])
+    x, y = cx + cw * 0.9, cy + ch * 0.5
+    app.send("activate", 0.3)
+    app.send(f"pointer?x={src[0] + src[2] / 2}&y={src[1] + src[3] - 10}&down=1", 0.1)
+    app.send("press-tab", 0.1)
+    for ox, oy, ow, oh, lvl in [(vx, vy, vw, vh, 20), (x - 40, y - 30, 80, 60, 500)]:
+        o = subprocess.Popen([os.path.join(TMP, "overlay"), str(ox), str(oy), str(ow), str(oh), str(lvl)], stdout=subprocess.PIPE)
+        o.stdout.readline()
+        overlays.append(o)
+    time.sleep(0.5)
+    app.send(f"pointer?x={x}&y={y}&down=1", 0.5)
+    mid = app.state()
+    check("the preview shows the right half under the drag image", mid["preview"] and near(rect(mid["preview_frame"]), (cx + cw / 2, cy, cw / 2, ch)), mid["preview_frame"])
+    app.send("drop-tab?title=Messages", 1.5)
+    app.send("pointer-clear", 0.2)
+    g = grid_window(app.state())
+    check("the tab became the right pane", g is not None and g["grid"] == "r0.500(0,1)" and g["panes"][1] == "Messages", str(g))
+finally:
+    app.stop()
+    for o in overlays:
+        o.terminate()
 
 print("12. a tab moved to a new window by the menu, pointer over a page: not docked")
 app = App()
@@ -278,5 +340,8 @@ try:
 finally:
     app.stop()
 
+if vdisp:
+    vdisp.terminate()
+    vdisp.wait(10)
 print(f"PASS: pane-grid, all checks passed" if fails == 0 else f"pane-grid: {fails} check(s) FAILED (log {LOG})")
 sys.exit(1 if fails else 0)

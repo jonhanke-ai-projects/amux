@@ -681,6 +681,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var tabGroupSeen: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]
     var lastTabPlaced = Date.distantPast
     lazy var snapPreview = SnapPreview()
+    // What covered the pointer the last time a drop found no amux window (amux-panes.swift).
+    var paneBlocker: String?
 
     func applyBadge() {
         let show = config.dockBadge ?? true

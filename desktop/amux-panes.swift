@@ -252,21 +252,35 @@ extension AppDelegate {
     /// The amux window at `p`, front-most, skipping `excluding` (a tab being
     /// dragged, which follows the pointer) and the drop preview. nil when another
     /// app's window is on top there. Read from the window server's front-to-back
-    /// list, skipping its own layers above the screen saver's: a locked or
-    /// shielded display put a full-screen "Display Shield" window on top, and
-    /// windowNumber(at:) answered that for every point (2026-10-23).
+    /// list, skipping:
+    /// - every layer above amux's own windows: the system draws overlays there
+    ///   that cover the whole screen. The Dock keeps a full-screen window at
+    ///   layer 20, the thumbnail AppKit draws under the pointer during a tab
+    ///   drag sits at the dragging layer (Ethan's recording, 2026-10-24 07:39),
+    ///   and a locked display puts a "Display Shield" on top (2026-10-23). Each
+    ///   answered for every point. Another app's ordinary window over amux
+    ///   still blocks;
+    /// - this app's own windows that are not dashboard windows (drag images,
+    ///   panels).
+    /// What blocked the last miss is kept in `paneBlocker` for the drag's log line.
     func amuxWindow(at p: NSPoint, excluding: [NSWindow] = []) -> DashboardWindowController? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
               let top = NSScreen.screens.first?.frame.maxY else { return nil }
         let q = CGPoint(x: p.x, y: top - p.y)   // the window server's y runs down from the main display's top
         let skip = Set(excluding.map { $0.windowNumber } + [snapPreview.panel.windowNumber])
+        let ours = controllers.compactMap { $0.window?.isVisible == true ? $0.window?.level.rawValue : nil }.max() ?? 0
+        let me = Int(getpid())
         for w in list {
             guard let n = w[kCGWindowNumber as String] as? Int, !skip.contains(n),
-                  (w[kCGWindowLayer as String] as? Int ?? 0) < Int(CGWindowLevelForKey(.screenSaverWindow)),
+                  (w[kCGWindowLayer as String] as? Int ?? 0) <= ours,
                   let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b), r.contains(q) else { continue }
             if (w[kCGWindowAlpha as String] as? Double ?? 1) == 0 { continue }
-            return controllers.first { $0.window?.windowNumber == n && $0.window?.isVisible == true }
+            if let c = controllers.first(where: { $0.window?.windowNumber == n && $0.window?.isVisible == true }) { return c }
+            if (w[kCGWindowOwnerPID as String] as? Int) == me { continue }
+            paneBlocker = "\(w[kCGWindowOwnerName as String] as? String ?? "?") layer=\(w[kCGWindowLayer as String] as? Int ?? 0) \(Int(r.width))x\(Int(r.height))"
+            return nil
         }
+        paneBlocker = "no window"
         return nil
     }
 

@@ -691,7 +691,10 @@ extension AppDelegate {
             }
             t.invalidate()
             if !windowDrag { self.snapPreview.hide() }
-            dlog("verdict=tab_press_released out=\(out ? 1 : 0) free=\(free ? 1 : 0) window_drag=\(windowDrag ? 1 : 0) zone=\(pane.map { "pane " + $0.name } ?? zone?.zone.name ?? "none")")
+            // Over an amux window with no pane: say what was on top, so a miss names its cause.
+            let over = self.controllers.contains { $0.window?.isVisible == true && $0.window!.frame.contains(at) }
+            let blocker = pane == nil && over && !free ? " blocker=\(self.paneBlocker ?? "-")" : ""
+            dlog("verdict=tab_press_released out=\(out ? 1 : 0) free=\(free ? 1 : 0) window_drag=\(windowDrag ? 1 : 0) zone=\(pane.map { "pane " + $0.name } ?? zone?.zone.name ?? "none")\(blocker)")
             if let p = pane {
                 self.lastTabPlaced = Date()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
