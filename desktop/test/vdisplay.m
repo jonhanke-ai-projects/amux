@@ -31,5 +31,19 @@ int main(int argc, char **argv) { @autoreleasepool {
   s.hiDPI = 0; s.modes = @[[[CGVirtualDisplayMode alloc] initWithWidth:w height:h refreshRate:60]];
   BOOL ok = [disp applySettings:s];
   printf("display %u applied=%d\n", disp.displayID, ok); fflush(stdout);
+  // Leave with the test that started this. A runner killed by a timeout never
+  // reaches its cleanup, and the display it left kept the next run's display
+  // (same serial) from connecting: "the virtual display did not connect",
+  // 2026-10-24, three leftovers.
+  pid_t parent = getppid();
+  dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+  dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 10);
+  dispatch_source_set_event_handler(t, ^{
+    if (getppid() != parent) {
+      fprintf(stderr, "vdisplay: verdict=parent_gone pid=%d, removing display %u\n", parent, disp.displayID);
+      exit(0);
+    }
+  });
+  dispatch_resume(t);
   dispatch_main();
 }}

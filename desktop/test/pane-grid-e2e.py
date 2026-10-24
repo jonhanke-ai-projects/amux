@@ -76,7 +76,7 @@ d0 = before[0]
 if os.environ.get("PANE_E2E_MAIN_DISPLAY") != "1":
     assert sh("clang", "-fobjc-arc", "-o", os.path.join(TMP, "vdisplay"), os.path.join(HERE, "vdisplay.m"),
               "-framework", "Foundation", "-framework", "CoreGraphics").returncode == 0
-    vdisp = subprocess.Popen([os.path.join(TMP, "vdisplay"), "amux-pane-e2e", "4343", "1920", "1080"], stdout=subprocess.PIPE)
+    vdisp = subprocess.Popen([os.path.join(TMP, "vdisplay"), "amux-pane-e2e", "4343", "1920", "1080"], stdout=subprocess.DEVNULL)
     end = time.time() + 15
     new = []
     while not new and time.time() < end:
@@ -105,7 +105,17 @@ class App:
         end = time.time() + 25
         while log().count("verdict=windows_restored") <= n and time.time() < end:
             time.sleep(0.3)
-        time.sleep(3)   # pages load and post their names
+        # Pages load and post their names; drop-tab?title= finds a tab by that
+        # name, so wait for every one (a fixed 3s lost the race under load).
+        end = time.time() + 30
+        while time.time() < end:
+            time.sleep(0.5)
+            try:
+                names = [w["title"] for w in self.state()["windows"]]
+            except (OSError, ValueError, KeyError):
+                continue
+            if names and "amux" not in names and "" not in names:
+                break
         self.send("activate", 0.5)
 
     def send(self, u, settle=0.3):
@@ -128,6 +138,22 @@ class App:
             self.p.kill()
 
 
+SHOTS = os.environ.get("PANE_E2E_SHOTS") or os.path.join(TMP, "shots")
+
+
+def shot(name, g):
+    """The grid window as the window server draws it, for a human to judge."""
+    if not g or "number" not in g:
+        return
+    os.makedirs(SHOTS, exist_ok=True)
+    out = os.path.join(SHOTS, name + ".png")
+    try:
+        r = sh("/usr/sbin/screencapture", "-x", "-o", f"-l{g['number']}", out)
+        print(f"  shot {out}" if r.returncode == 0 and os.path.exists(out) else f"  shot {name} not taken: {r.stderr.strip()}")
+    except OSError as e:
+        print(f"  shot {name} not taken: {e}")
+
+
 def grid_window(st):
     g = [w for w in st["windows"] if "grid" in w]
     if not g:
@@ -146,8 +172,11 @@ def drag_tab(app, title, x, y):
     app.send("press-tab", 0.1)
     app.send(f"pointer?x={x}&y={y}&down=1", 0.5)
     mid = app.state()
+    n = log().count("verdict=test_drop_tab_title_missing")
     app.send(f"drop-tab?title={title}", 1.5)
     app.send("pointer-clear", 0.2)
+    if log().count("verdict=test_drop_tab_title_missing") > n:
+        print(f"  note: no tab named {title} at the drop; the showing tab moved instead")
     return mid
 
 
@@ -188,16 +217,22 @@ try:
     g = grid_window(st)
     check("four panes, two columns of two", g is not None and g["grid"] == "r0.500(c0.500(0,1),c0.500(2,3))", str(g))
 
-    print("4. a full grid: a fifth tab gets no pane zone and tears off as a window")
+    print("4. a full grid: a fifth tab dropped near a pane's edge joins that pane's tabs")
     before = g["grid"] if g else ""
     # The one tab still in the tab bar (AppKit showed the next tab after each tear, so which it is varies).
     rest = [w["title"] for w in st["windows"] if "grid" not in w and w["tabs"] > 1]
-    mid = drag_tab(app, rest[0] if rest else "Board", cx + cw * 0.3, cy + ch * 0.6)
+    fifth = rest[0] if rest else "Board"
+    top_left = rect(g["pane_frames"][0]) if g else (0, 0, 0, 0)
+    mid = drag_tab(app, fifth, top_left[0] + top_left[2] * 0.06, top_left[1] + top_left[3] * 0.5)
     st = app.state()
     g = grid_window(st)
-    check("no pane preview over a full grid", not mid["preview"] or not near(rect(mid["preview_frame"]), (cx, cy, cw / 2, ch), 30), mid["preview_frame"])
-    check("the grid is unchanged", g is not None and g["grid"] == before, str(g))
-    check("the fifth tab is its own window", any("grid" not in w and w["tabs"] == 1 for w in st["windows"]) and g is not None and g["tabs"] == 1, str(st["windows"]))
+    inset = (top_left[0] + min(24, top_left[2] * 0.06), top_left[1] + min(24, top_left[3] * 0.06),
+             top_left[2] - 2 * min(24, top_left[2] * 0.06), top_left[3] - 2 * min(24, top_left[3] * 0.06))
+    check("the preview is the whole pane (a join), not its half", mid["preview"] and near(rect(mid["preview_frame"]), inset, 6), f"{mid['preview_frame']} want {inset}")
+    check("the grid is unchanged: still four panes", g is not None and g["grid"] == before, str(g))
+    check("the fifth tab is the top left pane's second tab, shown", g is not None and g["pane_tabs"][0][-1] == fifth and len(g["pane_tabs"][0]) == 2 and g["pane_active"][0] == 1, str(g and g["pane_tabs"]))
+    check("the join is logged", "verdict=tab_joined_pane panes=4 pane_tabs=2" in log())
+    shot("4-four-panes-fifth-joined", g)
 
     print("5. a divider moved, then a quit and relaunch: the grid comes back as left")
     app.send("pane-divider?f=0.3", 1.5)
@@ -205,6 +240,8 @@ try:
     g = grid_window(st)
     check("the split moved to 0.3", g is not None and g["grid"].startswith("r0.300("), str(g))
     panes_before = g["panes"] if g else []
+    tabs_before = g["pane_tabs"] if g else []
+    active_before = g["pane_active"] if g else []
     grid_before = g["grid"] if g else ""
     time.sleep(2)
 finally:
@@ -213,6 +250,7 @@ finally:
 saved = json.load(open(CFG))
 sg = [w for w in saved.get("windows", []) if w.get("grid")]
 check("the grid is saved with the window", len(sg) == 1 and sg[0]["grid"]["tree"].startswith("r0.300(") and len(sg[0]["grid"]["panes"]) == 3, str(sg))
+check("the top left pane's two tabs are saved", len(sg) == 1 and len(sg[0]["grid"].get("hostTabs") or []) + sum(len(p.get("tabs") or []) for p in sg[0]["grid"]["panes"]) == 1, str(sg))
 
 app = App(fresh=False)
 try:
@@ -221,7 +259,8 @@ try:
     print("    after relaunch:", [(w["title"], w["tabs"], w.get("grid")) for w in st["windows"]])
     check("relaunched with the same grid", g is not None and g["grid"] == grid_before, f"{g and g['grid']} want {grid_before}")
     check("the same pages in the same panes", g is not None and g["panes"] == panes_before, f"{g and g['panes']} want {panes_before}")
-    check("the panes' own windows stay hidden", st["hidden_panes"] == 3, str(st["hidden_panes"]))
+    check("the same tabs in each pane, the same one shown", g is not None and g["pane_tabs"] == tabs_before and g["pane_active"] == active_before, f"{g and g['pane_tabs']} want {tabs_before}")
+    check("the panes' own windows stay hidden", st["hidden_panes"] == 4, str(st["hidden_panes"]))
     check("the restore is logged", "verdict=pane_grid_restored panes=4" in log())
 
     app.send("activate", 0.3)
@@ -247,9 +286,15 @@ try:
     g = grid_window(st)
     check("still two panes, now one above the other", g is not None and g["grid"].startswith("c0.500("), str(g))
 
-    print("9. a pane closed: one page left, a plain window again")
+    print("9. a pane closed: one pane left with its two tabs; its last extra tab closed: a plain window again")
     n_ctrl = len(st["windows"])
-    app.send("pane-close?i=1", 1)
+    # Close the pane with one tab; case 8 may have put the two-tab pane at either index.
+    one = next((i for i, t in enumerate(g["pane_tabs"]) if len(t) == 1), 1) if g else 1
+    app.send(f"pane-close?i={one}", 1)
+    st = app.state()
+    g = grid_window(st)
+    check("one pane left, keeping its own two tabs", g is not None and g["grid"] == "0" and len(g["pane_tabs"][0]) == 2, str(g))
+    app.send("pane-tab-close?i=0&t=1", 1)
     st = app.state()
     check("no grid left", grid_window(st) is None, str(st["windows"]))
     check("the closed pane's page is gone, not a tab", len(st["windows"]) == n_ctrl, str(st["windows"]))
@@ -365,8 +410,71 @@ try:
 finally:
     app.stop()
 
+print("16. each pane has its own tabs: join, switch, move between panes, close, new, zoom, focus")
+app = App()
+try:
+    st = app.state()
+    cx, cy, cw, ch = rect(st["content_frame"])
+    drag_tab(app, "Messages", cx + cw * 0.9, cy + ch * 0.5)
+    g = grid_window(app.state())
+    right = rect(g["pane_frames"][1]) if g else (0, 0, 0, 0)
+    mid = drag_tab(app, "Calendar", right[0] + right[2] * 0.5, right[1] + right[3] * 0.5)
+    st = app.state()
+    g = grid_window(st)
+    check("a drop on a pane's middle joins its tabs: still two panes", g is not None and g["grid"] == "r0.500(0,1)", str(g))
+    check("the right pane holds Messages then Calendar, Calendar shown", g is not None and g["pane_tabs"][1] == ["Messages", "Calendar"] and g["pane_active"][1] == 1, str(g and g["pane_tabs"]))
+    check("the joined pane has focus", g is not None and g["focused"] == 1, str(g and g["focused"]))
+
+    app.send("pane-tab-select?i=1&t=0", 0.8)
+    g = grid_window(app.state())
+    check("a click on a strip tab shows it", g is not None and g["pane_active"][1] == 0 and g["panes"][1] == "Messages", str(g))
+    app.send("pane-action?a=next", 0.8)
+    g = grid_window(app.state())
+    check("Next Tab in Pane cycles within the pane", g is not None and g["pane_active"][1] == 1, str(g and g["pane_active"]))
+    app.send("pane-action?a=tab&n=1", 0.8)
+    g = grid_window(app.state())
+    check("⌘1 is the focused pane's first tab", g is not None and g["pane_active"][1] == 0, str(g and g["pane_active"]))
+
+    app.send("pane-action?a=left", 0.8)
+    g = grid_window(app.state())
+    check("⌘⌥← moves focus to the left pane", g is not None and g["focused"] == 0, str(g and g["focused"]))
+    app.send("pane-action?a=right", 0.8)
+
+    left = rect(g["pane_frames"][0]) if g else (0, 0, 0, 0)
+    app.send(f"pane-tab-drag?i=1&t=1&x={left[0] + left[2] * 0.5}&y={left[1] + left[3] * 0.5}", 1.2)
+    g = grid_window(app.state())
+    check("a strip tab dragged to the other pane's middle joins it there", g is not None and g["pane_tabs"][1] == ["Messages"] and g["pane_tabs"][0][-1] == "Calendar", str(g and g["pane_tabs"]))
+
+    app.send("pane-focus?i=0", 0.3)
+    app.send("pane-action?a=new", 2.5)
+    g = grid_window(app.state())
+    shot("16-pane-with-three-tabs", g)
+    check("New Tab in Pane adds a tab to the focused pane", g is not None and len(g["pane_tabs"][0]) == 3 and g["pane_active"][0] == 2, str(g and g["pane_tabs"]))
+
+    app.send("pane-action?a=close", 1)
+    g = grid_window(app.state())
+    check("Close Tab in Pane closes only that tab", g is not None and len(g["pane_tabs"][0]) == 2 and g["grid"] == "r0.500(0,1)", str(g and g["pane_tabs"]))
+
+    app.send("pane-tab-close?i=0&t=1", 1)
+    g = grid_window(app.state())
+    check("a strip tab's close button closes that tab", g is not None and len(g["pane_tabs"][0]) == 1, str(g and g["pane_tabs"]))
+
+    app.send("pane-focus?i=1", 0.3)
+    app.send("pane-action?a=zoom", 1)
+    st = app.state()
+    g = grid_window(st)
+    zr = rect(g["pane_frames"][1]) if g else (0, 0, 0, 0)
+    shot("16-zoomed", g)
+    check("Zoom Pane shows the focused pane alone over the view", g is not None and g["zoomed"] == 1 and g["pane_shown"] == [False, True] and zr[2] > cw * 0.9, str(g))
+    app.send("pane-action?a=zoom", 1)
+    g = grid_window(app.state())
+    check("zooming again puts the layout back", g is not None and g["zoomed"] == -1 and g["pane_shown"] == [True, True] and g["grid"] == "r0.500(0,1)", str(g))
+finally:
+    app.stop()
+
 if vdisp:
     vdisp.terminate()
     vdisp.wait(10)
+print(f"screenshots: {SHOTS}")
 print(f"PASS: pane-grid, all checks passed" if fails == 0 else f"pane-grid: {fails} check(s) FAILED (log {LOG})")
 sys.exit(1 if fails else 0)

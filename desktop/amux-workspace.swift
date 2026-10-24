@@ -813,6 +813,10 @@ extension AppDelegate {
             if let o = Pointer.testOverride { Pointer.testOverride = (o.at, false) }
             let want = q.first { $0.name == "title" }?.value
             let tab = want.flatMap { t in (arrangeTarget?.tabbedWindows ?? []).first { tw in controllers.first { $0.window === tw }?.pageTitle == t } }
+            if let t = want, tab == nil {
+                // Dropping the showing tab instead would pass a test about a different tab.
+                dlog("verdict=test_drop_tab_title_missing title=\(t) tabs=\((arrangeTarget?.tabbedWindows ?? []).compactMap { tw in controllers.first { $0.window === tw }?.pageTitle })")
+            }
             (tab ?? arrangeTarget)?.moveTabToNewWindow(nil)
         // The test copy above every app, so the window under the pointer is its
         // own: macOS no longer lets a background app activate itself, and the
@@ -844,6 +848,39 @@ extension AppDelegate {
             if url.path == "/pane-tab" { v.toTab() } else if url.path == "/pane-close" { v.closePane() }
             // After the window server has the grid's tab in front, as it is for a header you can see.
             else { let p = NSPoint(x: num("x"), y: num("y")); DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { v.dragged(to: p); v.dropped(at: p) } }
+        // A pane's tab strip and the Panes menu (amux-panes.swift), on the
+        // window holding a grid: i is the pane in reading order, t a tab in its strip.
+        case "/pane-tab-select", "/pane-tab-close", "/pane-tab-drag", "/pane-focus", "/pane-action":
+            guard let h = controllers.first(where: { $0.grid?.host === $0 }), let g = h.grid else { break }
+            h.window?.tabGroup?.selectedWindow = h.window
+            let leaves = g.tree.leaves, i = Int(num("i")), t = Int(num("t"))
+            let v = i >= 0 && i < leaves.count ? g.views[leaves[i]] : nil
+            switch url.path {
+            case "/pane-tab-select": v?.selectTab(t)
+            case "/pane-tab-close": v?.closeTab(t)
+            case "/pane-focus": if i >= 0 && i < leaves.count { g.focus(leaves[i]) }
+            case "/pane-tab-drag":
+                let p = NSPoint(x: num("x"), y: num("y"))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { v?.dragged(to: p, tab: t); v?.dropped(at: p, tab: t) }
+            default:
+                // The same actions the menu items send, as a key press reaches them.
+                let item = NSMenuItem(); item.tag = Int(num("n"))
+                actionGrid = g
+                defer { actionGrid = nil }
+                switch q.first(where: { $0.name == "a" })?.value ?? "" {
+                case "new": paneNewTab(item)
+                case "close": paneCloseTab(item)
+                case "zoom": paneZoom(item)
+                case "next": paneNextTab(item)
+                case "prev": panePreviousTab(item)
+                case "tab": paneSelectTab(item)
+                case "left": paneFocusLeft(item)
+                case "right": paneFocusRight(item)
+                case "up": paneFocusUp(item)
+                case "down": paneFocusDown(item)
+                default: break
+                }
+            }
         // A divider dragged to fraction f (the first split of the window's grid).
         case "/pane-divider":
             guard let g = controllers.first(where: { $0.grid?.host === $0 })?.grid,
@@ -868,7 +905,7 @@ extension AppDelegate {
         case "/state":
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
-                var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow,
+                var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow, "number": w.windowNumber,
                                         "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w]
                 if let g = c.grid {
                     d["grid"] = g.readingOrder
@@ -876,6 +913,11 @@ extension AppDelegate {
                     let frames = Dictionary(g.paneFrames().map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
                     d["pane_frames"] = g.tree.leaves.map { NSStringFromRect(frames[$0] ?? .zero) }
                     d["pane_views"] = g.tree.leaves.map { g.members[$0]?.viewHash ?? "" }
+                    d["pane_tabs"] = g.tree.leaves.map { g.tabs($0).map { $0.pageTitle } }
+                    d["pane_active"] = g.tree.leaves.map { id in g.tabs(id).firstIndex { $0 === g.members[id] } ?? -1 }
+                    d["pane_shown"] = g.tree.leaves.map { g.views[$0]?.window != nil }
+                    d["focused"] = g.focused.flatMap { g.tree.leaves.firstIndex(of: $0) } ?? -1
+                    d["zoomed"] = g.zoomed.flatMap { g.tree.leaves.firstIndex(of: $0) } ?? -1
                 }
                 return d
             }

@@ -397,7 +397,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         window?.title = pageTitle
         // A grid's window is named by its panes, each pane by its page.
         if let host = paneHost ?? (grid != nil ? self : nil), let g = host.grid {
-            for (id, m) in g.members { g.views[id]?.title = m.pageTitle }
+            g.refreshStrips()
             host.window?.title = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }.joined(separator: " | ")
         }
     }
@@ -428,6 +428,17 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     }
 
     // ── NSWindowDelegate ──
+    /// ⌘W in a window split into panes closes the focused pane's tab
+    /// (amux-panes.swift); the window's close button still closes the window.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if let g = grid, g.all.count > 1, NSApp.currentEvent?.type == .keyDown,
+           let id = g.focused ?? g.tree.leaves.first, let c = g.members[id] {
+            app?.undockPane(c, to: .close)
+            return false
+        }
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) {
         titleObservation = nil
         themeObservation = nil
@@ -581,6 +592,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let url = navigationAction.request.url, let app = app {
             if app.isServerURL(url) {
+                dlog("verdict=page_opened_window url=\(url.absoluteString) from=\(webView.url?.absoluteString ?? "-")")
                 let c = app.openWindow(url: nil, frame: nil, configuration: configuration)
                 return c.webView
             }
@@ -680,6 +692,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var tearWatchTimer: Timer?
     var tabGroupSeen: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]
     var lastTabPlaced = Date.distantPast
+    var actionGrid: PaneGrid? = nil
     lazy var snapPreview = SnapPreview()
     // What covered the pointer the last time a drop found no amux window (amux-panes.swift).
     var paneBlocker: String?
@@ -753,6 +766,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func openWindow(url: URL?, frame: NSRect?, configuration: WKWebViewConfiguration? = nil, activate: Bool = true) -> DashboardWindowController {
         let c = DashboardWindowController(app: self, frame: frame ?? cascadeFrame(), configuration: configuration)
         controllers.append(c)
+        // Every new window or tab says so, so a tab nobody asked for is traceable.
+        dlog("verdict=window_opened url=\(url?.absoluteString ?? (configuration != nil ? "page-window.open" : "server")) windows=\(controllers.count)")
         if let url = url { c.load(url) } else if configuration == nil {
             if let s = serverURL { c.load(s) } else { c.showConnectPage() }
         }
@@ -932,7 +947,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                 if w.isMiniaturized { w.deminiaturize(nil) }
                 w.tabGroup?.selectedWindow = w
                 w.makeKeyAndOrderFront(nil)
-                if c.paneHost != nil { w.makeFirstResponder(c.webView) }
+                // In a pane, maybe behind another of its tabs: that tab in front.
+                if c.inGrid != nil { reveal(c); w.makeFirstResponder(c.webView) }
             } else {
                 openWindow(url: self.url(withHash: "#peek=" + enc), frame: nil)
             }
@@ -1289,6 +1305,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     @objc func newWindow(_ sender: Any?) { openWindow(url: nil, frame: nil) }
 
     @objc func newTabAction(_ sender: Any?) {
+        // A window split into panes: a tab in the focused pane (amux-panes.swift).
+        if keyGrid != nil { paneNewTab(sender); return }
         if let c = keyController, c.window?.isVisible == true { newTab(nextTo: c) } else { openWindow(url: nil, frame: nil) }
     }
 
@@ -1328,6 +1346,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if item.action == #selector(toggleNotifications(_:)) { item.state = (config.notifications ?? true) ? .on : .off }
         if item.action == #selector(toggleDockBadge(_:)) { item.state = (config.dockBadge ?? true) ? .on : .off }
         if item.action == #selector(toggleSnap(_:)) { item.state = snapEnabled ? .on : .off }
+        // Window > Panes acts on a window split into panes; elsewhere its keys
+        // (⌘1-9 among them) go on to the page.
+        let paneActions: [Selector] = [#selector(paneCloseTab(_:)), #selector(paneZoom(_:)), #selector(paneNextTab(_:)),
+            #selector(panePreviousTab(_:)), #selector(paneSelectTab(_:)), #selector(paneNewTab(_:)), #selector(paneFocusLeft(_:)),
+            #selector(paneFocusRight(_:)), #selector(paneFocusUp(_:)), #selector(paneFocusDown(_:))]
+        if let a = item.action, paneActions.contains(a) {
+            if a == #selector(paneZoom(_:)) { item.state = keyGrid?.zoomed != nil ? .on : .off }
+            return keyGrid != nil
+        }
         return true
     }
 
@@ -1451,6 +1478,27 @@ func buildMenuBar(_ d: AppDelegate) {
     let arrangeItem = NSMenuItem(title: "Arrange", action: nil, keyEquivalent: "")
     arrangeItem.submenu = buildArrangeMenu(d)
     window.addItem(arrangeItem)
+    // Panes (amux-panes.swift): each acts on the focused pane of the window in front.
+    let panesItem = NSMenuItem(title: "Panes", action: nil, keyEquivalent: "")
+    let panes = NSMenu(title: "Panes")
+    add(panes, "New Tab in Pane", #selector(AppDelegate.paneNewTab(_:)), "t", [.command, .option], target: d)
+    add(panes, "Close Tab in Pane", #selector(AppDelegate.paneCloseTab(_:)), "w", [.command, .option], target: d)
+    add(panes, "Zoom Pane", #selector(AppDelegate.paneZoom(_:)), "\r", [.command, .shift], target: d)
+    panes.addItem(.separator())
+    add(panes, "Next Tab in Pane", #selector(AppDelegate.paneNextTab(_:)), "]", [.command, .option], target: d)
+    add(panes, "Previous Tab in Pane", #selector(AppDelegate.panePreviousTab(_:)), "[", [.command, .option], target: d)
+    for n in 1...9 {
+        add(panes, n == 9 ? "Last Tab in Pane" : "Tab \(n) in Pane", #selector(AppDelegate.paneSelectTab(_:)), "\(n)", target: d)
+        panes.items.last?.tag = n
+    }
+    panes.addItem(.separator())
+    let arrow = { (k: Int) in String(Character(UnicodeScalar(k)!)) }
+    add(panes, "Focus Pane on the Left", #selector(AppDelegate.paneFocusLeft(_:)), arrow(NSLeftArrowFunctionKey), [.command, .option], target: d)
+    add(panes, "Focus Pane on the Right", #selector(AppDelegate.paneFocusRight(_:)), arrow(NSRightArrowFunctionKey), [.command, .option], target: d)
+    add(panes, "Focus Pane Above", #selector(AppDelegate.paneFocusUp(_:)), arrow(NSUpArrowFunctionKey), [.command, .option], target: d)
+    add(panes, "Focus Pane Below", #selector(AppDelegate.paneFocusDown(_:)), arrow(NSDownArrowFunctionKey), [.command, .option], target: d)
+    panesItem.submenu = panes
+    window.addItem(panesItem)
     let layoutsItem = NSMenuItem(title: "Workspaces", action: nil, keyEquivalent: "")
     d.rebuildLayoutsMenu()
     layoutsItem.submenu = d.layoutsMenu

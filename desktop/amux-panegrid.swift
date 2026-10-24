@@ -11,7 +11,10 @@ import CoreGraphics
 
 let maxPanes = 4
 
-enum PaneEdge: String { case left, right, top, bottom }
+// center: the dropped tab joins the pane's own tabs instead of splitting it
+// (Ethan, 2026-10-24: "my thing can have its own tabs and the others can have
+// their own tabs").
+enum PaneEdge: String { case left, right, top, bottom, center }
 
 indirect enum PaneTree: Equatable {
     case leaf(Int)
@@ -34,6 +37,7 @@ indirect enum PaneTree: Equatable {
             case .right: return .split(row: true, fraction: 0.5, self, .leaf(new))
             case .top: return .split(row: false, fraction: 0.5, .leaf(new), self)
             case .bottom: return .split(row: false, fraction: 0.5, self, .leaf(new))
+            case .center: return self
             }
         case .leaf: return self
         case .split(let row, let f, let a, let b):
@@ -112,13 +116,19 @@ indirect enum PaneTree: Equatable {
     }
 }
 
-/// Where a tab dropped on a pane goes. The cursor's spot in the pane (u right,
-/// v up, each 0...1) picks the nearest edge, and the new pane takes that half.
+/// Where a tab dropped on a pane goes. The middle of the pane (the central
+/// `middle` of each axis) joins its tabs. Elsewhere the cursor's spot in the
+/// pane (u right, v up, each 0...1) picks the nearest edge, and the new pane
+/// takes that half. A window that already has `maxPanes` only takes joins
+/// (`full`), so a fifth tab lands in the pane under the pointer.
 /// A corner splits the pane across its longer side, toward that corner: on a
 /// wide pane the top-right corner is the right half, and on a pane that is
 /// already a half (taller than wide) it is the top half, so two corner drops
 /// make quarters.
-func paneDropEdge(u: CGFloat, v: CGFloat, width: CGFloat, height: CGFloat, corner: CGFloat = 0.25) -> (edge: PaneEdge, name: String) {
+func paneDropEdge(u: CGFloat, v: CGFloat, width: CGFloat, height: CGFloat, corner: CGFloat = 0.25,
+                  middle: CGFloat = 0.4, full: Bool = false) -> (edge: PaneEdge, name: String) {
+    let m = (1 - middle) / 2
+    if full || (u > m && u < 1 - m && v > m && v < 1 - m) { return (.center, "center") }
     let left = u < 0.5, bottom = v < 0.5
     let inCorner = (u < corner || u > 1 - corner) && (v < corner || v > 1 - corner)
     if inCorner {
@@ -138,5 +148,7 @@ func paneDropRect(_ pane: CGRect, edge: PaneEdge) -> CGRect {
     case .right: return CGRect(x: pane.midX, y: pane.minY, width: pane.width / 2, height: pane.height)
     case .top: return CGRect(x: pane.minX, y: pane.midY, width: pane.width, height: pane.height / 2)
     case .bottom: return CGRect(x: pane.minX, y: pane.minY, width: pane.width, height: pane.height / 2)
+    // Joining: the whole pane, inset so it reads differently from a split.
+    case .center: return pane.insetBy(dx: min(24, pane.width * 0.06), dy: min(24, pane.height * 0.06))
     }
 }

@@ -20,7 +20,10 @@ func check(_ label: String, _ want: String?, _ got: String?) {
         check("right part is the right half", "right right", e(0.9, 0.5))
         check("top part is the top half", "top top", e(0.5, 0.9))
         check("bottom part is the bottom half", "bottom bottom", e(0.5, 0.1))
-        check("the middle goes to the nearest edge", "right right", e(0.6, 0.5))
+        check("the middle joins the pane's tabs", "center center", e(0.6, 0.5))
+        check("just outside the middle goes to the nearest edge", "right right", e(0.75, 0.5))
+        let full = paneDropEdge(u: 0.95, v: 0.5, width: 1400, height: 860, full: true)
+        check("a full window only joins, even at an edge", "center center", "\(full.edge.rawValue) \(full.name)")
         check("a corner of a wide pane splits it side by side", "right top right", e(0.9, 0.9))
         check("a corner of a tall pane splits it top and bottom", "top top right", e(0.9, 0.9, 700, 860))
         check("bottom left corner of a tall pane", "bottom bottom left", e(0.1, 0.1, 700, 860))
@@ -28,6 +31,8 @@ func check(_ label: String, _ want: String?, _ got: String?) {
         let pane = CGRect(x: 100, y: 50, width: 800, height: 600)
         check("the right half preview", "(500.0, 50.0, 400.0, 600.0)", fmt(paneDropRect(pane, edge: .right)))
         check("the top half preview sits on top (y up)", "(100.0, 350.0, 800.0, 300.0)", fmt(paneDropRect(pane, edge: .top)))
+        check("a join previews the whole pane, inset", "(124.0, 74.0, 752.0, 552.0)", fmt(paneDropRect(pane, edge: .center)))
+        check("a join leaves the layout alone", "0", PaneTree.leaf(0).inserting(1, at: 0, edge: .center).encoded)
 
         // Growing: one page, a tab dropped on its right, then on the right pane's top.
         var t = PaneTree.leaf(0)
