@@ -51,8 +51,10 @@ probe() { # [dry]
   rm -f "$FIX/renice.calls"
   TICK_PATH="$TICK" FIXD="$FIX" PROBE_DRY="${1:-0}" bash -c '
     AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_SCOPE_FILE=/dev/null . "$TICK_PATH"
-    STATE_DIR="$FIXD/state" UTIL_CMD="cat $FIXD/res.json" UTIL_TREE_PS_CMD="cat $FIXD/ps" RENICE_CMD="$FIXD/renice"
+    STATE_DIR="$FIXD/state" UTIL_CMD="cat $FIXD/res.json" UTIL_TREE_PS_CMD="cat $FIXD/ps" RENICE_CMD="$FIXD/renice" UTIL_IDLE_CMD="cat $FIXD/top"
     check_utilization "$PROBE_DRY"; echo "SUMMARY=$UTIL_SUMMARY"; echo "RENICED=$UTIL_RENICED"' 2>&1; }
+idle_top() { echo "CPU usage: 1.0% user, 1.0% sys, $1% idle " > "$FIX/top"; }
+idle_top 98
 calls() { cat "$FIX/renice.calls" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
 
 echo "1. busy: it names the consumers and lowers detached trees, nothing else"
@@ -93,6 +95,18 @@ out=$(UTIL_SUMMARY="workers homepage 310%; rest vm 250%" bash -c '
   printf "%s\n" "$verdicts"')
 check "the cpu line names who"                        yes "$(has "$out" '^cpu 15-min load 82.0 is 293% of 28 cores \(over 150%\) \(who: workers homepage 310%; rest vm 250%\)$')"
 check "other lines are untouched"                     yes "$(has "$out" '^memory x$')"
+
+echo "7. the census misses short-lived children: top's busier reading decides"
+# RCA 20261024-170152: one ffmpeg after another, census 71% busy, top 88%.
+payload 1200 2800; idle_top 12; out=$(probe)
+check "it says top was used, with a verdict"          yes "$(has "$out" 'top reads the CPU 88% busy, above the census; judging busy by top \(verdict=util_census_under_top\)')"
+check "and the tree is lowered"                       "-n 10 -p 500 -n 10 -p 501" "$(calls)"
+idle_top 60; out=$(probe)
+check "top idle too: still only reported"             yes "$(has "$out" 'pid 500 \(bash\) at 150%: reported')"
+check "no top line when top is not busier"            no  "$(has "$out" 'util_census_under_top')"
+echo "garbage" > "$FIX/top"; out=$(probe)
+check "an unreadable top falls back to the census"    yes "$(has "$out" 'pid 500 \(bash\) at 150%: reported')"
+idle_top 98
 
 echo "6. system_health runs it"
 check "wired between the volume and self checks"      yes "$(grep -q 'check_agent_volume; check_utilization "\$1"; demote_background_daemons "\$1"; check_self_runs' "$TICK" && echo yes || echo no)"

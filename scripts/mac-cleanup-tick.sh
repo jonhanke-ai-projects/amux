@@ -362,6 +362,13 @@ VM_LOAD_CMD=${AMUX_CLEANUP_VM_LOAD_CMD:-colima ssh -p PROFILE -- cat /proc/loada
 # is UTIL_ACT_SHARE busy, detached trees at UTIL_RENICE_MIN_PCT+ lowered to nice 10.
 UTIL_CMD=${AMUX_CLEANUP_UTIL_CMD:-curl -sk --max-time 20 -H X-Amux-Session:desktop $(amux url 2>/dev/null || echo https://localhost:8824)/api/resources}
 UTIL_ACT_SHARE=${AMUX_CLEANUP_UTIL_ACT_SHARE:-0.85}
+# The census sums per-process samples, so a job that starts a fresh short-lived
+# child every few seconds falls between them. RCA 20261024-170152: a lane's
+# video job ran one ffmpeg after another at ~950% each; the census read the CPU
+# 71% busy while top read 88% and load15 was 123% of the cores, so the cpu
+# constraint escalated and this arm reported the tree without lowering it.
+# Busy is now the higher of the census and top's own idle figure.
+UTIL_IDLE_CMD=${AMUX_CLEANUP_UTIL_IDLE_CMD:-top -l 2 -s 1 -n 0}
 UTIL_RENICE_MIN_PCT=${AMUX_CLEANUP_UTIL_RENICE_MIN_PCT:-100}
 UTIL_RENICE_EXCLUDE=${AMUX_CLEANUP_UTIL_RENICE_EXCLUDE:-(^|/)tmux( |$)|gs12}
 UTIL_TREE_PS_CMD=${AMUX_CLEANUP_UTIL_TREE_PS_CMD:-ps -axo pid=,ppid=,uid=,nice=,args=}
@@ -1719,7 +1726,14 @@ for o in m.get("top_unattributed") or []:
   read -r _ total cap _ _ <<< "$(printf '%s\n' "$parsed" | sed -n 1p)"
   UTIL_SUMMARY=$(printf '%s\n' "$parsed" | sed -n 's/^who //p')
   echo "mac-cleanup: utilization: $(printf '%s\n' "$parsed" | awk 'NR==1{printf "%d%% of %d%% busy, workers %d%%, everything else %d%%", $2, $3, $4, $5}'); $UTIL_SUMMARY"
-  busy=$(awk -v t="$total" -v c="$cap" -v s="$UTIL_ACT_SHARE" 'BEGIN{print (c>0 && t/c >= s) ? 1 : 0}')
+  local idle share
+  idle=$($UTIL_IDLE_CMD 2>/dev/null | awk '/^CPU usage/ {for (i=1;i<=NF;i++) if ($i ~ /idle/) v=$(i-1)} END{sub(/%/,"",v); print v}')
+  case "$idle" in ''|*[!0-9.]*) idle=-1 ;; esac
+  share=$(awk -v t="$total" -v c="$cap" -v i="$idle" 'BEGIN{ s = (c>0) ? t/c : 0; if (i >= 0 && (100-i)/100 > s) s = (100-i)/100; printf "%.2f", s }')
+  busy=$(awk -v x="$share" -v s="$UTIL_ACT_SHARE" 'BEGIN{print (x >= s) ? 1 : 0}')
+  if awk -v i="$idle" -v t="$total" -v c="$cap" 'BEGIN{exit !(i >= 0 && c > 0 && (100-i)/100 > t/c + 0.05)}'; then
+    echo "mac-cleanup: utilization: top reads the CPU $(awk -v i="$idle" 'BEGIN{printf "%d", 100-i}')% busy, above the census; judging busy by top (verdict=util_census_under_top)"
+  fi
   local snap; snap=$($UTIL_TREE_PS_CMD 2>/dev/null)
   while read -r _ root pct cmd; do
     [ -n "$root" ] || continue
