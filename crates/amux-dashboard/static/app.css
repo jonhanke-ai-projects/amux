@@ -2688,6 +2688,60 @@
   #peek-overlay[data-head="3"] .peek-dir-bar { display:none !important; }
   #peek-overlay[data-head="3"] .peek-focus-bar { display:flex; align-items:center; gap:8px; padding:4px 12px; border-bottom:1px solid var(--border); flex-shrink:0; }
   .peek-focus-bar h3 { margin: 0; font-size: 0.85rem; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* WORKER VIEW, COMPACT ON DESKTOP (Ethan, 2026-10-23: "i like the
+     ux/functionality and everything displayed but its too large a % of the
+     overall screen on worker views"). Measured at 1440x900: the bands above
+     and below the terminal took 368 of 900px. With a mouse, everything stays
+     shown and the 44px controls keep their size; the layout tightens:
+     the title and task stack on the left of one band with the toolbar on the
+     right (97px -> 55px), "Send command" sits on the status line instead of
+     its own row, and the chips and folder line slim down. Touch screens keep
+     the spacious layout. The grip stages are redrawn below so each still folds more. */
+  @media (min-width: 601px) and (hover: hover) and (pointer: fine) {
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header {
+      display: grid !important; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 0 !important;
+      align-items: center; padding-bottom: 3px !important; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > * { grid-column: 1; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) #peek-title-row {
+      justify-content: flex-start !important; width: auto !important; }
+    /* The task wraps: its full name stays readable (Ethan, 2026-10-16). */
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) #peek-task-row,
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) #peek-needs-input-row { justify-content: flex-start !important; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) #peek-needs-input-row { white-space: nowrap; overflow: hidden; }
+    /* THE GRIP STAGES STILL EACH GIVE ROOM. Stage 0 is already one band, so
+       here stage 1 drops the folder line (the task and ask go to one line, as
+       before), stage 2 swaps the band for the slim name bar and keeps the tabs,
+       and stage 3 is the slim bar alone. */
+    #peek-overlay[data-head="1"] .peek-dir-bar { display: none !important; }
+    #peek-overlay[data-head="2"] .overlay-header { display: none !important; }
+    #peek-overlay[data-head="2"] .peek-focus-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-toolbar {
+      grid-column: 2; grid-row: 1 / span 3; align-self: center; width: auto; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-find-wrap { grid-column: 1 / -1; }
+    #peek-overlay .peek-dir-bar { padding: 1px 14px; }
+    #peek-overlay .peek-head-grip { height: 7px; }
+    #peek-overlay .peek-cmd-bar { position: relative; }
+    #peek-overlay #peek-status { text-align: left; padding: 0 12px; margin-top: 1px; }
+    #peek-overlay .peek-cmd-toggle { position: absolute; right: 12px; top: -15px; width: auto; padding: 0 2px; line-height: 14px; font-size: 0.68rem; }
+    #peek-chips .chip { min-height: 28px; padding: 3px 10px; font-size: 0.75rem; }
+    #peek-overlay .peek-cmd-row { padding-top: 2px; }
+    /* The ask is one line: its label, then the question, ending in an
+       ellipsis (the full text is the button's title and its modal). */
+    #peek-needs-input-row .status-badge.needs-input { flex-direction: row; align-items: center; gap: 8px; width: auto; max-width: 100%; }
+    #peek-needs-input-row .status-badge.needs-input .ni-label { flex: 0 0 auto; }
+    #peek-needs-input-row .status-badge.needs-input .ni-ask { display: block; flex: 1 1 auto; min-width: 0; white-space: nowrap; -webkit-line-clamp: unset; }
+  }
+  /* Wide enough: the ask takes the middle of the header band, between the
+     worker's name and its toolbar, at the toolbar's own height, so a worker
+     that needs you costs no extra rows (Ethan, 2026-10-23, screenshot of
+     social-activities: "the real estate % per section is not reflective of
+     where the focus should be"). */
+  @media (min-width: 1100px) and (hover: hover) and (pointer: fine) {
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header { grid-template-columns: minmax(0, 1fr) auto auto; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > #peek-needs-input-row {
+      grid-column: 2; grid-row: 1 / span 3; width: auto; max-width: min(440px, 34vw); justify-content: flex-end !important; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-toolbar { grid-column: 3; }
+  }
 
   /* Peek compact mode — when visual viewport is constrained (pinch zoom / keyboard) */
   .overlay.vv-compact .peek-cmd-row .chips { display: none !important; }
