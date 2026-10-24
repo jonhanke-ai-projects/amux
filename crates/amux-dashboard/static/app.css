@@ -2718,6 +2718,22 @@
     #peek-overlay .peek-cmd-toggle { position: absolute; right: 12px; top: -15px; width: auto; padding: 0 2px; line-height: 14px; font-size: 0.68rem; }
     #peek-chips .chip { min-height: 28px; padding: 3px 10px; font-size: 0.75rem; }
     #peek-overlay .peek-cmd-row { padding-top: 2px; }
+    /* The ask is one line: its label, then the question, ending in an
+       ellipsis (the full text is the button's title and its modal). */
+    #peek-needs-input-row .status-badge.needs-input { flex-direction: row; align-items: center; gap: 8px; width: auto; max-width: 100%; }
+    #peek-needs-input-row .status-badge.needs-input .ni-label { flex: 0 0 auto; }
+    #peek-needs-input-row .status-badge.needs-input .ni-ask { display: block; flex: 1 1 auto; min-width: 0; white-space: nowrap; -webkit-line-clamp: unset; }
+  }
+  /* Wide enough: the ask takes the middle of the header band, between the
+     worker's name and its toolbar, at the toolbar's own height, so a worker
+     that needs you costs no extra rows (Ethan, 2026-10-23, screenshot of
+     social-activities: "the real estate % per section is not reflective of
+     where the focus should be"). */
+  @media (min-width: 1100px) and (hover: hover) and (pointer: fine) {
+    #peek-overlay:not([data-head="1"]):not([data-head="2"]):not([data-head="3"]) > .overlay-header { grid-template-columns: minmax(0, 1fr) auto auto; }
+    #peek-overlay:not([data-head="1"]):not([data-head="2"]):not([data-head="3"]) > .overlay-header > #peek-needs-input-row {
+      grid-column: 2; grid-row: 1 / span 3; width: auto; max-width: min(440px, 34vw); justify-content: flex-end !important; }
+    #peek-overlay:not([data-head="1"]):not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-toolbar { grid-column: 3; }
   }
 
   /* Peek compact mode — when visual viewport is constrained (pinch zoom / keyboard) */
