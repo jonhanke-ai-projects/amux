@@ -1,5 +1,83 @@
 [
   {
+    "hash": "4065457ea47290ae50f59d1ec279983e21055626",
+    "short": "4065457e",
+    "title": "Each worker tab shows that worker's data",
+    "date": "2026-10-24",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "reliability",
+      "workers"
+    ],
+    "description": "Switching from one worker to another on the same tab could paint the first worker's answer onto the second when it arrived late. Ten tabs, including Memory, Git, Steering, Logs and Shell, now check that an answer still belongs to the worker on screen before showing it, so Save and Push always act on the worker you are looking at."
+  },
+  {
+    "hash": "8200abbde258cee8a46fd67afa60e611c01f66f4",
+    "short": "8200abbd",
+    "title": "Drag a tab into the Mac app window to split it",
+    "date": "2026-10-23",
+    "type": "feat",
+    "tags": [
+      "mac app",
+      "split view",
+      "desktop"
+    ],
+    "description": "In the amux Mac app, drag a tab over a window and a preview shows which half of the pane it will take. Drop it and the window becomes a grid of up to four panes, each keeping its page state, with dividers you can drag to resize."
+  },
+  {
+    "hash": "de0259901ec8f33cb77129a51c71e7b636e5269a",
+    "short": "de025990",
+    "title": "See how much memory and CPU each worker uses",
+    "date": "2026-10-23",
+    "type": "feat",
+    "tags": [
+      "metrics",
+      "resources",
+      "workers"
+    ],
+    "description": "amux now samples each worker's memory, CPU and process count every 30 seconds and keeps seven days of history. The new Resources tab in Metrics shows live numbers and peaks per worker, and you can cap how many workers run at once and stagger their start after a reboot."
+  },
+  {
+    "hash": "85a71cca3a781b37ab22eafef9834ae452c751e1",
+    "short": "85a71cca",
+    "title": "Claude sign-in on amux Cloud uses your subscription",
+    "date": "2026-10-23",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "claude code",
+      "sign-in"
+    ],
+    "description": "Signing in to Claude from the dashboard now runs the same login as /login on a laptop. Your plan usage shows in the dashboard, and workers run on your Claude subscription instead of an API key."
+  },
+  {
+    "hash": "2dc70bcb77c9560bba72bf7f92080003811d9931",
+    "short": "2dc70bcb",
+    "title": "Stuck queued messages can be retried or removed",
+    "date": "2026-10-23",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "queue",
+      "dashboard"
+    ],
+    "description": "A message saved on your device that never reached its worker used to sit in the Queued list with its buttons disabled. It now says what happened, and you can send it again or remove it."
+  },
+  {
+    "hash": "ee265d768be67d4a1953c22161ebe6d11281b4fc",
+    "short": "ee265d76",
+    "title": "A bigger terminal in the worker view on desktop",
+    "date": "2026-10-23",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "desktop",
+      "terminal"
+    ],
+    "description": "With a mouse and a wide screen, the header and command bar around a worker's terminal are tighter, so the terminal grows from 532 to 611 pixels tall at 1440 by 900. Touch screens keep the stacked layout."
+  },
+  {
     "hash": "c5aba6e5eee052d666b7a141ce67c126feab40dd",
     "short": "c5aba6e5",
     "title": "More room for messages on your phone",
