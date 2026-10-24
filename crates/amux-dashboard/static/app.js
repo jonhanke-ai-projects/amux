@@ -57222,7 +57222,10 @@ async function _pagesEditHtml() {
   } catch (e) { showToast('Not saved: ' + e.message); }
 }
 
-function _sqlInit() { if (!_sqlSchemaLoaded) { _sqlSchemaLoaded = true; _dbLoadSchema(); } }
+function _sqlInit() {
+  if (!_sqlSchemaLoaded) { _sqlSchemaLoaded = true; _dbLoadSchema(); }
+  try { const m = localStorage.getItem('amux_db_mode'); if (m && ['data','structure','query','ask'].includes(m)) _dbSetMode(m); } catch(e) {}
+}
 
 async function _sqlFetchJson(url, options) {
   const response = await fetch(url, options);
@@ -57280,10 +57283,12 @@ function _dbSelectTable(name) {
 
 function _dbSetMode(mode) {
   _dbMode = mode;
-  ['data', 'structure', 'query'].forEach(m => {
+  try { localStorage.setItem('amux_db_mode', mode); } catch(e) {}
+  ['data', 'structure', 'query', 'ask'].forEach(m => {
     const pane = document.getElementById('db-pane-' + m);
     if (pane) pane.style.display = m === mode ? '' : 'none';
-    document.getElementById('db-mode-' + m).classList.toggle('active', m === mode);
+    const btn = document.getElementById('db-mode-' + m);
+    if (btn) btn.classList.toggle('active', m === mode);
   });
   if (mode === 'query') {
     const ta = document.getElementById('sql-editor');

@@ -500,7 +500,7 @@ fn worker_harness_env(name: &str, root: &Path, endpoint: &str) -> Vec<(String, S
     .collect()
 }
 
-fn sessions_dir() -> PathBuf {
+pub(crate) fn sessions_dir() -> PathBuf {
     home().join("sessions")
 }
 fn logs_dir() -> PathBuf {
@@ -32671,14 +32671,48 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
     // served a ghost of this worker for the next TTL (AMUX-2960 — the same
     // hole create_session_legacy had on the grow side).
     crate::api::sessions_legacy::invalidate_sessions_cache();
-    // DB-side per-session state (Python clears in-memory maps; the durable
-    // equivalents here are the steering queue rows).
+    // DB-side per-session state: delete everything owned by this worker.
     let n = name.to_string();
     let _ = state
         .store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
             conn.execute("DELETE FROM steering_queue WHERE session=?", [&n])?;
+            conn.execute("DELETE FROM steering_history WHERE session=?", [&n])?;
+            conn.execute("DELETE FROM cmd_history WHERE session=?", [&n])?;
+            conn.execute("DELETE FROM session_events WHERE session=?", [&n])?;
+            conn.execute("DELETE FROM send_dedup WHERE session=?", [&n])?;
+            conn.execute("DELETE FROM share_tokens WHERE session=?", [&n])?;
+            // Tables created by migrations (may not exist in test DBs).
+            for sql in [
+                "DELETE FROM issues WHERE session=?1",
+                "DELETE FROM schedules WHERE session=?1",
+                "DELETE FROM session_gates WHERE session=?1",
+                "DELETE FROM guard_verdicts WHERE session=?1",
+                "DELETE FROM skill_usage WHERE session=?1",
+                "DELETE FROM token_ledger WHERE session=?1",
+                "DELETE FROM saved_messages WHERE session=?1",
+                "DELETE FROM board_drive_nudge_budget WHERE session=?1",
+                "DELETE FROM board_drive_nudge_state WHERE session=?1",
+                "DELETE FROM task_windows WHERE session=?1",
+                "DELETE FROM tasks WHERE session=?1",
+                "DELETE FROM logs WHERE session=?1",
+                "DELETE FROM standing_approval_uses WHERE session=?1",
+                "DELETE FROM worker_resource_samples WHERE session=?1",
+                "DELETE FROM board_overlap_members WHERE session=?1",
+                "DELETE FROM dictation_history WHERE session=?1",
+                "DELETE FROM mdai_runs WHERE session=?1",
+                "DELETE FROM reclaim_quarantine WHERE session=?1",
+                "DELETE FROM trace_archive WHERE worker=?1",
+                "DELETE FROM _amux_sessions WHERE worker_id=?1",
+                "DELETE FROM _amux_workers WHERE id=?1",
+            ] {
+                let _ = conn.execute(sql, [&n]);
+            }
+            tracing::info!(
+                session = %n, verdict = "cascade_delete_complete", measured = true,
+                "deleted all DB rows owned by worker"
+            );
             // A DELETED WORKER MUST STOP BEING A LEASE HOLDER (AMUX-4954).
             //
             // Measured 2026-09-20: after DELETE returned 200 for three fan-out
