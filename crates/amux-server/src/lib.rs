@@ -703,12 +703,16 @@ async fn async_main() {
     });
     // AA-40: skills saved in the Skills tab before their command file was
     // written on save exist only in the table, where Claude Code cannot run
-    // them. Give each one a file once per boot (create only).
+    // them. Give each one a file once per boot (create only). The skills amux
+    // itself ships (skills/amux-contribute.md) are installed first.
     {
         let st = state.clone();
         tokio::task::spawn_blocking(move || {
-            let Ok(conn) = st.store.read() else { return };
             let dir = crate::api::skills::user_commands_dir();
+            let (written, n) = crate::api::skills::install_shipped(&dir, crate::api::skills::SHIPPED_COMMANDS);
+            tracing::info!(written, measured = true, n_considered = n, verdict = "shipped_skills_installed",
+                "installed or refreshed the skills amux ships (e.g. /amux-contribute)");
+            let Ok(conn) = st.store.read() else { return };
             let (created, n) = crate::api::skills::materialize_missing(&conn, &dir);
             tracing::info!(created, measured = true, n_considered = n, verdict = "skill_command_files_reconciled",
                 "gave every Skills-tab skill a command file Claude Code can run");

@@ -142,6 +142,8 @@ async fn deploy_status(dir: Option<&Path>) -> serde_json::Value {
         "on_main": on_main,
         "behind": behind,
         "gate": gate,
+        // The checkout this server builds from, so /amux-contribute can find it.
+        "repo": dir.map(|d| d.display().to_string()),
     })
 }
 

@@ -414,6 +414,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-amux-cdp-committed.sh
+      - name: amux sync-checkout --override matches origin and saves what it replaces (/amux-contribute pull)
+        run: |
+          set -uo pipefail
+          ./scripts/test-sync-checkout-override.sh
       - name: Python reading a shared site-packages defaults grpc to fork-safe (Mac crashes RCA 20261018-105230)
         run: |
           set -uo pipefail

@@ -6488,6 +6488,7 @@ ${BOLD}Interaction:${RESET}
 ${BOLD}Coordination:${RESET}
   amux land [--branch main]      Rebase and push HEAD holding a per-repo lock, so lanes queue instead of racing
   amux sync-checkout [--check]   Bring this checkout's branch current with origin when that loses nothing; else name what blocks it
+  amux sync-checkout --override  Make this checkout match origin exactly; local work is saved to a restore ref first
   amux memory [add --stdin]      Show, or append to, your worker memory (the Memory tab)
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
@@ -8950,17 +8951,19 @@ PY
 }
 
 cmd_sync_checkout() {
-  local remote=origin branch="" check=0
+  local remote=origin branch="" check=0 override=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check=1; shift ;;
+      --override) override=1; shift ;;
       --remote) remote="${2:?}"; shift 2 ;;
       --branch) branch="${2:?}"; shift 2 ;;
-      -h|--help) echo "usage: amux sync-checkout [--check] [--remote origin] [--branch <current>]"; return 0 ;;
+      -h|--help) echo "usage: amux sync-checkout [--check] [--override] [--remote origin] [--branch <current>]"; return 0 ;;
       *) die "amux sync-checkout: unknown argument $1" ;;
     esac
   done
   git rev-parse --git-dir >/dev/null 2>&1 || die "amux sync-checkout: not inside a git repository"
+  if [ "$override" = 1 ]; then _sync_checkout_override "$remote" "$branch" "$check"; return; fi
   local cur; cur="$(git symbolic-ref --short -q HEAD)" || die "amux sync-checkout: HEAD is detached; nothing to advance"
   branch="${branch:-$cur}"
   [ "$branch" = "$cur" ] || die "amux sync-checkout: on $cur, not $branch"
@@ -9005,6 +9008,67 @@ cmd_sync_checkout() {
   git update-ref -m "amux sync-checkout" "refs/heads/$branch" "$up" "$head" \
     || { _sc_log "verdict=raced measured=true (HEAD moved during the sync; tree now matches $up, branch not moved)"; return 1; }
   _sc_log "verdict=advanced measured=true from=$(git rev-parse --short "$head") to=$(git rev-parse --short "$up") behind=$behind"
+}
+
+# `amux sync-checkout --override`: the "pull from remote, replace what I have"
+# half of /amux-contribute (Ethan, 2026-10-24: "if thats the case it should
+# override what they have locally with remote"). Plain sync-checkout refuses
+# whenever local work would be lost; this one makes the checkout match
+# <remote>/<branch> exactly, after saving EVERYTHING it discards (local commits,
+# staged and unstaged edits, untracked files; ignored files are left alone) as
+# one commit under refs/amux/pre-override/<UTC time>. Nothing is unrecoverable:
+# the line it prints restores the lot. --check only reports what it would drop.
+_sync_checkout_override() { # <remote> <branch|""> <check 0|1>
+  local remote=$1 branch=$2 check=$3 top log cur
+  top="$(git rev-parse --show-toplevel)"; log="$HOME/.amux/logs/sync-checkout.log"
+  mkdir -p "${log%/*}"
+  _so_log() { printf '%s %s repo=%s %s\n' "$(date -u +%FT%TZ)" "${AMUX_SESSION:-?}" "$top" "$*" >> "$log"; echo "amux sync-checkout: $*"; }
+  cur="$(git symbolic-ref --short -q HEAD || true)"
+  branch="${branch:-main}"   # "pull from remote" means main unless --branch says otherwise
+  git fetch -q "$remote" "$branch" || { _so_log "verdict=fetch_failed measured=false override=1"; return 1; }
+  local head up ahead behind dirty
+  head="$(git rev-parse HEAD)"; up="$(git rev-parse "$remote/$branch")"
+  ahead="$(git rev-list --count "$up..HEAD")"; behind="$(git rev-list --count "HEAD..$up")"
+  dirty="$(git -C "$top" status --porcelain --untracked-files=all | wc -l | tr -d ' ')"
+  echo "  local commits not on $remote/$branch: $ahead"
+  [ "$ahead" != 0 ] && git log --format='    %h %s' "$up..HEAD" | head -10
+  echo "  changed or untracked paths: $dirty"
+  [ "$dirty" != 0 ] && git -C "$top" status --porcelain --untracked-files=all | head -10 | sed 's/^/    /'
+  echo "  $remote/$branch commits this checkout lacks: $behind"
+  if [ "$ahead" = 0 ] && [ "$dirty" = 0 ] && [ "$head" = "$up" ]; then
+    _so_log "verdict=current measured=true override=1"; return 0
+  fi
+  if [ "$check" = 1 ]; then _so_log "verdict=would_override measured=true ahead=$ahead dirty=$dirty behind=$behind"; return 0; fi
+  # The backup: HEAD's history plus a snapshot of the whole working tree, built
+  # in a private index so the shared one is not touched until the reset.
+  local idx tree snap ref
+  idx="$(mktemp -t amux-override-idx)"
+  cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true
+  GIT_INDEX_FILE="$idx" git -C "$top" add -A . 2>/dev/null \
+    && tree="$(GIT_INDEX_FILE="$idx" git write-tree)" \
+    && snap="$(git commit-tree "$tree" -p "$head" -m "amux sync-checkout --override: local state of $top before matching $remote/$branch ($ahead commit(s), $dirty path(s))")"
+  rm -f "$idx"
+  if [ -z "${snap:-}" ]; then _so_log "verdict=backup_failed measured=true override=1 (nothing was changed)"; return 1; fi
+  ref="refs/amux/pre-override/$(date -u +%Y%m%dT%H%M%SZ)"
+  git update-ref "$ref" "$snap" || { _so_log "verdict=backup_failed measured=true override=1 (nothing was changed)"; return 1; }
+  # A half-finished operation would survive a reset and confuse the next git command.
+  git rebase --quit >/dev/null 2>&1 || true; git merge --abort >/dev/null 2>&1 || true
+  git cherry-pick --quit >/dev/null 2>&1 || true; git revert --quit >/dev/null 2>&1 || true
+  if [ -n "$cur" ] && [ "$cur" = "$branch" ]; then
+    git reset -q --hard "$up"
+  elif [ -n "$cur" ]; then
+    git checkout -q -B "$branch" "$up" 2>/dev/null || git checkout -q -f -B "$branch" "$up"
+  else
+    git checkout -q -f --detach "$up"
+  fi
+  git -C "$top" clean -q -fd
+  if [ "$(git rev-parse HEAD)" != "$up" ] || [ -n "$(git -C "$top" status --porcelain)" ]; then
+    _so_log "verdict=override_incomplete measured=true backup=$ref (the checkout does not match $remote/$branch; git status shows what is left)"
+    return 1
+  fi
+  _so_log "verdict=overridden measured=true from=${head:0:9} to=${up:0:9} ahead=$ahead dirty=$dirty behind=$behind backup=$ref"
+  echo "  This checkout now matches $remote/$branch exactly."
+  echo "  Restore what was replaced: git switch -c restored-local $ref"
 }
 
 # `amux ci wait <run-id> [--repo owner/name] [--timeout S] [--poll S] [--json]`:
