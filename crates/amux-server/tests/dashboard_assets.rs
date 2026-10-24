@@ -1364,9 +1364,14 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         app.contains("if (z && typeof z === 'object') return Object.keys(z).length > 0"),
         "nested skin/connector settings must not render as an unset configuration"
     );
+    // The way back to inherited configuration is the Scope tab: removing a
+    // worker-level row deletes that key (asserted just above). The Board tab's
+    // own Inherit button was removed on 2026-10-24 (Ethan: "we should have had
+    // one toggle for enable/disable board"), so it must not come back beside
+    // the switch.
     assert!(
-        app.contains("_boardOneSet(\\'' + escJs(name) + '\\',null)\">Inherit</button>"),
-        "worker overrides need an explicit path back to inherited configuration"
+        !app.contains("_boardOneSet(\\'' + escJs(name) + '\\',null)"),
+        "the Board tab is one switch; inherited configuration is reached from Scope"
     );
     let css = asset("app.css");
     for needle in [
