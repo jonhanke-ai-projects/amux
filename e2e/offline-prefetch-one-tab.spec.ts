@@ -10,6 +10,10 @@ test('a hidden tab skips the automatic offline save, a manual one still runs', a
     Object.defineProperty(Document.prototype, 'hidden', { get: () => true, configurable: true });
     Object.defineProperty(Document.prototype, 'visibilityState', { get: () => 'hidden', configurable: true });
   });
+  // The worker list itself serves zz-pf: a sessions refresh landing between the
+  // setup below and the manual save used to replace it with the real (empty)
+  // list, so the save found nothing to fetch (main CI run 40108120656).
+  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [{ name: 'zz-pf', dir: '/tmp', running: true, status: 'active', flags: '' }] }));
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any)._offlinePrefetch === 'function');
   const peeks: string[] = [];
@@ -18,6 +22,7 @@ test('a hidden tab skips the automatic offline save, a manual one still runs', a
   await g(`localStorage.removeItem(_PREFETCH_LAST_KEY); _prefetchRunning = false; sessions = [{name:'zz-pf', running:true, status:'active'}];`);
   await g(`_offlinePrefetch(false, 'interval')`);
   expect(peeks.length).toBe(0);
+  await page.evaluate(() => (window as any).fetchSessions());   // a refresh lands first, as it can in CI
   await g(`_offlinePrefetch(true)`);
   await expect.poll(() => peeks.length).toBe(1);
 });
