@@ -1721,21 +1721,18 @@
     background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; margin-left: 8px; }
   #fc-container .fc-addEvent-button:hover { filter: brightness(1.08); }
   #fc-container .fc-eventsToggle-button,
-  #fc-container .fc-schedToggle-button,
   #fc-container .fc-issuesToggle-button,
   #fc-container .fc-gcalToggle-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
   /* On: a light accent-tinted fill so an active layer reads as "on" at a
      glance, not just "not dimmed". Off: dimmed, same as before — the label
      itself carries no glyph (see _fcLayerLabel), so this is the only signal. */
   #fc-container .fc-eventsToggle-button[aria-pressed="true"],
-  #fc-container .fc-schedToggle-button[aria-pressed="true"],
   #fc-container .fc-issuesToggle-button[aria-pressed="true"],
   #fc-container .fc-gcalToggle-button[aria-pressed="true"] {
     background: color-mix(in srgb, var(--accent) 18%, transparent) !important;
     border-color: var(--accent) !important;
   }
   #fc-container .fc-eventsToggle-button[aria-pressed="false"],
-  #fc-container .fc-schedToggle-button[aria-pressed="false"],
   #fc-container .fc-issuesToggle-button[aria-pressed="false"],
   #fc-container .fc-gcalToggle-button[aria-pressed="false"] { opacity: 0.55; }
   #fc-container .fc-footer-toolbar .fc-button { padding: 8px 10px; min-width: 44px; }

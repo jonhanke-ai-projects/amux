@@ -46326,7 +46326,9 @@ let _fcInstance = null;
 let calEvents = [];
 let gcalEvents = [];
 let _calShowEvents = localStorage.getItem('amux_cal_show_events') !== '0';   // default on
-let _calShowSched  = localStorage.getItem('amux_cal_show_sched')  !== '0';   // default on
+// No schedules layer (Ethan, 2026-10-24: "i dont want schedulers on the amux
+// calendar - its too bloated"). Every schedule's next run was drawn as an
+// event; schedules live in the Scheduler tab.
 let _calShowIssues = localStorage.getItem('amux_cal_show_issues') === '1';   // default off (noisy)
 let _calShowGcal   = localStorage.getItem('amux_cal_show_gcal')   !== '0';   // default on
 
@@ -46337,7 +46339,6 @@ let _calShowGcal   = localStorage.getItem('amux_cal_show_gcal')   !== '0';   // 
 // was correctly hiding a currently-empty layer next to a populated one).
 const _CAL_LAYERS = {
   events: { get: () => _calShowEvents, ls: 'amux_cal_show_events', label: 'Local',           btn: 'eventsToggle' },
-  sched:  { get: () => _calShowSched,  ls: 'amux_cal_show_sched',  label: 'Tasks',           btn: 'schedToggle'  },
   issues: { get: () => _calShowIssues, ls: 'amux_cal_show_issues', label: 'Issues',          btn: 'issuesToggle' },
   gcal:   { get: () => _calShowGcal,   ls: 'amux_cal_show_gcal',   label: 'Google',          btn: 'gcalToggle'   },
 };
@@ -46352,7 +46353,6 @@ function _fcLayerLabel(key) {
 function _fcToggleLayer(key) {
   const on = !_CAL_LAYERS[key].get();
   if (key === 'events') _calShowEvents = on;
-  else if (key === 'sched') _calShowSched = on;
   else if (key === 'issues') _calShowIssues = on;
   else if (key === 'gcal') _calShowGcal = on;
   localStorage.setItem(_CAL_LAYERS[key].ls, on ? '1' : '0');
@@ -46477,7 +46477,6 @@ function _calPanelHtml() {
   let h = '<div class="cal-panel-head"><b>Calendars</b><button class="cal-x" aria-label="Close" onclick="_calPanelClose()">&#x2715;</button></div>';
   h += '<div class="cal-group">amux</div>';
   h += row(_calShowEvents, '#7c4dff', 'Local events', "_fcToggleLayer('events');_calPanelRefresh()", 'synced out via the iCal feed');
-  h += row(_calShowSched, '#8a6d3b', 'Scheduled tasks', "_fcToggleLayer('sched');_calPanelRefresh()");
   h += row(_calShowIssues, '#5f6368', 'Board due dates', "_fcToggleLayer('issues');_calPanelRefresh()");
   h += row(_calShowGcal, '#4285f4', 'Google calendars', "_fcToggleLayer('gcal');_calPanelRefresh()");
   const byAcct = new Map();
@@ -46536,21 +46535,6 @@ function _fcGetEvents() {
         borderColor: '#388bfd',
         textColor: '#79c0ff',
         extendedProps: { _type: 'event', evId: e.id, desc: e.description || '' },
-      });
-    });
-  }
-  if (_calShowSched) {
-    (schedules || []).forEach(s => {
-      if (s.deleted || !s.enabled || !s.next_run) return;
-      out.push({
-        id: 'sched-' + s.id,
-        title: '⏰ ' + s.title,
-        start: s.next_run_ms ? new Date(s.next_run_ms) : s.next_run,
-        allDay: !s.next_run.includes('T'),
-        backgroundColor: 'rgba(163,113,247,0.15)',
-        borderColor: '#a855f7',
-        textColor: '#c084fc',
-        extendedProps: { _type: 'schedule', schedId: s.id },
       });
     });
   }
@@ -46620,7 +46604,6 @@ function _fcInit() {
         click: showIcalInfo,
       },
       eventsToggle: { text: _fcLayerLabel('events'), click: () => _fcToggleLayer('events') },
-      schedToggle:  { text: _fcLayerLabel('sched'),  click: () => _fcToggleLayer('sched')  },
       issuesToggle: { text: _fcLayerLabel('issues'), click: () => _fcToggleLayer('issues') },
       gcalToggle:   { text: _fcLayerLabel('gcal'),   click: () => _fcToggleLayer('gcal')   },
     },
@@ -46654,7 +46637,6 @@ function _fcInit() {
     eventClick: function(info) {
       const props = info.event.extendedProps;
       if (props._type === 'event') openEventModal(props.evId);
-      else if (props._type === 'schedule') openSchedModal(props.schedId);
       else if (props._type === 'issue') { switchView('board'); }
       else if (props._type === 'gcal') openGcalEventModal(info.event);
     },
@@ -46690,7 +46672,6 @@ function _fcInit() {
   }
   const _titles = {
     events: 'Real calendar events — the only layer that syncs to Google Calendar',
-    sched:  'Scheduled tasks (in-app only — never synced to Google Calendar)',
     issues: 'Board issues with a due date (in-app only)',
   };
   Object.keys(_CAL_LAYERS).forEach(key => {
