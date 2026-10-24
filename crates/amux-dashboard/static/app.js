@@ -1936,12 +1936,12 @@ function _mlShow(state) {
   _mlEl('model-login-err').textContent = state.error || '';
 }
 
-async function modelLogin(provider) {
+async function modelLogin(provider, note) {
   const kit = window.AmuxState && window.AmuxState.cliLogin;
   const a = kit && kit.CLI_LOGINS[provider];
   if (!a) { showToast('Sign-in is not available in this build'); return; }
   modelLoginCancel(true);
-  const run = _modelLogin = { provider, raw: '', id: null, done: false, exited: false, codeSent: false, wasSignedIn: false };
+  const run = _modelLogin = { provider, raw: '', id: null, done: false, exited: false, codeSent: false, wasSignedIn: false, note: note || '' };
   _mlShow({ status: 'Starting ' + a.label + ' sign-in…' });
   try {
     // Already signed in means this is "Switch account": the identity check alone would
@@ -1976,6 +1976,12 @@ async function _mlPollOutput(run) {
       if (d.data) run.raw += decodeURIComponent(escape(atob(d.data)));
       const p = kit.parseLogin(run.provider, run.raw);
       if (_modelLogin !== run || run.done) return;
+      if (run.codeSent && p.rejected) {
+        // The CLI stops reading after a refused code, so the only way on is a new sign-in.
+        console.warn('[model-login] ' + a.label + ' refused the pasted code; starting a new sign-in');
+        modelLogin(run.provider, a.label + ' did not accept that code, so this is a new sign-in link. Copy the whole code from the page.');
+        return;
+      }
       if (d.alive === false) {
         run.exited = true;
         // The CLI writes its login and then exits; give the files a moment to land.
@@ -1990,7 +1996,7 @@ async function _mlPollOutput(run) {
       const status = p.code ? 'Open the page, sign in, and enter the code below.' :
         p.needsCode ? 'Open the page, sign in, then paste the code it shows you.' :
         p.url ? 'Open the page and sign in.' : 'Waiting for ' + a.label + '…';
-      _mlShow({ status, url: p.url, code: p.code, needsCode: p.needsCode });
+      _mlShow({ status, url: p.url, code: p.code, needsCode: p.needsCode, error: run.note });
     } catch (e) {
       await new Promise(res => setTimeout(res, 1500));
     }
@@ -2011,6 +2017,9 @@ async function _mlPollIdentity(run) {
 async function _mlSignedIn(run) {
   const a = window.AmuxState.cliLogin.CLI_LOGINS[run.provider];
   if (run.done || _modelLogin !== run || ((run.wasSignedIn || a.waitForExit) && !run.exited)) return false;
+  // An exit without the CLI's success line is a failed sign-in, even while an older login
+  // still makes the identity check pass.
+  if (a.succeeded && !window.AmuxState.cliLogin.parseLogin(run.provider, run.raw).succeeded) return false;
   let d;
   try { d = await (await fetch(API + '/api/identity')).json(); } catch (e) { return false; }
   if (!a.done(d.model_auth) || run.done || _modelLogin !== run) return false;

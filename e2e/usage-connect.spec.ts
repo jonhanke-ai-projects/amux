@@ -39,10 +39,13 @@ function usage(connected: boolean) {
 }
 
 // The Claude CLI in a server terminal: the recorded link and prompt until a code is typed,
-// then what /login prints on success, and the process exits `exitAfterMs` later.
-async function mockCli(page: Page, exitAfterMs = 0) {
+// then its answer to the code (`outcome`), and the process exits `exitAfterMs` later.
+// Each new terminal is a new CLI waiting for a code.
+type Outcome = 'success' | 'refused' | 'silent';
+async function mockCli(page: Page, exitAfterMs = 0, outcome: Outcome = 'success') {
   const st = { codeTyped: 0, created: 0, deleted: 0, inputs: [] as string[] };
-  await page.route('**/api/terminal/create', r => { st.created++; r.fulfill({ json: { id: 'e2e-login' } }); });
+  const answer = { success: '\r\nLogin successful.\r\n', refused: '\r\nInvalid code. Please make sure the full code was copied.\r\n', silent: '' };
+  await page.route('**/api/terminal/create', r => { st.created++; st.codeTyped = 0; r.fulfill({ json: { id: 'e2e-login' } }); });
   await page.route('**/api/terminal/e2e-login/input', async r => {
     const data = Buffer.from(JSON.parse(r.request().postData() || '{}').data || '', 'base64').toString();
     st.inputs.push(data);
@@ -51,9 +54,9 @@ async function mockCli(page: Page, exitAfterMs = 0) {
   });
   await page.route('**/api/terminal/e2e-login/output**', async r => {
     await new Promise(res => setTimeout(res, 300));
-    const signedIn = st.codeTyped > 0;
-    const out = AUTH_LOGIN + (signedIn ? '\r\nLogin successful.\r\n' : '');
-    r.fulfill({ json: { data: Buffer.from(out).toString('base64'), alive: !(signedIn && Date.now() - st.codeTyped >= exitAfterMs) } });
+    const answered = st.codeTyped > 0;
+    const out = AUTH_LOGIN + (answered ? answer[outcome] : '');
+    r.fulfill({ json: { data: Buffer.from(out).toString('base64'), alive: !(answered && Date.now() - st.codeTyped >= exitAfterMs) } });
   });
   await page.route('**/api/terminal/e2e-login', r => { if (r.request().method() === 'DELETE') st.deleted++; r.fulfill({ json: { ok: true } }); });
   return st;
@@ -144,6 +147,43 @@ test('Claude: Switch account waits for the new login instead of closing at once'
   await expect(page.locator('#apikey-setup-modal')).toBeHidden({ timeout: 30000 });
   expect(Date.now() - cli.codeTyped).toBeGreaterThanOrEqual(4000);
   await expect(page.getByText('Claude is connected. Your workers can use it now.')).toBeVisible();
+});
+
+// Sandbox, 2026-10-24: Claude refused a pasted code ("Invalid code") and stopped reading;
+// the window sat at "Checking…" for minutes, then said "connected" because the old login
+// was still there.
+async function startSwitch(page: Page) {
+  await page.route('**/api/usage', r => r.fulfill({ json: usage(true) }));
+  await claudeIdentity(page, () => true);     // an older login stays in place throughout
+  await page.goto('/');
+  await openUsage(page);
+  const row = page.locator('.usage-provider[data-provider="claude"]');
+  if (!(await row.locator('.usage-connect').isVisible())) await row.locator('summary').click();
+  await row.locator('.usage-connect').click();
+  await expect(page.locator('#model-login-status')).toHaveText('Open the page, sign in, then paste the code it shows you.', { timeout: 15000 });
+  await page.locator('#model-login-paste').fill('e2e-code#e2e-state');
+  await page.locator('#model-login-paste-wrap button').first().click();
+}
+
+test('Claude: a refused code starts a new sign-in and says why', async ({ page }) => {
+  const cli = await mockCli(page, 60000, 'refused');
+  await startSwitch(page);
+  await expect.poll(() => cli.created, { timeout: 15000 }).toBe(2);
+  await expect(page.locator('#model-login-err')).toHaveText('Claude did not accept that code, so this is a new sign-in link. Copy the whole code from the page.');
+  await expect(page.locator('#model-login-status')).toHaveText('Open the page, sign in, then paste the code it shows you.');
+  await expect(page.locator('#model-login-link')).toHaveAttribute('href', AUTH_URL);
+  expect(cli.deleted).toBeGreaterThanOrEqual(1);    // the refused CLI's terminal is closed
+  await expect(page.getByText('Claude is connected. Your workers can use it now.')).toHaveCount(0);
+});
+
+test('Claude: a switch whose CLI exits without signing in is not reported as connected', async ({ page }) => {
+  const cli = await mockCli(page, 0, 'silent');
+  allowUnusedRoute(page, '**/api/terminal/e2e-login');   // the CLI has exited: no terminal is left to delete
+  await startSwitch(page);
+  await expect(page.locator('#model-login-status')).toHaveText('Claude sign-in stopped before finishing.', { timeout: 30000 });
+  await expect(page.locator('#apikey-setup-modal')).toBeVisible();
+  await expect(page.getByText('Claude is connected. Your workers can use it now.')).toHaveCount(0);
+  expect(cli.created).toBe(1);
 });
 
 test('Codex: the usage row starts the ChatGPT device sign-in', async ({ page }) => {

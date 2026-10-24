@@ -31,6 +31,11 @@ export const CLI_LOGINS = {
     // It exits once the login is written; finishing earlier would delete the terminal
     // while ~/.claude.json may still be half written.
     waitForExit: true,
+    // Its answer to a pasted code. A refused code ("Invalid code") stops the prompt, and the
+    // CLI exits minutes later. On "Switch account" the old login still satisfies done(), so
+    // only the success line tells a new login from a failed one (sandbox, 2026-10-24).
+    succeeded: /Login\s*successful/i,
+    rejected: /Invalid\s*code/i,
     done: (a) => !!(a && a.claude && a.claude.oauth),
   },
   codex: {
@@ -87,5 +92,7 @@ export function parseLogin(provider, raw) {
     if (m) url = joinWrapped(text, m.index);
   }
   const code = a.code ? ((a.code.exec(text) || [])[0] || null) : null;
-  return { url, code, needsCode: !!(a.codePrompt && a.codePrompt.test(text.replace(/\s+/g, ' '))) };
+  const flat = text.replace(/\s+/g, ' ');
+  return { url, code, needsCode: !!(a.codePrompt && a.codePrompt.test(flat)),
+    succeeded: !!(a.succeeded && a.succeeded.test(flat)), rejected: !!(a.rejected && a.rejected.test(flat)) };
 }

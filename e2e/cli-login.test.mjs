@@ -19,6 +19,18 @@ test('claude 2.1.291 auth login: whole link from the OSC 8 hyperlink, waits for 
   assert.equal(r.code, null);
 });
 
+test('claude 2.1.291 auth login: its answer to a pasted code, success or refusal', () => {
+  // The two lines the CLI printed on the sandbox (2026-10-24) after the code went in.
+  const base = fx('claude-auth-login-2.1.291.txt');
+  const waiting = parseLogin('claude', base);
+  assert.equal(waiting.succeeded, false);
+  assert.equal(waiting.rejected, false);
+  const ok = parseLogin('claude', base + 'Login successful.\r\n');
+  assert.deepEqual([ok.succeeded, ok.rejected], [true, false]);
+  const refused = parseLogin('claude', base + 'Invalid code. Please make sure the full code was copied.\r\n');
+  assert.deepEqual([refused.succeeded, refused.rejected], [false, true]);
+});
+
 test('claude: the sign-in is /login, not an inference-only setup-token', () => {
   assert.match(CLI_LOGINS.claude.command, /^exec env BROWSER=false claude auth login --claudeai$/);
   assert.doesNotMatch(CLI_LOGINS.claude.command, /setup-token/);
@@ -47,7 +59,7 @@ test('gemini 0.64.0: Google link and the authorization-code prompt', () => {
 
 test('nothing is invented from unrelated output', () => {
   for (const p of Object.keys(CLI_LOGINS)) {
-    assert.deepEqual(parseLogin(p, 'bash: command not found\r\n'), { url: null, code: null, needsCode: false });
+    assert.deepEqual(parseLogin(p, 'bash: command not found\r\n'), { url: null, code: null, needsCode: false, succeeded: false, rejected: false });
   }
 });
 
