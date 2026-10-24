@@ -92,17 +92,20 @@ ci_verdict() {   # green | red | pending | none | unmeasured
   if [ -n "${AMUX_CI_VERDICT_CMD:-}" ]; then "$AMUX_CI_VERDICT_CMD" "$sha"; return; fi
   cached=$(cat "$CI_CACHE/$sha" 2>/dev/null || true)
   case "$cached" in
-    green|none) echo "$cached"; return ;;
-    red)
+    green) echo "$cached"; return ;;
+    red|none)
       # A re-run can turn red green (2026-10-16: 3067a22da's rust run passed on
       # attempt 2 at 11:36, the cache had said red since 11:13, and the gate
       # held a server fix back for an hour while the fleet ran out of quota).
+      # A cancelled run can be re-run too: on 2026-10-24 f83afc792's checks run
+      # was cancelled, its re-run was never read because "none" was cached as
+      # final, and the Mac stayed 79 commits behind main.
       # Ask again every AMUX_CI_RED_RECHECK_S until the commit is a day old.
       local cache_age commit_age
       cache_age=$(python3 -c 'import os,sys,time; print(int(time.time()-os.path.getmtime(sys.argv[1])))' "$CI_CACHE/$sha" 2>/dev/null || echo 0)
       commit_age=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") ))
       if [ "$cache_age" -lt "${AMUX_CI_RED_RECHECK_S:-600}" ] || [ "$commit_age" -gt 86400 ]; then
-        echo red; return
+        echo "$cached"; return
       fi ;;
   esac
   local token v

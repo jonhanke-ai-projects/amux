@@ -190,6 +190,21 @@ run_cached env AMUX_CI_RED_RECHECK_S=0
 expect test "$(cat "$CACHE/$RERUN")" = green
 expect grep -q "repo=$WORK sha=$RERUN" "$TRACE"
 
+# A CANCELLED VERDICT IS RE-ASKED TOO (2026-10-24). f83afc792's checks run was
+# cancelled, so the cache held "none" as final and never read its re-run; the
+# Mac stayed 79 commits behind main. A cached none is re-asked like a red.
+REVIVED=$(commit_next revived)
+echo "{\"commit_full\":\"$RERUN\"}" > "$TMP/health.json"
+echo none > "$CACHE/$REVIVED"
+echo "$REVIVED green" >> "$FETCHED"
+: > "$TRACE"
+run_cached env AMUX_CI_RED_RECHECK_S=3600
+expect test "$(cat "$CACHE/$REVIVED")" = none
+expect test "$(grep -c "sha=$REVIVED" "$TRACE")" = 0
+run_cached env AMUX_CI_RED_RECHECK_S=0
+expect test "$(cat "$CACHE/$REVIVED")" = green
+expect grep -q "repo=$WORK sha=$REVIVED" "$TRACE"
+
 # A GATE THAT CANNOT MEASURE HEALS ITS OWN LAUNCHER (2026-10-16): 162e78e03
 # broke the CI judge, every pass refused as unmeasured, and the fixed launcher
 # could only arrive through an activation it was refusing. With CI unreadable,
