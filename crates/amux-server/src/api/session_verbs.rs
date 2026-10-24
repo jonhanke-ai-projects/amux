@@ -3762,6 +3762,10 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
         RenameDisposition::KeepForAudit("a scan is a dated observation, not live state"),
     ),
     (
+        "worker_resource_samples",
+        RenameDisposition::KeepForAudit("a sample is a dated measurement of the processes under that name"),
+    ),
+    (
         "standing_approval_uses",
         RenameDisposition::KeepForAudit(
             "a use records which lane an approval answered at the time (AMUX-5270)",
