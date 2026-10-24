@@ -1730,7 +1730,11 @@ for o in m.get("top_unattributed") or []:
   idle=$($UTIL_IDLE_CMD 2>/dev/null | awk '/^CPU usage/ {for (i=1;i<=NF;i++) if ($i ~ /idle/) v=$(i-1)} END{sub(/%/,"",v); print v}')
   case "$idle" in ''|*[!0-9.]*) idle=-1 ;; esac
   share=$(awk -v t="$total" -v c="$cap" -v i="$idle" 'BEGIN{ s = (c>0) ? t/c : 0; if (i >= 0 && (100-i)/100 > s) s = (100-i)/100; printf "%.2f", s }')
-  busy=$(awk -v x="$share" -v s="$UTIL_ACT_SHARE" 'BEGIN{print (x >= s) ? 1 : 0}')
+  # The bar is never stricter than the cpu constraint's own (busy once idle is
+  # under CPU_IDLE_MAX_PCT): with the arm at 0.85 and the constraint at 0.75,
+  # a machine 79% busy escalated every tick and this arm never acted (same RCA).
+  local act; act=$(awk -v s="$UTIL_ACT_SHARE" -v m="${CPU_IDLE_MAX_PCT:-25}" 'BEGIN{ b = 1 - m/100; printf "%.2f", (b < s) ? b : s }')
+  busy=$(awk -v x="$share" -v s="$act" 'BEGIN{print (x >= s) ? 1 : 0}')
   if awk -v i="$idle" -v t="$total" -v c="$cap" 'BEGIN{exit !(i >= 0 && c > 0 && (100-i)/100 > t/c + 0.05)}'; then
     echo "mac-cleanup: utilization: top reads the CPU $(awk -v i="$idle" 'BEGIN{printf "%d", 100-i}')% busy, above the census; judging busy by top (verdict=util_census_under_top)"
   fi
@@ -1743,7 +1747,7 @@ for o in m.get("top_unattributed") or []:
     if printf '%s\n' "$line" | awk '{$1=$2=$3=$4=""; print}' | grep -Eq -- "$UTIL_RENICE_EXCLUDE"; then
       echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: excluded, not touched"; continue
     fi
-    if [ "$busy" != 1 ]; then echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: reported (CPU under ${UTIL_ACT_SHARE} busy)"; continue; fi
+    if [ "$busy" != 1 ]; then echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: reported (CPU under ${act} busy)"; continue; fi
     # The tree: the root and every descendant, own uid, not already low.
     pids=$(printf '%s\n' "$snap" | awk -v r="$root" -v me="$(id -u)" '
       { pp[$1]=$2; uid[$1]=$3; ni[$1]=$4; order[NR]=$1 }
@@ -1757,7 +1761,7 @@ for o in m.get("top_unattributed") or []:
     echo "mac-cleanup:   detached tree pid $root ($cmd) at ${pct}%: lowered $n process(es) to nice 10 (verdict=util_detached_reniced)"
   done <<< "$(printf '%s\n' "$parsed" | grep '^tree ' || true)"
   UTIL_RENICED=$n_pids
-  echo "mac-cleanup: utilization: detached trees lowered ${n_trees} (${n_pids} processes) at or over ${UTIL_RENICE_MIN_PCT}% while the CPU is ${UTIL_ACT_SHARE}+ busy; log $log"
+  echo "mac-cleanup: utilization: detached trees lowered ${n_trees} (${n_pids} processes) at or over ${UTIL_RENICE_MIN_PCT}% while the CPU is ${act}+ busy; log $log"
 }
 
 DEMOTED=0

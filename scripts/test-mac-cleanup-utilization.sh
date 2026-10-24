@@ -73,7 +73,7 @@ check "the action is logged"                          yes "$(grep -q $'\treniced
 
 echo "2. not busy: it reports and touches nothing"
 payload 1200 2800; out=$(probe)
-check "the tree is reported"                          yes "$(has "$out" 'pid 500 \(bash\) at 150%: reported \(CPU under 0.85 busy\)')"
+check "the tree is reported"                          yes "$(has "$out" 'pid 500 \(bash\) at 150%: reported \(CPU under 0.75 busy\)')"
 check "no renice ran"                                 "" "$(calls)"
 
 echo "3. a dry run says what it would do"
@@ -104,6 +104,10 @@ check "and the tree is lowered"                       "-n 10 -p 500 -n 10 -p 501
 idle_top 60; out=$(probe)
 check "top idle too: still only reported"             yes "$(has "$out" 'pid 500 \(bash\) at 150%: reported')"
 check "no top line when top is not busier"            no  "$(has "$out" 'util_census_under_top')"
+# The live reading that still escalated after the first fix: top 79% busy,
+# over the constraint's 75% bar and under the arm's old 0.85.
+idle_top 21; out=$(probe)
+check "79% busy is busy: the arm's bar matches the constraint's" "-n 10 -p 500 -n 10 -p 501" "$(calls)"
 echo "garbage" > "$FIX/top"; out=$(probe)
 check "an unreadable top falls back to the census"    yes "$(has "$out" 'pid 500 \(bash\) at 150%: reported')"
 idle_top 98
