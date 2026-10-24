@@ -58265,7 +58265,16 @@ pub(crate) async fn relaunch_key_workers_onto_subscription(state: &AppState) -> 
             TRIED.lock().unwrap_or_else(|e| e.into_inner()).remove(&name);
             continue;
         }
-        let (ok, detail) = start_session_as("subscription-relaunch", state, &name, "", false).await;
+        let (mut ok, mut detail) = start_session_as("subscription-relaunch", state, &name, "", false).await;
+        if !ok {
+            // This job stopped the worker, so it must not leave it stopped. The
+            // first relaunch on the sandbox (workflows, 2026-10-24) timed out in
+            // the start step ("shell command receipt timed out") and a second
+            // start 15s later came up clean.
+            tracing::warn!(session = %name, detail = %detail, measured = true, n_considered = 1,
+                verdict = "subscription_relaunch_retry", "relaunch start failed; starting once more");
+            (ok, detail) = start_session_as("subscription-relaunch", state, &name, "", false).await;
+        }
         tracing::warn!(session = %name, ok, detail = %detail, measured = true, n_considered = 1,
             verdict = "subscription_relaunch",
             "relaunched a worker that was started before the Claude sign-in and still used ANTHROPIC_API_KEY");
