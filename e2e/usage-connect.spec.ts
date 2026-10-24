@@ -104,7 +104,7 @@ test('Claude: Sign in from the usage row runs /login, clears an old setup-token 
   await expect(page.locator('#model-login-status')).toHaveText('Open the page, sign in, then paste the code it shows you.', { timeout: 15000 });
   await expect(page.locator('#model-login-link')).toHaveAttribute('href', AUTH_URL);
   expect(cli.created).toBe(1);
-  expect(cli.inputs[0]).toBe('BROWSER=false claude auth login --claudeai\r');
+  expect(cli.inputs[0]).toBe('exec env BROWSER=false claude auth login --claudeai\r');
 
   await page.locator('#model-login-paste').fill('e2e-code#e2e-state');
   connected = true;   // what the usage endpoint answers once the login is on the server

@@ -20,7 +20,7 @@ test('claude 2.1.291 auth login: whole link from the OSC 8 hyperlink, waits for 
 });
 
 test('claude: the sign-in is /login, not an inference-only setup-token', () => {
-  assert.match(CLI_LOGINS.claude.command, /\bclaude auth login --claudeai$/);
+  assert.match(CLI_LOGINS.claude.command, /^exec env BROWSER=false claude auth login --claudeai$/);
   assert.doesNotMatch(CLI_LOGINS.claude.command, /setup-token/);
   assert.deepEqual(CLI_LOGINS.claude.clearEnv, ['CLAUDE_CODE_OAUTH_TOKEN']);
   assert.equal(CLI_LOGINS.claude.waitForExit, true);

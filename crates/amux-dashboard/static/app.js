@@ -16894,8 +16894,15 @@ function _savePeekState() {
   }
 }
 
+// Owns only '', #view= and #peek=. Any other hash (#issue=, #browser=, ...) is
+// a deeplink still being opened or a state its own view owns: switchView runs
+// inside those handlers, and replacing the hash there made the handler's
+// `location.hash !== hash` check abandon the open (#issue= links landed on the
+// board with no card, 2026-10-23).
 function _syncUrlHash() {
   if (window._peekSplitChild || window._peekEmbed) return;
+  const cur = location.hash;
+  if (cur && cur !== '#' && !/^#(view|peek)=/.test(cur)) return;
   try {
     let hash = '';
     if (peekSession) {
@@ -52345,7 +52352,12 @@ async function _handleDeeplink(hash) {
       if (typeof boardItems !== 'undefined' && document.getElementById('board-detail-overlay')) {
         switchView('board');
         setTimeout(async () => {
-          if (location.hash !== hash) return;
+          if (location.hash !== hash) {
+            // Someone replaced the hash mid-open; say so rather than land silently on the board.
+            try { window._clientDebug?.('deeplink', {verdict: 'deeplink_hash_replaced', measured: true, n_considered: 1,
+              wanted: hash.slice(0, 80), found: location.hash.slice(0, 80)}); } catch (_) {}
+            return;
+          }
           try {
             await openBoardDetail(id);
             if (tab) boardDetailTab(tab);

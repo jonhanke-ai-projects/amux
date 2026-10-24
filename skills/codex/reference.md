@@ -129,6 +129,10 @@ $CS events <thread> | jq '.events[] | select(.failed)'
 # Find work by keyword across sessions (titles, messages, commands, outputs)
 $CS search "MXP-GS12" --days 30 | jq '.matches[] | {thread_id, name, kind, excerpt}'
 
+# Markdown transcripts of the newest threads, shown in the MDAI tab with no model call
+$CS export --recent 5 --exclude '^#amux codex-skill' --out ~/.amux/local/codex-threads/latest-5.md
+#   ~/.amux/local/Codex-Threads.mdai:  fetch: https://localhost:8824/api/file/raw?path=<that file>
+
 # Follow a thread until it settles (bounded; NDJSON)
 $CS watch <thread> --until-idle --duration 900
 ```

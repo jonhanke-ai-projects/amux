@@ -187,6 +187,17 @@ class Live(unittest.TestCase):
         kinds = {i["kind"] for i in full["items"]}
         self.assertIn("userMessage", kinds)
 
+    def test_export_keeps_messages_whole(self):
+        tid = self._readable("rollout")
+        code, full = run("read", tid, "--limit", "100000", "--full", "--types", "userMessage,agentMessage")
+        self.assertEqual(code, 0, full)
+        r = subprocess.run([sys.executable, str(SCRIPT), "export", tid, "--output-chars", "50"],
+                           capture_output=True, text=True, timeout=300)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"`{tid}`", r.stdout)
+        for item in full["items"]:
+            self.assertIn(item["text"].strip()[:2000], r.stdout, item["id"])
+
     def test_unknown_thread_is_an_error_not_empty(self):
         code, d = run("read", "00000000-0000-0000-0000-000000000000")
         self.assertEqual(code, 2)
