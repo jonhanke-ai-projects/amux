@@ -19,9 +19,16 @@ struct SavedPin: Codable {
 /// A saved window's tab name: the one it had when saved, or (a file saved
 /// before names were kept) what its link shows.
 func savedTabName(_ w: SavedWindow) -> String {
-    if let t = w.title, !t.isEmpty { return t }
-    guard let r = w.url.range(of: "#") else { return "amux" }
-    let h = String(w.url[r.upperBound...]).split(separator: "&").first.map(String.init) ?? ""
+    let own = savedPageName(url: w.url, title: w.title)
+    // A window split into panes (amux-panes.swift) is named by every pane.
+    guard let g = w.grid, !g.panes.isEmpty else { return own }
+    return ([own] + g.panes.map { savedPageName(url: $0.url, title: $0.title) }).joined(separator: " | ")
+}
+
+func savedPageName(url: String, title: String?) -> String {
+    if let t = title, !t.isEmpty { return t }
+    guard let r = url.range(of: "#") else { return "amux" }
+    let h = String(url[r.upperBound...]).split(separator: "&").first.map(String.init) ?? ""
     let v = h.split(separator: "=", maxSplits: 1).last.map(String.init) ?? h
     return v.removingPercentEncoding ?? v
 }

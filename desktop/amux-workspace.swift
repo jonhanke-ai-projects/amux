@@ -196,10 +196,11 @@ extension AppDelegate {
                 guard let url = m.savedURL() else { return nil }
                 var s = place
                 s.url = url
-                let t = m.window?.title ?? ""
+                let t = m.pageTitle
                 if !t.isEmpty, t != "amux" { s.title = t }
                 s.tabGroup = group
                 if group != nil { s.selected = m.window === selected }
+                s.grid = self.savedGrid(m)
                 return s
             }
             if items.isEmpty { continue }
@@ -235,6 +236,7 @@ extension AppDelegate {
         restoring = true
         defer { restoring = false }
         let spaces = Spaces.all()
+        dissolveGrids(reuse)
         var pool = reuse
         var lastInGroup: [Int: DashboardWindowController] = [:]
         var selected: [Int: DashboardWindowController] = [:]
@@ -257,6 +259,8 @@ extension AppDelegate {
             }
             c.home = s
             c.home?.display = s.display ?? screen?.uuid
+            c.home?.grid = nil
+            if let g = s.grid { restoreGrid(g, in: c, pool: &pool) }
             if let g = s.tabGroup {
                 if let prev = lastInGroup[g], let pw = prev.window, let cw = c.window {
                     pw.addTabbedWindow(cw, ordered: .above)
@@ -352,7 +356,7 @@ extension AppDelegate {
     func placementSignature() -> String {
         controllers.compactMap { c -> String? in
             guard let w = c.window else { return nil }
-            return "\(w.windowNumber):\(NSStringFromRect(w.frame)):\(Spaces.of(window: w.windowNumber)):\(w.isMiniaturized):\(c.viewHash)"
+            return "\(w.windowNumber):\(NSStringFromRect(w.frame)):\(Spaces.of(window: w.windowNumber)):\(w.isMiniaturized):\(c.viewHash):\(c.grid?.signature ?? "")"
         }.joined(separator: "|")
     }
 
@@ -612,19 +616,44 @@ extension AppDelegate {
     func followTornTab(_ candidates: [NSWindow], source: NSRect) {
         tabDragTimer?.invalidate()
         var zone: (zone: SnapZone, frame: NSRect)? = nil
+        var pane: PaneDropTarget? = nil
+        var at = Pointer.location
+        var sawDown = false
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] t in
             guard let self = self else { t.invalidate(); return }
-            let out = !source.insetBy(dx: -8, dy: -8).contains(Pointer.location)
-            zone = out ? self.zoneAtCursor() : nil
+            if !Pointer.buttonDown, !sawDown {
+                // The tear was seen only after the drop: AppKit's tab drag gives
+                // the app no events, and the press monitor missed the press
+                // (Ethan, 2026-10-23 21:00: "im dragging tabs nothing is
+                // happening"). The pointer is where the tab was dropped, and
+                // AppKit puts the window the tab became with its title bar under
+                // it. A tab moved by the menu or a shortcut lands elsewhere and
+                // is not docked.
+                let torn = candidates.filter { w in
+                    (abs(w.frame.minX - source.minX) > 1 || abs(w.frame.maxY - source.maxY) > 1)
+                        && w.frame.insetBy(dx: -8, dy: -8).contains(at) && at.y >= w.frame.maxY - 80
+                }
+                if !torn.isEmpty { pane = self.paneDropTarget(at: at, excluding: torn) }
+                if let p = pane { dlog("verdict=tab_pane_drop_found_at_release zone=\(p.name)") }
+            }
             if Pointer.buttonDown {
-                if let z = zone { self.snapPreview.showFront(z.frame) } else { self.snapPreview.hide() }
+                sawDown = true
+                at = Pointer.location
+                // Over an amux window's content: a pane of that window. The torn
+                // window follows the pointer, so it is not the one under it.
+                let moving = candidates.filter { abs($0.frame.minX - source.minX) > 1 || abs($0.frame.maxY - source.maxY) > 1 }
+                pane = self.paneDropTarget(at: at, excluding: moving)
+                let out = !source.insetBy(dx: -8, dy: -8).contains(at)
+                zone = pane == nil && out ? self.zoneAtCursor() : nil
+                if let p = pane { self.snapPreview.showFront(p.preview) } else if let z = zone { self.snapPreview.showFront(z.frame) } else { self.snapPreview.hide() }
                 return
             }
             t.invalidate()
             self.snapPreview.hide()
             self.lastTabPlaced = Date()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.placeTornTab(from: candidates, source: source, zone: zone)
+                if let p = pane { self?.finishPaneDrop(p, at: at, from: candidates, source: source) }
+                else { self?.placeTornTab(from: candidates, source: source, zone: zone) }
             }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -638,20 +667,38 @@ extension AppDelegate {
         let source = w.frame
         dlog("verdict=tab_press_tracked tabs=\(group.count) button_down=\(Pointer.buttonDown ? 1 : 0)")
         tabDragTimer?.invalidate()
+        // The last place the drag was seen with the button down: a real drop
+        // lands there, and AppKit may already have split the tab off (and
+        // moved its window under the pointer) by the release.
+        var pane: PaneDropTarget? = nil
+        var at = Pointer.location
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] t in
             guard let self = self else { t.invalidate(); return }
             // Dragging the bar itself moves the whole window; dragBegan has that.
             let windowDrag = self.dragTimer?.isValid ?? false
             let free = !self.snapEnabled || NSEvent.modifierFlags.contains(.option) || windowDrag
-            let out = !source.insetBy(dx: -8, dy: -8).contains(Pointer.location)
-            let zone = free || !out ? nil : self.zoneAtCursor()
             if Pointer.buttonDown {
-                if let z = zone { self.snapPreview.showFront(z.frame) } else if !windowDrag { self.snapPreview.hide() }
+                at = Pointer.location
+                // Into an amux window's content (this one too): a pane there.
+                let moving = group.filter { abs($0.frame.minX - source.minX) > 1 || abs($0.frame.maxY - source.maxY) > 1 }
+                pane = free ? nil : self.paneDropTarget(at: at, excluding: moving)
+            }
+            let out = !source.insetBy(dx: -8, dy: -8).contains(at)
+            let zone = free || !out || pane != nil ? nil : self.zoneAtCursor()
+            if Pointer.buttonDown {
+                if let p = pane { self.snapPreview.showFront(p.preview) } else if let z = zone { self.snapPreview.showFront(z.frame) } else if !windowDrag { self.snapPreview.hide() }
                 return
             }
             t.invalidate()
             if !windowDrag { self.snapPreview.hide() }
-            dlog("verdict=tab_press_released out=\(out ? 1 : 0) free=\(free ? 1 : 0) window_drag=\(windowDrag ? 1 : 0) zone=\(zone?.zone.name ?? "none")")
+            dlog("verdict=tab_press_released out=\(out ? 1 : 0) free=\(free ? 1 : 0) window_drag=\(windowDrag ? 1 : 0) zone=\(pane.map { "pane " + $0.name } ?? zone?.zone.name ?? "none")")
+            if let p = pane {
+                self.lastTabPlaced = Date()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.finishPaneDrop(p, at: at, from: group, source: source)
+                }
+                return
+            }
             guard out, !free else { return }
             // AppKit splits the tab off at the drop, so the watcher sees the
             // split just after this release: it must not place the window a
@@ -706,11 +753,26 @@ extension AppDelegate {
         case "/press-tab": press(true)          // the mouse-down that starts a tab drag
         case "/press-content": press(false)     // a click in the page, which must not
         // What AppKit does with a tab dropped outside every tab bar.
-        case "/tear-tab": arrangeTarget?.moveTabToNewWindow(nil)
+        // ?x=&y= puts the new window's title bar at that point, as AppKit
+        // does with a tab dropped there.
+        case "/tear-tab":
+            let w = arrangeTarget
+            w?.moveTabToNewWindow(nil)
+            if let w = w, q.contains(where: { $0.name == "x" }) { w.setFrameTopLeftPoint(NSPoint(x: num("x") - w.frame.width / 2, y: num("y") + 14)) }
         // A real drop: the button comes up and AppKit splits the tab off in the same instant.
+        // ?title= drops that tab of the group rather than the one showing.
         case "/drop-tab":
             if let o = Pointer.testOverride { Pointer.testOverride = (o.at, false) }
-            arrangeTarget?.moveTabToNewWindow(nil)
+            let want = q.first { $0.name == "title" }?.value
+            let tab = want.flatMap { t in (arrangeTarget?.tabbedWindows ?? []).first { tw in controllers.first { $0.window === tw }?.pageTitle == t } }
+            (tab ?? arrangeTarget)?.moveTabToNewWindow(nil)
+        // The test copy above every app, so the window under the pointer is its
+        // own: macOS no longer lets a background app activate itself, and the
+        // owner's real amux window covered the test window (2026-10-23).
+        case "/activate":
+            NSApp.activate(ignoringOtherApps: true)
+            for c in controllers { c.window?.level = .floating }
+            arrangeTarget?.orderFrontRegardless()
         // What AppKit does with a tab dropped on another window's tab bar.
         // The visible tab of a tab group, never whichever window is in front
         // (that made tab-snap-e2e case 9 flaky: a lone window joined instead).
@@ -723,6 +785,23 @@ extension AppDelegate {
         // The tab bar's + button, on the window Arrange acts on.
         case "/new-tab":
             if let w = arrangeTarget, let c = controllers.first(where: { $0.window === w }) { c.newWindowForTab(nil) }
+        // A pane's buttons and its header drag (amux-panes.swift), by the pane's
+        // place in reading order in the window Arrange acts on.
+        case "/pane-tab", "/pane-close", "/pane-drag":
+            // The window holding a grid (a test has one), shown in its tab group.
+            guard let h = controllers.first(where: { $0.grid?.host === $0 }), let g = h.grid else { break }
+            h.window?.tabGroup?.selectedWindow = h.window
+            let i = Int(num("i")), leaves = g.tree.leaves
+            guard i >= 0, i < leaves.count, let v = g.views[leaves[i]] else { break }
+            if url.path == "/pane-tab" { v.toTab() } else if url.path == "/pane-close" { v.closePane() }
+            // After the window server has the grid's tab in front, as it is for a header you can see.
+            else { let p = NSPoint(x: num("x"), y: num("y")); DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { v.dragged(to: p); v.dropped(at: p) } }
+        // A divider dragged to fraction f (the first split of the window's grid).
+        case "/pane-divider":
+            guard let g = controllers.first(where: { $0.grid?.host === $0 })?.grid,
+                  let sv = g.container.subviews.first as? GridSplitView else { break }
+            sv.setPosition((sv.length - sv.dividerThickness) * num("f"), ofDividerAt: 0)
+            saveWindowsSoon()
         case "/window-drag":
             if let w = arrangeTarget, let c = controllers.first(where: { $0.window === w }) { dragBegan(c) }
         // Through Window > Arrange > Snap to Grid While Dragging, as a person turns it off.
@@ -741,10 +820,23 @@ extension AppDelegate {
         case "/state":
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
-                return ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow,
-                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w]
+                var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow,
+                                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w]
+                if let g = c.grid {
+                    d["grid"] = g.readingOrder
+                    d["panes"] = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }
+                    let frames = Dictionary(g.paneFrames().map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
+                    d["pane_frames"] = g.tree.leaves.map { NSStringFromRect(frames[$0] ?? .zero) }
+                    d["pane_views"] = g.tree.leaves.map { g.members[$0]?.viewHash ?? "" }
+                }
+                return d
             }
-            let st: [String: Any] = ["preview": snapPreview.panel.isVisible, "preview_frame": NSStringFromRect(snapPreview.panel.frame),
+            let st: [String: Any] = ["preview": snapPreview.panel.isVisible,
+                                     "hidden_panes": controllers.filter { $0.paneHost != nil && $0.window?.isVisible == false }.count,
+                                     // What a drop at the pointer hits: the window server's front window there.
+                                     "pointer_window": NSWindow.windowNumber(at: Pointer.location, belowWindowWithWindowNumber: 0),
+                                     "pointer_amux": amuxWindow(at: Pointer.location)?.window?.title ?? "",
+                                     "content_frame": arrangeTarget.map { NSStringFromRect($0.convertToScreen($0.contentLayoutRect)) } ?? "", "preview_frame": NSStringFromRect(snapPreview.panel.frame),
                                      "tracking": tabDragTimer?.isValid ?? false,
                                      "visible_frame": NSStringFromRect(arrangeTarget?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero),
                                      "screen_frame": NSStringFromRect(arrangeTarget?.screen?.frame ?? NSScreen.main?.frame ?? .zero),
