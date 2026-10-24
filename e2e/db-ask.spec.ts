@@ -1,4 +1,5 @@
 import { test, expect, allowUnusedRoute } from './fixtures';
+import { grantClipboard } from './helpers';
 
 // Text-to-SQL "Ask" mode in the Database tab. The e2e servers use a non-secret
 // test key, so the real Anthropic API will reject it. We intercept /api/sql/ask
@@ -122,8 +123,10 @@ test.describe('Database Ask mode', () => {
     expect(callCount).toBe(2);
   });
 
-  test('Copy button copies SQL to clipboard', async ({ page, context }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  test('Copy button copies SQL to clipboard', async ({ page, context, browserName }) => {
+    // WebKit has no clipboard permissions and asking is a hard error (see
+    // grantClipboard), so capture what the button writes instead of reading back.
+    await grantClipboard(context, browserName);
     await page.route('**/api/sql/ask', async (route) => {
       await route.fulfill({
         status: 200,
@@ -138,8 +141,15 @@ test.describe('Database Ask mode', () => {
     await page.locator('#db-ask-send').click();
     await expect(page.locator('.db-ask-turn')).toHaveCount(1);
 
+    await page.evaluate(() => {
+      (window as any).__dbAskWrote = null;
+      (navigator.clipboard as any).writeText = (t: string) => {
+        (window as any).__dbAskWrote = t;
+        return Promise.resolve();
+      };
+    });
     await page.locator('.db-ask-turn').first().locator('button', { hasText: 'Copy' }).click();
-    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    const clip = await page.evaluate(() => (window as any).__dbAskWrote);
     expect(clip).toContain('SELECT');
   });
 

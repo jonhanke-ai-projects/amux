@@ -3167,7 +3167,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/pull",
-        methods: &["POST"],
+        methods: &["GET", "POST"],
     },
     RouteEntry {
         path: "/api/proxies",
@@ -3292,6 +3292,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/sql",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/sql/ask",
         methods: &["POST"],
     },
     RouteEntry {
