@@ -103,6 +103,11 @@ Verify a hook by what it WROTE, not by the settings file.
   hand-built binary deploys nothing and is replaced. Never copy a build over
   `~/.local/bin/amux-server-rs`: on 2026-10-24 a hand build of a two-week-old fork ran the
   Mac for hours. Settings shows what the server runs against main (`GET /api/pull`).
+- **A red main holds the server.** Until one main commit passes both `rust` and `checks`,
+  nothing newer deploys (2026-10-24: a week red, 73 commits behind). SCHED-713
+  (`scripts/main-ci-watch.sh`) re-runs a first attempt that failed only in e2e once, then
+  keeps ONE card on the amux lane per red stretch. `deploy.served_commit_is_current` in
+  `/api/health/invariants` says when the gate is holding. A red main is the first thing to fix.
 - **No auto-pull.** Shared checkout; the freshness hook reports staleness, the human decides.
   Asked to bring a checkout current, run `amux sync-checkout` (`--check` to only report): it
   fast-forwards when nothing can be lost and otherwise names the blockers in seconds. Do not
