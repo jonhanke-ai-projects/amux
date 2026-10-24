@@ -205,6 +205,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::CONTRACT_WATCH,
     ids::LAND_QUEUE,
     ids::CONVERSE_RETENTION,
+    ids::WORKER_RESOURCES,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -757,6 +758,18 @@ pub const CATALOG: &[Doc] = &[
         }],
         pref: None,
         detail: Some("/api/metrics/host/history"),
+    },
+    Doc {
+        id: ids::WORKER_RESOURCES,
+        name: "Worker resource samples",
+        purpose: "Samples each worker's RSS, CPU, process and thread counts into worker_resource_samples every 30s, so which worker was using the machine at a past moment is answerable, and logs a WARN when a worker's RSS passes AMUX_WORKER_MAX_RSS_MB.",
+        env: &[
+            EnvControl { var: "AMUX_WORKER_RESOURCES_EVERY_SECS", effect: "seconds between samples (default 30, floored at 10)", off: None },
+            EnvControl { var: "AMUX_WORKER_METRICS_RETAIN_DAYS", effect: "days of samples kept (default 7, floored at 1)", off: None },
+            EnvControl { var: "AMUX_WORKER_MAX_RSS_MB", effect: "per-worker RSS above which a WARN is logged (default 0, no cap)", off: None },
+        ],
+        pref: None,
+        detail: Some("/api/metrics/workers"),
     },
     Doc {
         id: ids::GOAL_KEEPER,

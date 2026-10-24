@@ -1910,6 +1910,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/metrics/workers",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/metrics/workers/live",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/metrics/telemetry",
         methods: &["GET"],
     },

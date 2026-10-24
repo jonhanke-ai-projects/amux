@@ -715,9 +715,9 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0130_signal_subscriptions.sql"),
     },
     Migration {
-        version: 116,
-        name: "0116_worker_resource_samples",
-        sql: include_str!("../../migrations/0116_worker_resource_samples.sql"),
+        version: 131,
+        name: "0131_worker_resource_samples",
+        sql: include_str!("../../migrations/0131_worker_resource_samples.sql"),
     },
 ];
 
