@@ -534,6 +534,10 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-hook-version-marker.sh
+      - name: pre-commit refuses a migration number that is already taken
+        run: |
+          set -uo pipefail
+          bash scripts/test-pre-commit-migration-guard.sh
       - name: install.sh's hook install references the real source path
         run: |
           set -uo pipefail
