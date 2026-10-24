@@ -53,6 +53,9 @@ jobs:
       - name: Snap zones
         run: xcrun swiftc -parse-as-library -o /tmp/snapzones desktop/amux-snapzones.swift desktop/test/snapzones-test.swift && /tmp/snapzones
 
+      - name: Pane grid
+        run: xcrun swiftc -parse-as-library -o /tmp/panegrid desktop/amux-panegrid.swift desktop/test/panegrid-test.swift && /tmp/panegrid
+
       - name: 401 backoff
         run: xcrun swiftc -parse-as-library -D AMUX_APP -o /tmp/backoff scripts/amux-menubar.swift desktop/test/unauthorized-backoff-test.swift -framework Cocoa -framework WebKit && /tmp/backoff
 
