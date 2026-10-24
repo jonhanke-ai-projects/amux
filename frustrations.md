@@ -6040,3 +6040,25 @@ COST: about 10 minutes and a rewrite through the Write tool; the refusal text
 FIX: Scope rule 5 to a token file path, as rule 4 does (`\.amux/(auth[-_]token|
   worker-tokens)`), instead of the two words anywhere in the command; and name
   the matched rule index and the matched text in the refusal.
+
+## codex-send.py sent worker relays unsigned, and the owner's Codex chat read them as the owner
+AREA: attribution
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-24
+SESSION: amux-helper
+CARD: none (amux-helper is isolated and has no board)
+SYMPTOM: `codex-send.py` adds "From amux worker $AMUX_SESSION:" only when
+  $AMUX_SESSION is set. In amux-helper's shell it was empty (the staged-guard
+  also printed "$AMUX_SESSION was empty ... (MR-43)"), so five relays to the
+  Codex orchestrator thread went out with no prefix and exit 0. That thread is
+  the owner's own chat, so an unsigned message reads as the owner typing it.
+COST: the orchestrator adopted a relay headed "Ethan's order" as a "direct
+  authenticated owner message", and with it a "48-hour soak" duration that
+  contradicted Ethan's committed 459e1211dfb ruling. It relayed that to three
+  lanes before amux-helper caught it and corrected all of them, about 20 minutes.
+FIX: codex-send.py falls back to the tmux session name (amux-<worker> stripped
+  to the worker when its env file exists), WARNs when it does, and refuses with
+  verdict not_sent_no_origin in codex-send.log when no identity resolves,
+  unless --no-origin is given. A mutation that drops the refusal turns the
+  no-identity probe from rc 2 to rc 0.

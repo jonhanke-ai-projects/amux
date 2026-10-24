@@ -132,8 +132,34 @@ def main():
         print("codex-send: empty message. Nothing sent.", file=sys.stderr)
         log(chat=a.chat, thread=tid, name=name, verdict="not_sent_empty")
         sys.exit(2)
-    sender = os.environ.get("AMUX_SESSION", "")
-    if sender and not a.no_origin:
+    # An unsigned message lands in a chat the owner types into, so it reads as the
+    # owner's own words. 2026-10-24: $AMUX_SESSION was empty in amux-helper's shell,
+    # five relays went out with no prefix, and the orchestrator adopted one as a
+    # direct owner instruction. So fall back to the tmux session name, and refuse
+    # rather than send unsigned unless --no-origin says that is intended.
+    sender, origin_source = os.environ.get("AMUX_SESSION", "").strip(), "env"
+    if not sender and os.environ.get("TMUX"):
+        try:
+            sender = subprocess.run(["tmux", "display-message", "-p", "#S"], capture_output=True,
+                                    text=True, timeout=5).stdout.strip()
+            origin_source = "tmux"
+        except (OSError, subprocess.SubprocessError):
+            sender = ""
+        # amux names a worker's tmux session amux-<worker>.
+        if sender.startswith("amux-") and (Path.home() / ".amux" / "sessions"
+                                           / f"{sender[5:]}.env").is_file():
+            sender = sender[5:]
+    if not a.no_origin:
+        if not sender:
+            print("codex-send: no sender identity ($AMUX_SESSION is empty and no tmux session "
+                  "name), so the message would arrive unsigned and read as the owner's. Set "
+                  "AMUX_SESSION, or pass --no-origin if unsigned is intended. Nothing sent.",
+                  file=sys.stderr)
+            log(chat=a.chat, thread=tid, name=name, verdict="not_sent_no_origin")
+            sys.exit(2)
+        if origin_source != "env":
+            print(f"codex-send: WARN $AMUX_SESSION empty; signing as '{sender}' from the tmux "
+                  "session name", file=sys.stderr)
         msg = f"From amux worker {sender}:\n\n{msg}"
     if a.dry_run:
         print(f"codex-send: dry run, {len(msg)} chars not sent")
