@@ -44,6 +44,8 @@ struct SavedWindow: Codable {
     // The tab's name when it was saved ("mixpeek-general", "Board"), shown in
     // Workspaces and on the tab until its page loads.
     var title: String?
+    // Added 2026-10-23 (amux-panes.swift): the window split into panes.
+    var grid: SavedGrid?
 }
 
 struct Config: Codable {
@@ -304,6 +306,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     var home: SavedWindow?
     var lastSpace: Spaces.Info?
     var normalFrame: NSRect?
+    // amux-panes.swift: the panes this window shows, or the window whose grid
+    // this controller's page is a pane of (its own window is hidden then).
+    var grid: PaneGrid?
+    weak var paneHost: DashboardWindowController?
     let webView: WKWebView
     var titleObservation: NSKeyValueObservation?
     var themeObservation: NSKeyValueObservation?
@@ -381,9 +387,19 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         updateTitle()
     }
 
-    func updateTitle() {
+    /// The page's own name ("mixpeek-general", "Board").
+    var pageTitle: String {
         let page = (webView.title ?? "").trimmingCharacters(in: .whitespaces)
-        window?.title = !pageLabel.isEmpty ? pageLabel : (page.isEmpty ? "amux" : page)
+        return !pageLabel.isEmpty ? pageLabel : (page.isEmpty ? "amux" : page)
+    }
+
+    func updateTitle() {
+        window?.title = pageTitle
+        // A grid's window is named by its panes, each pane by its page.
+        if let host = paneHost ?? (grid != nil ? self : nil), let g = host.grid {
+            for (id, m) in g.members { g.views[id]?.title = m.pageTitle }
+            host.window?.title = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }.joined(separator: " | ")
+        }
     }
 
     func applyTheme(_ color: NSColor?) {
@@ -415,6 +431,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     func windowWillClose(_ notification: Notification) {
         titleObservation = nil
         themeObservation = nil
+        if grid != nil { app?.gridHostClosed(self) }
         app?.windowClosed(self)
     }
 
@@ -577,7 +594,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         let a = NSAlert()
         a.messageText = message
         a.addButton(withTitle: "OK")
-        a.beginSheetModal(for: window!) { _ in completionHandler() }
+        a.beginSheetModal(for: sheetWindow) { _ in completionHandler() }
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
@@ -586,7 +603,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         a.messageText = message
         a.addButton(withTitle: "OK")
         a.addButton(withTitle: "Cancel")
-        a.beginSheetModal(for: window!) { r in completionHandler(r == .alertFirstButtonReturn) }
+        a.beginSheetModal(for: sheetWindow) { r in completionHandler(r == .alertFirstButtonReturn) }
     }
 
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
@@ -599,7 +616,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         a.accessoryView = field
         a.addButton(withTitle: "OK")
         a.addButton(withTitle: "Cancel")
-        a.beginSheetModal(for: window!) { r in completionHandler(r == .alertFirstButtonReturn ? field.stringValue : nil) }
+        a.beginSheetModal(for: sheetWindow) { r in completionHandler(r == .alertFirstButtonReturn ? field.stringValue : nil) }
     }
 
     // <input type="file">: uploads and attachments.
@@ -609,7 +626,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canChooseDirectories = parameters.allowsDirectories
         panel.canChooseFiles = true
-        panel.beginSheetModal(for: window!) { r in completionHandler(r == .OK ? panel.urls : nil) }
+        panel.beginSheetModal(for: sheetWindow) { r in completionHandler(r == .OK ? panel.urls : nil) }
     }
 
     // Voice and recording features ask for the microphone; allow it for the
@@ -774,6 +791,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         controllers.first { $0.window == NSApp.keyWindow } ?? controllers.last
     }
 
+    /// The page you are in: the key window's, or in a grid (amux-panes.swift)
+    /// the pane you last clicked. Reload, zoom and the like act on it.
+    var keyPage: DashboardWindowController? {
+        guard let c = keyController else { return nil }
+        if let g = c.grid, let fr = c.window?.firstResponder as? NSView,
+           let m = g.members.values.first(where: { fr === $0.webView || fr.isDescendant(of: $0.webView) }) { return m }
+        return c
+    }
+
     func url(withHash hash: String) -> URL? {
         guard let s = serverURL else { return nil }
         return URL(string: normalized(s.absoluteString) + "/" + hash)
@@ -896,10 +922,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         switch url.host ?? "" {
         case "worker":
             // Already open somewhere (any Desktop): go to it instead of opening a duplicate.
-            if let c = controllers.first(where: { $0.viewHash.hasPrefix("#peek=" + enc) && ($0.viewHash.count == 6 + enc.count || $0.viewHash.dropFirst(6 + enc.count).hasPrefix("&")) }), let w = c.window {
+            if let c = controllers.first(where: { $0.viewHash.hasPrefix("#peek=" + enc) && ($0.viewHash.count == 6 + enc.count || $0.viewHash.dropFirst(6 + enc.count).hasPrefix("&")) }),
+               let w = c.paneHost?.window ?? c.window {
+                // A pane is shown in its grid's window; its own window is hidden.
                 if w.isMiniaturized { w.deminiaturize(nil) }
                 w.tabGroup?.selectedWindow = w
                 w.makeKeyAndOrderFront(nil)
+                if c.paneHost != nil { w.makeFirstResponder(c.webView) }
             } else {
                 openWindow(url: self.url(withHash: "#peek=" + enc), frame: nil)
             }
@@ -1207,7 +1236,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     /// The current worker or tab in its own window.
     @objc func openCurrentInNewWindow(_ sender: Any?) {
-        guard let c = keyController else { openWindow(url: nil, frame: nil); return }
+        guard let c = keyPage else { openWindow(url: nil, frame: nil); return }
         c.webView.evaluateJavaScript(currentViewJS) { [weak self] result, _ in
             guard let self = self else { return }
             let hash = (result as? String) ?? ""
@@ -1216,10 +1245,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     @objc func showConnect(_ sender: Any?) {
-        (keyController ?? openWindow(url: nil, frame: nil)).showConnectPage()
+        (keyPage ?? openWindow(url: nil, frame: nil)).showConnectPage()
     }
 
-    @objc func reload(_ sender: Any?) { keyController?.webView.reload() }
+    @objc func reload(_ sender: Any?) { keyPage?.webView.reload() }
     // Zoom goes through the dashboard's own zoom (root font size on WebKit).
     // WKWebView.pageZoom shrank the page's CSS viewport without the dashboard
     // re-measuring it, so the file viewer kept its old height and its bottom
@@ -1227,7 +1256,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // bottom without zooming out"). pageZoom is only the fallback for a page
     // without the dashboard's zoom, such as the connect page.
     func zoom(_ fn: String, fallback: @escaping (WKWebView) -> Void) {
-        guard let wv = keyController?.webView else { return }
+        guard let wv = keyPage?.webView else { return }
         wv.evaluateJavaScript("typeof \(fn) === 'function' ? (\(fn)(), 'dashboard') : 'none'") { r, _ in
             if (r as? String) != "dashboard" { fallback(wv) }
         }
