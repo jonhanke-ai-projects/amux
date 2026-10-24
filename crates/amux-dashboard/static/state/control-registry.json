@@ -1686,8 +1686,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_fileSave": {
-      "kind": "command._fileSave",
+    "_fileSaveOnce": {
+      "kind": "command._fileSaveOnce",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2408,6 +2408,12 @@
     },
     "_mapLinkAllPlaces": {
       "kind": "command._mapLinkAllPlaces",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapLoad": {
+      "kind": "command._mapLoad",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3666,6 +3672,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_proxyStartOnce": {
+      "kind": "command._proxyStartOnce",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_proxyStop": {
       "kind": "command._proxyStop",
       "feedback_required": true,
@@ -4100,6 +4112,12 @@
     },
     "_runLogSearch": {
       "kind": "command._runLogSearch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_runScheduleNowOnce": {
+      "kind": "command._runScheduleNowOnce",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4760,6 +4778,12 @@
     },
     "_typingPing": {
       "kind": "command._typingPing",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_updateBoardItemSend": {
+      "kind": "command._updateBoardItemSend",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

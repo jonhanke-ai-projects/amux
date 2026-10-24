@@ -85,7 +85,7 @@ test("two quick filter taps: the older, slower answer does not replace the newer
     return r.fulfill({ json: [{ id: human ? 11 : 12, text, type: 'user', session: B, ts: Date.now(), kind: human ? 'human' : 'session' }],
       headers: { 'x-amux-total': '1' } });
   });
-  const older = beaconsOf(page, 'messages_older_answer');
+  const older = beaconsOf(page, 'older_answer_dropped');
   await boot(page);
   await page.evaluate((b) => {
     const g = window as any;

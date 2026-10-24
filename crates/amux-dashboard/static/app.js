@@ -4057,8 +4057,8 @@ function runSyncBanner(quiet = false) {
   if (_syncFlight) return _syncFlight;
   const before = offlineQueue.length, draftsBefore = drafts.length;
   const queuedAtStart = new Set(offlineQueue.map(q => q.id));
-  const run = async () => { _syncSetPhase('queue_read'); await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
   const token = {};
+  const run = async () => { _syncSetPhase('queue_read'); await _mutateQueue(() => {}); return _runSyncBanner(quiet, token); };
   _syncFlightToken = token;
   // A re-arming timeout, not setInterval: the outbox unit sandboxes provide
   // only setTimeout (tests/dashboard-outage-recovery.mjs).
@@ -4071,6 +4071,9 @@ function runSyncBanner(quiet = false) {
     _outboxDiagnostic('outbox_flight_stalled', {phase:_syncPhase, stalled_ms:Date.now() - _syncPhaseAt,
       queued:offlineQueue.length, hidden:document.hidden ? 1 : 0});
     _syncFlightToken = null; _syncFlight = null; _syncSetPhase('idle');
+    // The dropped pass's "Syncing x/y" must not stay on the pill: its own
+    // finally returns early once it is no longer the current pass.
+    _syncPillText = ''; updateConnectionStatus();
     _scheduleSyncRetry();
   };
   watch = setTimeout(check, 5000);
@@ -4146,7 +4149,11 @@ function _outboxMessageProgress(q, phase, startedAt) {
   if (typeof peekSession !== 'undefined' && peekSession === worker) _peekKickFast();
 }
 
-async function _runSyncBanner(quiet = false) {
+async function _runSyncBanner(quiet = false, token = null) {
+  // A pass the stall watchdog dropped keeps delivering when it wakes, but
+  // paints nothing: its "Syncing 2/3" landed over the pass that replaced it
+  // and stuck on the pill (2026-10-24).
+  const current = () => !token || _syncFlightToken === token;
   // A real browser offline switch cannot deliver anything. Keep work durable
   // without painting a failed checklist over the editor on each timer tick.
   // Server reachability still retries freely when the browser is online.
@@ -4196,6 +4203,7 @@ async function _runSyncBanner(quiet = false) {
   _syncChecklistAt = Date.now();
   skipped = items.filter(item => item.status === 'skipped').length;
   function renderBanner() {
+    if (!current()) return;
     const done = items.filter(i => i.status === 'done').length;
     const failed = items.filter(i => i.status === 'failed').length;
     titleEl.textContent = 'Syncing ' + done + '/' + items.length + (failed ? ' (' + failed + ' failed)' : '') + (skipped ? ' (' + skipped + ' skipped)' : '');
@@ -4407,6 +4415,7 @@ async function _runSyncBanner(quiet = false) {
   const failCount = items.filter(i => i.status === 'failed').length;
   const checkingCount = items.filter(i => i.status === 'checking').length;
   const waitingCount = items.filter(i => i.status === 'waiting').length;
+  if (!current()) { _outboxDiagnostic('sync_dropped_pass_finished', {done: doneCount, failed: failCount}); return; }
   titleEl.textContent = doneCount + ' synced' + (checkingCount ? ', ' + checkingCount + ' awaiting confirmation' : '') + (waitingCount ? ', ' + waitingCount + ' waiting' : '') + (failCount ? ', ' + failCount + ' failed' : '') + (skipped ? ', ' + skipped + ' skipped' : '');
   updateConnectionStatus();
   fetchSessions();
@@ -5905,9 +5914,8 @@ function _needsYouRenderPanel() {
   const boot = () => _needsYouFetch();
   if (document.body) boot(); else document.addEventListener('DOMContentLoaded', boot);
   // Coarse periodic refresh so the badge count does not go stale across a
-  // long-open tab. Not wired to SSE (.claude/rules/sse-realtime.md would
-  // require adding it to the polling fallback too) -- a scoped choice for
-  // this dashboard-only rollout, not a limitation of the endpoint itself.
+  // long-open tab. Board changes refresh it sooner (_nudgeWorkersOnBoardChange,
+  // which both the realtime stream and the polling fallback call).
   setInterval(_needsYouFetch, 5 * 60 * 1000);
 })();
 
@@ -7767,6 +7775,12 @@ function _nudgeWorkersOnBoardChange() {
     if (window._boardCountSig === sig) return;
     window._boardCountSig = sig;
     if (activeView === 'sessions') render();
+    // The needs-you bell counts board cards too, and refreshed only every 5
+    // minutes: answering a card left it counted while the board had moved on.
+    // It follows any board change now, a few seconds after the last one. This
+    // runs for live updates and for the polling fallback alike.
+    clearTimeout(window._needsYouSoonTimer);
+    window._needsYouSoonTimer = setTimeout(() => { try { _needsYouFetch(); } catch (_) {} }, 3000);
   } catch (e) { /* a render hiccup must not break the ingest that called us */ }
 }
 function _grpMembers(g) {
@@ -12004,10 +12018,11 @@ async function sendFromInput(name) {
   if (_blockedByAttachment(_cf)) return;
   const _files = _cf.filter(f => f.path);
   if (!text && _files.length === 0) {
-    // Empty send = extract + submit the suggested prompt from the session
+    // Empty send = extract + submit the suggested prompt from the session.
+    // Once per press: a double tap raced a second submit that found no
+    // suggestion and pressed a stray Enter in the worker.
     inp.value = '';
-    _submitSuggestion(name, false, 'Enter');
-    return;
+    return _onlyOnce('empty-send:' + name, () => _submitSuggestion(name, false, 'Enter'));
   }
   // No newlines: tmux treats \n as Enter, which would split the message and
   // submit the path as its own line.
@@ -13601,6 +13616,15 @@ function _peekStale(sess, where) {
       where, asked: sess, now: peekSession || ''}); } catch (_) {}
   }
   return true;
+}
+// The same for a view's own reloads: an older answer than one already
+// applied is dropped, counted per place and reported.
+const _olderAnswerDrops = {};
+function _olderAnswerDropped(where) {
+  const n = (_olderAnswerDrops[where] = (_olderAnswerDrops[where] || 0) + 1);
+  if (n === 1 || n % 20 === 0) {
+    try { window._clientDebug?.('stale-answer', {verdict: 'older_answer_dropped', measured: true, n_considered: n, where}); } catch (_) {}
+  }
 }
 // An editor holding another worker's text must not be saved into this one.
 function _peekEditorIsFor(el, where) {
@@ -26057,7 +26081,7 @@ async function _peekMessagesLoad(more) {
   try {
     const rows = await _peekMsgFetch({ level: 'worker', name: sess }, _peekMsgOffset);
     if (peekSession !== sess) { _peekMsgLoading = false; _peekStale(sess, 'messages'); return; }
-    if (gen !== _peekMsgGen) { _peekStale('superseded', 'messages_older_answer'); return; }
+    if (gen !== _peekMsgGen) { _olderAnswerDropped('messages'); return; }
     _peekMsgTotal = rows.total;
     // AMUX-4661 (Ethan's screenshot, mixpeek-cicd: the filter chips read "2"
     // beside a freshly-loaded list of 3). `_peekMsgCountsFor !== sess` only
@@ -28974,7 +28998,21 @@ async function _fileDownload() {
   }
 }
 
-async function _fileSave() {
+// Saves of the open file run one after another. Two at once both saw a new
+// note as new, and the second stepped to "note-2" and wrote a duplicate. A
+// press during a save queues one more save after it (the first gives the note
+// its path, so the next one overwrites it), and holds text typed since.
+let _fileSaveChain = null, _fileSaveWaiting = 0;
+function _fileSave() {
+  if (_fileSaveWaiting >= 2) return _fileSaveChain;   // one running and one queued cover every later press
+  _fileSaveWaiting++;
+  if (_fileSaveWaiting === 2) {
+    try { window._clientDebug?.('double-submit', {verdict: 'double_submit_queued', measured: true, n_considered: 1, key: 'file-save'}); } catch (_) {}
+  }
+  _fileSaveChain = (_fileSaveChain || Promise.resolve()).catch(() => {}).then(_fileSaveOnce).finally(() => { _fileSaveWaiting--; });
+  return _fileSaveChain;
+}
+async function _fileSaveOnce() {
   if (_xlsxEd) { await _xlsxSave(); return; }
   if (!_fileData || _fileData.readOnly || (!_fileData.is_markdown && !_fileData._isNew)) return;
   const ta = document.getElementById('file-edit-ta');
@@ -37267,6 +37305,22 @@ function _mapSwRoute(id) {
   setTimeout(() => { if (_map) _map.invalidateSize(); }, 60);
 }
 
+// A map load replaces pins, tags and lists wholesale. Edits made while it is
+// out are kept (2026-10-24: a pin dropped right after opening the map vanished
+// when the server answer landed, and a tag added before it was never sent),
+// and an older load never lands over a newer one.
+let _mapLoadGen = 0, _mapLoadingGen = 0;
+const _mapPinsEditedInLoad = new Map();   // id -> pin, put while a load was out
+let _mapMetaUnsent = false;               // tags/lists changed before the first load
+function _mapKeepLocalEdits() {
+  for (const pin of _mapPinsEditedInLoad.values()) {
+    const i = _mapPins.findIndex(p => p.id === pin.id);
+    if (i >= 0) _mapPins[i] = pin; else _mapPins.push(pin);
+  }
+  const kept = _mapPinsEditedInLoad.size;
+  _mapPinsEditedInLoad.clear();
+  return kept;
+}
 function _mapLoad() {
   // Load from localStorage immediately for instant render
   try { var cp = localStorage.getItem('amux_map_pins'); if (cp) _mapPins = JSON.parse(cp); } catch(e) {}
@@ -37274,12 +37328,24 @@ function _mapLoad() {
   try { var cs = localStorage.getItem('amux_map_settings'); if (cs) _mapSettings = Object.assign(_mapSettings, JSON.parse(cs)); } catch(e) {}
   if (_mapPins.length || _mapTags.length) { _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers(); }
   // Then fetch fresh from server
+  const gen = _mapLoadingGen = ++_mapLoadGen;
+  const localTags = _mapTags.slice();
   fetch(API + '/api/map').then(function(r) { return r.ok ? r.json() : null; }).then(function(data) {
     if (!data) return;
+    if (gen !== _mapLoadGen) { _olderAnswerDropped('map'); return; }
+    _mapLoadingGen = 0;
     var firstLoad = _mapPins.length === 0;
     // The server gives every pin its id and rev (map_store.rs).
     _mapPins = data.pins || [];
+    const keptPins = _mapKeepLocalEdits();
     _mapTags = data.tags || [];
+    if (_mapMetaUnsent) {   // tags made before the server answered: keep them, and send them below
+      const ids = new Set(_mapTags.map(t => t.id));
+      for (const t of localTags) if (!ids.has(t.id)) _mapTags.push(t);
+    }
+    if (keptPins || _mapMetaUnsent) {
+      try { window._clientDebug?.('map-race', {verdict: 'map_edits_kept_over_load', measured: true, n_considered: keptPins, meta: _mapMetaUnsent ? 1 : 0}); } catch (_) {}
+    }
     _mapTagGroups = Array.isArray(data.tagGroups) ? data.tagGroups : [];
     _mapLists = Array.isArray(data.lists) ? data.lists : [];
     _mapTrials = Array.isArray(data.trials) ? data.trials : [];
@@ -37295,6 +37361,7 @@ function _mapLoad() {
     _mapApplyBase();
     _mapGoogleKey = (data.settings || {}).googleMapsKey || '';
     _mapServerLoaded = true; // safe to persist now that client mirrors server
+    if (_mapMetaUnsent) { _mapMetaUnsent = false; _mapSave(); }
     // Cache for offline
     try {
       localStorage.setItem('amux_map_pins', JSON.stringify(_mapPins));
@@ -37314,6 +37381,7 @@ function _mapLoad() {
       else if (coords.length > 1) { _map.fitBounds(coords, { padding: [40, 40], maxZoom: 15 }); }
     }
   }).catch(function() {
+    if (gen === _mapLoadGen) { _mapLoadingGen = 0; _mapPinsEditedInLoad.clear(); }   // they are in _mapPins already
     // Already loaded from cache above; render if not done
     if (_mapPins.length || _mapTags.length) { _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers(); }
   });
@@ -37328,8 +37396,9 @@ function _mapSave() {
   } catch(e) {}
   // Don't push to the server until we've synced FROM it this session — prevents
   // an empty/stale client (e.g. fetch not finished) from wiping saved pins when
-  // the map is merely panned or zoomed.
-  if (!_mapServerLoaded) return;
+  // the map is merely panned or zoomed. The first load sends what was changed
+  // meanwhile (_mapMetaUnsent).
+  if (!_mapServerLoaded) { _mapMetaUnsent = true; return; }
   // Pins are saved one at a time (_mapPutPin); this writes the rest of the map.
   var meta = Object.assign({}, _mapSettings); delete meta.googleMapsKey;
   apiCall(API + '/api/map/meta', {
@@ -37349,6 +37418,7 @@ function _mapRerender() { _mapRenderTags(); _mapRenderStatus(); _mapRenderLists(
 // another device since then comes back as 409 with the current pin instead of
 // being overwritten; the list then shows the server's copy.
 async function _mapPutPin(pin) {
+  if (_mapLoadingGen) _mapPinsEditedInLoad.set(pin.id, pin);   // the load in flight must not drop it
   var i = _mapPins.findIndex(function(p) { return p.id === pin.id; });
   if (i >= 0) _mapPins[i] = pin; else _mapPins.push(pin);
   _mapCacheLocal(); _mapRerender();
@@ -38424,8 +38494,9 @@ function _mapPlaceRefresh() { _mapPlaceCall('refresh'); }
 
 // Reload the map, then run cb.
 function _mapLoadThen(cb) {
+  const gen = _mapLoadingGen = ++_mapLoadGen;
   fetch(API + '/api/map').then(function(r) { return r.ok ? r.json() : null; }).then(function(d) {
-    if (d) { _mapPins = d.pins || []; _mapCacheLocal(); _mapRerender(); }
+    if (d && gen === _mapLoadGen) { _mapLoadingGen = 0; _mapPins = d.pins || []; _mapKeepLocalEdits(); _mapCacheLocal(); _mapRerender(); }
     cb();
   }).catch(function() { cb(); });
 }
@@ -40965,7 +41036,8 @@ function _peekRefreshSchedIfActive() {
   try { _peekColorSchedBadge((schedules || []).filter(x => x.session === peekSession && !x.deleted)); } catch (_) {}
 }
 
-async function runScheduleNow(id) {
+function runScheduleNow(id) { return _onlyOnce('schedule-run:' + id, () => _runScheduleNowOnce(id)); }
+async function _runScheduleNowOnce(id) {
   // Ethan pressed Run three times in 63 seconds on SCHED-99 and reported
   // "nothing happens". All three RAN and all three succeeded — `exit 0 [noop]
   // quiet: CACHED 0.54s`. The button did its job and said nothing, so a
@@ -43944,10 +44016,19 @@ function _boardEnsureFull() {
   const hasText = q && _bqParse(q).text.length > 0;
   if (!hasText || _boardFullLoading || Date.now() - _boardFullTs < 60000) return;
   _boardFullLoading = true;
+  // The full set replaces the list, so it must not land over an edit, move
+  // or create made while it loaded (it wiped them until the next refresh).
+  const epoch = _boardSnapshotEpoch;
   fetch(API + '/api/board?done_limit=0&full=1', { headers: _authHeaders() })
     .then(r => r.json())
     .then(d => {
-      if (Array.isArray(d)) { boardItems = d; _boardFullTs = Date.now(); renderBoard(); _nudgeWorkersOnBoardChange(); }
+      if (!Array.isArray(d)) return;
+      if (epoch !== _boardSnapshotEpoch) {   // the board changed meanwhile: load again later
+        _boardFullTs = 0;
+        try { window._clientDebug?.('board-race', {verdict: 'board_full_load_superseded', measured: true, n_considered: d.length}); } catch (_) {}
+        return;
+      }
+      boardItems = d; _boardFullTs = Date.now(); renderBoard(); _nudgeWorkersOnBoardChange();
     })
     .catch(() => {})
     .finally(() => { _boardFullLoading = false; });
@@ -45909,6 +45990,7 @@ async function addBoardItem(title, desc, status, worker, groups, due, ownerType,
   const now = Math.floor(Date.now() / 1000);
   const tempItem = { id: tempId, title, desc, status, session: worker || '', tags: groups || [], due: due || '', due_time: dueTime || '', gate: gate, creator: _getDeviceName(), owner_type: ownerType, created: now, updated: now, _pending: true };
   boardItems.push(tempItem);
+  _boardSnapshotEpoch++;   // a board read in flight predates this card
   saveBoardCache();
   renderBoard();
   let refused = false;
@@ -45943,13 +46025,29 @@ async function addBoardItem(title, desc, status, worker, groups, due, ownerType,
 // next poll silently undid it. "Tons of board items are not moving" is what
 // that looks like from the outside: the card moves, the card comes back, and
 // no one ever sees the reason the server gave.
+// Edits to one card go to the server one after another. Two quick edits both
+// carried the rev the card had before either, so the server refused the
+// second (rev conflict) and the client rolled it back: change status, then
+// owner, within a second, and the owner change silently reverted.
+const _boardPatchChain = new Map();
 async function updateBoardItem(id, changes) {
   const idx = boardItems.findIndex(i => i.id === id);
   const prev = idx >= 0 ? { ...boardItems[idx] } : null;
   if (idx >= 0) { boardItems[idx] = { ...boardItems[idx], ...changes, updated: Math.floor(Date.now() / 1000) }; }
+  _boardSnapshotEpoch++;   // a board read in flight predates this edit
   saveBoardCache();
   renderBoard();
-  if (prev && changes.expect_rev === undefined) changes = { ...changes, expect_rev: prev.rev };
+  const before = _boardPatchChain.get(id);
+  const turn = (before || Promise.resolve()).catch(() => {}).then(() => _updateBoardItemSend(id, changes, prev, !!before));
+  _boardPatchChain.set(id, turn);
+  turn.finally(() => { if (_boardPatchChain.get(id) === turn) _boardPatchChain.delete(id); });
+  return turn;
+}
+async function _updateBoardItemSend(id, changes, prev, queued) {
+  // The rev the card has NOW: after an earlier edit's reply, that is its rev.
+  const cur = boardItems.find(i => i.id === id);
+  if (prev && changes.expect_rev === undefined) changes = { ...changes, expect_rev: (queued && cur && cur.rev != null) ? cur.rev : prev.rev };
+  if (queued) { try { window._clientDebug?.('board-race', {verdict: 'board_edit_serialized', measured: true, n_considered: 1, id}); } catch (_) {} }
   const r = await apiCall(API + '/api/board/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(changes)
@@ -45978,6 +46076,7 @@ async function deleteBoardItem(id) {
   const prev = boardItems.find(i => i.id === id);
   const prevIdx = boardItems.findIndex(i => i.id === id);
   boardItems = boardItems.filter(i => i.id !== id);
+  _boardSnapshotEpoch++;   // a board read in flight still has this card
   saveBoardCache();
   renderBoard();
   const r = await apiCall(API + '/api/board/' + id, { method: 'DELETE' });
@@ -46252,7 +46351,15 @@ function editSessionGate(worker, statusId) {
   box.querySelector('#_sgate-edit-save').onclick = () => persist(ta.value.split('\n').map(x => x.trim()).filter(Boolean));
 }
 
+// The newest move of each card: a reply to an older move is not applied.
+const _boardMoveSeq = new Map();
 function moveBoardItem(id, newStatus, newPos, gateAck) {
+  // A board read already in flight carries the card's old column; applied
+  // after the drag it jumped the card back (2026-10-24). Fence those reads,
+  // as clearDone does, before and after the write.
+  _fenceBoardMutationReads();
+  const seq = (_boardMoveSeq.get(id) || 0) + 1;
+  _boardMoveSeq.set(id, seq);
   // Optimistic: update in-memory + cache immediately; Sortable already moved the DOM
   const idx = boardItems.findIndex(i => i.id === id);
   if (idx >= 0) {
@@ -46269,13 +46376,18 @@ function moveBoardItem(id, newStatus, newPos, gateAck) {
   apiCall(API + '/api/board/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
-  }).then(r => {
+  }).then(async r => {
     if (!r) return;
-    r.json().then(updated => {
-      const i = boardItems.findIndex(b => b.id === id);
-      if (i >= 0) boardItems[i] = updated;
-      saveBoardCache();
-    });
+    const updated = await r.json().catch(() => null);
+    if (!updated || updated.id !== id) return;
+    if (_boardMoveSeq.get(id) !== seq) {   // a newer move of this card owns it now
+      try { window._clientDebug?.('board-race', {verdict: 'board_move_reply_superseded', measured: true, n_considered: 1, id}); } catch (_) {}
+      return;
+    }
+    await _fenceBoardMutationReads();
+    const i = boardItems.findIndex(b => b.id === id);
+    if (i >= 0) boardItems[i] = updated;
+    saveBoardCache();
   });
 }
 
@@ -46937,7 +47049,31 @@ function _evCompose(dateId, timeId, allDay) {
   const t = document.getElementById(timeId).value || '00:00';
   return d + 'T' + t + ':00';
 }
-async function saveEvent(id) {
+// One run of an action at a time. A second press (a double click, Cmd+S
+// then Close, Run tapped twice in Safari where a click does not focus the
+// button) shares the run already in flight instead of starting another: two
+// calendar events, a note saved as "note" and "note-2", a schedule run twice
+// (Ethan, 2026-10-24: "theres race conditions all over the app"). The shared
+// run is counted and reported as double_submit_joined, so a control that is
+// pressed twice shows in the logs.
+const _onlyOnceRuns = new Map();
+const _onlyOnceJoined = {};
+function _onlyOnce(key, run) {
+  const live = _onlyOnceRuns.get(key);
+  if (live) {
+    const n = (_onlyOnceJoined[key] = (_onlyOnceJoined[key] || 0) + 1);
+    if (n === 1 || n % 20 === 0) {
+      try { window._clientDebug?.('double-submit', {verdict: 'double_submit_joined', measured: true, n_considered: n, key}); } catch (_) {}
+    }
+    return live;
+  }
+  const p = Promise.resolve().then(run).finally(() => _onlyOnceRuns.delete(key));
+  _onlyOnceRuns.set(key, p);
+  return p;
+}
+
+function saveEvent(id) { return _onlyOnce('cal-event-save:' + (id || 'new'), () => _saveEventOnce(id)); }
+async function _saveEventOnce(id) {
   const title = document.getElementById('ev-title').value.trim();
   if (!title) { document.getElementById('ev-title').focus(); return; }
   const allDay = document.getElementById('ev-allday').checked;
@@ -46985,12 +47121,17 @@ async function _tunnelStatus() {
 let _proxiesTimer = null;
 function _startProxiesTimer() { if (!_proxiesTimer) _proxiesTimer = setInterval(loadProxies, 3000); }
 function _stopProxiesTimer() { if (_proxiesTimer) { clearInterval(_proxiesTimer); _proxiesTimer = null; } }
+// The list reloads every 3s; an older, slower answer must not repaint a
+// started tunnel as stopped, and a start in flight keeps its button disabled.
+let _proxiesGen = 0;
 async function loadProxies() {
   const wrap = document.getElementById('proxies-list');
   if (!wrap) return;
+  const gen = ++_proxiesGen;
   try {
     const r = await fetch(API + '/api/proxies', { headers: _authHeaders() });
     const d = await r.json();
+    if (gen !== _proxiesGen) { _olderAnswerDropped('proxies'); return; }
     document.getElementById('proxies-unconfigured').style.display = d.configured ? 'none' : 'inline';
     const rl = document.getElementById('proxies-rate');
     if (rl && d.rate_per_min) rl.textContent = ' Limit: ' + d.rate_per_min + ' req/min, ' + d.max_concurrent + ' concurrent.';
@@ -47020,7 +47161,9 @@ async function loadProxies() {
         +   '<div style="display:flex;gap:6px;flex-shrink:0;">'
         +     (live
               ? '<button class="btn" onclick="_proxyStop(\'' + p.id + '\')">Stop</button>'
-              : '<button class="btn primary" onclick="_proxyStart(\'' + p.id + '\',this)">Start</button>')
+              : _onlyOnceRuns.has('proxy-start:' + p.id)   // a start in flight stays disabled across the 3s redraw
+                ? '<button class="btn primary" disabled>Starting…</button>'
+                : '<button class="btn primary" onclick="_proxyStart(\'' + p.id + '\',this)">Start</button>')
         +     '<button class="btn" onclick="_proxyEdit(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\',' + p.port + ',\'' + esc(p.scheme) + '\')">Edit</button>'
         +     '<button class="btn" style="color:var(--red);" onclick="_proxyDelete(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\')">Delete</button>'
         +   '</div>'
@@ -47070,7 +47213,8 @@ async function _proxySaveForm(btn) {
   } catch (e) { showToast('Save failed'); }
   finally { btn.disabled = false; }
 }
-async function _proxyStart(id, btn) {
+function _proxyStart(id, btn) { return _onlyOnce('proxy-start:' + id, () => _proxyStartOnce(id, btn)); }
+async function _proxyStartOnce(id, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
   try {
     const r = await fetch(API + '/api/proxies/' + id + '/start', { method: 'POST', headers: _authHeaders() });
