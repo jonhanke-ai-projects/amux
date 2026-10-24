@@ -858,6 +858,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cmdkStartRows": {
+      "kind": "command._cmdkStartRows",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cmdkToggleHidden": {
+      "kind": "command._cmdkToggleHidden",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_colMigrateAll": {
       "kind": "command._colMigrateAll",
       "feedback_required": true,

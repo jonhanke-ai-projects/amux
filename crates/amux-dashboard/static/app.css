@@ -10110,8 +10110,15 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .cmdk-title { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk-sub { color: var(--dim); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk-empty { color: var(--dim); padding: 16px 12px; }
-.cmdk-foot { border-top: 1px solid var(--border); color: var(--dim); font-size: 0.7rem; padding: 8px 14px; flex-shrink: 0; }
-@media (max-width: 600px) { .cmdk-kind { flex-basis: 60px; } }
+.cmdk-foot { border-top: 1px solid var(--border); color: var(--dim); font-size: 0.7rem; padding: 6px 8px 6px 14px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.cmdk-foot-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmdk-foot .cmdk-hidden-toggle { flex-shrink: 0; font-size: 0.7rem; min-height: 28px; padding: 2px 10px; }
+.cmdk-foot .cmdk-hidden-toggle[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.cmdk-row mark { background: color-mix(in srgb, var(--accent) 28%, transparent); color: inherit; border-radius: 2px; padding: 0 1px; }
+.cmdk-section { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); padding: 8px 10px 2px; }
+.cmdk-row.cmdk-meta .cmdk-title { font-weight: 500; color: var(--accent); }
+.cmdk-snippet { font-style: italic; }
+@media (max-width: 600px) { .cmdk-kind { flex-basis: 60px; } .cmdk-foot .cmdk-hidden-toggle { min-height: 44px; } }
 .header-search-btn { min-width: 44px; min-height: 44px; }
 .header-search-btn[hidden] { display: none; }
 

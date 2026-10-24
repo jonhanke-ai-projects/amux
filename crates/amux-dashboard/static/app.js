@@ -67185,23 +67185,36 @@ function _drawRtAfterDiskReload(text, etag) {
 // matched here from what the page holds or fetches once per open; board cards
 // and schedules come from /api/palette, a server-side name index, because
 // shipping 28k card titles to every client is the wrong cost.
-const _cmdk = { q: '', sel: 0, rows: [], lists: null, listsAt: 0, failed: [], server: [], serverMeta: null, seq: 0, timer: 0 };
+//
+// Ranking (Ethan, 2026-10-24) is the server's scale, so both lists merge by
+// score: `tier * 10000 + boost`. The tier is how the text matched (5 exact
+// name or id, 4 prefix or every word at a word start, 3 inside the title,
+// 2 only in the body, 1 fuzzy) and always wins. The boost orders one tier:
+// the kind of thing, active work, where you are, and what you open often.
+// Archived and discarded things stay out until "Show archived" is on.
+const _cmdk = { q: '', sel: 0, rows: [], lists: null, listsAt: 0, failed: [], server: [], serverMeta: null, seq: 0, timer: 0,
+  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0 };
+const _CMDK_SHOW = 8;
+const _CMDK_USAGE_KEY = 'amux-cmdk-usage';
 const _CMDK_KIND = {
   worker: 'Worker', group: 'Group', project: 'Project', card: 'Card', schedule: 'Schedule', view: 'Tab',
   action: 'Action', pin: 'Pin', secret: 'Vault', payment: 'Vault', connector: 'Connector', skill: 'Skill',
 };
-// Families weighted so a worker outranks a card of the same name.
-const _CMDK_WEIGHT = { worker: 60, view: 40, action: 35, group: 35, project: 35, pin: 20, connector: 15, skill: 15, secret: 10, payment: 10 };
+// Families weighted so a worker or group outranks a card that matched as
+// well: an open card fresh today reaches 60 + 80 + 60 (+60 for a prefix) on
+// the server's side of the scale.
+const _CMDK_WEIGHT = { worker: 220, group: 200, view: 160, action: 140, project: 140, card: 60, schedule: 50, pin: 60, connector: 50, skill: 50, secret: 30, payment: 30 };
 
 function _cmdkActions() {
   return [
     { title: 'New worker', sub: 'Create or connect', run: () => openCreate() },
     { title: 'New card', sub: 'Add a card to the board', run: () => { switchView('board'); openBoardAdd(); } },
+    { title: 'New schedule', sub: 'Run a prompt or command on a timer', run: () => { switchView('scheduler'); openSchedModal(); } },
     { title: 'New scratchpad note', sub: 'Scratchpad', run: () => { switchView('scratchpad'); _scratchpadNewNote(); } },
     { title: 'Settings', sub: 'Dashboard settings', run: () => toggleSettings() },
     { title: 'Toggle light / dark mode', sub: 'Theme', run: () => toggleTheme() },
     { title: 'Grid view', sub: 'Every worker terminal at once', run: () => enterGridMode() },
-  ].map((a, i) => ({ kind: 'action', id: 'action-' + i, ...a }));
+  ].map((a, i) => ({ kind: 'action', id: 'action-' + i, body: a.sub, ...a }));
 }
 
 function _cmdkViews() {
@@ -67220,14 +67233,14 @@ async function _cmdkLoadLists() {
   const get = (path) => fetch(API + path, { headers: _authHeaders(), signal: AbortSignal.timeout(8000) })
     .then(r => r.ok ? r.json() : Promise.reject(new Error(path + ' ' + r.status)));
   const fams = {
-    group: get('/api/groups').then(d => (d.groups || []).map(g => ({ kind: 'group', id: g.name, title: g.name, sub: [g.department, g.goal].filter(Boolean).join(' · ') || 'Group' }))),
+    group: get('/api/groups').then(d => (d.groups || []).map(g => { const about = [g.department, g.goal].filter(Boolean).join(' · '); return { kind: 'group', id: g.name, title: g.name, sub: about || 'Group', body: about }; })),
     project: get('/api/projects').then(d => (d.projects || []).map(p => ({ kind: 'project', id: p.name, title: p.name, sub: 'Project' }))),
-    pin: get('/api/pinned').then(d => (d || []).map(p => ({ kind: 'pin', id: p.id, title: p.title || String(p.file_path || '').split('/').pop(), sub: p.file_path || 'Pinned note' }))),
+    pin: get('/api/pinned').then(d => (d || []).map(p => ({ kind: 'pin', id: p.id, title: p.title || String(p.file_path || '').split('/').pop(), sub: p.file_path || 'Pinned note', body: p.file_path || '' }))),
     // Names and scopes only; the vault never sends values here.
     secret: get('/api/vault/secrets').then(d => (d.items || []).map(s => ({ kind: 'secret', id: s.key, title: s.key, sub: (s.kind === 'api_key' ? 'API key' : 'Secret') + (s.scope ? ' · ' + s.scope + (s.target ? ' ' + s.target : '') : '') }))),
     payment: get('/api/vault').then(d => (d.items || []).filter(p => p.kind !== 'login').map(p => ({ kind: 'payment', id: p.id, title: p.label || p.brand || 'Card', sub: 'Payment method' + (p.brand ? ' · ' + p.brand : '') }))),
     connector: get('/api/connectors').then(d => (d.connectors || []).map(c => ({ kind: 'connector', id: c.id, title: c.name || c.id, sub: c.category || 'Connector' }))),
-    skill: get('/api/skills').then(d => (d || []).map(s => ({ kind: 'skill', id: s.name, title: '/' + s.name, sub: s.description || 'Skill' }))),
+    skill: get('/api/skills').then(d => (d || []).map(s => ({ kind: 'skill', id: s.name, title: '/' + s.name, sub: s.description || 'Skill', body: s.description || '' }))),
   };
   const names = Object.keys(fams);
   const settled = await Promise.allSettled(Object.values(fams));
@@ -67240,76 +67253,245 @@ async function _cmdkLoadLists() {
   if (failed.length) console.warn('[amux] palette lists unavailable', failed);
 }
 
+// A worker that is working or waiting on you is active work.
+function _cmdkBusy(status) { return /waiting|needs|input|working|active/i.test(status || ''); }
+
 function _cmdkLocal() {
   const workers = (typeof sessions !== 'undefined' ? sessions : []).map(s => ({
     kind: 'worker', id: s.name, title: s.name,
-    sub: [s.status, s.desc].filter(Boolean).join(' · ').slice(0, 120), status: s.status || '',
+    sub: [s.status, s.desc].filter(Boolean).join(' · ').slice(0, 120), body: s.desc || '',
+    status: s.status || '', tags: s.tags || [], archived: !!s.archived,
   }));
   const l = _cmdk.lists || {};
   return [...workers, ..._cmdkViews(), ..._cmdkActions(), ...(l.group || []), ...(l.project || []),
     ...(l.pin || []), ...(l.connector || []), ...(l.skill || []), ...(l.secret || []), ...(l.payment || [])];
 }
 
-function _cmdkScore(it, q, toks) {
-  const t = String(it.title || '').toLowerCase();
-  const hay = t + ' ' + String(it.id || '').toLowerCase() + ' ' + String(it.sub || '').toLowerCase();
-  if (!toks.every(k => hay.includes(k))) return -1;
-  let s = _CMDK_WEIGHT[it.kind] || 0;
-  if (t === q) s += 1000; else if (t.startsWith(q)) s += 200; else if (t.includes(q)) s += 80;
-  for (const k of toks) s += new RegExp('(^|[^\\p{L}\\p{N}])' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'u').test(t) ? 40 : 10;
-  return s;
+// What you opened from here, and how often: { "kind:id": [count, lastMs, title] }.
+function _cmdkUsage() {
+  try { return JSON.parse(localStorage.getItem(_CMDK_USAGE_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+
+function _cmdkRecord(r) {
+  if (!r.id || r.kind === 'more' || r.kind === 'hidden') return;
+  const u = _cmdkUsage(), k = r.kind + ':' + r.id, prev = u[k] || [0, 0, ''];
+  u[k] = [prev[0] + 1, Date.now(), r.title];
+  const keep = Object.entries(u).sort((a, b) => b[1][1] - a[1][1]).slice(0, 60);
+  try { localStorage.setItem(_CMDK_USAGE_KEY, JSON.stringify(Object.fromEntries(keep))); } catch (e) {}
+}
+
+// Up to +200 for something opened often and lately; a week halves it.
+function _cmdkFrecency(u, it) {
+  const e = u[it.kind + ':' + it.id];
+  if (!e) return 0;
+  const days = Math.max(0, Date.now() - e[1]) / 86_400_000;
+  return Math.round(Math.min(200, 70 * Math.log2(1 + e[0])) * Math.pow(0.5, days / 7));
+}
+
+// Where you are: the open worker, the filtered group, the tab on screen.
+function _cmdkContext(it) {
+  const peek = typeof peekSession !== 'undefined' ? peekSession : null;
+  const tag = typeof activeTag !== 'undefined' ? activeTag : '';
+  const view = typeof activeView !== 'undefined' ? activeView : '';
+  let b = 0;
+  if (it.kind === 'worker' && peek && it.id === peek) b += 150;
+  if ((it.kind === 'card' || it.kind === 'schedule') && peek && it.session === peek) b += 100;
+  if (tag && ((it.kind === 'worker' && (it.tags || []).includes(tag)) || (it.kind === 'group' && it.id === tag))) b += 80;
+  if ((view === 'board' && it.kind === 'card') || (view === 'scheduler' && it.kind === 'schedule')) b += 100;
+  return b;
+}
+
+function _cmdkWordStart(text, tok) {
+  let i = text.indexOf(tok);
+  while (i >= 0) {
+    if (i === 0 || !/[\p{L}\p{N}]/u.test(text[i - 1])) return true;
+    i = text.indexOf(tok, i + 1);
+  }
+  return false;
+}
+
+// The query's letters in order inside `text`: the matched positions, or null.
+function _cmdkFuzzy(text, q) {
+  const want = q.replace(/\s+/g, '');
+  const at = [];
+  let j = 0;
+  for (let i = 0; i < text.length && j < want.length; i++) if (text[i] === want[j]) { at.push(i); j++; }
+  return j === want.length ? at : null;
+}
+
+// How `it` matches: { tier, match, gaps } or null. The same tiers as
+// /api/palette's rank(), so a local hit and a server hit compare.
+function _cmdkMatch(it, q, toks) {
+  const t = String(it.title || '').toLowerCase(), id = String(it.id || '').toLowerCase();
+  const body = String(it.body || '').toLowerCase();
+  const hay = id + ' ' + t;
+  if (t === q || id === q) return { tier: 5, match: 'exact' };
+  const inHay = toks.every(k => hay.includes(k));
+  if (inHay && (t.startsWith(q) || id.startsWith(q))) return { tier: 4, match: 'prefix' };
+  if (inHay && toks.every(k => _cmdkWordStart(t, k) || _cmdkWordStart(id, k))) return { tier: 4, match: 'word' };
+  if (inHay) return { tier: 3, match: 'title' };
+  if (body && toks.every(k => hay.includes(k) || body.includes(k))) return { tier: 2, match: 'body' };
+  if (q.replace(/\s+/g, '').length >= 3) {
+    const at = _cmdkFuzzy(t, q);
+    if (at) { let gaps = 0; for (let i = 1; i < at.length; i++) if (at[i] !== at[i - 1] + 1) gaps++; return { tier: 1, match: 'fuzzy', gaps }; }
+  }
+  return null;
+}
+
+function _cmdkBoost(it, m, u) {
+  let b = _CMDK_WEIGHT[it.kind] || 0;
+  if (m.match === 'prefix') b += 60;
+  if (m.gaps) b -= Math.min(400, m.gaps * 40);
+  if (it.kind === 'worker' && _cmdkBusy(it.status)) b += 80;
+  if (it.archived) b -= 400;
+  return b + _cmdkContext(it) + _cmdkFrecency(u, it);
+}
+
+// Body text around the first matched word, for a hit found only there.
+function _cmdkSnippet(body, toks) {
+  const lc = body.toLowerCase();
+  const found = toks.map(k => lc.indexOf(k)).filter(i => i >= 0);
+  const at = found.length ? Math.min(...found) : 0;
+  const from = Math.max(0, at - 30), to = Math.min(body.length, from + 90);
+  return (from > 0 ? '…' : '') + body.slice(from, to) + (to < body.length ? '…' : '');
+}
+
+// `text` escaped, with the query's words (or a fuzzy match's letters) marked.
+function _cmdkMark(text, toks, fuzzyQ) {
+  text = String(text || '');
+  const lc = text.toLowerCase();
+  if (lc.length !== text.length) return esc(text);
+  const on = new Array(text.length).fill(false);
+  if (fuzzyQ) (_cmdkFuzzy(lc, fuzzyQ) || []).forEach(i => { on[i] = true; });
+  else for (const k of toks) { let i = lc.indexOf(k); while (i >= 0) { for (let j = i; j < i + k.length; j++) on[j] = true; i = lc.indexOf(k, i + k.length); } }
+  let out = '', open = false;
+  for (let i = 0; i < text.length; i++) {
+    if (on[i] !== open) { out += on[i] ? '<mark>' : '</mark>'; open = on[i]; }
+    out += esc(text[i]);
+  }
+  return out + (open ? '</mark>' : '');
+}
+
+function _cmdkKey(r) { return r ? r.kind + ':' + r.id : ''; }
+
+// Nothing typed: where you went lately, workers waiting on you, then actions
+// and tabs.
+function _cmdkStartRows() {
+  const local = _cmdkLocal(), u = _cmdkUsage();
+  const byKey = new Map(local.map(it => [_cmdkKey(it), it]));
+  const recent = [];
+  for (const [k, e] of Object.entries(u).sort((a, b) => b[1][1] - a[1][1])) {
+    if (recent.length >= 5) break;
+    const kind = k.split(':')[0], id = k.slice(kind.length + 1);
+    if (kind === 'action') continue;
+    const it = byKey.get(k) || ((kind === 'card' || kind === 'schedule') ? { kind, id, title: e[2] || id, sub: id } : null);
+    if (it && !it.archived) recent.push({ ...it, section: 'Recent' });
+  }
+  const seen = new Set(recent.map(_cmdkKey));
+  const waiting = local.filter(it => it.kind === 'worker' && !it.archived && /waiting|needs|input/i.test(it.status) && !seen.has(_cmdkKey(it)))
+    .slice(0, 3).map(it => ({ ...it, section: 'Needs you' }));
+  const actions = _cmdkActions().sort((a, b) => _cmdkFrecency(u, b) - _cmdkFrecency(u, a)).map(it => ({ ...it, section: 'Actions' }));
+  const views = _cmdkViews().filter(it => !seen.has(_cmdkKey(it))).map(it => ({ ...it, section: 'Tabs' }));
+  return [...recent, ...waiting, ...actions, ...views];
 }
 
 function _cmdkCompute() {
   const q = _cmdk.q.trim().toLowerCase();
   const toks = q.split(/\s+/).filter(Boolean);
-  let rows;
+  let all;
+  _cmdk.hiddenLocal = 0;
   if (!toks.length) {
-    // Nothing typed: workers that want you, then the tabs and actions.
-    const want = s => /waiting|needs|input|working/i.test(s.status || '');
-    const ws = _cmdkLocal().filter(r => r.kind === 'worker');
-    rows = [...ws.filter(want), ...ws.filter(r => !want(r))].slice(0, 8)
-      .concat(_cmdkActions(), _cmdkViews().slice(0, 8));
+    all = _cmdkStartRows();
   } else {
-    const local = _cmdkLocal().map(it => [it, _cmdkScore(it, q, toks)]).filter(([, s]) => s >= 0);
-    const server = (_cmdk.server || []).map(h => [{ kind: h.kind, id: h.id, title: h.title,
-      sub: [h.id, h.status, h.session].filter(Boolean).join(' · ') + (h.archived ? ' · archived' : ''), archived: h.archived }, h.score]);
-    rows = [...local, ...server].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([it]) => it);
+    const u = _cmdkUsage();
+    const scored = [];
+    for (const it of _cmdkLocal()) {
+      const m = _cmdkMatch(it, q, toks);
+      if (!m) continue;
+      if (it.archived && !_cmdk.hidden) { _cmdk.hiddenLocal++; continue; }
+      scored.push([{ ...it, tier: m.tier, match: m.match,
+        snippet: m.match === 'body' ? _cmdkSnippet(String(it.body), toks) : '' }, m.tier * 10000 + _cmdkBoost(it, m, u)]);
+    }
+    for (const h of (_cmdk.server || [])) {
+      // An older server answers without tier/boost: read the tier off its score.
+      const tier = h.tier || (h.score >= 1000 ? 5 : h.score >= 200 ? 4 : 3);
+      const it = { kind: h.kind, id: h.id, title: h.title, status: h.status, session: h.session, archived: h.archived,
+        sub: [h.id, h.status, h.session].filter(Boolean).join(' · ') + (h.archived ? ' · archived' : ''),
+        tier, match: h.match || '', snippet: h.snippet || '' };
+      scored.push([it, tier * 10000 + (h.boost || 0) + _cmdkContext(it) + _cmdkFrecency(u, it)]);
+    }
+    all = scored.sort((a, b) => b[1] - a[1]).slice(0, 40).map(([it]) => it);
   }
+  // Show 8 first; a "more" row opens the rest.
+  let rows = all;
+  if (!_cmdk.more && all.length > _CMDK_SHOW) {
+    const pinned = _cmdk.moved ? all.findIndex(r => _cmdkKey(r) === _cmdk.selKey) : -1;
+    if (pinned >= _CMDK_SHOW) _cmdk.more = true;
+    else rows = all.slice(0, _CMDK_SHOW).concat([{ kind: 'more', id: '', title: 'Show ' + (all.length - _CMDK_SHOW) + ' more' }]);
+  }
+  const hiddenN = ((_cmdk.serverMeta && _cmdk.serverMeta.hidden) || 0) + _cmdk.hiddenLocal;
+  if (toks.length && !_cmdk.hidden && hiddenN) rows = rows.concat([{ kind: 'hidden', id: '', title: 'Show ' + hiddenN + ' archived or discarded' }]);
   _cmdk.rows = rows;
+  // The highlight stays on the same thing while results arrive; until you
+  // move it, it stays on the top row.
+  if (_cmdk.moved) {
+    const i = rows.findIndex(r => _cmdkKey(r) === _cmdk.selKey);
+    if (i >= 0) _cmdk.sel = i;
+  } else _cmdk.sel = 0;
   if (_cmdk.sel >= rows.length) _cmdk.sel = Math.max(0, rows.length - 1);
+}
+
+function _cmdkRowHtml(r, i, toks, q) {
+  const meta = r.kind === 'more' || r.kind === 'hidden';
+  const head = '<div class="cmdk-row' + (i === _cmdk.sel ? ' sel' : '') + (meta ? ' cmdk-meta' : '') + '" role="option" aria-selected="' + (i === _cmdk.sel) + '" data-i="' + i + '"'
+    + ' onmousemove="_cmdkHover(' + i + ')" onclick="_cmdkRun(' + i + ')">';
+  if (meta) return head + '<span class="cmdk-kind"></span><span class="cmdk-text"><span class="cmdk-title">' + esc(r.title) + '</span></span></div>';
+  const fz = r.match === 'fuzzy' ? q : '';
+  const sub = r.snippet ? '<span class="cmdk-sub cmdk-snippet">' + _cmdkMark(r.snippet, toks, '') + '</span>'
+    : r.sub ? '<span class="cmdk-sub">' + _cmdkMark(r.sub, fz ? [] : toks, '') + '</span>' : '';
+  return head + '<span class="cmdk-kind">' + esc(_CMDK_KIND[r.kind] || r.kind) + '</span>'
+    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span></div>';
 }
 
 function _cmdkRender() {
   const list = document.getElementById('cmdk-list');
   if (!list) return;
   _cmdkCompute();
-  list.innerHTML = _cmdk.rows.length ? _cmdk.rows.map((r, i) =>
-    '<div class="cmdk-row' + (i === _cmdk.sel ? ' sel' : '') + '" role="option" aria-selected="' + (i === _cmdk.sel) + '" data-i="' + i + '"'
-    + ' onmousemove="_cmdkHover(' + i + ')" onclick="_cmdkRun(' + i + ')">'
-    + '<span class="cmdk-kind">' + esc(_CMDK_KIND[r.kind] || r.kind) + '</span>'
-    + '<span class="cmdk-text"><span class="cmdk-title">' + esc(r.title) + '</span>'
-    + (r.sub ? '<span class="cmdk-sub">' + esc(r.sub) + '</span>' : '') + '</span></div>').join('')
-    : '<div class="cmdk-empty">' + (_cmdk.q.trim() ? 'Nothing named “' + esc(_cmdk.q.trim()) + '”.' : 'Type to search.') + '</div>';
+  const q = _cmdk.q.trim().toLowerCase(), toks = q.split(/\s+/).filter(Boolean);
+  let html = '', section = '';
+  _cmdk.rows.forEach((r, i) => {
+    if (r.section && r.section !== section) { section = r.section; html += '<div class="cmdk-section">' + esc(section) + '</div>'; }
+    html += _cmdkRowHtml(r, i, toks, q);
+  });
+  list.innerHTML = html || '<div class="cmdk-empty">' + (q ? 'Nothing named “' + esc(_cmdk.q.trim()) + '”.' : 'Type to search.') + '</div>';
   const foot = document.getElementById('cmdk-foot');
   if (foot) {
     const m = _cmdk.serverMeta;
     const bits = [];
-    if (_cmdk.q.trim() && m) bits.push(m.measured ? (m.n_considered || 0).toLocaleString() + ' cards and schedules searched' + (m.stale ? ' (refreshing)' : '') : 'cards could not be searched');
+    if (q && m) bits.push(m.measured ? (m.n_considered || 0).toLocaleString() + ' cards and schedules searched' + (m.stale ? ' (refreshing)' : '') : 'cards could not be searched');
     if (_cmdk.failed.length) bits.push('not loaded: ' + _cmdk.failed.join(', '));
-    bits.push('↑↓ to move · Enter to open · Esc to close');
-    foot.textContent = bits.join(' · ');
+    bits.push('↑↓ Enter · Esc');
+    foot.innerHTML = '<span class="cmdk-foot-text">' + esc(bits.join(' · ')) + '</span>'
+      + '<button type="button" class="btn cmdk-hidden-toggle" aria-pressed="' + _cmdk.hidden + '" onclick="_cmdkToggleHidden()">'
+      + (_cmdk.hidden ? 'Hide archived' : 'Show archived') + '</button>';
   }
   list.querySelector('.cmdk-row.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
 function _cmdkHover(i) {
-  if (_cmdk.sel === i) return;
+  if (_cmdk.sel === i && _cmdk.moved) return;
   _cmdk.sel = i;
+  _cmdk.moved = true; _cmdk.selKey = _cmdkKey(_cmdk.rows[i]);
   document.querySelectorAll('#cmdk-list .cmdk-row').forEach((el, j) => {
     el.classList.toggle('sel', j === i);
     el.setAttribute('aria-selected', String(j === i));
   });
+}
+
+function _cmdkToggleHidden() {
+  _cmdk.hidden = !_cmdk.hidden;
+  _cmdkRender(); _cmdkQueryServer();
+  document.getElementById('cmdk-input')?.focus();
 }
 
 function _cmdkQueryServer() {
@@ -67319,7 +67501,7 @@ function _cmdkQueryServer() {
   if (!q) { _cmdk.server = []; _cmdk.serverMeta = null; return; }
   _cmdk.timer = setTimeout(async () => {
     try {
-      const r = await fetch(API + '/api/palette?limit=15&q=' + encodeURIComponent(q), { headers: _authHeaders(), signal: AbortSignal.timeout(8000) });
+      const r = await fetch(API + '/api/palette?limit=20&q=' + encodeURIComponent(q) + (_cmdk.hidden ? '&hidden=1' : ''), { headers: _authHeaders(), signal: AbortSignal.timeout(8000) });
       const d = await r.json();
       if (seq !== _cmdk.seq) return;
       _cmdk.server = r.ok ? (d.hits || []) : [];
@@ -67339,15 +67521,15 @@ function openCmdk() {
     ov.id = 'cmdk-overlay';
     ov.className = 'modal-overlay cmdk-overlay';
     ov.innerHTML = '<div class="modal cmdk" role="dialog" aria-label="Search amux">'
-      + '<input id="cmdk-input" class="input cmdk-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search workers, groups, cards, tabs…" aria-controls="cmdk-list">'
+      + '<input id="cmdk-input" class="input cmdk-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search workers, groups, cards, tabs, actions…" aria-controls="cmdk-list">'
       + '<div id="cmdk-list" class="cmdk-list" role="listbox"></div>'
       + '<div id="cmdk-foot" class="cmdk-foot"></div></div>';
     ov.addEventListener('mousedown', e => { if (e.target === ov) closeCmdk(); });
     document.body.appendChild(ov);
     const inp = ov.querySelector('#cmdk-input');
-    inp.addEventListener('input', () => { _cmdk.q = inp.value; _cmdk.sel = 0; _cmdkRender(); _cmdkQueryServer(); });
+    inp.addEventListener('input', () => { _cmdk.q = inp.value; _cmdk.sel = 0; _cmdk.moved = false; _cmdk.more = false; _cmdkRender(); _cmdkQueryServer(); });
     inp.addEventListener('keydown', e => {
-      if (e.key === 'ArrowDown') { e.preventDefault(); _cmdkHover(Math.min(_cmdk.rows.length - 1, _cmdk.sel + 1)); _cmdkRender(); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); _cmdkHover(Math.min(_cmdk.rows.length - 1, _cmdk.moved ? _cmdk.sel + 1 : 1)); _cmdkRender(); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); _cmdkHover(Math.max(0, _cmdk.sel - 1)); _cmdkRender(); }
       else if (e.key === 'Enter') { e.preventDefault(); _cmdkRun(_cmdk.sel); }
       else if (e.key === 'Escape') { e.preventDefault(); closeCmdk(); }
@@ -67356,6 +67538,7 @@ function openCmdk() {
   ov.classList.add('active');
   const inp = document.getElementById('cmdk-input');
   inp.value = _cmdk.q = ''; _cmdk.sel = 0; _cmdk.server = []; _cmdk.serverMeta = null;
+  _cmdk.moved = false; _cmdk.more = false; _cmdk.selKey = '';
   _cmdkRender();
   inp.focus();
   _cmdkLoadLists().then(() => { if (ov.classList.contains('active')) _cmdkRender(); });
@@ -67385,8 +67568,13 @@ function _cmdkFill(inputId, value) {
 function _cmdkRun(i) {
   const r = _cmdk.rows[i];
   if (!r) return;
+  if (r.kind === 'more') { _cmdk.more = true; _cmdk.moved = true; _cmdk.selKey = _cmdkKey(_cmdk.rows[i - 1]); _cmdkRender(); _cmdkHover(Math.min(i, _cmdk.rows.length - 1)); _cmdkRender(); return; }
+  if (r.kind === 'hidden') { _cmdkToggleHidden(); return; }
   closeCmdk();
-  try { amuxTrack('palette_open', { kind: r.kind, measured: true, n_considered: _cmdk.rows.length }); } catch (e) {}
+  _cmdkRecord(r);
+  // rank and tier let a sweep see people opening things far down the list,
+  // which is what a ranking regression looks like from outside.
+  try { amuxTrack('palette_open', { kind: r.kind, rank: i, tier: r.tier || 0, match: r.match || (_cmdk.q.trim() ? '' : 'start'), measured: true, n_considered: _cmdk.rows.length }); } catch (e) {}
   switch (r.kind) {
     case 'worker': openPeek(r.id); break;
     case 'view': switchView(r.id); break;

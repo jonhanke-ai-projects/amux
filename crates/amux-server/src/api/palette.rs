@@ -19,6 +19,15 @@
 //!
 //! Workers, groups, projects, pins, connectors and the rest are small and the
 //! dashboard already holds or fetches them, so the client matches those.
+//!
+//! Ranking (Ethan, 2026-10-24: exact names and ids first, then prefix and
+//! word matches, then fuzzy; title over body; completed work demoted,
+//! archived and discarded hidden unless asked for) is a tier and a boost:
+//! `score = tier * 10000 + boost`. The tier is how well the text matched and
+//! always wins; the boost (open over done, recency) only orders hits inside
+//! one tier. The dashboard ranks its own families on the same scale, so the
+//! two lists merge by score. Each hit says which tier it reached (`match`)
+//! and, for a body match, carries a `snippet` around the first matched word.
 
 use super::AppState;
 use axum::extract::{Query, State};
@@ -48,11 +57,19 @@ pub struct Entry {
     pub session: String,
     pub archived: bool,
     pub updated: i64,
+    /// The start of the card's description, whitespace collapsed: what a body
+    /// match is found in and its snippet cut from.
+    pub body: String,
     /// lowercased "id title session", what tokens are matched against
     hay: String,
     title_lc: String,
     id_lc: String,
+    body_lc: String,
 }
+
+/// How much of a description is indexed. 400 chars of all 28.6k live cards
+/// is 10.5 MB (measured 2026-10-24); whole descriptions would be hundreds.
+const BODY_CHARS: usize = 400;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Fingerprint {
@@ -106,6 +123,8 @@ fn fingerprint(conn: &Connection) -> rusqlite::Result<Fingerprint> {
     })
 }
 
+// One row's fields, as the two SELECTs read them.
+#[allow(clippy::too_many_arguments)]
 fn entry(
     kind: &'static str,
     id: String,
@@ -114,10 +133,19 @@ fn entry(
     session: String,
     archived: bool,
     updated: i64,
+    desc: &str,
 ) -> Entry {
     let id_lc = id.to_lowercase();
     let title_lc = title.to_lowercase();
     let hay = format!("{id_lc} {title_lc} {}", session.to_lowercase());
+    let body: String = desc
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(BODY_CHARS)
+        .collect();
+    let body_lc = body.to_lowercase();
     Entry {
         kind,
         id,
@@ -126,19 +154,24 @@ fn entry(
         session,
         archived,
         updated,
+        body,
         hay,
         title_lc,
         id_lc,
+        body_lc,
     }
 }
 
 pub fn build(conn: &Connection) -> rusqlite::Result<Vec<Entry>> {
     let mut out = Vec::new();
     let mut st = conn.prepare(
-        "SELECT id, title, status, COALESCE(session, ''), COALESCE(archived, 0), updated
+        "SELECT id, title, status, COALESCE(session, ''), COALESCE(archived, 0), updated,
+                substr(COALESCE(desc, ''), 1, ?1)
          FROM issues WHERE deleted IS NULL",
     )?;
-    let rows = st.query_map([], |r| {
+    // Bytes, not chars, in SQL: twice the budget leaves room for multibyte
+    // text before entry() trims it to BODY_CHARS characters.
+    let rows = st.query_map([BODY_CHARS as i64 * 2], |r| {
         Ok(entry(
             "card",
             r.get(0)?,
@@ -147,16 +180,18 @@ pub fn build(conn: &Connection) -> rusqlite::Result<Vec<Entry>> {
             r.get(3)?,
             r.get::<_, i64>(4)? != 0,
             r.get(5)?,
+            &r.get::<_, String>(6)?,
         ))
     })?;
     for e in rows {
         out.push(e?);
     }
     let mut st = conn.prepare(
-        "SELECT id, title, COALESCE(enabled, 1), COALESCE(session, ''), COALESCE(updated, 0)
+        "SELECT id, title, COALESCE(enabled, 1), COALESCE(session, ''), COALESCE(updated, 0),
+                substr(COALESCE(command, ''), 1, ?1)
          FROM schedules WHERE deleted IS NULL",
     )?;
-    let rows = st.query_map([], |r| {
+    let rows = st.query_map([BODY_CHARS as i64 * 2], |r| {
         let enabled: i64 = r.get(2)?;
         Ok(entry(
             "schedule",
@@ -170,6 +205,7 @@ pub fn build(conn: &Connection) -> rusqlite::Result<Vec<Entry>> {
             r.get(3)?,
             false,
             r.get(4)?,
+            &r.get::<_, String>(5)?,
         ))
     })?;
     for e in rows {
@@ -178,8 +214,9 @@ pub fn build(conn: &Connection) -> rusqlite::Result<Vec<Entry>> {
     Ok(out)
 }
 
-fn is_open(status: &str) -> bool {
-    !matches!(status, "done" | "verified" | "discarded")
+/// Archived and discarded cards: out of the answer unless `hidden=1`.
+fn is_hidden(e: &Entry) -> bool {
+    e.kind == "card" && (e.archived || e.status == "discarded")
 }
 
 fn word_start(hay: &str, tok: &str) -> bool {
@@ -192,52 +229,165 @@ fn word_start(hay: &str, tok: &str) -> bool {
     })
 }
 
-/// Every token must appear in "id title worker". Ranked by: an exact or
-/// prefix id hit, the title starting with the query, tokens at word starts,
-/// open over closed, live over archived, then recency.
-pub fn rank<'a>(entries: &'a [Entry], q: &str, now: i64) -> (Vec<(&'a Entry, i64)>, usize) {
+/// The query's characters in order inside `text` ("dplygt" in "deploy gate"):
+/// Some(gap count) when they all appear, the smaller the tighter.
+pub fn fuzzy(text: &str, q: &str) -> Option<usize> {
+    let mut want = q.chars().filter(|c| !c.is_whitespace()).peekable();
+    let (mut gaps, mut started, mut run) = (0usize, false, false);
+    for c in text.chars() {
+        match want.peek() {
+            None => break,
+            Some(w) if *w == c => {
+                if started && !run {
+                    gaps += 1;
+                }
+                started = true;
+                run = true;
+                want.next();
+            }
+            Some(_) => run = false,
+        }
+    }
+    want.peek().is_none().then_some(gaps)
+}
+
+/// Up to ~90 chars of `body` around its first match of `tok`, on char
+/// boundaries, with an ellipsis where it was cut.
+fn snippet(body: &str, body_lc: &str, tok: &str) -> String {
+    let at = body_lc.find(tok).unwrap_or(0);
+    let at_char = body_lc[..at].chars().count();
+    // Lowercasing can change a char count ("İ"); then cut the lowercased text.
+    let src: Vec<char> = if body.chars().count() == body_lc.chars().count() {
+        body.chars().collect()
+    } else {
+        body_lc.chars().collect()
+    };
+    let from = at_char.saturating_sub(30);
+    let to = (from + 90).min(src.len());
+    let mut out: String = src[from..to].iter().collect();
+    if from > 0 {
+        out.insert(0, '…');
+    }
+    if to < src.len() {
+        out.push('…');
+    }
+    out
+}
+
+pub struct Hit<'a> {
+    pub entry: &'a Entry,
+    /// 5 exact id or title, 4 id/title prefix or every word at a word start (title or id),
+    /// 3 every word in the id/title/worker, 2 a word only in the body, 1 fuzzy.
+    pub tier: i64,
+    pub boost: i64,
+    pub matched: &'static str,
+    pub snippet: Option<String>,
+}
+
+impl Hit<'_> {
+    pub fn score(&self) -> i64 {
+        self.tier * 10_000 + self.boost
+    }
+}
+
+/// Every hit for `q`, best first, and how many matches were left out as
+/// archived or discarded (0 when `with_hidden`).
+pub fn rank<'a>(
+    entries: &'a [Entry],
+    q: &str,
+    now: i64,
+    with_hidden: bool,
+) -> (Vec<Hit<'a>>, usize) {
     let q = q.trim().to_lowercase();
     let toks: Vec<&str> = q.split_whitespace().collect();
     if toks.is_empty() {
         return (Vec::new(), 0);
     }
-    let mut hits: Vec<(&Entry, i64)> = entries
-        .iter()
-        .filter(|e| toks.iter().all(|t| e.hay.contains(t)))
-        .map(|e| {
-            let mut s: i64 = 0;
-            if e.id_lc == q {
-                s += 1000;
-            } else if e.id_lc.starts_with(&q) {
-                s += 300;
+    let compact: String = q.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut hidden = 0usize;
+    let mut hits: Vec<Hit> = Vec::new();
+    for e in entries {
+        let in_hay = toks.iter().all(|t| e.hay.contains(t));
+        let (tier, matched, snip, gaps) = if e.id_lc == q || e.title_lc == q {
+            (5, "exact", None, 0)
+        } else if in_hay
+            && (e.id_lc.starts_with(&q)
+                || e.title_lc.starts_with(&q)
+                || toks
+                    .iter()
+                    .all(|t| word_start(&e.title_lc, t) || word_start(&e.id_lc, t)))
+        {
+            (
+                4,
+                if e.title_lc.starts_with(&q) || e.id_lc.starts_with(&q) {
+                    "prefix"
+                } else {
+                    "word"
+                },
+                None,
+                0,
+            )
+        } else if in_hay {
+            (3, "title", None, 0)
+        } else if toks
+            .iter()
+            .all(|t| e.hay.contains(t) || e.body_lc.contains(t))
+        {
+            let first = toks
+                .iter()
+                .find(|t| !e.hay.contains(**t))
+                .copied()
+                .unwrap_or(toks[0]);
+            (2, "body", Some(snippet(&e.body, &e.body_lc, first)), 0)
+        } else if compact.chars().count() >= 3 {
+            match fuzzy(&e.title_lc, &compact) {
+                Some(g) => (1, "fuzzy", None, g),
+                None => continue,
             }
-            if e.title_lc.starts_with(&q) {
-                s += 200;
-            } else if e.title_lc.contains(&q) {
-                s += 80;
+        } else {
+            continue;
+        };
+        if is_hidden(e) && !with_hidden {
+            hidden += 1;
+            continue;
+        }
+        let mut b: i64 = if e.kind == "card" { 60 } else { 50 };
+        if matched == "prefix" {
+            b += 60;
+        }
+        if e.kind == "card" {
+            b += match e.status.as_str() {
+                "doing" | "active" | "review" => 80,
+                "done" | "verified" => -300,
+                "discarded" => -400,
+                _ => 40,
+            };
+            if e.archived {
+                b -= 400;
             }
-            for t in &toks {
-                s += if word_start(&e.title_lc, t) { 40 } else { 10 };
-            }
-            if e.kind == "card" {
-                if is_open(&e.status) {
-                    s += 60;
-                }
-                if e.archived {
-                    s -= 80;
-                }
-            } else if e.status == "enabled" {
-                s += 30;
-            }
-            // Up to +30 for something touched today, fading over a month.
-            let age_days = ((now - e.updated).max(0) as f64) / 86_400.0;
-            s += (30.0 * (-age_days / 30.0).exp()) as i64;
-            (e, s)
-        })
-        .collect();
-    let total = hits.len();
-    hits.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.updated.cmp(&a.0.updated)));
-    (hits, total)
+        } else if e.status == "enabled" {
+            b += 30;
+        } else {
+            b -= 100;
+        }
+        b -= (gaps as i64 * 40).min(400);
+        // Up to +60 for something touched today, fading over a month.
+        let age_days = ((now - e.updated).max(0) as f64) / 86_400.0;
+        b += (60.0 * (-age_days / 30.0).exp()) as i64;
+        hits.push(Hit {
+            entry: e,
+            tier,
+            boost: b,
+            matched,
+            snippet: snip,
+        });
+    }
+    hits.sort_by(|a, b| {
+        b.score()
+            .cmp(&a.score())
+            .then(b.entry.updated.cmp(&a.entry.updated))
+    });
+    (hits, hidden)
 }
 
 #[derive(Deserialize)]
@@ -245,6 +395,9 @@ pub struct PaletteParams {
     #[serde(default)]
     q: String,
     limit: Option<usize>,
+    /// 1: include archived and discarded cards (ranked last in each tier).
+    #[serde(default)]
+    hidden: u8,
 }
 
 async fn palette(State(st): State<AppState>, Query(p): Query<PaletteParams>) -> Response {
@@ -346,14 +499,18 @@ async fn palette(State(st): State<AppState>, Query(p): Query<PaletteParams>) -> 
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let (ranked, total) = rank(&entries, &p.q, now);
+    let (ranked, hidden) = rank(&entries, &p.q, now, p.hidden != 0);
+    let total = ranked.len();
     let hits: Vec<Value> = ranked
-        .into_iter()
+        .iter()
         .take(limit)
-        .map(|(e, score)| {
+        .map(|h| {
+            let e = h.entry;
             json!({
                 "kind": e.kind, "id": e.id, "title": e.title, "status": e.status,
-                "session": e.session, "archived": e.archived, "updated": e.updated, "score": score,
+                "session": e.session, "archived": e.archived, "updated": e.updated,
+                "score": h.score(), "tier": h.tier, "boost": h.boost,
+                "match": h.matched, "snippet": h.snippet,
             })
         })
         .collect();
@@ -361,6 +518,8 @@ async fn palette(State(st): State<AppState>, Query(p): Query<PaletteParams>) -> 
         "q": p.q,
         "hits": hits,
         "total": total,
+        "hidden": hidden,
+        "with_hidden": p.hidden != 0,
         "limit": limit,
         "measured": true,
         "n_considered": entries.len(),
@@ -376,6 +535,8 @@ async fn palette(State(st): State<AppState>, Query(p): Query<PaletteParams>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NOW: i64 = 1_790_000_000;
 
     fn e(
         kind: &'static str,
@@ -393,57 +554,155 @@ mod tests {
             "lane".into(),
             archived,
             updated,
+            "",
         )
+    }
+
+    fn ids(hits: &[Hit]) -> Vec<String> {
+        hits.iter().map(|h| h.entry.id.clone()).collect()
     }
 
     #[test]
     fn every_token_must_match_and_ids_win() {
-        let now = 1_790_000_000;
         let v = vec![
-            e("card", "AMUX-12", "Fix the deploy gate", "todo", false, now),
+            e("card", "AMUX-12", "Fix the deploy gate", "todo", false, NOW),
             e(
                 "card",
                 "MG-9",
                 "Deploy notes for amux",
                 "done",
                 false,
-                now - 86_400 * 90,
+                NOW - 86_400 * 90,
             ),
-            e("card", "AMUX-120", "Unrelated", "todo", false, now),
+            e("card", "AMUX-120", "Unrelated", "todo", false, NOW),
             e(
                 "schedule",
                 "SCHED-1",
                 "nightly deploy check",
                 "enabled",
                 false,
-                now,
+                NOW,
             ),
         ];
-        let (hits, total) = rank(&v, "deploy amux", now);
-        assert_eq!(total, 2, "only the two with both words");
+        let (hits, _) = rank(&v, "deploy amux", NOW, false);
         assert_eq!(
-            hits[0].0.id, "AMUX-12",
-            "open beats a closed 90-day-old card"
+            ids(&hits),
+            vec!["AMUX-12", "MG-9"],
+            "only the two with both words, open first"
         );
-        let (hits, _) = rank(&v, "amux-12", now);
+        let (hits, _) = rank(&v, "amux-12", NOW, false);
         assert_eq!(
-            hits[0].0.id, "AMUX-12",
-            "exact id first, before the AMUX-120 prefix"
+            ids(&hits)[..2],
+            ["AMUX-12", "AMUX-120"],
+            "exact id first, before the prefix"
         );
-        assert_eq!(hits[1].0.id, "AMUX-120");
-        let (hits, _) = rank(&v, "nightly", now);
-        assert_eq!(hits[0].0.kind, "schedule");
-        assert_eq!(rank(&v, "   ", now).1, 0, "blank query matches nothing");
+        assert_eq!(hits[0].matched, "exact");
+        let (hits, _) = rank(&v, "nightly", NOW, false);
+        assert_eq!(hits[0].entry.kind, "schedule");
+        assert_eq!(
+            rank(&v, "   ", NOW, false).0.len(),
+            0,
+            "blank query matches nothing"
+        );
     }
 
     #[test]
-    fn archived_cards_sink_below_live_ones() {
-        let now = 1_790_000_000;
+    fn tiers_outrank_status_and_status_orders_a_tier() {
         let v = vec![
-            e("card", "A-1", "billing fix", "todo", true, now),
-            e("card", "A-2", "billing fix", "todo", false, now),
+            // A word-start match on a fresh open card...
+            e("card", "R-1", "Market research for Q4", "doing", false, NOW),
+            // ...beats a mid-word match, and a done title match sinks under it.
+            e("card", "R-2", "Preresearch notes", "todo", false, NOW),
+            e(
+                "card",
+                "R-3",
+                "Research spike",
+                "done",
+                false,
+                NOW - 86_400 * 120,
+            ),
+            e("card", "R-4", "research", "done", false, NOW - 86_400 * 200),
         ];
-        let (hits, _) = rank(&v, "billing", now);
-        assert_eq!(hits[0].0.id, "A-2");
+        let (hits, _) = rank(&v, "research", NOW, false);
+        assert_eq!(ids(&hits), vec!["R-4", "R-1", "R-3", "R-2"],
+            "exact name first even when done; then the word tier with the open card above the old done one; mid-word last");
+        assert_eq!(
+            hits.iter().map(|h| h.tier).collect::<Vec<_>>(),
+            vec![5, 4, 4, 3]
+        );
+    }
+
+    #[test]
+    fn archived_and_discarded_are_hidden_and_counted() {
+        let v = vec![
+            e("card", "A-1", "billing fix", "todo", true, NOW),
+            e("card", "A-2", "billing fix", "todo", false, NOW),
+            e("card", "A-3", "billing fix", "discarded", false, NOW),
+        ];
+        let (hits, hidden) = rank(&v, "billing", NOW, false);
+        assert_eq!((ids(&hits), hidden), (vec!["A-2".to_string()], 2));
+        let (hits, hidden) = rank(&v, "billing", NOW, true);
+        assert_eq!(hidden, 0);
+        assert_eq!(
+            hits[0].entry.id, "A-2",
+            "shown on request, still below the live card"
+        );
+        assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn body_matches_rank_under_title_matches_and_carry_a_snippet() {
+        let mut body = entry("card", "B-1".into(), "Quarterly cleanup".into(), "todo".into(), "lane".into(), false, NOW,
+            "Steps:\n\n  first drain the  parsnip queue, then rotate keys and archive the old bucket");
+        body.updated = NOW;
+        let v = vec![
+            body,
+            e(
+                "card",
+                "B-2",
+                "Parsnip rollout",
+                "done",
+                false,
+                NOW - 86_400 * 300,
+            ),
+        ];
+        let (hits, _) = rank(&v, "parsnip", NOW, false);
+        assert_eq!(
+            ids(&hits),
+            vec!["B-2", "B-1"],
+            "a done title match still beats an open body match"
+        );
+        assert_eq!(hits[1].matched, "body");
+        let sn = hits[1].snippet.as_deref().unwrap();
+        assert!(
+            sn.contains("drain the parsnip queue"),
+            "whitespace collapsed, around the word: {sn}"
+        );
+        assert!(hits[0].snippet.is_none());
+    }
+
+    #[test]
+    fn fuzzy_matches_come_last_and_tight_ones_first() {
+        let v = vec![
+            e("card", "F-1", "deploy gate", "todo", false, NOW),
+            e(
+                "card",
+                "F-2",
+                "dashboard polish lag gate",
+                "todo",
+                false,
+                NOW,
+            ),
+            e("card", "F-3", "zebra", "todo", false, NOW),
+        ];
+        let (hits, _) = rank(&v, "dplgate", NOW, false);
+        assert_eq!(ids(&hits), vec!["F-1", "F-2"]);
+        assert!(hits.iter().all(|h| h.matched == "fuzzy"));
+        assert_eq!(fuzzy("deploy", "dpy"), Some(2));
+        assert_eq!(fuzzy("deploy", "yd"), None);
+        assert!(
+            rank(&v, "dp", NOW, false).0.is_empty(),
+            "under three letters, no fuzzy guesses"
+        );
     }
 }

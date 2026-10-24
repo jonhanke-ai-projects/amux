@@ -125,3 +125,72 @@ async fn names_match_and_a_new_card_appears_after_the_rebuild() {
     }
     assert!(found, "the rebuilt index never carried PAL-3");
 }
+
+fn card_with(store: &Store, id: &str, title: &str, desc: &str, status: &str, archived: i64) {
+    let (id, title, desc, status) = (
+        id.to_string(),
+        title.to_string(),
+        desc.to_string(),
+        status.to_string(),
+    );
+    store
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO issues (id, title, desc, status, session, creator, created, updated, archived)
+                 VALUES (?1, ?2, ?3, ?4, 'lane-a', 'tester', 1790000000, 1790000000, ?5)",
+                rusqlite::params![id, title, desc, status, archived],
+            )?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
+        })
+        .unwrap();
+}
+
+// Archived and discarded cards stay out unless asked for, and the answer says
+// how many it left out; a word found only in a description comes back as a
+// body match with a snippet, below the title matches.
+#[tokio::test(flavor = "multi_thread")]
+async fn hidden_cards_are_counted_and_body_matches_carry_a_snippet() {
+    let (app, store, _d) = app();
+    card_with(&store, "HID-1", "Turnip rollout", "", "todo", 0);
+    card_with(&store, "HID-2", "Turnip rollout old", "", "todo", 1);
+    card_with(
+        &store,
+        "HID-3",
+        "Turnip rollout dropped",
+        "",
+        "discarded",
+        0,
+    );
+    card_with(
+        &store,
+        "HID-4",
+        "Weekly cleanup",
+        "first drain the turnip queue, then rotate keys",
+        "todo",
+        0,
+    );
+
+    let (st, v) = get(&app, "/api/palette?q=turnip").await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(ids(&v), vec!["HID-1", "HID-4"], "{v}");
+    assert_eq!(v["hidden"], 2, "{v}");
+    assert_eq!(v["hits"][0]["match"], "prefix");
+    assert_eq!(v["hits"][1]["match"], "body");
+    assert!(
+        v["hits"][1]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("drain the turnip queue"),
+        "{v}"
+    );
+
+    let (_, v) = get(&app, "/api/palette?q=turnip&hidden=1").await;
+    assert_eq!(v["hidden"], 0);
+    assert_eq!(v["with_hidden"], true);
+    let got = ids(&v);
+    assert_eq!(got.len(), 4, "{v}");
+    assert_eq!(got[0], "HID-1", "the live card stays first: {v}");
+}
