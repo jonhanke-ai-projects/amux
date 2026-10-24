@@ -18635,7 +18635,8 @@ function _linkifyPaths(safeHtml) {
       if (!p.startsWith('/') && !p.startsWith('~/') && !(typeof peekSessionDir === 'string' && peekSessionDir)) return m;
       const cls = /\.md$/i.test(p) ? 'md-link' : 'file-link';
       const shown = p + (line || '');
-      return pre + at + '<span class="' + cls + '" title="Open in the file browser: '
+      // data-path is what the right-click menu reads (_fileCtxMenu).
+      return pre + at + '<span class="' + cls + '" data-path="' + esc(p) + '" title="Open in the file browser: '
         + esc(_resolveOutputPath(p)) + '" onclick="event.preventDefault();event.stopPropagation();'
         + "_openPathFromOutput('" + escJs(p) + "')" + '">' + esc(shown) + '</span>'
         + (dot ? '.' : '');
