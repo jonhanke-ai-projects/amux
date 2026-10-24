@@ -12,13 +12,22 @@
 # 12 cards in two days, all discarded as duplicates, and SCHED-713 was switched
 # off from the dashboard on 10-17. Main then stayed red for a week with nobody
 # told, and the server sat 73 commits behind on 08c8c6973.
+#
+# A first attempt that failed ONLY in e2e jobs is re-run once before anyone is
+# told. In that same week every one of five consecutive main runs failed in
+# exactly one e2e spec, a different one each time, in code the commit did not
+# touch, so no commit ever went green and the gate deployed nothing. Test-level
+# retries stay 0 (e2e/playwright.config.ts says why); a job re-run keeps the
+# first attempt's evidence (artifacts carry the attempt), a real regression
+# fails attempt 2 as well and is reported then, and every re-run prints the
+# flaky test here as verdict=flaky_rerun.
 set -euo pipefail
 REPO=mixpeek/amux
 STATE="${MAIN_CI_WATCH_STATE:-${AMUX_HOME:-$HOME/.amux}/state/main-ci-watch.json}"
 mkdir -p "$(dirname "$STATE")"; [ -f "$STATE" ] || echo '{}' > "$STATE"
 eval "$(~/.amux/github-app/get-token.sh --min-remaining 300)"
 U="$(amux url)"
-filed=0 appended=0 closed=0 considered=0 refused=0
+filed=0 appended=0 closed=0 reruns=0 considered=0 refused=0
 st_get() { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],{}).get(sys.argv[3],''))" "$STATE" "$1" "$2"; }
 st_set() { python3 -c "
 import json,sys
@@ -49,12 +58,15 @@ board_patch() {  # id json -> prints the HTTP code
 clean() { python3 -c 'import sys; print(sys.argv[1].encode("utf-8","surrogateescape").decode("utf-8","replace")[:int(sys.argv[2])])' "$1" "$2"; }
 for wf in rust.yml checks.yml; do
   row=$(gh api "repos/$REPO/actions/workflows/$wf/runs?branch=main&status=completed&per_page=1" \
-        --jq '.workflow_runs[0] | [.id, .conclusion, .head_sha, .html_url] | @tsv') || continue
+        --jq '.workflow_runs[0] | [.id, .conclusion, .head_sha, .html_url, .run_attempt] | @tsv') || continue
   [ -n "$row" ] || continue
   considered=$((considered + 1))
-  IFS=$'\t' read -r id conclusion sha url <<<"$row"
+  IFS=$'\t' read -r id conclusion sha url attempt <<<"$row"
+  attempt=${attempt:-1}
+  # A re-run keeps the run id, so an attempt is what makes a run new.
   seen=$(st_get "$wf" seen)
-  [ "$seen" = "$id" ] && continue
+  # A bare id is the pre-attempt state file: it means attempt 1 only.
+  if [ "$seen" = "$id.$attempt" ] || { [ "$attempt" = 1 ] && [ "$seen" = "$id" ]; }; then continue; fi
   card=$(st_get "$wf" card)
   if [ "$conclusion" = success ]; then
     # Green again: close the stretch's card with the run that proves it.
@@ -63,14 +75,25 @@ for wf in rust.yml checks.yml; do
       body=$(python3 -c "import json,sys; print(json.dumps({'status':'done','evidence':sys.argv[1],'desc_append':sys.argv[1]}))" "$ev")
       case "$(board_patch "$card" "$body")" in 2??) closed=$((closed + 1)) ;; *) refused=$((refused + 1)); continue ;; esac
     fi
-    st_set "$wf" seen "$id"; st_set "$wf" green "$sha"; st_set "$wf" card ""
+    st_set "$wf" seen "$id.$attempt"; st_set "$wf" green "$sha"; st_set "$wf" card ""
     continue
   fi
-  [ "$conclusion" = failure ] || { python3 - "$STATE" "$wf" "$id" <<'PY'
-import json,sys
-p,wf,i=sys.argv[1:]; s=json.load(open(p)); s.setdefault(wf,{})['seen']=i; json.dump(s,open(p,'w'))
-PY
-    continue; }
+  [ "$conclusion" = failure ] || { st_set "$wf" seen "$id.$attempt"; continue; }
+  if [ "$conclusion" = failure ] && [ "$attempt" = 1 ]; then
+    failed_jobs=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" --jq '.jobs[]|select(.conclusion=="failure")|.name' 2>/dev/null || true)
+    if [ -n "$failed_jobs" ] && ! printf '%s\n' "$failed_jobs" | grep -qv '^e2e'; then
+      flaky=$(gh api "repos/$REPO/actions/runs/$id/jobs" --jq '.jobs[]|select(.conclusion=="failure")|.id' | head -6 | while read -r j; do
+          gh api "repos/$REPO/actions/jobs/$j/logs" 2>/dev/null | grep -av WebServer | grep -aE '^\S+\s+[0-9]+\) \[' | sed 's/^[0-9TZ:.-]* //' | head -2 || true
+        done | sed 's/^ *//' | sort -u | head -4 || true)
+      if [ "${DRY:-0}" = 1 ] || gh api -X POST "repos/$REPO/actions/runs/$id/rerun-failed-jobs" >/dev/null 2>&1; then
+        reruns=$((reruns + 1))
+        echo "{\"verdict\":\"flaky_rerun\",\"workflow\":\"${wf%.yml}\",\"sha\":\"${sha:0:9}\",\"run\":\"$url\",\"tests\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$(clean "$flaky" 600)")}"
+        st_set "$wf" seen "$id.$attempt"
+        continue
+      fi
+      echo "could not re-run the failed e2e jobs of $url; reporting it as red" >&2
+    fi
+  fi
   green=$(st_get "$wf" green)
   tests=$(gh api "repos/$REPO/actions/runs/$id/jobs" --jq '.jobs[]|select(.conclusion=="failure")|.id' | head -6 | while read -r j; do
       gh api "repos/$REPO/actions/jobs/$j/logs" 2>/dev/null | grep -av WebServer \
@@ -131,9 +154,9 @@ PY
   # Mark the run seen only once someone was told; an alert that never landed
   # is retried on the next tick.
   if [ "$landed" = 1 ]; then
-    st_set "$wf" seen "$id"
+    st_set "$wf" seen "$id.$attempt"
   fi
 done
-echo "{\"verdict\":\"main_ci_watch\",\"measured\":true,\"n_considered\":$considered,\"cards_filed\":$filed,\"cards_appended\":$appended,\"cards_closed\":$closed,\"alerts_not_delivered\":$refused}"
+echo "{\"verdict\":\"main_ci_watch\",\"measured\":true,\"n_considered\":$considered,\"cards_filed\":$filed,\"cards_appended\":$appended,\"cards_closed\":$closed,\"flaky_reruns\":$reruns,\"alerts_not_delivered\":$refused}"
 # A red run nobody was told about is a failed tick, so the schedule reports it.
 [ "$refused" = 0 ]

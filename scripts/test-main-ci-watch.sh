@@ -21,6 +21,8 @@ cat > "$BIN/gh" <<'EOF'
 case "$*" in
   *workflows/rust.yml/runs*) printf '%s\n' "${RUST_ROW:-$(printf '101\tfailure\tabc123def456\thttps://example/run/101')}" ;;
   *workflows/checks.yml/runs*) printf '' ;;
+  *rerun-failed-jobs*) echo "$*" >> "${RERUNS:-/dev/null}"; printf '{}' ;;
+  *runs/*/jobs*.name*) printf '%s\n' "${JOB_NAMES:-test-shards (1)}" ;;
   *runs/*/jobs*) printf '7\n' ;;
   # "1) [ios-safari] " is 16 bytes and the filler 72, so the 3-byte "›" sits at
   # bytes 89-91: a byte-counting cut at 90 splits it (the 13:31 failure).
@@ -108,6 +110,23 @@ echo discarded > "$FIX/card_status"
 python3 -c "import json; p='$FIX/state.json'; s=json.load(open(p)); s['rust.yml']['card']='AMUX-1'; json.dump(s,open(p,'w'))"
 out=$(run3 "$(printf '204\tfailure\tddd444ddd444\thttps://example/run/204')")
 check "a retired card is not written into"    2 "$(grep -c . "$FIX/bodies")"
+
+echo "4. a first attempt that failed only in e2e is re-run once; a second failure is reported"
+rm -f "$FIX/state.json" "$FIX/bodies" "$FIX/patches" "$FIX/reruns"; echo todo > "$FIX/card_status"
+run4() { RERUNS="$FIX/reruns" JOB_NAMES="$2" run3 "$1"; }
+out=$(run4 "$(printf '301\tfailure\teee555eee555\thttps://example/run/301\t1')" "e2e-shards (7)")
+check "the e2e-only failure is re-run"        1 "$(grep -c rerun-failed-jobs "$FIX/reruns" 2>/dev/null || echo 0)"
+check "no card for a first e2e failure"       0 "$(grep -c . "$FIX/bodies" 2>/dev/null || echo 0)"
+check "the flaky test is named in the tick"   yes "$(has "$out" '"verdict":"flaky_rerun","workflow":"rust","sha":"eee555eee"')"
+out=$(run4 "$(printf '301\tfailure\teee555eee555\thttps://example/run/301\t1')" "e2e-shards (7)")
+check "the same attempt is not re-run twice"  1 "$(grep -c rerun-failed-jobs "$FIX/reruns")"
+out=$(run4 "$(printf '301\tfailure\teee555eee555\thttps://example/run/301\t2')" "e2e-shards (7)")
+check "attempt 2 failing again files a card"  1 "$(grep -c . "$FIX/bodies")"
+check "attempt 2 is never re-run"             1 "$(grep -c rerun-failed-jobs "$FIX/reruns")"
+rm -f "$FIX/state.json" "$FIX/bodies" "$FIX/reruns"
+out=$(run4 "$(printf '302\tfailure\tfff666fff666\thttps://example/run/302\t1')" "$(printf 'e2e-shards (2)\ntest-shards (1)')")
+check "a non-e2e failure is reported at once" 1 "$(grep -c . "$FIX/bodies")"
+check "and is not re-run"                     0 "$(grep -c rerun-failed-jobs "$FIX/reruns" 2>/dev/null || echo 0)"
 
 [ "$fails" = 0 ] || { echo "--- last script output ---"; printf '%s\n' "$out" | tail -20; }
 if [ "$fails" = 0 ]; then echo "PASS: main-ci-watch — all checks passed"; else echo "main-ci-watch: $fails check(s) FAILED"; exit 1; fi
