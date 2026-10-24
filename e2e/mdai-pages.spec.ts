@@ -764,7 +764,15 @@ test('MDAI chat: a real server edits the file through the model and the next run
     // The run that follows sends the NEW instruction, and its output has the new column.
     await expect.poll(() => api.runPrompts.length, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
     expect(api.runPrompts[api.runPrompts.length - 1]).toContain('Lifecycle column');
-    await page.locator('#mdai-chat-log .mdai-chat-acts .btn', { hasText: 'See output' }).click();
+    // Wait for the run to finish ("Run again" renders only when nothing runs):
+    // its completion re-renders this panel, and on WebKit a click whose node is
+    // replaced between press and release fires nothing. CI f83afc792
+    // (ios-safari): the run finished, Chat stayed selected, no .mdai-output.
+    await expect(page.locator('#mdai-chat-log .mdai-chat-acts .btn', { hasText: 'Run again' })).toBeVisible({ timeout: 60_000 });
+    await expect(async () => {
+      await page.locator('#mdai-chat-log .mdai-chat-acts .btn', { hasText: 'See output' }).click();
+      await expect(page.locator('#mdai-overlay .mdai-tab[data-tab=preview]')).toHaveAttribute('aria-selected', 'true', { timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
     await expect(page.locator('#mdai-body .mdai-output')).toContainText('restart path fixed', { timeout: 60_000 });
 
     // The conversation is kept: a reload reads it back from the server.
