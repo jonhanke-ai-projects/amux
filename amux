@@ -9042,7 +9042,8 @@ _sync_checkout_override() { # <remote> <branch|""> <check 0|1>
   # The backup: HEAD's history plus a snapshot of the whole working tree, built
   # in a private index so the shared one is not touched until the reset.
   local idx tree snap ref
-  idx="$(mktemp -t amux-override-idx)"
+  # A template with X's: GNU mktemp refuses `-t name` without them (CI, Linux).
+  idx="$(mktemp "${TMPDIR:-/tmp}/amux-override-idx.XXXXXX")"
   cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true
   GIT_INDEX_FILE="$idx" git -C "$top" add -A . 2>/dev/null \
     && tree="$(GIT_INDEX_FILE="$idx" git write-tree)" \
