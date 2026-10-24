@@ -4,6 +4,7 @@
 //    left of the button. A click outside the reported box now places the menu.
 // 2. it saves presets server side, like the homepage tab list (scope=peek).
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 
 async function openWorkerView(page: import('@playwright/test').Page) {
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
@@ -80,8 +81,8 @@ test('a worker tab preset is saved on the server, loads back, and stays out of t
     await expect(box()).not.toBeChecked();
     await page.screenshot({ path: info.outputPath('peek-tab-preset.png') });
   } finally {
-    await api(page, '/api/layout-presets/' + encodeURIComponent(name) + '?scope=peek', 'DELETE').catch(() => {});
+    await cleanup('delete the peek preset', () => api(page, '/api/layout-presets/' + encodeURIComponent(name) + '?scope=peek', 'DELETE'), info);
     // Put the worker-view layout back: it is saved server side for every spec.
-    await page.evaluate(h => { try { (0, eval)('peekHiddenTabs = new Set(' + h + '); _savePeekTabPrefs(); _applyPeekTabVisibility()'); } catch (e) {} }, before);
+    await cleanup('restore the worker-view tabs', () => page.evaluate(h => { (0, eval)('peekHiddenTabs = new Set(' + h + '); _savePeekTabPrefs(); _applyPeekTabVisibility()'); }, before), info);
   }
 });
