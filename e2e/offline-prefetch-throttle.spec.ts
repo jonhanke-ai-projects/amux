@@ -9,16 +9,19 @@ const WORKERS = ['zz-pf-a', 'zz-pf-b'];
 
 test('automatic offline prefetch runs once per window of time across windows; manual still runs', async ({ context }) => {
   const peeks: string[] = [];
-  await context.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: WORKERS.map(name => (
-    { name, dir: '/tmp/' + name, running: true, status: 'active', flags: '', steering: [] })) }));
-  await context.route(/\/api\/sessions\/zz-pf-[ab]\/peek\?lines=200$/, r => {
-    peeks.push(r.request().url());
-    return r.fulfill({ json: { output: 'frame\n', history: 'line\n' }, headers: { ETag: '"e' + peeks.length + '"' } });
-  });
+  // page.route on each window (the fixture counts page stubs; it does not wrap context.route).
+  const stub = async (p: any) => {
+    await p.route(/\/api\/sessions(?:\?.*)?$/, (r: any) => r.fulfill({ json: WORKERS.map(name => (
+      { name, dir: '/tmp/' + name, running: true, status: 'active', flags: '', steering: [] })) }));
+    await p.route(/\/api\/sessions\/zz-pf-[ab]\/peek\?lines=200$/, (r: any) => {
+      peeks.push(r.request().url());
+      return r.fulfill({ json: { output: 'frame\n', history: 'line\n' }, headers: { ETag: '"e' + peeks.length + '"' } });
+    });
+  };
   const beacons: string[] = [];
   const watch = (p: any) => p.on('request', (r: any) => { const b = r.postData() || ''; if (b.includes('offline_prefetch_throttled')) beacons.push(b); });
   const boot = async () => {
-    const p = await context.newPage(); watch(p);
+    const p = await context.newPage(); watch(p); await stub(p);
     await p.goto('/');
     await p.waitForFunction((n) => typeof (window as any)._offlinePrefetch === 'function'
       && (globalThis as any).eval('sessions').filter((s: any) => s.running).length === n, WORKERS.length);
