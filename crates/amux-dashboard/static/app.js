@@ -36918,7 +36918,7 @@ function switchView(view) {
   if (view === 'terminal') _termInit();
   if (view === 'graph') _graphInit();
   if (view === 'map') { _mapLoad(); _mapInit(); if (_mapSwState()) _mapSwToggle(true); }
-  if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); } // always refresh on tab switch
+  if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); try { const m = localStorage.getItem('amux_metrics_mode'); if (m && ['system','host','resources','disk'].includes(m)) _metricsSetMode(m); } catch(e) {} } // always refresh on tab switch
   if (view === 'cost') _costLoad();
   if (view === 'disk') _reclaimLoad(); else if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling();
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
@@ -36940,7 +36940,7 @@ function switchView(view) {
   // Per-session scoping lives on the peek's own Messages tab and on the
   // "Message history" modal reached from inside a peek.
   if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
-  if (view === 'messages') { _messagesLoad(true, ''); _cvEnter(); }
+  if (view === 'messages') { _messagesLoad(true, ''); _cvEnter(); try { const m = localStorage.getItem('amux_msg_mode'); if (m && ['messages','trends','ask'].includes(m)) _msgSetMode(m); } catch(e) {} }
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'scratchpad') _scratchpadLoad();
   if (view === 'record') _recorderInit();
@@ -53385,6 +53385,7 @@ const _TREND_THEMES = [
 ];
 function _msgSetMode(mode) {
   _msgMode = mode;
+  try { localStorage.setItem('amux_msg_mode', mode); } catch(e) {}
   document.getElementById('msgmode-messages')?.classList.toggle('active', mode === 'messages');
   document.getElementById('msgmode-trends')?.classList.toggle('active', mode === 'trends');
   document.getElementById('msgmode-ask')?.classList.toggle('active', mode === 'ask');
@@ -54263,6 +54264,7 @@ const _KIND_COLORS = {
 
 function _metricsSetMode(mode) {
   _metricsMode = mode;
+  try { localStorage.setItem('amux_metrics_mode', mode); } catch(e) {}
   document.getElementById('metricsmode-system')?.classList.toggle('active', mode === 'system');
   document.getElementById('metricsmode-host')?.classList.toggle('active', mode === 'host');
   document.getElementById('metricsmode-resources')?.classList.toggle('active', mode === 'resources');

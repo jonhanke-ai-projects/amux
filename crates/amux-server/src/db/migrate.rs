@@ -719,6 +719,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0131_worker_resource_samples",
         sql: include_str!("../../migrations/0131_worker_resource_samples.sql"),
     },
+    Migration {
+        version: 132,
+        name: "0132_token_ledger_task_session_ts_index",
+        sql: include_str!("../../migrations/0132_token_ledger_task_session_ts_index.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
