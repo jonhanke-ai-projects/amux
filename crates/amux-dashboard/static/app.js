@@ -31462,7 +31462,12 @@ function _cxGoogleSvcState(c, a) {
   const can = a.canary || {};
   const leg = _CONN_LEG[c.id];
   if (!leg || (!fam.google && !fam.gmail)) return null;
-  if (fam.google === 'needs_reauth' || fam.gmail === 'needs_reauth') return ['Expired', 'bad', 'reconnect'];
+  // Gmail runs on its own grant when the account has one; Calendar and Drive
+  // run on the connector grant. Judging each service by the grant it uses keeps
+  // a dead Calendar grant from marking a working Gmail as Expired (2026-10-24:
+  // three accounts showed ✗ Gmail while /api/gmail/accounts read two "ok").
+  const grant = leg === 'gmail' && fam.gmail ? fam.gmail : fam.google;
+  if (grant === 'needs_reauth') return ['Expired', 'bad', 'reconnect'];
   if (!fam.google && leg !== 'gmail') return ['Not granted', 'warn', 'grant'];
   const l = can[leg] || {};
   return l.status === 'ok' ? ['Active', 'ok', '']
