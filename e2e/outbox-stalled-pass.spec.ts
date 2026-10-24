@@ -35,7 +35,7 @@ function sendRoute(page: Page, posts: string[]) {
   });
 }
 
-test('another window holding the replay lock does not hold the message', async ({ page, context }) => {
+test('another window holding the replay lock does not hold the message, and a shown window takes it at once', async ({ page, context }) => {
   test.setTimeout(90_000);
   const posts: string[] = [], beacons: any[] = [];
   await sendRoute(page, posts);
@@ -49,8 +49,13 @@ test('another window holding the replay lock does not hold the message', async (
   await boot(page, beacons);
   await page.evaluate(() => (window as any).eval('_syncFlight = null'));
   await seedAndSync(page);
-  await expect.poll(() => posts.includes('m-stall'), { timeout: 40_000 }).toBe(true);
-  await expect.poll(() => beacons.some(b => b.verdict === 'outbox_replay_lock_stalled' && b.held === 1)).toBe(true);
+  // A shown window steals the lock after a short wait instead of waiting out
+  // the 20s stall bound (Ethan, 2026-10-23: the Mac app was slower than the
+  // browser because a frozen background tab held this lock).
+  const t0 = Date.now();
+  await expect.poll(() => posts.includes('m-stall'), { timeout: 15_000 }).toBe(true);
+  expect(Date.now() - t0).toBeLessThan(10_000);
+  await expect.poll(() => beacons.some(b => b.verdict === 'outbox_replay_lock_stalled' && b.action === 'stole' && b.held === 1)).toBe(true);
   await other.close();
 });
 
