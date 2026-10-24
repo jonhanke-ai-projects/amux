@@ -282,6 +282,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_boardCtxMenu": {
+      "kind": "command._boardCtxMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_boardCtxMove": {
       "kind": "command._boardCtxMove",
       "feedback_required": true,
@@ -866,6 +872,12 @@
     },
     "_cmdkToggleHidden": {
       "kind": "command._cmdkToggleHidden",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_colMenu": {
+      "kind": "command._colMenu",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3530,6 +3542,12 @@
     },
     "_placeFixedAt": {
       "kind": "command._placeFixedAt",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_placeMenuAtPointer": {
+      "kind": "command._placeMenuAtPointer",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

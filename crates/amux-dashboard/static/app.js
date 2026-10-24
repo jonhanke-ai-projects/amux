@@ -8674,6 +8674,43 @@ function _uiZoomFactor() {
   } catch (e) { _zProbe = { z: 1, t: performance.now() }; }
   return _zProbe.z;
 }
+// A right-click menu at the pointer, clamped INTO the viewport (a click near
+// the right or bottom edge must not push it off screen).
+//
+// The pointer's coordinates are not always where the pointer is. Under the
+// root UI zoom they are screen pixels while a fixed menu's left/top are CSS
+// pixels, hence /z. Worse, WebKit (the Mac app) scales them by any CSS zoom on
+// the clicked element's ancestors, and the terminal output carries one (its
+// text size): the menu opened far below and right of the click (Ethan,
+// 2026-10-24 screenshot). Rather than guess per engine, check that the point
+// lands on what was clicked; when it does not, open at the element itself.
+function _placeMenuAtPointer(m, e) {
+  const z = _uiZoomFactor();
+  let x = e.clientX / z, y = e.clientY / z;
+  const t = e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement;
+  if (t) {
+    // The menu is already on the page; it must not be what the probe hits.
+    const pe = m.style.pointerEvents;
+    m.style.pointerEvents = 'none';
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    m.style.pointerEvents = pe;
+    if (!hit || !(hit === t || t.contains(hit))) {
+      // A wrapped link has a box per line: open under the first one.
+      const rects = t.getClientRects();
+      const rr = rects.length ? rects[0] : t.getBoundingClientRect();
+      x = rr.left / z; y = rr.bottom / z + 2;
+      try {
+        fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'menu-anchor', verdict: 'pointer_off_target_anchored_to_element', menu: m.id || '',
+            measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+      } catch (err) {}
+    }
+  }
+  const r = _cssRect(m);
+  const vw = window.innerWidth / z, vh = window.innerHeight / z;
+  m.style.left = Math.max(6, Math.min(x, vw - r.width - 6)) + 'px';
+  m.style.top = Math.max(6, Math.min(y, vh - r.height - 6)) + 'px';
+}
 function _cssRect(el) {
   const r = el.getBoundingClientRect();
   const z = _uiZoomFactor();
@@ -18503,9 +18540,7 @@ function _fileCtxMenu(e, link) {
     if (it) { ev.stopPropagation(); _fileCtxRun(it.dataset.act); }
   });
   document.body.appendChild(m);
-  const r = m.getBoundingClientRect();
-  m.style.left = Math.max(6, Math.min(e.clientX, window.innerWidth - r.width - 6)) + 'px';
-  m.style.top = Math.max(6, Math.min(e.clientY, window.innerHeight - r.height - 6)) + 'px';
+  _placeMenuAtPointer(m, e);
 }
 async function _fileCtxRun(act) {
   const c = _fileCtx; _fileCtxClose();
@@ -43268,9 +43303,7 @@ function _colMenu(e, st, lane) {
   m.id = 'board-col-menu';
   m.innerHTML = h;
   document.body.appendChild(m);
-  const r = m.getBoundingClientRect();
-  m.style.left = Math.max(6, Math.min(e.clientX, window.innerWidth - r.width - 6)) + 'px';
-  m.style.top = Math.max(6, Math.min(e.clientY, window.innerHeight - r.height - 6)) + 'px';
+  _placeMenuAtPointer(m, e);
   return false;
 }
 // The SAME canon `deleteBoardStatus` counts with, so the number in the dialog
@@ -43403,13 +43436,7 @@ function _boardCtxMenu(e, id) {
   m.id = 'board-ctx-menu';
   m.innerHTML = h;
   document.body.appendChild(m);
-  // Clamp INTO the viewport rather than off the bottom-right edge, which is
-  // where a right-click near the last column of a full board lands.
-  const r = m.getBoundingClientRect();
-  const x = Math.max(6, Math.min(e.clientX, window.innerWidth - r.width - 6));
-  const y = Math.max(6, Math.min(e.clientY, window.innerHeight - r.height - 6));
-  m.style.left = x + 'px';
-  m.style.top = y + 'px';
+  _placeMenuAtPointer(m, e);
   return false;
 }
 function _boardCtxMove(id, st) {

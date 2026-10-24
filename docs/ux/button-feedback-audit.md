@@ -119,6 +119,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | … … | `_cmdHistSetKind` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ; if (meta) return head + | `_cmdkRun` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | … | `_cmdkToggleHidden` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Column actions | `_colMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Migrate all to … | `_colMigrateAll` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Collapse | `_collapsePeekInput` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ; html += | `_commitsSelect` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
@@ -1138,7 +1139,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Close video | `_closeVideo` | onclick |
 | index.html | video-overlay | `_closeVideo` | onclick |
 | app.js | See amux Cloud | `_cloudOfferHide` | onclick |
-| app.js | Column actions | `_colMenu` | onclick |
 | index.html | Commits | `_commitsBack` | onclick |
 | index.html | Add connector | `_connAddToggle` | onclick |
 | app.js | Close | `_connClose` | onclick |
@@ -1545,8 +1545,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | MD | `exportBoard` | onclick |
 | index.html | JSON | `exportPeekBoard` | onclick |
 | index.html | MD | `exportPeekBoard` | onclick |
-| app.js | … | `f` | onclick |
-| app.js | … | `fn` | onclick |
+| app.js | {}); } catch (err) {} } } const r = _cssRect(m); | `f` | onclick |
+| app.js | {}); } catch (err) {} } } const r = _cssRect(m); | `fn` | onclick |
 | index.html | Tap to force update | `forceUpdate` | onclick |
 | app.js | board-columns | `function` | addEventListener |
 | app.js | container | `function` | addEventListener |
