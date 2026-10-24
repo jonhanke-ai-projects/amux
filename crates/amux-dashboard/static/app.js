@@ -1327,14 +1327,23 @@ async function _mutateQueue(change) {
     _writeUserStorage('amux_offline_queue', JSON.stringify(current));
     offlineQueue = current;
     if (typeof _idb !== 'undefined') _idb.set('offline_queue', current);
-    try { _peekMessagesBadge(); } catch (_) {}
-    try { if (_peekTab === 'messages') _peekMessagesRender(); } catch (_) {}
+    _outboxViewsRefresh();
     return result;
   });
 }
+// Every view that reads the outbox, repainted together whenever it changes,
+// here or in another window. The Steering list and its tab badge both read it
+// but only Messages was repainted, so the badge kept a sent message's count
+// while the list, drawn fresh when the tab opened, was empty (Ethan,
+// 2026-10-24: "theres race conditions all over the app").
+function _outboxViewsRefresh() {
+  try { _peekMessagesBadge(); } catch (_) {}
+  try { if (_peekTab === 'messages') _peekMessagesRender(); } catch (_) {}
+  try { if (peekSession) { if (_peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge(); } } catch (_) {}
+}
 window.addEventListener('storage', event => {
   if (event.key !== 'amux_offline_queue') return;
-  try { offlineQueue = _readQueue(); updateConnectionStatus(); _scheduleSyncRetry(); }
+  try { offlineQueue = _readQueue(); updateConnectionStatus(); _scheduleSyncRetry(); _outboxViewsRefresh(); }
   catch (error) { _writeError = error.message; updateConnectionStatus(); }
 });
 
@@ -8103,8 +8112,7 @@ function render() {
   updatePeekStatus();
   _saveListView();
   if (peekSession) {
-    _steeringUpdateBadge();
-    if (_peekTab === 'steering') _steeringRender();
+    if (_peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge();
   }
   // Skip the CARD LIST render if a menu or edit overlay is open, to prevent
   // DOM clobbering.
@@ -13660,6 +13668,10 @@ function _steeringRender() {
   const sys = queue.filter(m => m.system);
   countEl.textContent = (human.length ? human.length + ' queued' : 'No queued messages')
     + (sys.length ? ' · ' + sys.length + ' system' : '');
+  countEl.dataset.n = String(human.length);
+  countEl.dataset.sess = peekSession;
+  // The tab badge from the same reading as this list.
+  _steeringUpdateBadge();
   const row = m => {
     const ago = timeAgo(m.queued_at);
     const sysTag = m.system ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(148,163,184,0.15);color:var(--dim);margin-right:6px;">SYSTEM${m.guard ? ' · ' + esc(m.guard) : ''}</span>` : '';
@@ -13751,6 +13763,14 @@ function _steeringUpdateBadge() {
   if (!badge) return;
   if (n > 0) { badge.textContent = n; badge.classList.add('has-count'); }
   else { badge.textContent = ''; badge.classList.remove('has-count'); }
+  // With Steering open, its list must say the same. A list showing another
+  // count was not repainted when the queue changed: report it and redraw.
+  const listed = document.getElementById('peek-steering-count');
+  if (_peekTab === 'steering' && listed && listed.dataset.sess === peekSession && Number(listed.dataset.n) !== n) {
+    try { window._clientDebug?.('steer-list-stale', {verdict: 'steer_list_stale', measured: true, n_considered: 1,
+      list: Number(listed.dataset.n), badge: n, session: peekSession}); } catch (_) {}
+    _steeringRender();
+  }
 }
 
 // "Delivers 6:15 PM", with the day when it is not today.
@@ -22113,8 +22133,8 @@ async function steerSession(name, text, identity = {}, opts = {}) {
       if (!r.ok) return false;
       _validateMessageAcknowledgement(await r.clone().json(), '/steer');
     }
-    if (peekSession === name && _peekTab === 'steering') _steeringRender();
-    _steeringUpdateBadge(); render();
+    if (peekSession === name && _peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge();
+    render();
     return true;
   } catch (e) { _outboxDiagnostic('steering_accept_failed', {session:name}); return false; }
 }
@@ -48596,7 +48616,7 @@ function connectSSE() {
       } else if (msg.type === 'alerts') {
         for (const a of (msg.payload || [])) {
           _fireAmuxAlert(a);
-          if (a.type === 'steering_delivered' && a.session === peekSession) _steeringUpdateBadge();
+          if (a.type === 'steering_delivered' && a.session === peekSession) { if (_peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge(); }
         }
       } else if (msg.type === 'typing') {
         _typingOnEvent(msg);

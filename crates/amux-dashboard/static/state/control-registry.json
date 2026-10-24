@@ -3012,6 +3012,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxViewsRefresh": {
+      "kind": "command._outboxViewsRefresh",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outcomeStart": {
       "kind": "command._outcomeStart",
       "feedback_required": true,
