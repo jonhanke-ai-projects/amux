@@ -11705,6 +11705,15 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
             ),
         );
     }
+    // --- 409: an empty send found a message the lane already received still
+    //     in its input box, and pressing Enter would deliver it twice. Nothing
+    //     was sent; the lane needs its composer cleared, not a retry.
+    if m.starts_with("the input box shows a message this worker already received") {
+        return (
+            StatusCode::CONFLICT,
+            Some("the lane's input box still holds a message it already received; clear it in the terminal instead of sending again"),
+        );
+    }
     // --- 409: amux's own paste of this exact message is already in the
     //     composer and will be submitted at the next idle boundary. Nothing is
     //     lost and nothing needs retrying; 500 would send someone debugging.
@@ -58229,7 +58238,8 @@ pub(crate) async fn relaunch_key_workers_onto_subscription(state: &AppState) -> 
         if provider_of(&cfg) != "claude" || env_flag_on(cfg.get("CC_ISOLATED")) {
             continue;
         }
-        let Some(out) = tmux(&["show-environment", "-t", &st(&name), "ANTHROPIC_API_KEY"]).await else {
+        let st = st(&name);
+        let Some(out) = tmux(&["show-environment", "-t", &st, "ANTHROPIC_API_KEY"]).await else {
             continue;
         };
         if !tmux_env_holds_api_key(&String::from_utf8_lossy(&out.stdout)) || !is_running(&name).await {
