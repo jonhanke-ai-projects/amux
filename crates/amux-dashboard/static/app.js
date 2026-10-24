@@ -17122,8 +17122,15 @@ function _peekSplitViewOptions() {
   });
   return out;
 }
+// A file the Files pane opens instead of the worker's folder, set by "Open in
+// split view" on a file link.
+let _peekSplitFileTarget = null;
+function _peekSplitOpenFile(path) {
+  _peekSplitFileTarget = path;
+  _peekSplitOpen('files');
+}
 function _peekSplitSrc(view) {
-  if (view === 'files') return '/?embed=files#path=' + _encodeHashPath(peekSessionDir || '/');
+  if (view === 'files') return '/?embed=files#path=' + _encodeHashPath(_peekSplitFileTarget || peekSessionDir || '/');
   return '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view) + '&peekSplitChild=1';
 }
 function _peekSplitPersist() {
@@ -17327,6 +17334,7 @@ function _peekSplitSetActive(active, path) {
     _restoreSplitWidths();
   } else {
     // Closing the split unloads every pane.
+    _peekSplitFileTarget = null;
     const host = document.getElementById('psp-panes');
     if (host) host.innerHTML = '';
     const tp = document.getElementById('peek-terminal-panel');
@@ -18420,6 +18428,89 @@ function _resolveOutputPath(p) {
 // was dim text with no handler (ethos rule 6 — a claim that justifies a design
 // and is not implemented). It is a real button now, so the round trip the
 // comment promised is one click and the folder is never more than that away.
+// The full path an output link names: the blind join against the worker's cwd,
+// then the server's check of cwd and its ancestors (AMUX-3511, below).
+async function _resolveLinkedPath(p) {
+  let full = _resolveOutputPath(p);
+  try {
+    const raw = String(p || '').replace(/:\d+$/, '');
+    const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
+    if (!raw.startsWith('/') && !raw.startsWith('~/') && cwd) {
+      const r = await fetch(API + '/api/fs/resolve?cwd=' + encodeURIComponent(cwd)
+        + '&rel=' + encodeURIComponent(raw), { headers: _authHeaders() });
+      if (r.ok) {
+        const d = await r.json();
+        if (d && d.resolved) full = d.resolved;
+      }
+    }
+  } catch (e) {}
+  return full;
+}
+
+// Right-click a file link, in worker output or a rendered markdown link, to
+// open it here, beside the worker in the split view, or in a new window (Ethan,
+// 2026-10-24). A new window is window.open on the file's #path= link: the Mac
+// app opens that as another amux window, a browser as a tab. The path is
+// resolved when the menu opens, so the click still counts as a user gesture
+// for window.open.
+let _fileCtx = null;
+function _fileCtxClose() { document.getElementById('file-ctx-menu')?.remove(); _fileCtx = null; }
+function _fileCtxCanSplit() {
+  return typeof peekSession !== 'undefined' && !!peekSession && window.innerWidth > 600
+    && !window._peekSplitChild && !!document.getElementById('peek-split-wrap')
+    && document.getElementById('peek-overlay')?.classList.contains('active');
+}
+function _fileCtxMenu(e, link) {
+  e.preventDefault(); e.stopPropagation();
+  _fileCtxClose();
+  const output = !link.classList.contains('md-file-link');
+  const raw = output ? (link.dataset.path || '').replace(/(?::\d+){1,2}$/, '') : (link.dataset.file || '');
+  if (!raw) return;
+  const ctx = { raw, output, full: output ? _resolveOutputPath(raw) : raw };
+  if (output) ctx.ready = _resolveLinkedPath(raw).then(f => { ctx.full = f; });
+  _fileCtx = ctx;
+  const item = (act, icon, label) => '<div class="card-menu-item" role="menuitem" data-act="' + act + '"><span class="mi">' + icon + '</span> ' + label + '</div>';
+  let h = item('open', '&#x2197;', 'Open');
+  if (_fileCtxCanSplit()) h += item('split', '&#x25EB;', 'Open in split view');
+  h += item('window', '&#x29C9;', 'Open in new window');
+  h += '<div class="card-menu-sep"></div>' + item('copy', '&#x2398;', 'Copy path');
+  const m = document.createElement('div');
+  m.className = 'card-menu open'; m.id = 'file-ctx-menu'; m.setAttribute('role', 'menu');
+  m.innerHTML = h;
+  m.addEventListener('click', ev => {
+    const it = ev.target.closest('[data-act]');
+    if (it) { ev.stopPropagation(); _fileCtxRun(it.dataset.act); }
+  });
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.max(6, Math.min(e.clientX, window.innerWidth - r.width - 6)) + 'px';
+  m.style.top = Math.max(6, Math.min(e.clientY, window.innerHeight - r.height - 6)) + 'px';
+}
+async function _fileCtxRun(act) {
+  const c = _fileCtx; _fileCtxClose();
+  if (!c) return;
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'file-link-menu', action: act, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+  } catch (e) {}
+  if (act === 'window') {
+    // Synchronous on purpose: after an await the browser no longer treats this
+    // as the user's click and blocks the window.
+    window.open(location.origin + location.pathname + '#path=' + _encodeHashPath(c.full), '_blank');
+    return;
+  }
+  if (c.ready) await c.ready;
+  if (act === 'open') return c.output ? _openPathFromOutput(c.raw) : openFilePreview(c.full);
+  if (act === 'split') return _peekSplitOpenFile(c.full);
+  if (act === 'copy') return _copyFilePath(c.full);
+}
+document.addEventListener('contextmenu', (e) => {
+  const link = e.target.closest && e.target.closest('.file-link[data-path], .md-link[data-path], .md-file-link[data-file]:not([data-dir])');
+  if (link) _fileCtxMenu(e, link); else _fileCtxClose();
+});
+document.addEventListener('click', () => { if (_fileCtx) _fileCtxClose(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && _fileCtx) _fileCtxClose(); });
+
 async function _openPathFromOutput(p) {
   if (window.getSelection && String(window.getSelection()) !== '') return;  // a drag-select is not a click
   let full = _resolveOutputPath(p);
@@ -18448,18 +18539,7 @@ async function _openPathFromOutput(p) {
   // .../NYC/NYC/Events and a dead "not a directory". The server can CHECK:
   // /api/fs/resolve walks cwd then its ancestors and returns the first
   // spelling that exists. The blind join stays as the offline fallback.
-  try {
-    const raw = String(p || '').replace(/:\d+$/, '');
-    const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
-    if (!raw.startsWith('/') && !raw.startsWith('~/') && cwd) {
-      const r = await fetch(API + '/api/fs/resolve?cwd=' + encodeURIComponent(cwd)
-        + '&rel=' + encodeURIComponent(raw), { headers: _authHeaders() });
-      if (r.ok) {
-        const d = await r.json();
-        if (d && d.resolved) full = d.resolved;
-      }
-    }
-  } catch (e) {}
+  full = await _resolveLinkedPath(p);
   const lastSeg = full.slice(full.lastIndexOf('/') + 1);
   const looksLikeFile = /\.[A-Za-z0-9]{1,8}$/.test(lastSeg);
   if (looksLikeFile) {

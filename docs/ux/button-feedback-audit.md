@@ -1539,6 +1539,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | grid | `e` | addEventListener |
 | app.js | el | `ev` | addEventListener |
 | app.js | m | `ev` | addEventListener |
+| app.js | m | `ev` | addEventListener |
 | index.html | Exit | `exitGridMode` | onclick |
 | index.html | JSON | `exportBoard` | onclick |
 | index.html | MD | `exportBoard` | onclick |

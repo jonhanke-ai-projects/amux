@@ -1680,6 +1680,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileCtxMenu": {
+      "kind": "command._fileCtxMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fileCtxRun": {
+      "kind": "command._fileCtxRun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fileDownload": {
       "kind": "command._fileDownload",
       "feedback_required": true,
@@ -3434,6 +3446,12 @@
     },
     "_peekSplitOpen": {
       "kind": "command._peekSplitOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekSplitOpenFile": {
+      "kind": "command._peekSplitOpenFile",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
