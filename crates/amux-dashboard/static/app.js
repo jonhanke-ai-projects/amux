@@ -20739,7 +20739,9 @@ function _peekHeadSet(level, remember = true) {
   const ov = document.getElementById('peek-overlay');
   if (!ov) return;
   ov.dataset.head = String(level);
-  if (level === 3) {
+  // Stage 2 shows the slim name bar too on a desktop (app.css, WORKER VIEW,
+  // COMPACT ON DESKTOP), so its title is filled from stage 2 up.
+  if (level >= 2) {
     const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
     const t = document.getElementById('peek-focus-title');
     if (t) t.textContent = s && s.task_name ? peekSession + ' \u2014 ' + s.task_name : (peekSession || '');
