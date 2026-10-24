@@ -224,6 +224,36 @@ test('a saved list can be shared read-only, shows no notes, and the link can be 
   await page.locator('#map-search').fill('');
 });
 
+// Saving a list sends it to the server without waiting. Sharing right after
+// used to reach the server first and get "no saved list" (CI, 2026-10-24); the
+// held save below makes that order certain instead of load-dependent.
+test('sharing a list that was just saved waits for the save to land', async ({ page }) => {
+  const request = await api(page);
+  await addPin(request, 'Fresh one', 0.032, { status: 'want' });
+  await boot(page);
+  await page.locator('#map-search').fill(RUN);
+  await expect(item(page, 'Fresh one')).toBeVisible();
+  let shareBeforeSave = false, saved = false;
+  await page.route(/\/api\/map\/meta$/, async r => {
+    if (r.request().method() !== 'PUT') return r.fallback();
+    await new Promise(res => setTimeout(res, 1500));
+    await r.fallback();
+    saved = true;
+  });
+  page.on('request', q => { if (/\/api\/map\/lists\/.+\/share$/.test(q.url()) && q.method() === 'POST' && !saved) shareBeforeSave = true; });
+  await page.locator('#map-list-select').selectOption('__new');
+  await page.locator('#map-list-name').fill(`${RUN} Fresh`);
+  await page.locator('#map-list-modal').getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('#map-list-share-btn').click();
+  await expect(page.locator('#map-list-share-link')).toBeVisible({ timeout: 10000 });
+  expect(shareBeforeSave, 'the share request waited for the list to be stored').toBe(false);
+  await page.unrouteAll({ behavior: 'wait' });
+  await page.locator('#map-list-share-btn').click();
+  await expect(page.locator('#map-list-share-status')).toHaveText('Not shared');
+  await page.locator('#map-list-select').selectOption('');
+  await page.locator('#map-search').fill('');
+});
+
 test('a long visit from location history marks a pin been and keeps a hand-set favorite', async ({ page }) => {
   const request = await api(page);
   const want = await addPin(request, 'Visited', 0.040, { status: 'want' });

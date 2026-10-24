@@ -86,9 +86,13 @@ where
                 f(c)
             });
             let failed = out.is_err();
+            // The writer reports this as a failed mutation, so it carries the
+            // refusal's own reason rather than a generic "refused".
             let db_err = match &out {
                 Err(MapError::Db(e)) => Some(e.to_string()),
-                _ => None,
+                Err(MapError::Bad(m) | MapError::NotFound(m)) => Some(format!("map: refused ({m}), rolled back")),
+                Err(MapError::Conflict(_)) => Some("map: refused (conflict), rolled back".into()),
+                Ok(_) => None,
             };
             *s2.lock().unwrap_or_else(|e| e.into_inner()) = Some(out);
             if failed {

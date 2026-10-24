@@ -37322,6 +37322,7 @@ function _mapSwRoute(id) {
 let _mapLoadGen = 0, _mapLoadingGen = 0;
 const _mapPinsEditedInLoad = new Map();   // id -> pin, put while a load was out
 let _mapMetaUnsent = false;               // tags/lists changed before the first load
+let _mapMetaSaving = null;                // the newest meta PUT, so a call that needs it stored can wait
 function _mapKeepLocalEdits() {
   for (const pin of _mapPinsEditedInLoad.values()) {
     const i = _mapPins.findIndex(p => p.id === pin.id);
@@ -37411,7 +37412,7 @@ function _mapSave() {
   if (!_mapServerLoaded) { _mapMetaUnsent = true; return; }
   // Pins are saved one at a time (_mapPutPin); this writes the rest of the map.
   var meta = Object.assign({}, _mapSettings); delete meta.googleMapsKey;
-  apiCall(API + '/api/map/meta', {
+  _mapMetaSaving = apiCall(API + '/api/map/meta', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tags: _mapTags, settings: meta, trials: _mapTrials, lists: _mapLists, tagGroups: _mapTagGroups })
@@ -38347,6 +38348,9 @@ async function _mapShareToggle() {
     showToast('Link turned off');
   } else {
     if (!confirm('Anyone with the link will see this list’s pins: names, descriptions, groups, status and rating. Notes and visits stay private. Create the link?')) return;
+    // A list saved a moment ago may still be on its way to the server; sharing
+    // before it lands answers "no saved list" (CI, 2026-10-24).
+    if (_mapMetaSaving) await Promise.resolve(_mapMetaSaving).catch(function() {});
     const r = await apiCall(API + '/api/map/lists/' + encodeURIComponent(id) + '/share', { method: 'POST' });
     const d = r ? await r.json().catch(function() { return null; }) : null;
     if (d && d.url) {
