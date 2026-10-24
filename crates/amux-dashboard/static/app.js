@@ -13582,21 +13582,49 @@ function setPeekTab(tab) {
 }
 
 // ── Standing instructions (autonomy config) ──
+// A worker tab's answer belongs to the worker it asked about. Switching
+// workers while a request was out painted worker A's memory, instructions,
+// git state or logs into worker B's tab, and Save or Push then acted on B with
+// A's content (2026-10-24, Ethan: "theres race conditions all over the app").
+// Each loader captures the worker and drops a late answer here, which counts
+// the drop and reports it, so a loader that misses the check shows in the logs.
+const _peekStaleDrops = {};
+function _peekStale(sess, where) {
+  if (peekSession === sess) return false;
+  const n = (_peekStaleDrops[where] = (_peekStaleDrops[where] || 0) + 1);
+  if (n === 1 || n % 20 === 0) {
+    try { window._clientDebug?.('peek-stale-response', {verdict: 'peek_stale_response_dropped', measured: true, n_considered: n,
+      where, asked: sess, now: peekSession || ''}); } catch (_) {}
+  }
+  return true;
+}
+// An editor holding another worker's text must not be saved into this one.
+function _peekEditorIsFor(el, where) {
+  if (!el || el.dataset.sess === peekSession) return true;
+  try { window._clientDebug?.('peek-stale-response', {verdict: 'peek_save_refused_other_worker', measured: true, n_considered: 1,
+    where, holds: el.dataset.sess || '', now: peekSession || ''}); } catch (_) {}
+  showToast('This editor was showing another worker. Reloaded; save again.');
+  return false;
+}
+
 async function loadPeekInstructions() {
   if (!peekSession) return;
+  const sess = peekSession;
   const ta = document.getElementById('peek-instructions');
   const status = document.getElementById('peek-instructions-status');
   if (!ta) return;
   if (status) status.textContent = '';
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/instructions');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/instructions');
     const d = await r.json();
-    if (peekSession && document.getElementById('peek-instructions'))
-      document.getElementById('peek-instructions').value = d.instructions || '';
+    if (_peekStale(sess, 'instructions')) return;
+    const el = document.getElementById('peek-instructions');
+    if (el) { el.value = d.instructions || ''; el.dataset.sess = sess; }
   } catch(e) {}
 }
 async function savePeekInstructions(apply) {
   if (!peekSession) return;
+  if (!_peekEditorIsFor(document.getElementById('peek-instructions'), 'instructions')) { loadPeekInstructions(); return; }
   const ta = document.getElementById('peek-instructions');
   const status = document.getElementById('peek-instructions-status');
   const body = { instructions: ta.value };
@@ -13837,7 +13865,10 @@ function _steeringDelayPrompt(msgId) {
 
 async function _steeringSendNow(msgId) {
   if (!peekSession) return;
-  const sess = sessions.find(s => s.name === peekSession);
+  // The worker this message is queued on, kept through the send: the queue
+  // row is removed from THIS worker even if the peek moves on meanwhile.
+  const name = peekSession;
+  const sess = sessions.find(s => s.name === name);
   const msg = _steerQueueFor(sess).find(m => m.id === msgId);
   if (!msg) return;
   if (msg.guard === 'project-steering') {
@@ -13846,9 +13877,9 @@ async function _steeringSendNow(msgId) {
   }
   const btn = document.querySelector(`[onclick*="_steeringSendNow('${msgId}')"]`);
   if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; btn.style.opacity = '0.6'; }
-  showToast('Sending now to ' + peekSession + '…');
+  showToast('Sending now to ' + name + '…');
   try {
-    const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
+    const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({text: msg.text, deliver_now: true}),
       signal: AbortSignal.timeout(90000)
@@ -13859,16 +13890,14 @@ async function _steeringSendNow(msgId) {
       showToast(d.message ? ('Not sent: ' + d.message) : 'Not sent — kept in queue');
       return;
     }
-    await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
+    await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: msgId, sent: true})
     });
     if (sess && sess.steering) sess.steering = sess.steering.filter(m => m.id !== msgId);
-    _steeringRender();
-    _steeringLoadHistory();
-    _steeringUpdateBadge();
+    if (!_peekStale(name, 'steering_send_now')) { _steeringRender(); _steeringLoadHistory(); }
     render();
-    showToast('Sent now to ' + peekSession);
+    showToast('Sent now to ' + name);
     fetchSessions();
   } catch(e) { if (btn) { btn.textContent = 'Send now'; btn.disabled = false; btn.style.opacity = ''; } showToast('Failed to send'); }
 }
@@ -13928,8 +13957,10 @@ async function _commitsLoad() {
   const list = document.getElementById('commits-list');
   list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 16px;">Loading commits…</div>';
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/git/commits?count=15');
+    const asked = peekSession;
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/git/commits?count=15');
     const d = await r.json();
+    if (_peekStale(asked, 'commits')) return;
     _commitsData = d.commits || [];
     _commitsRenderList();
   } catch(e) {
@@ -14048,15 +14079,18 @@ function toggleGitFilter() {
 
 async function loadPeekGit() {
   if (!peekSession) return;
+  const asked = peekSession;
   document.getElementById('peek-git-loading').style.display = '';
   document.getElementById('peek-git-content').style.display = 'none';
   try {
     const [r, tr] = await Promise.all([
-      fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/git?detail=1'),
-      fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/tracked-files')
+      fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/git?detail=1'),
+      fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/tracked-files')
     ]);
     const d = await r.json();
     const td = await tr.json();
+    if (_peekStale(asked, 'git')) return;
+    d._sess = asked;   // whose branch this is: Push reads it
     if (td.files && td.files.length) {
       // Normalize tracked files to relative paths (tracked-files returns absolute, git diff returns relative)
       const prefix = d.repo ? d.repo.replace(/\/$/, '') + '/' : '';
@@ -14070,6 +14104,7 @@ async function loadPeekGit() {
     _peekGitData = d;
     _renderPeekGit(d);
   } catch(e) {
+    if (_peekStale(asked, 'git')) return;
     document.getElementById('peek-git-loading').textContent = 'Failed to load git info.';
   }
 }
@@ -14355,10 +14390,12 @@ async function peekGitPush() {
   if (!peekSession) return;
   const btn = document.getElementById('peek-git-push-btn');
   btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none'; btn.textContent = 'Pushing…';
-  const branch = _peekGitData && _peekGitData.branch;
+  const name = peekSession;
+  // Another worker's branch never goes into this worker's terminal.
+  const branch = _peekGitData && _peekGitData._sess === name && _peekGitData.branch;
   const text = branch ? `git push -u origin ${branch}` : 'git push';
-  await doSend(peekSession, text);
-  setTimeout(() => loadPeekGit(), 3000);
+  await doSend(name, text);
+  setTimeout(() => { if (peekSession === name) loadPeekGit(); }, 3000);
   btn.style.opacity = ''; btn.style.pointerEvents = '';
 }
 
@@ -14845,9 +14882,13 @@ async function _peekShellLoad() {
   _peekShellStop();
   const list = document.getElementById('peek-shell-list');
   if (!list || !peekSession) return;
+  const asked = peekSession;
   let d;
-  try { d = await (await fetch(API + '/api/schedules/shell?session=' + encodeURIComponent(peekSession), { headers: _authHeaders() })).json(); }
-  catch (e) { list.innerHTML = '<div class="peek-shell-empty">Could not load: ' + esc(e.message || e) + '</div>'; return; }
+  try { d = await (await fetch(API + '/api/schedules/shell?session=' + encodeURIComponent(asked), { headers: _authHeaders() })).json(); }
+  catch (e) { if (_peekStale(asked, 'shell')) return; list.innerHTML = '<div class="peek-shell-empty">Could not load: ' + esc(e.message || e) + '</div>'; return; }
+  if (_peekStale(asked, 'shell')) return;
+  // A new worker's runs, not the last worker's offsets.
+  for (const k of Object.keys(_shellView)) if (_shellView[k].sess !== asked) delete _shellView[k];
   const scheds = d.schedules || [];
   if (!scheds.length) { list.innerHTML = '<div class="peek-shell-empty">This worker has no shell schedules.</div>'; return; }
   list.innerHTML = scheds.map(s => {
@@ -14865,16 +14906,18 @@ async function _peekShellLoad() {
       + '<pre class="peek-shell-out" id="shell-out-' + esc(s.id) + '">' + (opts ? 'Loading…' : 'No output recorded yet. Runs from now on are captured here.') + '</pre></div>';
   }).join('');
   for (const s of scheds) {
-    _shellView[s.id] = { log: (s.logs && s.logs[0] && s.logs[0].name) || '', offset: 0, running: s.running };
+    _shellView[s.id] = { sess: asked, log: (s.logs && s.logs[0] && s.logs[0].name) || '', offset: 0, running: s.running };
     if (_shellView[s.id].log) await _peekShellFetch(s.id, true);
   }
   _peekShellSchedule();
 }
 function _peekShellSchedule() {
   _peekShellStop();
-  if (Object.values(_shellView).some(v => v.running)) _shellTimer = setTimeout(_peekShellTick, 1500);
+  // Only while the Shell tab shows: it kept polling logs after you left it.
+  if (_peekTab === 'shell' && Object.values(_shellView).some(v => v.running)) _shellTimer = setTimeout(_peekShellTick, 1500);
 }
 async function _peekShellTick() {
+  if (_peekTab !== 'shell') return;
   for (const [id, v] of Object.entries(_shellView)) if (v.running) await _peekShellFetch(id, false);
   if (Object.values(_shellView).some(v => v.running)) _peekShellSchedule();
   else _peekShellLoad();   // a run just finished: refresh statuses and the log list
@@ -14967,11 +15010,13 @@ let _peekLogsTimer = null;
 
 async function _peekLogsLoad() {
   if (!peekSession) return;
-  const params = ['limit=500', 'worker=' + encodeURIComponent(peekSession)];
+  const asked = peekSession;
+  const params = ['limit=500', 'worker=' + encodeURIComponent(asked)];
   try {
     const r = await fetch(API + '/api/logs?' + params.join('&'));
     if (!r.ok) return;
     const d = await r.json();
+    if (_peekStale(asked, 'logs')) return;
     _peekLogsEvents = (d.events || []).map(e => ({
       ...e, type: e.type || 'http',
       status: e.status || 200,
@@ -15129,9 +15174,11 @@ async function _peekLoadInherited() {
   const box = document.getElementById('peek-memory-inherited');
   if (!box) return;
   box.innerHTML = '<div style="color:var(--dim);padding:12px 4px;">Loading…</div>';
+  const asked = peekSession;
   try {
-    const r = await fetch(API + '/api/sessions/' + peekSession + '/memory-inherited');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/memory-inherited');
     const d = await r.json();
+    if (_peekStale(asked, 'memory_inherited')) return;
     const found = d.found || [], missing = d.missing || [];
     if (!found.length) {
       box.innerHTML = '<div style="color:var(--dim);padding:12px 4px;">No ' +
@@ -15280,13 +15327,16 @@ async function loadPeekMemory() {
   const inp = document.getElementById('peek-memory-input');
   const save = document.getElementById('peek-memory-save');
   peekMemoryTab('edit'); // always start on edit tab
-  inp.value = 'Loading...'; inp.disabled = true; save.disabled = true;
+  const sess = peekSession;
+  inp.value = 'Loading...'; inp.disabled = true; save.disabled = true; inp.dataset.sess = '';
   try {
-    const r = await fetch(API + '/api/sessions/' + peekSession + '/memory');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/memory');
     const data = await r.json();
+    if (_peekStale(sess, 'memory')) return;   // the newer load for the shown worker fills it
     inp.value = data.content || '';
+    inp.dataset.sess = sess;
     _peekMemorySharedBanner(data);
-  } catch(e) { inp.value = ''; }
+  } catch(e) { if (_peekStale(sess, 'memory')) return; inp.value = ''; inp.dataset.sess = sess; }
   inp.disabled = false; save.disabled = false;
   inp.focus();
 }
@@ -15296,11 +15346,11 @@ async function pullPeekMemory() {
   const save = document.getElementById('peek-memory-save');
   btn.disabled = true; btn.textContent = '…';
   inp.disabled = true; save.disabled = true;
+  const sess = peekSession;
   try {
-    const r = await fetch(API + '/api/sessions/' + peekSession + '/memory?pull=1');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/memory?pull=1');
     const data = await r.json();
-    inp.value = data.content || '';
-    showToast('Pulled latest from Claude');
+    if (!_peekStale(sess, 'memory_pull')) { inp.value = data.content || ''; inp.dataset.sess = sess; showToast('Pulled latest from Claude'); }
   } catch(e) { showToast('Pull failed'); }
   btn.disabled = false; btn.textContent = '↻';
   inp.disabled = false; save.disabled = false;
@@ -15308,6 +15358,7 @@ async function pullPeekMemory() {
 async function savePeekMemory() {
   const inp = document.getElementById('peek-memory-input');
   const save = document.getElementById('peek-memory-save');
+  if (!_peekEditorIsFor(inp, 'memory')) { loadPeekMemory(); return; }
   save.disabled = true; save.textContent = 'Saving...';
   try {
     // SAVE SAVES. It used to follow every save with a prompt asking the worker
@@ -25610,7 +25661,11 @@ function _peekMessagesBadge() {
   const badge = document.getElementById('peek-tab-messages-count');
   if (!badge) return;
   const projection = _pendingMessageProjection(_peekMessagesFor(), _pendingSendsFor(peekSession));
-  const n = projection.items.length;
+  // The same number as the filter chip that is lit: the server's count for
+  // this worker. The rows loaded are one page (60), so the badge read "60"
+  // beside "Human 300" and moved when you paged.
+  const counted = _peekMsgCounts && _peekMsgCountsFor === peekSession && _peekMsgCounts[_peekMsgFilter] != null;
+  const n = counted ? +_peekMsgCounts[_peekMsgFilter] : projection.items.length;
   const p = projection.pending.length;
   badge.textContent = p ? (n + '+' + p) : (n ? n : '');
   badge.classList.toggle('has-count', (n + p) > 0);
@@ -25936,12 +25991,17 @@ async function _peekMsgFetch(scope, offset, pageSize) {
   const r = await fetch(API + '/api/history?limit=' + page + '&offset=' + (offset || 0) + q, { headers: _authHeaders() });
   if (!r.ok) throw new Error('history ' + r.status);
   const _t = r.headers && r.headers.get('x-amux-total');
-  _peekMsgTotal = _t === null || _t === undefined || _t === '' ? null : +_t;
   // Raw server page (newest-first). The pending-unechoed merge and the time sort
   // happen ONCE in _peekMessagesLoad, on the full accumulated set — merging
   // per-page would prepend the same locally-queued sends to every page.
-  return (await r.json()).map(_msgNorm);
+  const rows = (await r.json()).map(_msgNorm);
+  // The total travels with its page. This wrote _peekMsgTotal itself, so a
+  // late answer for another worker, or the kind-hint fetches (50 and 200 rows),
+  // reset the Messages tab's page count.
+  rows.total = _t === null || _t === undefined || _t === '' ? null : +_t;
+  return rows;
 }
+let _peekMsgGen = 0;   // the newest Messages load; an older answer is dropped
 
 // The Messages tab's Export button (added in 91b29ba2 with no function behind
 // it, so every click threw). Pages through this worker's WHOLE history from the
@@ -25989,9 +26049,14 @@ async function _peekMessagesLoad(more) {
   _peekMsgLoading = true;
   _peekMsgError = '';
   _peekMessagesRender();                        // paint what we have instantly (with loading indicator)
+  // Two quick filter or page taps start two loads; the slower first answer
+  // used to land last and show its rows under the second tap's filter.
+  const gen = ++_peekMsgGen;
   try {
     const rows = await _peekMsgFetch({ level: 'worker', name: sess }, _peekMsgOffset);
-    if (peekSession !== sess) { _peekMsgLoading = false; return; }
+    if (peekSession !== sess) { _peekMsgLoading = false; _peekStale(sess, 'messages'); return; }
+    if (gen !== _peekMsgGen) { _peekStale('superseded', 'messages_older_answer'); return; }
+    _peekMsgTotal = rows.total;
     // AMUX-4661 (Ethan's screenshot, mixpeek-cicd: the filter chips read "2"
     // beside a freshly-loaded list of 3). `_peekMsgCountsFor !== sess` only
     // catches a SESSION SWITCH. The SSE `messages` invalidation handler
@@ -26019,6 +26084,7 @@ async function _peekMessagesLoad(more) {
       : _peekMsgPage >= Math.max(1, Math.ceil(_peekMsgTotal / size));
     _peekMsgRows = _mergeUnechoed(_peekMsgServerRows, sess); // pending merge + time sort, once, on the full set
   } catch(e) {
+    if (gen !== _peekMsgGen) return;   // a newer load owns the view, and its own error state
     // A FAILED LOAD IS ITS OWN STATE. Without this the view can only say
     // "loading" or "empty", and a fetch that died leaves it claiming one of
     // them forever — the first cut of this fix replaced a false "no messages"
@@ -26042,12 +26108,14 @@ let _dictItems = [], _dictWords = [], _dictTotalWords = 0, _dictCfg = null;
 let _dictCount = 0;   // history rows for peekSession — drives the tab badge without opening the tab
 
 async function _dictLoad() {
+  const asked = peekSession || '';
   try {
     const [h, d, c] = await Promise.all([
-      fetch(API + '/api/dictation/history?session=' + encodeURIComponent(peekSession || ''), { headers: _authHeaders() }).then(r => r.json()),
+      fetch(API + '/api/dictation/history?session=' + encodeURIComponent(asked), { headers: _authHeaders() }).then(r => r.json()),
       fetch(API + '/api/dictation/dict', { headers: _authHeaders() }).then(r => r.json()),
       fetch(API + '/api/dictation/config', { headers: _authHeaders() }).then(r => r.json()),
     ]);
+    if ((peekSession || '') !== asked) { _peekStale(asked, 'dictation'); return; }
     _dictItems = h.items || []; _dictTotalWords = h.total_words || 0;
     _dictWords = Array.isArray(d) ? d : []; _dictCfg = c || {};
     _dictCount = _dictItems.length;
@@ -40888,7 +40956,11 @@ function _stopSysJobsTimer() {
 // too when it's the active peek tab (otherwise a toggle/run/delete there goes stale).
 function _peekRefreshSchedIfActive() {
   const panel = document.getElementById('peek-schedules-panel');
-  if (typeof peekSession !== 'undefined' && peekSession && panel && panel.classList.contains('active')) _peekRenderSchedules();
+  if (typeof peekSession === 'undefined' || !peekSession) return;
+  if (panel && panel.classList.contains('active')) _peekRenderSchedules();
+  // The tab badge counts the same schedules as the list. Pausing one here
+  // redrew the list and left the badge at the old active/inactive count.
+  try { _peekColorSchedBadge((schedules || []).filter(x => x.session === peekSession && !x.deleted)); } catch (_) {}
 }
 
 async function runScheduleNow(id) {
@@ -51677,6 +51749,7 @@ async function loadPeekCommitGuard(sessionName) {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sessionName) + '/commit-guard');
     if (!r.ok) return;
     const d = await r.json();
+    if (_peekStale(sessionName, 'commit_guard')) return;
     _peekCommitGuardOverride = d.override;
     _renderPeekCommitGuardBtn(d.enabled, d.override, d.global);
   } catch(e) {}
