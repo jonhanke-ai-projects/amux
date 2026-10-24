@@ -133,6 +133,17 @@ run_launcher
 expect test ! -s "$TRACE"
 expect grep -q "newest green $PENDING is older than the live image $RED.*verdict=ci_gate_no_rollback" "$LOG"
 expect grep -q "\"verdict\":\"ci_gate_no_rollback\",\"tip\":\"$RED\",\"tip_state\":\"red\"" "$AMUX_ACTIVATION_GATE_STATE"
+# A green commit buried under more than 40 red ones is still found and activated
+# (2026-10-24: 56 red commits after the newest green held every deploy, and a
+# hand build of a fork stayed live). Logged as ci_gate_green_deep.
+DEEP_GREEN=$PENDING
+for i in $(seq 1 45); do echo "$(commit_next "deep$i") red" >> "$VERDICTS"; done
+echo "{\"commit_full\":\"$ELECTED\"}" > "$TMP/health.json"
+: > "$TRACE"; : > "$LOG"
+run_launcher
+expect grep -q "repo=$WORK sha=$DEEP_GREEN" "$TRACE"
+expect grep -q "newest green $DEEP_GREEN is 46 first-parent commits behind.*verdict=ci_gate_green_deep" "$LOG"
+: > "$TRACE"
 # Nothing green at all: refuse and keep the live image.
 for s in $(git -C "$STALE" rev-list origin/main); do echo "$s red" >> "$VERDICTS"; done
 echo "{}" > "$TMP/health.json"

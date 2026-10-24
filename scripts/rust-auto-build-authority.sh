@@ -40,7 +40,14 @@ tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
 # final ones are cached per sha so a 60s timer costs about one API call while a
 # run is in flight. Opt out with AMUX_DEPLOY_CI_GATE=0.
 CI_CACHE="${AMUX_CI_VERDICT_CACHE:-$HOME/.amux/ci-verdicts-v2}"  # v2: workflow-run verdicts; v1 judged check runs
-CI_DEPTH="${AMUX_CI_GATE_DEPTH:-40}"
+# How far back the walk looks for a green commit. It was 40, and on 2026-10-24
+# main had 56 commits after its newest green one: the gate refused every tick
+# (ci_gate_no_green), the builder never ran, and a hand-installed build of a
+# 2026-10-07 fork stayed live for hours. Verdicts are cached per sha, so a deep
+# walk costs API calls once. A green found deeper than CI_DEEP_WARN is still
+# activated and logged as ci_gate_green_deep: main has been red that long.
+CI_DEPTH="${AMUX_CI_GATE_DEPTH:-300}"
+CI_DEEP_WARN="${AMUX_CI_GATE_DEEP_WARN:-40}"
 # The push workflow runs for one sha, as GitHub's JSON. AMUX_CI_FETCH_CMD
 # stands in for the network in tests; everything after it (the judging below
 # and the verdict cache) is the shipped path.
@@ -154,6 +161,9 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
     fi
     passed=$((passed + 1))
   done
+  if [ -n "$target" ] && [ "$passed" -ge "$CI_DEEP_WARN" ]; then
+    say "WARN CI-GATE newest green $target is $passed first-parent commits behind $REF tip $tip; main has been red or pending that long verdict=ci_gate_green_deep"
+  fi
   [ -n "$target" ] || gate_state ci_gate_no_green "$tip" "$tip_state" "" "$passed"
   [ -n "$target" ] || refuse "CI-GATE no green commit in the last $CI_DEPTH of $REF (tip $tip is $tip_state); keeping the live image verdict=ci_gate_no_green"
   if [ "$target" != "$tip" ]; then
