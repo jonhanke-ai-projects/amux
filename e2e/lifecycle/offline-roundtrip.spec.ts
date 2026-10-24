@@ -140,6 +140,16 @@ test('LC-OFFLINE-ROUNDTRIP: cold offline reload preserves edits and messages; re
       durable.map((q: any) => ({ id: q.id, body: q.options.body })));
     expect((await uploadQueue()).map((f:any) => ({id:f.id, name:f.name, size:f.size, totalChunks:f.totalChunks}))).toEqual(savedUploads);
     await checkpoint(page, info, 'cold-offline-reload');
+    // The reload brings back the worker the messages were queued in (the URL
+    // keeps #peek= since cdd2f0012), and a reconnect with a terminal open
+    // keeps its progress in the status pill rather than opening the checklist
+    // over it (9b0cb30a1). This case is the home-page reconnect the checklist
+    // is for, so close the worker as a person would first.
+    const peek = page.locator('#peek-overlay');
+    if (await peek.evaluate(e => e.classList.contains('active'))) {
+      await page.getByRole('button', { name: 'Close worker', exact: true }).click();
+      await expect(peek).not.toHaveClass(/active/);
+    }
     // The checklist closes itself 2s after a clean run (9b0cb30a1), so whether
     // it is still up after the server checks below depends on how long they
     // take. Record what it showed as it changed instead.
