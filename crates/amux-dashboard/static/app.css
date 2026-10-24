@@ -10038,7 +10038,6 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pbc-one { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; justify-content:space-between; }
 .pbc-one .pbc-text { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1 1 16rem; }
 .board-one-switch { min-height:44px; min-width:72px; flex:0 0 auto; margin-left:auto; }
-.board-one-inherit { min-height:44px; flex:0 0 auto; margin-left:6px; }
 /* MDAI chat: a composer docked under the node, and the conversation in the Chat tab. */
 .mdai-chatbar { display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; padding: 8px 18px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg); }
 .mdai-chatbar[hidden] { display: none; }
@@ -10390,7 +10389,7 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .row-note-body p{margin:6px 0 2px;}
 .peek-board-config .pbc-one{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap;}
 .peek-board-config .pbc-label{font-size:0.78rem;font-weight:600;color:var(--dim);}
-.peek-board-config .board-one-switch,.peek-board-config .board-one-inherit{min-height:44px;}
+.peek-board-config .board-one-switch{min-height:44px;}
 @media (max-width:600px){
   /* The Board toolbar is one row that scrolls sideways on a phone, like every
      tab's (css-mobile rule); search keeps a usable 160px instead of its own row. */

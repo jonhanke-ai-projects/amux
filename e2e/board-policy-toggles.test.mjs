@@ -37,8 +37,9 @@ test('an isolated worker shows all toggles disabled with the reason',()=>{
  assert.match(el.innerHTML,/pbc-note/);
  assert.match(el.innerHTML,/Isolated worker/);
  assert.match(el.innerHTML,/board-one-switch[^>]* disabled/);
- // One switch (Ethan, 2026-10-17): all on reads On, none reads Off, a mix
- // set one by one reads Partly on, and there is exactly one control.
+ // One switch (Ethan, 2026-10-17, and 2026-10-24 "one toggle ... disable by
+ // default"): it reads On exactly when the board steers the worker, Off
+ // otherwise, never a third state, and there is exactly one control.
  run({name:'w',isolated:false,board_decompose:true,board_force_adherence:true,
       auto_drain_backlog:true,auto_pickup:true,auto_continue:true,standing_orders:true});
  assert.equal((el.innerHTML.match(/role="switch"/g)||[]).length,1);
@@ -50,10 +51,18 @@ test('an isolated worker shows all toggles disabled with the reason',()=>{
       auto_drain_backlog:false,auto_pickup:false,auto_continue:false,standing_orders:false});
  assert.match(el.innerHTML,/data-board-mode="off"/);
  assert.match(el.innerHTML,/_boardOneSet\('w',true\)/);
+ // Steering on with the rest off: the board types into the worker, so On.
  run({name:'w',isolated:false,board_decompose:false,board_force_adherence:true,
       auto_drain_backlog:false,auto_pickup:false,auto_continue:false,standing_orders:false});
- assert.match(el.innerHTML,/data-board-mode="partial"/);
- assert.match(el.innerHTML,/Partly on/);
+ assert.match(el.innerHTML,/data-board-mode="on"/);
+ // The fleet default on 2026-10-24: backlog refill set fleet-wide, steering
+ // off. The board does nothing for this worker, so Off (120 of 145 workers
+ // used to read "Partly on" here).
+ run({name:'w',isolated:false,board_decompose:false,board_force_adherence:false,
+      auto_drain_backlog:true,auto_pickup:false,auto_continue:false,standing_orders:false});
+ assert.match(el.innerHTML,/data-board-mode="off"/);
+ assert.match(el.innerHTML,/aria-checked="false"/);
+ assert.doesNotMatch(el.innerHTML,/Partly on|mixed|Inherit/);
 });
 
 test('a switch held back by its parent says so instead of looking active',()=>{

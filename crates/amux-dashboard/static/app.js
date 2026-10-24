@@ -12585,30 +12585,28 @@ const _WORKER_BOARD_CONFIGS = _BOARD_SWITCHES;
 
 // ONE BOARD SWITCH (Ethan, 2026-10-17: "update the board settings on worker
 // page to just have a single toggle enable/disable board. that should do all
-// the board stuff"). The worker pages show this one switch; it PATCHes
-// `board_enabled`, which writes every board key at once. A worker whose keys
-// were set one by one before this reads "Partly on" until it is flipped.
+// the board stuff"; 2026-10-24: "we should have had one toggle for
+// enable/disable board where disable by default"). The worker pages show this
+// one switch; it PATCHes `board_enabled`, which writes every board key at once.
+// It reads On exactly when the board steers the worker: every other board key
+// is gated on steering, so with steering off they do nothing and the switch is
+// Off. It used to read "Partly on" whenever any key was set, and the fleet-wide
+// AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1 made that 120 of 145 workers, all of them
+// with the board doing nothing.
 function _boardOneState(s) {
   if (!s || s.isolated) return { mode: 'off', on: false, label: 'Off' };
-  const st = _boardSwitchStates(s, _pbcPending);
-  const n = _BOARD_SWITCHES.filter(c => st[c.field].own).length;
   if ('board_enabled' in _pbcPending) return _pbcPending.board_enabled ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
-  if (n === _BOARD_SWITCHES.length && st.board_force_adherence.effective) return { mode: 'on', on: true, label: 'On' };
-  if (n === 0) return { mode: 'off', on: false, label: 'Off' };
-  return { mode: 'partial', on: false, label: 'Partly on', n };
+  const st = _boardSwitchStates(s, _pbcPending);
+  return st.board_force_adherence.effective ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
 }
 const _BOARD_ONE_NOTE = 'On: the board starts this worker\u2019s To Do cards when it is idle, keeps it going on unfinished cards, refills To Do from Backlog, turns task-like messages into cards, and nudges and reminds it. Off: the board only keeps records and never types into this worker.';
 function _boardOneSwitchHTML(name, s, cls) {
   const b = _boardOneState(s);
   const dis = s && s.isolated ? ' disabled' : '';
   return '<button type="button" class="btn board-one-switch' + (cls ? ' ' + cls : '') + '" role="switch"'
-    + ' aria-checked="' + (b.mode === 'partial' ? 'mixed' : String(b.on)) + '" data-board-mode="' + b.mode + '"' + dis
+    + ' aria-checked="' + String(b.on) + '" data-board-mode="' + b.mode + '"' + dis
     + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',' + (!b.on) + ')"'
-    + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>'
-    // The way back from a worker-level On or Off to whatever the group or
-    // fleet sets: the switch writes every board key, this removes them.
-    + '<button type="button" class="btn board-one-inherit"' + dis + ' title="Use the group or fleet board setting"'
-    + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',null)">Inherit</button>';
+    + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>';
 }
 async function _boardOneSet(name, on) {
   if (!name) return;
@@ -12815,10 +12813,7 @@ async function _workerExternalEmailSet(name, value) {
 function _workerBoardConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
   if (s.isolated) return '<p>Isolated mode: direct CLI messaging. Boards and harness automation are disabled.</p>';
-  const b = _boardOneState(s);
-  const row = _workerConfigurationRow('board_enabled', 'Board', '', _BOARD_ONE_NOTE
-      + (b.mode === 'partial' ? ' Some board settings were turned on one by one; switch it on or off to set them all.' : ''),
-    _boardOneSwitchHTML(name, s));
+  const row = _workerConfigurationRow('board_enabled', 'Board', '', _BOARD_ONE_NOTE, _boardOneSwitchHTML(name, s));
   return '<div class="worker-config-grid worker-config-grid-board" data-session="' + esc(name) + '">'
     + _workerConfigurationSection('task-lifecycle', 'Board and this worker', 'Status availability and Board gates below define transition requirements.', [row])
     + '</div>';
@@ -14619,11 +14614,9 @@ function _peekBoardPolicySync() {
   el.style.display = show ? '' : 'none';
   if (!show) { el.innerHTML = ''; return; }
   const iso = !!s.isolated;
-  const b = _boardOneState(s);
   // One control row per tab: the switch sits in the Board toolbar, and what it
   // does (plus why it is off for an isolated worker) opens from the info button.
-  const why = iso ? 'Isolated worker: board automation is off. Turn off isolation to use these.'
-    : (b.mode === 'partial' ? 'Some board settings were turned on one by one. Switch it on or off to set them all.' : '');
+  const why = iso ? 'Isolated worker: board automation is off. Turn off isolation to use these.' : '';
   const h = '<span class="pbc-one" data-session="' + esc(peekSession) + '">'
     + '<span class="pbc-label">Board</span>' + _boardOneSwitchHTML(peekSession, s)
     + '<details class="row-note' + (why ? ' warn' : '') + '"><summary class="btn" aria-label="What the Board switch does" title="What the Board switch does">'
