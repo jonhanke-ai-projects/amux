@@ -9424,26 +9424,10 @@ function _renderTabCustomizerMenu() {
       ${t.label}
     </label>`;
   }).join('');
-  html += '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding:6px 14px 4px;">';
-  html += '<div style="display:flex;align-items:center;justify-content:space-between;">';
-  html += '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>';
-  html += '<button onclick="saveLayoutPreset()" style="font-size:0.75rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 4px;">+ Save current</button>';
-  html += '</div>';
-  html += '<div id="preset-list" style="font-size:0.82rem;"></div>';
-  html += '</div>';
+  html += _layoutPresetSectionHtml('global');
   menu.innerHTML = html;
   requestAnimationFrame(() => { const s = document.getElementById('tab-cust-search'); if (s) s.focus(); });
-  // Load presets
-  fetch('/api/layout-presets').then(r=>r.json()).then(presets => {
-    const list = document.getElementById('preset-list');
-    if (!list) return;
-    if (!presets.length) { list.innerHTML = '<div style="color:var(--muted);font-size:0.78rem;padding:4px 0;">No saved presets</div>'; return; }
-    list.innerHTML = presets.map(p => `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;">
-      <button onclick="loadLayoutPreset('${p.name.replace(/'/g,"\\'")}')" style="flex:1;text-align:left;background:none;border:none;cursor:pointer;color:var(--text);font-size:0.82rem;padding:2px 0;">${p.name}</button>
-      <button onclick="shareLayoutPreset('${p.name.replace(/'/g,"\\'")}')" title="Copy share link" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&#x1F517;</button>
-      <button onclick="deleteLayoutPreset('${p.name.replace(/'/g,"\\'")}')" title="Delete" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&times;</button>
-    </div>`).join('');
-  }).catch(()=>{});
+  _loadLayoutPresetList('global');
   // Init Sortable on menu for drag-to-reorder (only on tab items, not preset
   // section). Destroy any prior instance first — the menu re-renders on every
   // toggle, and stacking a fresh Sortable each time left multiple drag handlers
@@ -9484,6 +9468,8 @@ function _filterPeekTabCustomizer(q) {
     const label = (el.textContent || '').toLowerCase();
     el.style.display = !lc || label.includes(lc) ? '' : 'none';
   });
+  const preset = menu.querySelector('.tab-preset-section');
+  if (preset) preset.style.display = lc ? 'none' : '';
 }
 
 // ── Peek (session) tab customizer (AMUX-2185) ──────────────────────────────
@@ -9645,7 +9631,7 @@ _loadPeekTabPrefs();
 //                  open, then the tap's own momentum scroll dismissed it. A
 //                  synthetic Playwright click cannot reproduce that, which is
 //                  why every test I write passes.
-function _tabCustBeacon(menu, which) {
+function _tabCustBeacon(menu, which, extra) {
   try {
     if (!menu) return;
     const snap = () => {
@@ -9668,7 +9654,8 @@ function _tabCustBeacon(menu, which) {
             items: menu.querySelectorAll('.tab-customizer-item').length,
             winW: window.innerWidth, winH: window.innerHeight,
             vvH: Math.round(vv.height || 0), vvTop: Math.round(vv.offsetTop || 0),
-            dpr: window.devicePixelRatio || 0, ua: navigator.userAgent }) });
+            dpr: window.devicePixelRatio || 0, ua: navigator.userAgent,
+            ...(typeof extra === 'function' ? extra() : {}) }) });
       } catch (e) {} }, 600);
     } catch (e) {} });
   } catch (e) {}
@@ -9680,8 +9667,30 @@ function _peekCustOutside(e) {
   const btn = document.getElementById('peek-tab-customize');
   if (menu && !menu.contains(e.target) && !btn?.contains(e.target)) { _peekTabCustomizerOpen = false; menu.style.display = 'none'; btn?.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', _peekCustOutside, true); }
 }
-function togglePeekTabCustomizer() {
+// WHERE IT WAS CLICKED (Ethan, 2026-10-24, Mac app: the menu hung ~200px left
+// of the ⊞). The ⊞ is position:sticky with margin-left:auto inside the scrolling
+// strip, and the Mac app's WebKit reported its box far from where it paints it
+// (a tabcust-geo beacon at winW 1280 implied a right edge of 879). Chromium and
+// Playwright's WebKit report it correctly. A pointer click is ground truth: when
+// it lands outside the reported box, the menu is placed by the click instead,
+// and the beacon says so (verdict=anchor_rect_mismatch).
+let _peekTabAnchorFix = null;
+function _peekTabAnchorFromClick(ev) {
+  _peekTabAnchorFix = null;
+  if (!ev || !ev.detail || !ev.currentTarget || typeof ev.clientX !== 'number') return;
+  // Only without root CSS zoom: under it, engines disagree on whether event
+  // and rect coordinates are scaled, and a spurious correction is worse than
+  // none. The Mac app uses font-size zoom, so it has none.
+  if ((parseFloat(getComputedStyle(document.documentElement).zoom) || 1) !== 1) return;
+  const r = ev.currentTarget.getBoundingClientRect();
+  const x = ev.clientX, y = ev.clientY;
+  const outside = x < r.left - 2 || x > r.right + 2 || y < r.top - 2 || y > r.bottom + 2;
+  if (outside) _peekTabAnchorFix = { dx: x - (r.left + r.right) / 2, dy: y - (r.top + r.bottom) / 2,
+    rect: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)], click: [Math.round(x), Math.round(y)] };
+}
+function togglePeekTabCustomizer(ev) {
   _peekTabCustomizerOpen = !_peekTabCustomizerOpen;
+  if (_peekTabCustomizerOpen) _peekTabAnchorFromClick(ev);
   document.getElementById('peek-tab-customize')?.setAttribute('aria-expanded', String(_peekTabCustomizerOpen));
   const menu = document.getElementById('peek-tab-customizer-menu');
   if (!menu) return;
@@ -9698,7 +9707,11 @@ function togglePeekTabCustomizer() {
     _placePeekTabCustomizer();
     menu.style.visibility = '';
     _watchPeekTabAnchor(true);
-    _tabCustBeacon(menu, 'peek');
+    _tabCustBeacon(menu, 'peek', () => {
+      const b = document.getElementById('peek-tab-customize')?.getBoundingClientRect();
+      return { btn: b ? [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)] : null,
+        verdict: _peekTabAnchorFix ? 'anchor_rect_mismatch' : 'anchor_rect_ok', anchor_fix: _peekTabAnchorFix };
+    });
     setTimeout(() => document.addEventListener('click', _peekCustOutside, true), 0);
   } else {
     menu.style.display = 'none';
@@ -9729,7 +9742,10 @@ function _watchPeekTabAnchor(on) {
     const btn = document.getElementById('peek-tab-customize');
     if (btn) {
       const r = btn.getBoundingClientRect();
-      const key = Math.round(r.left) + ':' + Math.round(r.bottom);
+      // The menu's own width is part of the key: the presets list loads after
+      // the menu opens and widens it, which moved its right edge off the ⊞.
+      const mw = document.getElementById('peek-tab-customizer-menu')?.offsetWidth || 0;
+      const key = Math.round(r.left) + ':' + Math.round(r.bottom) + ':' + mw;
       if (key !== _peekTabAnchorLast) { _peekTabAnchorLast = key; _placePeekTabCustomizer(); }
     }
     _peekTabAnchorRAF = requestAnimationFrame(tick);
@@ -9749,7 +9765,9 @@ function _placePeekTabCustomizer() {
   // 1280). Everything below is computed in screen pixels and divided by the
   // zoom only when written.
   const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
-  const r = btn.getBoundingClientRect();
+  const raw = btn.getBoundingClientRect();
+  const fx = _peekTabAnchorFix;
+  const r = fx ? { left: raw.left + fx.dx, right: raw.right + fx.dx, top: raw.top + fx.dy, bottom: raw.bottom + fx.dy } : raw;
   const vw = window.innerWidth, vh = window.innerHeight;
   const PAD = 8;
   // NEUTRALISE `right` FIRST: .tab-customizer-menu sets `right: 0`, and with
@@ -9796,8 +9814,10 @@ function _renderPeekTabCustomizer() {
       + '<span class="tab-drag-handle" style="cursor:grab;color:var(--dim);padding:0 4px 0 0;font-size:0.8rem;">\u2807</span>'
       + '<input type="checkbox" ' + (checked ? 'checked' : '') + (req ? ' disabled' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
   }).join('');
+  html += _layoutPresetSectionHtml('peek');
   menu.innerHTML = html;
   requestAnimationFrame(() => { const s = document.getElementById('peek-tab-cust-search'); if (s) s.focus(); });
+  _loadLayoutPresetList('peek');
   if (window.Sortable) {
     if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
     _peekTabMenuSortable = Sortable.create(menu, { handle: '.tab-drag-handle', draggable: '.tab-customizer-item[data-ptab-id]', animation: 100,
@@ -9830,22 +9850,69 @@ function toggleTabVisibility(id, show) {
 }
 
 // ── Layout presets (save/load/share tab configuration) ──
-async function saveLayoutPreset() {
-  const name = prompt('Preset name:');
+// Two lists share this code and the server table: `global` is the homepage tab
+// bar, `peek` the worker view's tabs (Ethan, 2026-10-24). Presets live server
+// side (/api/layout-presets?scope=), so every device sees the same ones.
+function _layoutPresetSectionHtml(scope) {
+  return '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding:6px 14px 4px;">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;">'
+    + '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>'
+    + '<button onclick="saveLayoutPreset(\'' + scope + '\')" style="font-size:0.75rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 4px;">+ Save current</button>'
+    + '</div><div class="preset-list" data-scope="' + scope + '"' + (scope === 'global' ? ' id="preset-list"' : '') + ' style="font-size:0.82rem;"></div></div>';
+}
+function _layoutPresetsUrl(scope) {
+  return '/api/layout-presets' + (scope && scope !== 'global' ? '?scope=' + encodeURIComponent(scope) : '');
+}
+function _loadLayoutPresetList(scope) {
+  fetch(_layoutPresetsUrl(scope)).then(r => r.json()).then(presets => {
+    const list = document.querySelector('.preset-list[data-scope="' + scope + '"]');
+    if (!list || !Array.isArray(presets)) return;
+    if (!presets.length) { list.innerHTML = '<div style="color:var(--muted);font-size:0.78rem;padding:4px 0;">No saved presets</div>'; return; }
+    list.innerHTML = presets.map(p => {
+      const n = escJs(p.name);
+      return `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;">
+      <button onclick="loadLayoutPreset('${n}','${scope}')" style="flex:1;text-align:left;background:none;border:none;cursor:pointer;color:var(--text);font-size:0.82rem;padding:2px 0;">${esc(p.name)}</button>`
+      + (scope === 'global' ? `<button onclick="shareLayoutPreset('${n}')" title="Copy share link" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&#x1F517;</button>` : '')
+      + `<button onclick="deleteLayoutPreset('${n}','${scope}')" title="Delete" aria-label="Delete preset ${esc(p.name)}" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&times;</button>
+    </div>`;
+    }).join('');
+  }).catch(() => {});
+}
+function _rerenderLayoutPresetMenu(scope) {
+  if (scope === 'peek') _renderPeekTabCustomizer(); else _renderTabCustomizerMenu();
+}
+async function saveLayoutPreset(scope = 'global') {
+  const name = ((await showPrompt('Preset name:', scope === 'peek' ? 'e.g. Review' : '')) || '').trim();
   if (!name) return;
-  await fetch('/api/layout-presets', {
+  const body = scope === 'peek'
+    ? {name, scope, hidden: [...peekHiddenTabs], tab_order: peekTabOrder}
+    : {name, hidden: [...hiddenTabs], tab_order: tabOrder};
+  const r = await fetch('/api/layout-presets', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name, hidden: [...hiddenTabs], tab_order: tabOrder})
-  });
-  _renderTabCustomizerMenu();
+    body: JSON.stringify(body)
+  }).catch(() => null);
+  if (!r || !r.ok) { showToast('Could not save the preset'); return; }
+  showToast('Preset "' + name + '" saved');
+  _rerenderLayoutPresetMenu(scope);
 }
 
-async function loadLayoutPreset(name) {
-  const r = await fetch('/api/layout-presets');
+async function loadLayoutPreset(name, scope = 'global') {
+  const r = await fetch(_layoutPresetsUrl(scope));
   const presets = await r.json();
   const p = presets.find(x => x.name === name);
   if (!p) return;
+  if (scope === 'peek') {
+    const all = PEEK_TABS.map(t => t.id);
+    const saved = (p.tab_order || []).filter(id => all.includes(id));
+    peekTabOrder = [...new Set([...saved, ...all.filter(id => !saved.includes(id))])];
+    peekHiddenTabs = new Set((p.hidden || []).filter(id => !PEEK_REQUIRED_TABS.has(id)));
+    if (peekHiddenTabs.has(_peekTab)) setPeekTab('terminal');
+    _savePeekTabPrefs();
+    _applyPeekTabVisibility();
+    _renderPeekTabCustomizer();
+    return;
+  }
   hiddenTabs = _honourBoardHide(new Set(p.hidden));
   tabOrder = p.tab_order.length ? p.tab_order : ALL_TABS.map(t => t.id);
   _saveHiddenTabs();
@@ -9854,11 +9921,11 @@ async function loadLayoutPreset(name) {
   _renderTabCustomizerMenu();
 }
 
-async function deleteLayoutPreset(name) {
-  if (!confirm('Delete preset "' + name + '"?')) return;
-  await fetch('/api/layout-presets/' + encodeURIComponent(name), {method:'DELETE'});
+async function deleteLayoutPreset(name, scope = 'global') {
+  if (!(await showConfirm('Delete preset "' + name + '"?', 'Delete', true))) return;
+  await fetch('/api/layout-presets/' + encodeURIComponent(name) + (scope !== 'global' ? '?scope=' + encodeURIComponent(scope) : ''), {method:'DELETE'});
   showToast('Preset "' + name + '" deleted');
-  _renderTabCustomizerMenu();
+  _rerenderLayoutPresetMenu(scope);
 }
 
 async function shareLayoutPreset(name) {

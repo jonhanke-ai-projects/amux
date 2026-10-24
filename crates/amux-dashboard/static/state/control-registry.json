@@ -4032,6 +4032,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_rerenderLayoutPresetMenu": {
+      "kind": "command._rerenderLayoutPresetMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_resendRows": {
       "kind": "command._resendRows",
       "feedback_required": true,
@@ -5714,6 +5720,12 @@
     },
     "loadHelperModel": {
       "kind": "command.loadHelperModel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "loadLayoutPreset": {
+      "kind": "command.loadLayoutPreset",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

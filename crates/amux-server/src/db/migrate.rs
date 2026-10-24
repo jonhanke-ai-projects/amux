@@ -724,6 +724,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0132_token_ledger_task_session_ts_index",
         sql: include_str!("../../migrations/0132_token_ledger_task_session_ts_index.sql"),
     },
+    Migration {
+        version: 133,
+        name: "0133_layout_presets_scope",
+        sql: include_str!("../../migrations/0133_layout_presets_scope.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
