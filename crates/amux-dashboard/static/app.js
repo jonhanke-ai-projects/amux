@@ -17122,15 +17122,33 @@ function _peekSplitViewOptions() {
   });
   return out;
 }
-// A file the Files pane opens instead of the worker's folder, set by "Open in
-// split view" on a file link.
-let _peekSplitFileTarget = null;
+// "Open in split view" on a file: the file gets a pane of its own (view
+// 'file:<path>'), so several files sit side by side (Ethan, 2026-10-24). The
+// split opens on it; an open split adds it as another pane; with every pane in
+// use it takes the last one's place. A file already shown is not added twice.
 function _peekSplitOpenFile(path) {
-  _peekSplitFileTarget = path;
-  _peekSplitOpen('files');
+  const view = 'file:' + path;
+  const wrap = document.getElementById('peek-split-wrap');
+  let how;
+  if (!wrap || !wrap.classList.contains('split-active')) {
+    _peekSplitPanes = [view]; how = 'opened';
+    _peekSplitOpen(view);
+  } else {
+    if (_peekSplitPanes.includes(view)) how = 'already_shown';
+    else if (_peekSplitPanes.length < _PEEK_SPLIT_MAX) { _peekSplitPanes.push(view); how = 'added'; }
+    else { _peekSplitPanes[_peekSplitPanes.length - 1] = view; how = 'replaced_last'; }
+    _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
+    _peekSplitPersist();
+    _peekSplitRenderPanes();
+  }
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'file-split-pane', how, panes: _peekSplitPanes.length, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+  } catch (e) {}
 }
 function _peekSplitSrc(view) {
-  if (view === 'files') return '/?embed=files#path=' + _encodeHashPath(_peekSplitFileTarget || peekSessionDir || '/');
+  if (view === 'files') return '/?embed=files#path=' + _encodeHashPath(peekSessionDir || '/');
+  if (view.startsWith('file:')) return '/?embed=files#path=' + _encodeHashPath(view.slice(5));
   return '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view) + '&peekSplitChild=1';
 }
 function _peekSplitPersist() {
@@ -17166,7 +17184,8 @@ function _peekSplitRenderPanes() {
     pane.dataset.view = view;
     const sel = pane.querySelector('.psp-pane-view');
     if (sel.dataset.opts !== optHtml) { sel.innerHTML = optHtml; sel.dataset.opts = optHtml; }
-    if (!opts.some(o => o[0] === view)) sel.insertAdjacentHTML('beforeend', '<option value="' + esc(view) + '">' + esc(view) + '</option>');
+    if (!opts.some(o => o[0] === view)) sel.insertAdjacentHTML('beforeend', '<option value="' + esc(view) + '">'
+      + esc(view.startsWith('file:') ? view.slice(view.lastIndexOf('/') + 1) : view) + '</option>');
     sel.value = view;
     sel.onchange = () => _peekSplitSetPane(i, sel.value);
     const add = pane.querySelector('.psp-pane-add');
@@ -17334,7 +17353,6 @@ function _peekSplitSetActive(active, path) {
     _restoreSplitWidths();
   } else {
     // Closing the split unloads every pane.
-    _peekSplitFileTarget = null;
     const host = document.getElementById('psp-panes');
     if (host) host.innerHTML = '';
     const tp = document.getElementById('peek-terminal-panel');
@@ -18463,8 +18481,11 @@ function _fileCtxCanSplit() {
 function _fileCtxMenu(e, link) {
   e.preventDefault(); e.stopPropagation();
   _fileCtxClose();
-  const output = !link.classList.contains('md-file-link');
-  const raw = output ? (link.dataset.path || '').replace(/(?::\d+){1,2}$/, '') : (link.dataset.file || '');
+  // Worker output names paths relative to the worker; a markdown link, a Files
+  // row and a board artifact already carry the full path.
+  const output = !link.matches('.md-file-link, .fe-row, .board-artifact-file');
+  const raw = link.classList.contains('md-file-link') ? (link.dataset.file || '')
+    : (link.dataset.path || '').replace(/(?::\d+){1,2}$/, '');
   if (!raw) return;
   const ctx = { raw, output, full: output ? _resolveOutputPath(raw) : raw };
   if (output) ctx.ready = _resolveLinkedPath(raw).then(f => { ctx.full = f; });
@@ -18505,7 +18526,7 @@ async function _fileCtxRun(act) {
   if (act === 'copy') return _copyFilePath(c.full);
 }
 document.addEventListener('contextmenu', (e) => {
-  const link = e.target.closest && e.target.closest('.file-link[data-path], .md-link[data-path], .md-file-link[data-file]:not([data-dir])');
+  const link = e.target.closest && e.target.closest('.file-link[data-path], .md-link[data-path], .md-file-link[data-file]:not([data-dir]), .fe-row[data-type="file"][data-path]');
   if (link) _fileCtxMenu(e, link); else _fileCtxClose();
 });
 document.addEventListener('click', () => { if (_fileCtx) _fileCtxClose(); });
@@ -45346,7 +45367,7 @@ function _bdArtifactRef(a, item) {
     try {
       const url = new URL(target);
       if (url.hostname && url.hostname !== 'localhost') throw new Error('remote file host');
-      return '<button type="button" class="file-link board-artifact-file" onclick="event.stopPropagation();openFilePreview(\''
+      return '<button type="button" class="file-link board-artifact-file" data-path="' + esc(decodeURIComponent(url.pathname)) + '" onclick="event.stopPropagation();openFilePreview(\''
         + escJs(decodeURIComponent(url.pathname)) + '\')">' + esc(ref) + '</button>';
     } catch (error) { _bdAudit('board-artifact-navigation', { verdict: 'invalid-file-url', ref }); return '<code>' + esc(ref) + '</code>'; }
   }
@@ -45365,7 +45386,7 @@ function _bdArtifactRef(a, item) {
     || (!/\s/.test(refPath) && (refPath.includes('/') || /\.[a-z0-9]{1,12}$/i.test(refPath)));
   const serverResolvedPath = target !== ref && /^(?:\/|\.\.?\/)/.test(targetPath);
   if (explicitPath || serverResolvedPath) {
-    return '<button type="button" class="file-link board-artifact-file" onclick="event.stopPropagation();openFilePreview(\''
+    return '<button type="button" class="file-link board-artifact-file" data-path="' + esc(targetPath) + '" onclick="event.stopPropagation();openFilePreview(\''
       + escJs(targetPath) + '\')" title="Open ' + esc(targetPath) + '">' + esc(ref) + '</button>';
   }
   return '<code>' + esc(ref) + '</code>';
