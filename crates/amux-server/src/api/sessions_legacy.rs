@@ -7796,6 +7796,14 @@ pub(crate) mod tests {
     /// message this replaces was false about two of them.
     #[test]
     fn a_tilde_dir_expands_to_home_before_it_is_checked() {
+        // Own HOME under the shared env lock. Under `cargo test` (one process,
+        // many threads; rust-nightly-deep) two session_verbs tests repoint HOME
+        // while holding that lock, and this test read it without the lock, so
+        // the last assert failed every night since 10-17. Run beside them,
+        // the unguarded form failed 1 of 15 locally and this form 0 of 15.
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::env::set_var("HOME", dir.path());
         let home = std::env::var("HOME").unwrap();
         assert_eq!(requested_work_dir("~/Dev/x"), format!("{home}/Dev/x"));
         assert_eq!(requested_work_dir("~"), home);
