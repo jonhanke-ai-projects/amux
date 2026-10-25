@@ -49517,7 +49517,7 @@ if (window._peekEmbed) {
 _notifUpdateBadge();
 loadBranding();
 // JS initialized — hide the no-JS fallback overlay
-(function(){var f=document.getElementById('js-fallback');if(f)f.style.display='none';})();
+(function(){var f=document.getElementById('js-fallback');if(f)f.style.display='none';try{sessionStorage.removeItem('amux_boot_reloaded');}catch(e){}})();
 
 // Initialize chrome tabs
 _chromeRender();

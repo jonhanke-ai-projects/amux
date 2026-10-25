@@ -110,12 +110,45 @@
 <div id="js-fallback" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;z-index:99999;background:var(--bg,#0d1117);color:#8b949e;font-family:-apple-system,system-ui,sans-serif;">
   <div style="font-size:1.1rem;">Loading amux...</div>
   <div id="js-fallback-retry" style="display:none;text-align:center;">
-    <div style="margin-bottom:12px;color:#f87171;">Failed to load. Try reloading.</div>
+    <div id="js-fallback-msg" style="margin-bottom:12px;color:#8b949e;">Still loading. A slow connection can take a moment.</div>
     <button onclick="location.reload()" style="padding:10px 24px;border-radius:8px;border:1px solid #30363d;background:#21262d;color:#e6edf3;font-size:0.9rem;cursor:pointer;">Reload</button>
   </div>
 </div>
 <script>
-setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style.display!=='none'){document.getElementById('js-fallback-retry').style.display='';}},8000);
+// A SLOW BOOT IS NOT A FAILED ONE (Ethan, 2026-10-25, the iPhone app over 5G
+// right after "clear caches and reload": "Failed to load" after 8s, nothing
+// from the page for 70s, then a manual Reload loaded it at once). At 8s this
+// says it is still loading; "Failed" only after a script error. At 20s a page
+// still not running reloads itself once per session, which is what the
+// manual Reload did, and reports which files were slow
+// (kind=boot-stalled: each script's duration, size, and whether it finished).
+(function(){
+  var failed=false;
+  function booted(){var f=document.getElementById('js-fallback');return !f||f.style.display==='none';}
+  window.addEventListener('error',function(e){if(booted())return;var t=e&&e.target;if(t&&t.tagName==='SCRIPT'||(e&&e.message)){failed=true;var m=document.getElementById('js-fallback-msg');if(m){m.textContent='Failed to load. Try reloading.';m.style.color='#f87171';}document.getElementById('js-fallback-retry').style.display='';}},true);
+  function report(action){
+    try{
+      // Every script and stylesheet on the page, finished or not: a download
+      // still in flight has no timing entry yet, and that is the one to name.
+      var ents={};(performance.getEntriesByType('resource')||[]).forEach(function(r){ents[r.name]=r;});
+      var els=[].slice.call(document.querySelectorAll('script[src],link[rel=stylesheet][href]'));
+      var rs=els.map(function(el){var u=el.src||el.href,r=ents[u];
+        return {f:u.replace(/^https?:\/\/[^/]+/,'').slice(0,80),host:u.indexOf(location.origin)===0?'self':'cdn',ms:r?Math.round(r.duration):-1,kb:r?Math.round((r.transferSize||0)/1024):-1,done:r&&r.responseEnd>0?1:0};});
+      var body=JSON.stringify({kind:'boot-stalled',verdict:'boot_stalled',action:action,measured:true,n_considered:rs.length,failed:failed?1:0,
+        since_ms:Math.round(performance.now()),online:navigator.onLine?1:0,ready:document.readyState,resources:rs.slice(0,30)});
+      fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},body:body,keepalive:true}).catch(function(){});
+    }catch(e){}
+  }
+  setTimeout(function(){if(!booted())document.getElementById('js-fallback-retry').style.display='';},8000);
+  setTimeout(function(){
+    if(booted()||failed)return;
+    var tried=false;try{tried=sessionStorage.getItem('amux_boot_reloaded')==='1';}catch(e){}
+    report(tried?'gave_up':'reloaded');
+    if(tried)return;
+    try{sessionStorage.setItem('amux_boot_reloaded','1');}catch(e){}
+    setTimeout(function(){location.reload();},500);
+  },20000);
+})();
 </script>
 <div id="no-apikey-banner" style="display:none;background:#7c2d12;color:#fed7aa;padding:8px 16px;text-align:center;font-size:0.82rem;z-index:90;position:relative;">
   No model connected yet, so workers cannot run. <a href="#" id="no-apikey-connect" onclick="event.preventDefault();document.getElementById('no-apikey-banner').style.display='none';document.getElementById('apikey-setup-modal').style.display='flex'" style="color:#fde68a;font-weight:600;text-decoration:underline;">Connect a model</a>
