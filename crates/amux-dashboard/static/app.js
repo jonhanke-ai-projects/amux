@@ -15986,7 +15986,7 @@ function _paintCachedPeek(cached) {
   if (peekSession && _workerRenderer(peekSession) !== 'terminal') return false;
   _peekHistoryRaw = cached.history || '';
   _peekModePainted = null;
-  _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
+  _peekHistoryHTML = cached.history ? _peekHistHtmlFor(cached.history) : (cached.histHTML || '');
   _lastLiveHTML = cached.output ? _peekLiveHtml(cached.output) : '';
   lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
   applyPeekSearch();
@@ -16859,7 +16859,7 @@ function openPeek(name, opts) {
   _lastPeekRaw = '';
   _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
   _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
-  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekThin = false; _peekModePainted = null;   // and its transcript history
+  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekHistAll = false; _peekHistHidden = 0; _peekHistSrc = ''; _peekThin = false; _peekModePainted = null;   // and its transcript history
   // CRITICAL: also drop the previous session's rendered live frame — the region
   // painter renders _lastLiveHTML directly, so a stale value briefly showed the
   // PREVIOUS session's terminal when opening a different one (2026-07-16).
@@ -20018,11 +20018,56 @@ function _peekLogAtClose() {
   const body = document.getElementById('peek-body');
   if (body) body.scrollTop = body.scrollHeight;
 }
+// A worker's scrollback can be 20,000 lines (2 MB of ANSI text). Drawn whole it
+// is ~57,000 elements, rebuilt on every history refresh, and the Mac app's
+// worker tabs grew with it to 1-1.7 GB (desktop-resources, 2026-10-25: tab
+// memory tracked scrollback size). Only the most recent lines are drawn; the
+// rest is one tap away, and a search, a message jump or earlier saved output
+// draws all of it first, so nothing becomes unreachable.
+const _PEEK_HIST_DRAWN_LINES = 3000;
+let _peekHistAll = false;      // the reader asked for the whole scrollback
+let _peekHistHidden = 0;       // scrollback lines not drawn right now
+let _peekHistSrc = '';         // the scrollback text _peekHistoryHTML was drawn from
+function _peekHistHtmlFor(raw) {
+  _peekHistSrc = raw || '';
+  _peekHistHidden = 0;
+  if (!raw) return '';
+  const all = _peekHistAll || (typeof peekSearchQuery === 'string' && peekSearchQuery.trim())
+    || _peekEarlier.chunks.length || _peekEarlier.conversation;
+  if (!all) {
+    let cut = raw.length;
+    for (let n = 0; n < _PEEK_HIST_DRAWN_LINES && cut > 0; n++) cut = raw.lastIndexOf('\n', cut - 1);
+    if (cut > 0) {
+      let hidden = 1;
+      for (let i = raw.indexOf('\n'); i >= 0 && i < cut; i = raw.indexOf('\n', i + 1)) hidden++;
+      _peekHistHidden = hidden;
+      return '<div class="peek-earlier-bar peek-hist-more" onclick="_peekHistExpand(true)">&#x25B2; Show '
+        + hidden.toLocaleString() + ' earlier lines</div>' + _peekHtml(raw.slice(cut + 1));
+    }
+  }
+  return _peekHtml(raw);
+}
+// Draw the whole scrollback in place, keeping the reader's line where it is.
+function _peekHistExpand(paint) {
+  if (!_peekHistHidden) return false;
+  _peekHistAll = true;
+  _peekHistoryHTML = _peekHistHtmlFor(_peekHistSrc);
+  lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+  if (paint) {
+    const body = document.getElementById('peek-body');
+    const fromBottom = body ? body.scrollHeight - body.scrollTop : 0;
+    applyPeekSearch(true, false);
+    if (body) body.scrollTop = body.scrollHeight - fromBottom;
+  }
+  return true;
+}
 function _peekEarlierHTML() {
   if (_peekLogAt && _peekLogAt.name === peekSession) return _peekLogAtHTML();
   // Thin mode: tmux's scrollback is already the whole history; the bar would
   // page in the transcript re-render this mode exists to drop.
   if (_peekEarlier.hidden || _peekThin) return '';
+  // Undrawn scrollback has its own bar, and tapping either draws it first.
+  if (_peekHistHidden && !_peekEarlier.chunks.length) return '';
   // The bar persists until the actual beginning of the log — every tap pages
   // one chunk further back, so the whole session is always scrollable.
   const bar = _peekEarlier.done
@@ -20064,6 +20109,8 @@ async function _peekLoadEarlier(options) {
   // Thin peek already holds the pane's whole tmux scrollback; transcript
   // pages are never drawn there, so loading them can find nothing and the
   // old message ("Earlier output could not be loaded") was false.
+  // Scrollback already in memory comes before saved pages from the server.
+  if (_peekHistExpand(true)) return 'loaded';
   if (_peekThin) return 'scrollback';
   const quiet = !!(options && options.quiet);
   const name = peekSession;
@@ -20119,7 +20166,8 @@ async function _peekLoadEarlier(options) {
           // The first record page contains the current transcript tail too.
           // Replace that tail once, then keep only new records from polls.
           earlier.tailRaw = text;
-          _peekHistoryHTML = _peekHtml(_peekAfterConversation(text, _peekHistoryRaw));
+          earlier.conversation = r.headers.get('X-Log-Conversation');
+          _peekHistoryHTML = _peekHistHtmlFor(_peekAfterConversation(text, _peekHistoryRaw));
         }
         earlier.conversation = r.headers.get('X-Log-Conversation');
         earlier.before = remaining;
@@ -20359,7 +20407,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     let histChanged = false;
     if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
       const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
-      _peekHistoryHTML = historyTail ? _peekHtml(historyTail) : '';
+      _peekHistoryHTML = _peekHistHtmlFor(historyTail);
       _peekHistoryRaw = histRaw;
       histChanged = true;
     }
@@ -20441,7 +20489,13 @@ async function _refreshPeekFrame(liveOnly, request) {
     // Cache BOTH slices — since the live-split, `output` alone is just the tiny
     // live frame (sometimes ''), which painted an EMPTY black peek from cache
     // (social, 2026-07-16). Never write an entry with no content.
-    if (_peekHistoryRaw || _lastPeekRaw) _idb.set(_PEEK_CACHE_KEY(name), { output: _lastPeekRaw, history: _peekHistoryRaw, liveHTML: _lastLiveHTML, histHTML: _peekHistoryHTML, time: Date.now() });
+    // The drawn history HTML is not cached: it is the largest value here, a
+    // reopen redraws it from `history`, and a busy worker's live frame changes
+    // every tick, so the write is also limited to history changes or every 10s.
+    if ((_peekHistoryRaw || _lastPeekRaw) && (histChanged || performance.now() - _peekCacheWroteMs > 10000)) {
+      _peekCacheWroteMs = performance.now();
+      _idb.set(_PEEK_CACHE_KEY(name), { output: _lastPeekRaw, history: _peekHistoryRaw, liveHTML: _lastLiveHTML, time: Date.now() });
+    }
   } catch(e) {
     if (!_peekIdentityCurrent(identity)) return;
     console.error('peek:', e);
@@ -20469,6 +20523,7 @@ async function _refreshPeekFrame(liveOnly, request) {
   } finally { clearTimeout(_peekTimeout); }
 }
 
+let _peekCacheWroteMs = 0;   // last terminal cache write (refreshPeek)
 let _peekChatPaintSkips = 0;   // terminal paints refused while the Chat tab owned #peek-body
 // Split DOM: history lives in a stable container and the live frame in its own,
 // so a live tick swaps ONLY #pk-live (a few hundred bytes) instead of
@@ -20540,6 +20595,7 @@ function applyPeekSearch(keepIndex, doScroll) {
     if (countEl) countEl.textContent = '';
     return;
   }
+  if (_peekHistHidden) _peekHistExpand(false);
   // Search the rendered text, not serialized HTML. Entities and ANSI/link
   // spans must not turn one visible phrase into missing or duplicate matches.
   // Rebuilding the DOM costs a full relayout plus two prompt reclassifies
@@ -29239,6 +29295,7 @@ async function _openXlsxPreview(path) {
   if (titleEl) titleEl.textContent = path.split('/').pop();
   const subEl = document.getElementById('file-subpath');
   if (subEl) { const dir = path.slice(0, path.lastIndexOf('/')) || '/'; subEl.textContent = dir; subEl.title = path; }
+  document.getElementById('file-overlay').dataset.path = path;
   const body = document.getElementById('file-body');
   body.className = 'file-overlay-body';
   body.textContent = 'Loading spreadsheet…';
@@ -29416,6 +29473,9 @@ async function openFilePreview(path, options = {}) {
     _subEl.onclick = () => _openPathInFiles(_dir);
   }
   if (options.readOnly && _subEl) { _subEl.onclick=null;_subEl.classList.remove('clickable');_subEl.title='Retained verified asset'; }
+  // The path the open file is saved under (Mac app restore, tab URLs): the
+  // title can read as the markdown heading or carry a "cached" suffix.
+  document.getElementById('file-overlay').dataset.path = path;
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-view-tabs').style.display = 'none';
@@ -31034,6 +31094,7 @@ async function _filesNewFile() {
   const fpath = (_filesPath || '/').replace(/\/$/, '') + '/' + fname;
   // Open the file overlay in edit mode with empty content
   _fileData = { path: fpath, content: '', is_markdown: /\.md$/i.test(fname), _isNew: true };
+  document.getElementById('file-overlay').dataset.path = '';   // unsaved: nothing to reopen yet
   _fileViewMode = 'edit';
   document.getElementById('file-title').textContent = fname + ' (new)';
   document.getElementById('file-body').className = 'file-overlay-body';
@@ -31429,6 +31490,7 @@ async function _scratchpadNewNote() {
   }
   const fpath = _spPath.replace(/\/$/, '') + '/' + fname;
   _fileData = { path: fpath, content: '', is_markdown: true, _isNew: true, _spAutoName: true };
+  document.getElementById('file-overlay').dataset.path = '';   // unsaved: nothing to reopen yet
   _fileViewMode = 'edit';
   const titleEl = document.getElementById('file-title');
   titleEl.textContent = 'New note';

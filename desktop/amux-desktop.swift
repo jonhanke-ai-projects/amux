@@ -287,15 +287,24 @@ let viewHashBody = """
     const bd = document.getElementById('board-detail-overlay');
     if (bd && bd.classList.contains('active') && typeof boardDetailId !== 'undefined' && boardDetailId)
       return '#issue=' + encodeURIComponent(boardDetailId);
+    // An open file is saved by its real path: the title can read as a
+    // markdown heading, "name (new)" or "name • cached 3m".
     const fo = document.getElementById('file-overlay');
     if (fo && fo.classList.contains('active')) {
-      const dir = (document.getElementById('file-subpath') || {}).textContent || '';
-      const name = (document.getElementById('file-title') || {}).textContent || '';
-      if (dir.startsWith('/') && name) return '#path=' + encodeURIComponent((dir === '/' ? '' : dir) + '/' + name);
+      let p = '';
+      try { if (typeof _fileData !== 'undefined' && _fileData && !_fileData._isNew && _fileData.path) p = _fileData.path; } catch (e) {}
+      p = p || fo.dataset.path || '';
+      if (p.startsWith('/')) return '#path=' + encodeURIComponent(p);
+    }
+    const mo = document.getElementById('mdai-overlay');
+    if (mo && mo.classList.contains('active')) {
+      try { if (typeof _mdaiCur !== 'undefined' && _mdaiCur && _mdaiCur.abs) return '#path=' + encodeURIComponent(_mdaiCur.abs); } catch (e) {}
     }
     if (typeof activeView !== 'undefined' && activeView) {
       try { if (activeView === 'files' && _filesPath && _filesPath !== '/') return '#path=' + encodeURIComponent(_filesPath); } catch (e) {}
       try { if (activeView === 'browser' && _bwSession) return '#browser=' + encodeURIComponent(_bwSession); } catch (e) {}
+      // A hidden tab's drawing waits in pendingOpen until the editor mounts.
+      try { if (activeView === 'draw') { const d = _drawS(), dp = (d && (d.path || d.pendingOpen)) || ''; if (dp.startsWith('/')) return '#path=' + encodeURIComponent(dp); } } catch (e) {}
       return '#view=' + encodeURIComponent(activeView);
     }
   } catch (e) {}
@@ -1118,7 +1127,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                let r = controllers.first(where: { $0 !== c && ($0.webView.url.map(isServerURL) ?? false) }) {
                 r.webView.evaluateJavaScript("fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))}).catch(()=>{}); 0", completionHandler: nil)
             }
-            c.webView.load(URLRequest(url: url))
+            // The saved URL carries what the page had open (a file, a drawing, a
+            // worker's tab); the web view's own URL may have dropped that hash.
+            c.webView.load(URLRequest(url: c.savedURL().flatMap { URL(string: $0) } ?? url))
         }
     }
 

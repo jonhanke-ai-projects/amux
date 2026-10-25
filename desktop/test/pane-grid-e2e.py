@@ -22,7 +22,7 @@ tab bar), because macOS refuses this agent synthetic mouse events. A pane's
 header drag and its buttons go through the same handlers a click reaches
 (amux://test/pane-*), not through a real mouse.
 """
-import json, os, re, signal, subprocess, sys, tempfile, time
+import json, os, re, signal, subprocess, sys, tempfile, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "Amux.app")
@@ -93,12 +93,15 @@ TABS = ["board", "calendar", "map", "sessions", "messages"]
 
 
 class App:
-    def __init__(self, fresh=True):
+    def __init__(self, fresh=True, extra=()):
         if fresh:
+            # extra: hashes of more tabs; the last one is the tab shown.
             with open(CFG, "w") as f:
                 json.dump({"connections": [{"name": "localhost", "url": url}], "lastUrl": url, "cleanExit": True,
-                           "windows": [{"url": f"{url}/#view={v}", "frame": src_s, "tabGroup": 1, "selected": v == "messages"}
-                                       for v in TABS]}, f)
+                           "windows": [{"url": f"{url}/#view={v}", "frame": src_s, "tabGroup": 1, "selected": v == "messages" and not extra}
+                                       for v in TABS]
+                           + [{"url": f"{url}/{h}", "frame": src_s, "tabGroup": 1, "selected": i == len(extra) - 1}
+                              for i, h in enumerate(extra)]}, f)
         n = log().count("verdict=windows_restored")
         self.p = subprocess.Popen([BIN], env=dict(os.environ, AMUX_DESKTOP_CONFIG=CFG, AMUX_DESKTOP_TEST="1",
                                   AMUX_DESKTOP_TEST_STATE=STATE), stdout=open(LOG, "a"), stderr=subprocess.STDOUT)
@@ -541,6 +544,42 @@ try:
     app.send("rename-tab?view=view=board&name=", 1)
     titles = [w["title"] for w in app.state()["windows"]]
     check("clearing it brings the page's own name back", "Board" in titles and "Planning" not in titles, str(titles))
+finally:
+    app.stop()
+
+print("19. an open file, drawing or MDAI node stays open across a relaunch (Ethan, 2026-10-25)")
+FILES = os.path.join(os.path.expanduser("~"), ".amux", "tmp", "pane-grid-e2e-files")
+os.makedirs(FILES, exist_ok=True)
+md = os.path.join(FILES, "notes-file.md")
+with open(md, "w") as f:
+    f.write("# A heading that is not the file name\n\nbody\n")   # the title shows the heading
+dr = os.path.join(FILES, "sketch.excalidraw")
+with open(dr, "w") as f:
+    json.dump({"type": "excalidraw", "version": 2, "elements": [], "appState": {}}, f)
+enc = lambda p: "#path=" + urllib.parse.quote(p, safe="")
+app = App(extra=[enc(dr), enc(md)])
+try:
+    def views():
+        return {w.get("view") for w in app.state()["windows"]}
+    end = time.time() + 20
+    while time.time() < end and enc(md) not in views():
+        time.sleep(0.5)
+    check("the shown tab reports the open file by its path", enc(md) in views(), str(views()))
+    app.send("select-view?view=" + enc(dr)[1:], 1)   # a #path= tab still deferred is found by its URL
+    end = time.time() + 20
+    while time.time() < end and enc(dr) not in views():
+        time.sleep(0.5)
+    check("the drawing tab reports its drawing", enc(dr) in views(), str(views()))
+    time.sleep(2)   # the debounced save
+    app.stop()
+    saved = [w["url"] for w in json.load(open(CFG))["windows"]]
+    check("the saved tabs name both files", any(u.endswith(enc(md)) for u in saved) and any(u.endswith(enc(dr)) for u in saved), str(saved))
+    app = App(fresh=False)
+    end = time.time() + 60   # hidden tabs load one at a time after the shown one
+    while time.time() < end and not {enc(md), enc(dr)} <= views():
+        time.sleep(0.5)
+    check("after a relaunch the file is open again", enc(md) in views(), str(views()))
+    check("and the drawing", enc(dr) in views(), str(views()))
 finally:
     app.stop()
 

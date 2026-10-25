@@ -989,7 +989,8 @@ extension AppDelegate {
         // Show the tab whose page is on #<view> (perf-bench.py times the switch).
         case "/select-view":
             let want = "#" + (q.first { $0.name == "view" }?.value ?? "")
-            if let c = controllers.first(where: { $0.viewHash == want || $0.webView.url?.fragment.map { "#" + $0 } == want }), let w = c.window {
+            if let c = controllers.first(where: { $0.viewHash == want || $0.webView.url?.fragment.map { "#" + $0 } == want
+                                                  || $0.savedURL()?.hasSuffix(want) == true }), let w = c.window {
                 w.tabGroup?.selectedWindow = w
                 w.orderFrontRegardless()
             }
