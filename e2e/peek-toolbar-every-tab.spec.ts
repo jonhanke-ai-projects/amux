@@ -28,6 +28,8 @@ const find = async (page: Page, q: string) => {
 };
 
 test('Schedules: Find searches across runs, up/down steps through them, the count follows', async ({ page }) => {
+  const beacons: any[] = [];
+  page.on('request', r => { if (r.url().includes('/api/client-debug') && r.method() === 'POST') { try { const b = r.postDataJSON(); if (b.kind === 'peek-tab-find') beacons.push(b); } catch {} } });
   await openOn(page, 'schedules');
   const rows = ['nightly backup ok', 'deploy amux failed: rustc', 'deploy amux ok', 'digest sent', 'deploy mixpeek ok']
     .map((t, i) => `<div class="sx-fleet-run" data-i="${i}" style="height:60px">${t}</div>`).join('');
@@ -38,6 +40,7 @@ test('Schedules: Find searches across runs, up/down steps through them, the coun
   await expect(page.locator('#peek-schedules-panel .sx-fleet-run:not(.peek-tab-miss)')).toHaveCount(3);
   await expect(page.locator('#zz-runs'), 'a collapsed Recent Runs opens to its matches').toHaveAttribute('open', '');
   await expect(page.locator('#peek-msg-count')).toHaveText('3');
+  await expect.poll(() => beacons.some(b => b.tab === 'schedules' && b.searching && b.matches === 3), { message: 'the search reports itself' }).toBe(true);
   await expect(page.locator('#peek-search')).toHaveAttribute('placeholder', 'Find in schedules and runs…');
   await expect(page.locator('#peek-schedules-panel .peek-highlight').first()).toHaveText('deploy');
   await page.locator('#peek-overlay .peek-nav-btn').last().click();   // down

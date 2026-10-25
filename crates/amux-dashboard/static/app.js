@@ -21091,9 +21091,9 @@ function _peekTabHighlight(root, q) {
 function _peekTabApply(report) {
   const root = _peekTabRoot(), tab = _peekTabName();
   if (!root) return;
+  const q = peekSearchQuery.trim().toLowerCase(), sel = _PEEK_TAB_ITEMS[tab];
   _peekTabApplying = true;
   try {
-    const q = peekSearchQuery.trim().toLowerCase(), sel = _PEEK_TAB_ITEMS[tab];
     _peekClearHighlights(root);
     root.querySelectorAll('.peek-tab-current').forEach(el => el.classList.remove('peek-tab-current'));
     if (sel) for (const el of root.querySelectorAll(sel)) el.classList.toggle('peek-tab-miss', !_peekTabItemKeeps(el, q));
