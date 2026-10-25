@@ -9196,14 +9196,14 @@ _contrib_gh() { # prints a gh binary, installing a private copy in ~/.amux/bin w
   local os arch ver tmp
   case "$(uname -s)" in Linux) os=linux ;; Darwin) os=macOS ;; *) return 1 ;; esac
   case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) return 1 ;; esac
-  ver="$(curl -fsSL --max-time 20 https://api.github.com/repos/cli/cli/releases/latest \
+  ver="$(curl -fsSL --connect-timeout 10 --max-time 20 https://api.github.com/repos/cli/cli/releases/latest \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')" || return 1
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/amux-gh.XXXXXX")"
   if [ "$os" = linux ]; then
-    curl -fsSL --max-time 120 "https://github.com/cli/cli/releases/download/v$ver/gh_${ver}_linux_${arch}.tar.gz" \
+    curl -fsSL --connect-timeout 10 --max-time 120 "https://github.com/cli/cli/releases/download/v$ver/gh_${ver}_linux_${arch}.tar.gz" \
       | tar -xz -C "$tmp" || { rm -rf "$tmp"; return 1; }
   else
-    curl -fsSL --max-time 120 -o "$tmp/gh.zip" "https://github.com/cli/cli/releases/download/v$ver/gh_${ver}_macOS_${arch}.zip" \
+    curl -fsSL --connect-timeout 10 --max-time 120 -o "$tmp/gh.zip" "https://github.com/cli/cli/releases/download/v$ver/gh_${ver}_macOS_${arch}.zip" \
       && (cd "$tmp" && unzip -q gh.zip) || { rm -rf "$tmp"; return 1; }
   fi
   mkdir -p "${own%/*}"
