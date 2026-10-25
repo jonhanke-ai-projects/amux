@@ -42,6 +42,12 @@ case "$1 $2" in
 esac
 GH
 chmod +x "$T/bin/gh"
+# Every run in one second, as on a fast CI host: branch names must still differ.
+cat > "$T/bin/date" <<'D'
+#!/bin/bash
+case "$*" in *%H%M%S*) echo 20261025-170351 ;; *) exec /bin/date "$@" ;; esac
+D
+chmod +x "$T/bin/date"
 export FAKE_GH_ROOT="$T" PATH="$T/bin:$PATH"
 run() { HOME="$T/home" AMUX_HOME="$T/home/.amux" "$AMUX" contribute "$@" 2>&1; }
 fresh() { # a checkout behind origin/main with a local commit, an edit and an untracked file
@@ -62,6 +68,7 @@ echo "2. push rights: PR from a branch on mixpeek/amux, then the checkout matche
 out=$(run --then-pull --json) || { echo "$out"; exit 1; }
 br=$(grep -A1 -x -- --head "$T/pr-create.args" | tail -1)
 check "branch named for the host"  1 "$(grep -c '^contrib/' <<<"$br")"
+check "and for the snapshot"       1 "$(grep -c -- "-$(git --git-dir="$T/remotes/mixpeek/amux.git" rev-parse --short=7 "refs/heads/$br")\$" <<<"$br")"
 snap=$(git --git-dir="$T/remotes/mixpeek/amux.git" rev-parse "refs/heads/$br")
 check "snapshot has the edit"      "$(printf 'one\nmine\ndirty')" "$(git --git-dir="$T/remotes/mixpeek/amux.git" show "$snap:f")"
 check "snapshot has untracked"     new "$(git --git-dir="$T/remotes/mixpeek/amux.git" show "$snap:untracked.txt")"

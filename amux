@@ -9268,7 +9268,10 @@ cmd_contribute() {
     [ -n "$snap" ] && [ "$snap" != "$head" ] || { echo "  Could not snapshot the local work; nothing was changed."; _ct_done 1 snapshot_failed; return; }
   fi
   local branch dest headref
-  branch="contrib/$(printf '%s' "$host" | tr -c 'A-Za-z0-9-' '-' | cut -c1-30)-$(date -u +%Y%m%d-%H%M%S)"
+  # The snapshot's sha keeps two runs in one second apart: on a fast host the
+  # second run pushed a different snapshot to the same name and was refused
+  # (push_failed), which red main CI on aeb2a5d59.
+  branch="contrib/$(printf '%s' "$host" | tr -c 'A-Za-z0-9-' '-' | cut -c1-30)-$(date -u +%Y%m%d-%H%M%S)-${snap:0:7}"
   if [ "$("$gh" api "repos/$up" --jq .permissions.push 2>/dev/null)" = true ]; then
     dest="https://github.com/$up.git"; headref="$branch"
   else
