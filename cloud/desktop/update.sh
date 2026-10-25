@@ -158,6 +158,36 @@ if [[ -f $CF && -f "$PUB" ]] && { ! cmp -s "$PUB" /etc/caddy/amux-public-links.c
   fi
 fi
 
+# Apps inside amux on their own origin (https://<domain>:8443, caddy-apps-origin.caddy), for
+# servers bootstrapped before it: the snippet refreshed from the checkout, a :8443 site block
+# added once, port 8443 opened, and AMUX_APPS_URL set. Validated before reload; rolled back if
+# Caddy rejects it.
+APPS="$SRC/cloud/desktop/caddy-apps-origin.caddy"
+if [[ -f $CF && -f "$APPS" ]]; then
+  site=$(grep -m1 -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,} *\{' $CF | cut -d' ' -f1)
+  if [[ -n "$site" ]] && { ! cmp -s "$APPS" /etc/caddy/amux-apps-origin.caddy || ! grep -q "^$site:8443 {" $CF; }; then
+    had=$([[ -f /etc/caddy/amux-apps-origin.caddy ]] && echo 1 || echo 0)
+    cp -p $CF $CF.prev; [[ $had == 1 ]] && cp -p /etc/caddy/amux-apps-origin.caddy /etc/caddy/amux-apps-origin.caddy.prev
+    install -m 644 "$APPS" /etc/caddy/amux-apps-origin.caddy
+    if ! grep -q "^$site:8443 {" $CF; then
+      tls=$(grep -m1 -E '^ *tls /etc/amux/origin' $CF || true)
+      printf '%s:8443 {\n%s\n  import /etc/caddy/amux-apps-origin.caddy\n}\n' "$site" "$tls" >> $CF
+    fi
+    if runuser -u caddy -- caddy validate --config $CF --adapter caddyfile >/dev/null 2>&1 && systemctl reload caddy; then
+      say "verdict=caddy_apps_origin_installed site=$site:8443"
+    else
+      mv $CF.prev $CF
+      if [[ $had == 1 ]]; then mv /etc/caddy/amux-apps-origin.caddy.prev /etc/caddy/amux-apps-origin.caddy; else rm -f /etc/caddy/amux-apps-origin.caddy; fi
+      systemctl reload caddy; say "WARN verdict=caddy_apps_origin_rejected previous Caddyfile kept"
+    fi
+  fi
+  command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^8443/tcp' || ufw allow 8443/tcp >/dev/null 2>&1 || true
+  ENVA="$HOME_DIR/.amux/server.env"
+  if [[ -n "$site" && -f "$ENVA" ]] && ! grep -q '^AMUX_APPS_URL=' "$ENVA"; then
+    printf 'AMUX_APPS_URL=https://%s:8443\n' "$site" >> "$ENVA" && say "verdict=apps_url_set url=https://$site:8443"
+  fi
+fi
+
 # The address workers build their links from, for servers bootstrapped before bootstrap.sh wrote
 # it: the site name Caddy serves. Read per call by the server, so no restart is needed.
 ENVF="$HOME_DIR/.amux/server.env"

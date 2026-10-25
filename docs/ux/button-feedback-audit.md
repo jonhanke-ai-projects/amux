@@ -523,6 +523,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Add app | `_pubNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Share a file | `_pubNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Share an app | `_pubNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | div | `_pubOpenInternal` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Decline | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Remove | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Turn off | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
@@ -1369,7 +1370,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy | `_proxyCopy` | onclick |
 | app.js | Edit | `_proxyEdit` | onclick |
 | index.html | + New proxy | `_proxyOpenForm` | onclick |
-| app.js | div | `_pubOpenInternal` | onclick |
 | app.js | Delete | `_raDelete` | onclick |
 | app.js | Replay | `_raReplay` | onclick |
 | app.js | Copy script | `_reclaimCopyScript` | onclick |

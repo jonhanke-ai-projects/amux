@@ -3,7 +3,8 @@
 //! facing files", proxies consolidated into it):
 //!
 //! - `internal`: an app on a port, for the signed-in owner only. Opened inside
-//!   the amux UI from Pages, or at `/proxy/<port>/` (port_proxy.rs).
+//!   the amux UI from Pages, served on the apps origin at `/app/<id>/`
+//!   (apps_origin.rs), never on the dashboard's own origin.
 //! - `app`: the same, public: `/pub/<id>/`, anyone with the link, no amux
 //!   sign-in, until turned off.
 //! - `file`: a file or folder, public at `/pub/<id>/`, opt in per path. A
@@ -18,7 +19,7 @@
 //! Links are built from the server's own address ([`public_url`]), so a worker
 //! never hands the owner `https://<raw ip>:8824/...` (sandbox, 2026-10-25:
 //! mtp-demo did exactly that, because nothing told it the address).
-use super::port_proxy;
+use super::app_relay;
 use super::AppState;
 use axum::body::Body;
 use axum::extract::{Path as AxPath, State};
@@ -78,10 +79,10 @@ impl Link {
     }
 }
 
-/// Whether a person added `port` to Pages as an app inside amux: the only
-/// ports `/proxy/<port>/` opens (port_proxy.rs).
-pub(crate) fn internal_approved(port: u16) -> bool {
-    load(&crate::config::amux_home()).iter().any(|l| l.kind == "internal" && l.port == port && !l.approved_by.is_empty())
+/// The app inside amux with this id, if a person approved it: the only apps
+/// the apps origin serves (apps_origin.rs).
+pub(crate) fn approved_internal(id: &str) -> Option<Link> {
+    load(&crate::config::amux_home()).into_iter().find(|l| l.id == id && l.kind == "internal" && !l.approved_by.is_empty())
 }
 
 /// The signed-in PERSON behind a request, never a worker: a server-verified
@@ -90,7 +91,7 @@ pub(crate) fn internal_approved(port: u16) -> bool {
 /// session cookie. A worker's bearer token, a session header or a loopback
 /// address is not a person, so a worker (or a prompt injected into one) can
 /// ask for a public link but cannot make one live.
-fn person_of(state: &AppState, headers: &HeaderMap) -> Option<String> {
+pub(crate) fn person_of(state: &AppState, headers: &HeaderMap) -> Option<String> {
     if let Some(m) = crate::api::org::local_member_actor(headers) {
         return Some(m.to_string());
     }
@@ -133,7 +134,7 @@ fn save(home: &Path, links: &[Link]) -> std::io::Result<()> {
 }
 
 /// 128 bits from the OS. No weaker fallback: the id is the whole credential.
-fn new_id() -> Option<String> {
+pub(crate) fn new_id() -> Option<String> {
     use std::io::Read;
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom").ok()?.read_exact(&mut b).ok()?;
@@ -229,7 +230,7 @@ pub(crate) fn public_url(home: &Path) -> Option<String> {
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    let h = port_proxy::host_only(host).trim_start_matches('[').trim_end_matches(']');
+    let h = app_relay::host_only(host).trim_start_matches('[').trim_end_matches(']');
     h.eq_ignore_ascii_case("localhost") || h == "0.0.0.0" || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
@@ -274,7 +275,7 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
     } else {
         "This amux's address is not known yet (AMUX_PUBLIC_URL in server.env sets it; otherwise it is \
          learned the first time the owner opens the dashboard). Give the owner the path, such as \
-         /proxy/<port>/, and say the address is unknown. Do not guess it from an IP address."
+         /#view=pages, and say the address is unknown. Do not guess it from an IP address."
             .to_string()
     };
     format!(
@@ -282,7 +283,8 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
          The owner manages everything below in the Pages tab ({base}/#view=pages), so register what you \
          build there rather than only printing a link:\n\
          - An app for the owner, inside amux: `amux publish --internal <port> [title]`. It is listed in \
-         Pages and opens inside the amux UI; its direct link is {base}/proxy/<port>/. A Page is \
+         Pages and opens inside the amux UI; its link is {base}/#view=pages&open=<id>, with the id \
+         `amux publish` prints. Never hand the owner localhost or a port. A Page is \
          {base}/pages/<name>.\n\
          - An app for anyone with the link (no amux sign-in), only when the owner wants it shared: \
          `amux publish <port> [title]`, which prints {base}/pub/<id>/.\n\
@@ -300,7 +302,9 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
 
 fn link_json(home: &Path, l: &Link) -> Value {
     let base = public_url(home);
-    let path = if l.is_public() { format!("/pub/{}/", l.id) } else { format!("/proxy/{}/", l.port) };
+    // An app inside amux is reached through its Pages entry, which opens it on
+    // the apps origin with a one-time handoff; there is no direct link to it.
+    let path = if l.is_public() { format!("/pub/{}/", l.id) } else { format!("/#view=pages&open={}", l.id) };
     json!({
         "id": l.id, "kind": l.kind, "port": l.port, "file": l.path, "title": l.title,
         "created_by": l.created_by, "created_at": l.created_at,
@@ -309,7 +313,7 @@ fn link_json(home: &Path, l: &Link) -> Value {
         "approved_by": l.approved_by,
         "path": path,
         "url": base.as_ref().map(|b| format!("{b}{path}")),
-        "inside_url": (l.port > 0).then(|| format!("/proxy/{}/", l.port)),
+        "app_path": (!l.is_public()).then(|| format!("/app/{}/", l.id)),
     })
 }
 
@@ -388,7 +392,7 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
             return bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save the link: {e}"));
         }
     }
-    let listening = port > 0 && port_proxy::local_listener(port).await.is_some();
+    let listening = port > 0 && app_relay::local_listener(port).await.is_some();
     tracing::warn!(id = %link.id, kind = %kind, port, created_by = %created_by, by_person = person.is_some(), listening,
         public = link.is_public(), pending = link.is_pending(),
         measured = true, n_considered = 1, verdict = "public_link_created",
@@ -640,10 +644,10 @@ async fn serve_inner(method: Method, headers: &HeaderMap, uri: &Uri, body: Body)
         h.insert("access-control-max-age", HeaderValue::from_static("600"));
         return r;
     }
-    let Some(local) = port_proxy::local_listener(link.port).await else {
+    let Some(local) = app_relay::local_listener(link.port).await else {
         tracing::warn!(port = link.port, measured = true, n_considered = 1, verdict = "public_link_nothing_listening",
             "public link opened while nothing listens on its port");
-        return port_proxy::page(StatusCode::BAD_GATEWAY, "This app is not running",
+        return app_relay::page(StatusCode::BAD_GATEWAY, "This app is not running",
             "<p>The app behind this link is not running right now. Ask the person who shared it.</p>");
     };
     // No cookie of any kind reaches a public app: amux's are the owner's, and
@@ -651,7 +655,7 @@ async fn serve_inner(method: Method, headers: &HeaderMap, uri: &Uri, body: Body)
     let mut fwd = headers.clone();
     fwd.remove(header::COOKIE);
     fwd.remove(header::AUTHORIZATION);
-    let mut r = port_proxy::relay(local, link.port, &format!("/pub/{id}"), &tail, method, &fwd, body).await;
+    let mut r = app_relay::relay(local, link.port, &format!("/pub/{id}"), &tail, method, &fwd, body).await;
     if from_sandbox {
         r.headers_mut().insert("access-control-allow-origin", HeaderValue::from_static("null"));
     }

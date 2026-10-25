@@ -1248,6 +1248,24 @@ async fn async_main() {
     } else {
         "listener_bound"
     }, "listening (https, plain-http redirected)");
+    // The apps origin (api/static_files/apps_origin.rs): a second listener that
+    // serves only /app/<id>/, so an app inside amux never shares the dashboard's
+    // origin. A failure to bind is logged and leaves the dashboard serving.
+    if let Some(apps_port) = api::static_files::apps_origin::apps_port(cfg.port) {
+        let apps_addr = std::net::SocketAddr::new(addr.ip(), apps_port);
+        let apps_tls = rustls_cfg.clone();
+        tokio::spawn(async move {
+            tracing::info!(%apps_addr, measured = true, n_considered = 1, verdict = "apps_origin_listening",
+                "apps origin listening: /app/<id>/ only");
+            if let Err(error) = axum_server::bind_rustls(apps_addr, apps_tls)
+                .serve(api::apps_router().into_make_service())
+                .await
+            {
+                tracing::warn!(%apps_addr, %error, measured = true, n_considered = 1, verdict = "apps_origin_bind_failed",
+                    "the apps origin could not listen; apps inside amux will not open");
+            }
+        });
+    }
     let acceptor = tls::RedirectingAcceptor::new(
         axum_server::tls_rustls::RustlsAcceptor::new(rustls_cfg),
         format!("localhost:{}", cfg.port),

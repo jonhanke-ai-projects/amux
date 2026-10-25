@@ -18279,15 +18279,15 @@ function _vvTick() {
   }, {passive: true});
 })();
 
-// Rewrite localhost/127.0.0.1/0.0.0.0 URLs to use the port proxy
-// so links work when viewing the dashboard from another device or cloud
+// A worker's localhost/127.0.0.1/0.0.0.0 link to an app on this machine opens
+// that app's Pages entry (or offers to add it), which serves it on the apps
+// origin. There is no proxy URL any more (2026-10-25: "remove the proxies").
 function rewriteLocalhostUrls(html) {
   return html.replace(/(https?):\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)(\/[^\s<>"']*)?/g,
-    (match, scheme, host, port, path) => {
+    (match, scheme, host, port) => {
       const p = port ? port.slice(1) : '';
-      if (!p || p === location.port) return match;  // don't proxy amux's own port
-      const base = location.origin + '/proxy/' + p;
-      return base + (path || '/');
+      if (!p || p === location.port) return match;  // amux's own port stays as written
+      return location.origin + '/#view=pages&add-internal=' + p;
     });
 }
 
@@ -18516,8 +18516,8 @@ function ansiToHtml(text) {
 function _osc8Resolve(html, urls) {
   if (!urls || !urls.length) return html;
   const href = u => {
-    // Localhost URLs go through the same port-proxy rewrite as every other
-    // link in the peek, so an OSC-8 link works from a phone or the cloud.
+    // Localhost URLs go through the same rewrite as every other link in the
+    // peek: to the app's Pages entry, so an OSC-8 link works from a phone or the cloud.
     const s = rewriteLocalhostUrls(String(u == null ? '' : u).trim());
     if (!/^(?:https?|file):\/\//i.test(s)) return null;
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -53272,7 +53272,12 @@ async function _handleDeeplink(hash) {
     if (m) hash = '#view=' + m[1];
   }
   if (hash && hash.startsWith('#view=')) {
-    const v = decodeURIComponent(hash.slice(6));
+    // The view is up to the first '&': the rest are that view's own parameters
+    // (#view=pages&open=<id>, &add-internal=<port>), read by the view itself.
+    const v = decodeURIComponent(hash.slice(6).split('&')[0]);
+    // switchView rewrites the hash to #view=<v> before the view reads it, so the
+    // view's parameters are handed over here.
+    window._viewParams = hash;
     // Deferred like #peek= below: this runs from the early inline script,
     // where switchView still null-derefs on #grid-view (parsed later). A bare
     // try/catch here SWALLOWED that throw and the deeplink silently no-oped —
@@ -58135,15 +58140,26 @@ function _pagesHostReady() {
     document.head.appendChild(s);
   });
 }
-function _pagesEnter() {
-  if (_pagesCur) return;
+async function _pagesEnter() {
+  const h = window._viewParams || location.hash;
+  window._viewParams = null;
+  const deep = /[#&](open|add-internal)=/.test(h);
+  if (_pagesCur && !deep) return;
+  if (_pagesCur) _pagesLeave();
   _pagesList();
-  _pubList();
-  // /proxy/<port>/ for a port not in Pages links here with #...&add-internal=<port>.
-  const m = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(location.hash);
-  if (m) {
-    history.replaceState(null, '', location.pathname + location.search + location.hash.replace(/&?add-internal=\d+/, ''));
-    _pubNew('internal', parseInt(m[1], 10));
+  // Deep links: #view=pages&open=<id> opens an app inside amux; a worker's link
+  // to localhost:<port> arrives as &add-internal=<port>, which opens that app
+  // when it is already in Pages and offers to add it otherwise.
+  const open = /[#&]open=([0-9a-f]{32})(?:&|$)/.exec(h);
+  const add = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(h);
+  await _pubList();
+  if (open) { _pubOpenInternal(open[1]); return; }
+  if (add) {
+    const port = parseInt(add[1], 10);
+    const have = _pubLinks.find(l => l.kind === 'internal' && l.port === port);
+    if (have && !have.pending) _pubOpenInternal(have.id);
+    else if (have) showToast('Port ' + port + ' is in Pages, waiting for your approval.');
+    else _pubNew('internal', port);
   }
 }
 // The rest of the Pages tab (static_files/public_links.rs): apps on this
@@ -58170,7 +58186,7 @@ function _pubRow(l) {
   if (l.kind === 'internal' && !l.pending) {
     return `<div class="pages-row pub-row" role="button" tabindex="0" data-pub="${esc(l.id)}"
       onclick="_pubOpenInternal('${escJs(l.id)}')" onkeydown="if(event.key==='Enter'){event.preventDefault();_pubOpenInternal('${escJs(l.id)}')}">
-      <div class="pages-row-main"><b>${esc(name)}</b><span class="ui-help">${esc(l.path)} · ${what}${by}</span></div>
+      <div class="pages-row-main"><b>${esc(name)}</b><span class="ui-help">${esc(l.app_path || '')} · ${what}${by}</span></div>
       <button class="btn danger" onclick="event.stopPropagation();_pubRevoke('${escJs(l.id)}')">Remove</button></div>`;
   }
   // A link a worker asked for does nothing until you approve it here: a public
@@ -58247,24 +58263,40 @@ async function _pubNew(kind, prefill) {
     _pubList();
   } catch (e) { showToast('Not saved: ' + e.message); }
 }
-// An app inside amux: the Pages open view, framed at /proxy/<port>/. The app
-// is the owner's own, so the frame has what /proxy/ already gives it in a tab.
-function _pubOpenInternal(id) {
+// An app inside amux: the Pages open view, framed on the apps origin.
+// A one-time link that opens app `id` on the apps origin (apps_origin.rs). The
+// app never runs on the dashboard's origin, so it cannot act as the owner.
+async function _pubHandoff(id) {
+  const d = await _pubFetch('/' + encodeURIComponent(id) + '/open', { method: 'POST' });
+  return d.url;
+}
+async function _pubOpenInternal(id) {
   const l = _pubLinks.find(x => x.id === id);
   if (!l) return;
+  if (l.pending) { showToast('Approve it first: it does not open until you do.'); return; }
+  let url;
+  try { url = await _pubHandoff(id); } catch (e) { showToast('Could not open: ' + e.message); return; }
   if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
   _pagesCur = 'app:' + id; _pagesMeta = null;
   document.getElementById('pages-list-wrap').style.display = 'none';
   document.getElementById('pages-open').style.display = 'flex';
   document.getElementById('pages-page-actions').style.display = 'none';
   document.getElementById('pages-title').textContent = l.title || ('Port ' + l.port);
-  document.getElementById('pages-standalone').href = l.path;
+  const standalone = document.getElementById('pages-standalone');
+  standalone.href = '#';
+  // Each handoff opens once, so a new tab asks for its own.
+  standalone.onclick = async (e) => {
+    e.preventDefault();
+    const w = window.open('', '_blank');
+    try { const u = await _pubHandoff(id); if (w) { w.opener = null; w.location = u; } }
+    catch (err) { if (w) w.close(); showToast('Could not open: ' + err.message); }
+  };
   document.getElementById('pages-status').textContent = 'port ' + l.port;
   const host = document.getElementById('pages-frame');
   const f = document.createElement('iframe');
   f.className = 'pub-app-frame';
   f.title = l.title || ('App on port ' + l.port);
-  f.src = l.path;
+  f.src = url;
   host.replaceChildren(f);
   _pagesMounted = { destroy() { f.remove(); } };
   _pagesFit();

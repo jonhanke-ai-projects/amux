@@ -23,7 +23,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 /// Why a request is refused, or None to let it through.
-pub(crate) fn refusal(method: &Method, path: &str, headers: &HeaderMap) -> Option<&'static str> {
+pub(crate) fn refusal(method: &Method, path: &str, authority: Option<&str>, headers: &HeaderMap) -> Option<&'static str> {
     if path.starts_with("/pub/") || path.starts_with("/app/") {
         return None;
     }
@@ -46,10 +46,12 @@ pub(crate) fn refusal(method: &Method, path: &str, headers: &HeaderMap) -> Optio
     if origin.eq_ignore_ascii_case("null") {
         return Some("opaque-origin");
     }
+    // HTTP/2 carries the host as :authority (in the URI), not a Host header.
     let own = headers
         .get("x-forwarded-host")
         .or_else(|| headers.get(header::HOST))
         .and_then(|v| v.to_str().ok())
+        .or(authority)
         .map(|h| h.split(',').next().unwrap_or("").trim())
         .unwrap_or("");
     match authority_of(origin) {
@@ -79,7 +81,7 @@ fn same_authority(origin: &str, own: &str, https: bool) -> bool {
 }
 
 pub(crate) async fn guard(req: Request, next: Next) -> Response {
-    if let Some(site) = refusal(req.method(), req.uri().path(), req.headers()) {
+    if let Some(site) = refusal(req.method(), req.uri().path(), req.uri().authority().map(|a| a.as_str()), req.headers()) {
         tracing::warn!(method = %req.method(), path = %req.uri().path(), site, measured = true, n_considered = 1,
             verdict = "cross_site_request_refused",
             "a browser sent a state-changing request on behalf of another site; refused");
@@ -106,27 +108,30 @@ mod tests {
         let post = Method::POST;
         let api = "/api/page-links/x/approve";
         // A browser on another site, or another origin of the same site.
-        assert_eq!(refusal(&post, api, &h(&[("sec-fetch-site", "cross-site")])), Some("cross-site"));
-        assert_eq!(refusal(&post, api, &h(&[("sec-fetch-site", "same-site")])), Some("same-site"));
-        assert_eq!(refusal(&Method::DELETE, api, &h(&[("sec-fetch-site", "same-site")])), Some("same-site"));
+        assert_eq!(refusal(&post, api, None, &h(&[("sec-fetch-site", "cross-site")])), Some("cross-site"));
+        assert_eq!(refusal(&post, api, None, &h(&[("sec-fetch-site", "same-site")])), Some("same-site"));
+        assert_eq!(refusal(&Method::DELETE, api, None, &h(&[("sec-fetch-site", "same-site")])), Some("same-site"));
         // The dashboard itself, and a typed URL.
-        assert_eq!(refusal(&post, api, &h(&[("sec-fetch-site", "same-origin")])), None);
-        assert_eq!(refusal(&post, api, &h(&[("sec-fetch-site", "none")])), None);
+        assert_eq!(refusal(&post, api, None, &h(&[("sec-fetch-site", "same-origin")])), None);
+        assert_eq!(refusal(&post, api, None, &h(&[("sec-fetch-site", "none")])), None);
         // No browser headers: the CLI, a worker, a webhook, a native app.
-        assert_eq!(refusal(&post, api, &HeaderMap::new()), None);
+        assert_eq!(refusal(&post, api, None, &HeaderMap::new()), None);
         // Reads pass; a WebSocket handshake is checked like a write.
-        assert_eq!(refusal(&Method::GET, api, &h(&[("sec-fetch-site", "cross-site")])), None);
-        assert_eq!(refusal(&Method::GET, "/api/rt", &h(&[("upgrade", "websocket"), ("sec-fetch-site", "same-site")])), Some("same-site"));
-        assert_eq!(refusal(&Method::GET, "/api/rt", &h(&[("upgrade", "websocket"), ("origin", "https://tubescience.amux.io"), ("host", "sandbox.amux.io")])), Some("foreign-origin"));
+        assert_eq!(refusal(&Method::GET, api, None, &h(&[("sec-fetch-site", "cross-site")])), None);
+        assert_eq!(refusal(&Method::GET, "/api/rt", None, &h(&[("upgrade", "websocket"), ("sec-fetch-site", "same-site")])), Some("same-site"));
+        assert_eq!(refusal(&Method::GET, "/api/rt", None, &h(&[("upgrade", "websocket"), ("origin", "https://tubescience.amux.io"), ("host", "sandbox.amux.io")])), Some("foreign-origin"));
         // Without Sec-Fetch-Site, Origin decides.
-        assert_eq!(refusal(&post, api, &h(&[("origin", "https://sandbox.amux.io"), ("host", "sandbox.amux.io")])), None);
-        assert_eq!(refusal(&post, api, &h(&[("origin", "https://sandbox.amux.io"), ("host", "127.0.0.1:8824"), ("x-forwarded-host", "sandbox.amux.io")])), None);
-        assert_eq!(refusal(&post, api, &h(&[("origin", "https://tubescience.amux.io"), ("host", "sandbox.amux.io")])), Some("foreign-origin"));
-        assert_eq!(refusal(&post, api, &h(&[("origin", "https://sandbox.amux.io:8443"), ("host", "sandbox.amux.io")])), Some("foreign-origin"));
-        assert_eq!(refusal(&post, api, &h(&[("origin", "null"), ("host", "sandbox.amux.io")])), Some("opaque-origin"));
-        assert_eq!(refusal(&post, api, &h(&[("origin", "https://localhost:8824"), ("host", "localhost:8824")])), None);
+        assert_eq!(refusal(&post, api, None, &h(&[("origin", "https://sandbox.amux.io"), ("host", "sandbox.amux.io")])), None);
+        assert_eq!(refusal(&post, api, None, &h(&[("origin", "https://sandbox.amux.io"), ("host", "127.0.0.1:8824"), ("x-forwarded-host", "sandbox.amux.io")])), None);
+        assert_eq!(refusal(&post, api, None, &h(&[("origin", "https://tubescience.amux.io"), ("host", "sandbox.amux.io")])), Some("foreign-origin"));
+        assert_eq!(refusal(&post, api, None, &h(&[("origin", "https://sandbox.amux.io:8443"), ("host", "sandbox.amux.io")])), Some("foreign-origin"));
+        assert_eq!(refusal(&post, api, None, &h(&[("origin", "null"), ("host", "sandbox.amux.io")])), Some("opaque-origin"));
+        assert_eq!(refusal(&post, api, None, &h(&[("origin", "https://localhost:8824"), ("host", "localhost:8824")])), None);
+        // HTTP/2: no Host header, the authority comes from the URI.
+        assert_eq!(refusal(&post, api, Some("sandbox.amux.io"), &h(&[("origin", "https://sandbox.amux.io")])), None);
+        assert_eq!(refusal(&post, api, Some("sandbox.amux.io"), &h(&[("origin", "https://other.amux.io")])), Some("foreign-origin"));
         // Relays to apps are the app's business.
-        assert_eq!(refusal(&post, "/pub/abc/form", &h(&[("sec-fetch-site", "cross-site")])), None);
-        assert_eq!(refusal(&post, "/app/abc/form", &h(&[("sec-fetch-site", "same-site")])), None);
+        assert_eq!(refusal(&post, "/pub/abc/form", None, &h(&[("sec-fetch-site", "cross-site")])), None);
+        assert_eq!(refusal(&post, "/app/abc/form", None, &h(&[("sec-fetch-site", "same-site")])), None);
     }
 }

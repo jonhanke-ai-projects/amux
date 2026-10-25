@@ -1345,14 +1345,6 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/proxy/{port}",
-        methods: &["*"],
-    },
-    RouteEntry {
-        path: "/proxy/{port}/{*rest}",
-        methods: &["*"],
-    },
-    RouteEntry {
         path: "/pub/{id}",
         methods: &["*"],
     },
@@ -2347,6 +2339,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/page-links/{id}/approve",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/page-links/{id}/open",
         methods: &["POST"],
     },
     RouteEntry {

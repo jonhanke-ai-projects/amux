@@ -27,7 +27,7 @@ test('Pages provisions an app inside amux, a public app and a public folder', as
   const anon = await playwright.request.newContext({ ignoreHTTPSErrors: true });
   try {
     // A frame cannot send the bearer token: sign this browser in with the
-    // owner cookie, as port-proxy.spec.ts does.
+    // owner cookie.
     await page.goto('/');
     await page.waitForFunction(() => !!(window as any)._AMUX_AUTH_TOKEN, { timeout: 20000 });
     const token = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
@@ -42,11 +42,25 @@ test('Pages provisions an app inside amux, a public app and a public folder', as
     await page.locator('#pub-new-title').fill(`inside ${tag}`);
     await modalBtn('Add').click();
     const inside = page.locator('#pub-internal .pub-row', { hasText: `inside ${tag}` });
-    await expect(inside).toContainText(`/proxy/${port}/`);
+    await expect(inside).toContainText(/\/app\/[0-9a-f]{32}\//);
     await inside.click();
     await expect(page.locator('#pages-open')).toBeVisible();
     await expect(page.frameLocator('.pub-app-frame').locator('h1')).toHaveText('shared app');
+    // It runs on the apps origin (its own port), never the dashboard's.
+    const frameSrc = await page.locator('.pub-app-frame').getAttribute('src');
+    const frameUrl = new URL(frameSrc!);
+    expect(frameUrl.pathname).toMatch(/^\/app\/[0-9a-f]{32}\/$/);
+    expect(frameUrl.origin).not.toBe(base());
+    // The one-time link was spent opening the frame; it opens nothing again.
+    const spent = await anon.get(frameSrc!, { maxRedirects: 0 });
+    expect(spent.status()).toBe(403);
     await expect(page.locator('#pages-page-actions')).toBeHidden();
+    await page.getByRole('button', { name: 'Back to all pages' }).click();
+    // A worker's localhost link lands on that Pages entry; /proxy/ is gone.
+    await page.goto(`/#view=pages&add-internal=${port}`);
+    await expect(page.frameLocator('.pub-app-frame').locator('h1')).toHaveText('shared app');
+    const gone = await anon.get(`${base()}/proxy/${port}/`);
+    expect(await gone.text()).not.toContain('shared app');
     await page.getByRole('button', { name: 'Back to all pages' }).click();
 
     // 2. A public app: anyone, no amux credential reaches it.

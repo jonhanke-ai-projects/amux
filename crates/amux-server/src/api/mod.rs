@@ -187,6 +187,12 @@ pub struct AppState {
     pub reconciled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// The apps origin's router: `/app/<id>/` and nothing else
+/// (static_files/apps_origin.rs). Served on its own listener.
+pub fn apps_router() -> Router {
+    static_files::apps_origin::router()
+}
+
 pub fn router(state: AppState) -> Router {
     router_with_connector_transport(state, Arc::new(crate::integrations::email::ReqwestTransport::new()))
 }
@@ -586,6 +592,11 @@ pub fn router_with_connector_transport(
         .route(
             "/api/page-links/{id}/approve",
             axum::routing::post(static_files::public_links::approve),
+        )
+        // A one-time link that opens an app inside amux on the apps origin.
+        .route(
+            "/api/page-links/{id}/open",
+            axum::routing::post(static_files::apps_origin::open),
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
