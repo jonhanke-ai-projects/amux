@@ -54,11 +54,18 @@ for (const width of [640, 760, 900]) {
       const r = (s: string) => (document.querySelector(s) as HTMLElement).getBoundingClientRect();
       const head = r('#peek-overlay > .overlay-header'), task = r('#peek-task-row'), tools = r('#peek-overlay .peek-toolbar');
       const line = parseFloat(getComputedStyle(document.querySelector('#peek-task-row') as HTMLElement).lineHeight) || 20;
-      return { headW: head.width, headH: head.height, taskW: task.width, taskH: task.height, line, toolsL: tools.left, toolsR: tools.right, vw: innerWidth };
+      const label = document.getElementById('peek-task-label') as HTMLElement;
+      return { headW: head.width, headH: head.height, taskW: task.width, taskH: task.height, line, toolsL: tools.left, toolsR: tools.right, vw: innerWidth,
+        fine: matchMedia('(hover: hover) and (pointer: fine)').matches, clipped: label.scrollWidth > label.clientWidth + 1 };
     });
     testInfo.annotations.push({ type: 'geometry', description: JSON.stringify(g) });
     await page.screenshot({ path: testInfo.outputPath(`narrow-${width}.png`) });
-    expect(g.taskW, 'the task gets most of the width').toBeGreaterThan(g.headW * 0.5);
+    // With a mouse the task row stretches across the band, so its width is the
+    // room it was given. A touch screen keeps the stacked header, where the row
+    // is centred and only as wide as its text (334px of 736 for this task at
+    // 760px, iOS Safari): there the check is that the whole text shows.
+    if (g.fine) expect(g.taskW, 'the task gets most of the width').toBeGreaterThan(g.headW * 0.5);
+    else expect(g.clipped, 'the whole task shows').toBe(false);
     expect(g.taskH, 'the task is a line or two, not a column of letters').toBeLessThanOrEqual(g.line * 3 + 8);
     expect(g.toolsL, 'the toolbar is on screen').toBeGreaterThanOrEqual(0);
     expect(g.toolsR, 'the toolbar is on screen').toBeLessThanOrEqual(g.vw + 1);
