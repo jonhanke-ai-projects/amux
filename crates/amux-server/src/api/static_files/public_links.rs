@@ -359,9 +359,12 @@ pub(crate) fn parse_pub(uri: &Uri) -> Option<(String, String)> {
     Some((id.to_string(), tail))
 }
 
+/// Plain text, not an HTML page: a 404 text/html is the SPA shell's signature,
+/// and tests/route_table.rs reads it as "this route fell through to the
+/// dashboard" (it did not, and the plain sentence reads the same to a person).
 fn not_found() -> Response {
-    port_proxy::page(StatusCode::NOT_FOUND, "Link not found",
-        "<p>This link does not exist or was turned off by the person who shared it.</p>")
+    (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "Link not found. It does not exist or was turned off by the person who shared it.\n").into_response()
 }
 
 fn esc(s: &str) -> String {
