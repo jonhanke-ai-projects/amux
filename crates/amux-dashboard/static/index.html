@@ -2091,9 +2091,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <input class="search-input" id="msgs-search" type="text" placeholder="Search messages… (Enter searches ALL history)" autocomplete="off" oninput="if(!this.value&&_msgsDeepQ){_msgsDeepQ='';_messagesLoad(true);}else{_messagesRender()}" onkeydown="if(event.key==='Enter'){event.preventDefault();_msgsDeepQ=this.value.trim();_messagesLoad(true);}">
       <div id="msgs-selbar" style="display:none;"></div>
     </div>
-    <select id="msgs-session-filter" onchange="_msgsCounts=null;_messagesLoad(true,this.value)" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
-      <option value="">All workers</option>
-    </select>
+    <!-- Which workers: several workers and groups, searchable (Ethan,
+         2026-10-25). Opens _msgsScopeOpen; the label says what is picked. -->
+    <button type="button" id="msgs-session-filter" aria-haspopup="dialog" aria-expanded="false" onclick="_msgsScopeOpen(this)" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;">All workers</button>
     <!-- Who SENT it (Ethan 2026-10-11). Options come from the server's
          senders facet, so it only offers names that select something. -->
     <select id="msgs-sender-filter" aria-label="Filter by sender" title="Who sent the message" onchange="_msgsSetSender(this.value)" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">

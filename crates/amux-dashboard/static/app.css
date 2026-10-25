@@ -10357,3 +10357,17 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .steer-row { flex-wrap: wrap; }
   .steer-row-actions { width: 100%; justify-content: flex-end; }
 }
+
+/* Messages: which workers (several workers and groups, searchable). The
+   picker reuses the Vault group picker's chips, search box and checks. */
+.msgs-scope-pop { position: fixed; z-index: 320; background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.35); padding: var(--space-3, 12px); max-height: min(70vh, 560px);
+  display: flex; flex-direction: column; gap: var(--space-2, 8px); }
+.msgs-scope-list { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+.msgs-scope-list .vault-checks { flex-direction: column; flex-wrap: nowrap; max-height: none; gap: 0; }
+.msgs-scope-list .vault-check { min-height: 36px; }
+	.msgs-scope-head[hidden] { display: none; }
+.msgs-scope-head { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--dim); margin: 6px 0 2px; }
+.msgs-scope-foot { display: flex; justify-content: space-between; gap: var(--space-2, 8px); }
+#msgs-session-filter.active { border-color: var(--accent) !important; color: var(--accent) !important; }
+@media (max-width: 600px) { .msgs-scope-list .vault-check { min-height: 44px; } }

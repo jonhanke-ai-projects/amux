@@ -12468,10 +12468,8 @@ function _grpGoto(g, where) {
     // select is single-session, so for a group we set the deep-search box to a
     // group: token instead and let the server scope it.
     setTimeout(() => {
-      const sel = document.getElementById('msgs-session-filter');
-      if (sel) sel.value = '';
-      _msgsGroup = label || '';
-      _msgsRenderGroupChip();
+      _msgsScope = { workers: new Set(), groups: new Set(label ? [label] : []) };
+      _msgsScopeLabel();
       _messagesLoad(true);
     }, 60);
     return;
@@ -45651,13 +45649,12 @@ function _bdOpenMessage(id) {
   closeBoardDetail();
   _msgsKind = 'all';
   _msgsDeepQ = displayId;
-  _msgsGroup = '';
+  _msgsScope = { workers: new Set(), groups: new Set() };
   _msgsSender = '';
   _msgsCounts = null;
   const search = document.getElementById('msgs-search');
   if (search) search.value = displayId;
-  const worker = document.getElementById('msgs-session-filter');
-  if (worker) worker.value = '';
+  _msgsScopeLabel();
   if (typeof _msgSetMode === 'function') _msgSetMode('messages');
   switchView('messages');
 }
@@ -56584,23 +56581,120 @@ window.addEventListener('resize', () => {
 let _msgsData = [];
 let _msgsAllSessions = null;   // store-derived dropdown options (AMUX-2548); null = not fetched
 let _msgsDeepQ = '';   // non-empty = server-side full-history search is active
-let _msgsGroup = '';   // non-empty = scoped to a group (arrived from its scope panel)
-function _msgsRenderGroupChip() {
-  let el = document.getElementById('msgs-group-chip');
-  if (!el) {
-    const host = document.getElementById('msgs-session-filter');
-    if (!host || !host.parentElement) return;
-    el = document.createElement('span');
-    el.id = 'msgs-group-chip';
-    host.parentElement.insertBefore(el, host.nextSibling);
+// WHICH WORKERS (Ethan, 2026-10-25: "multiselect/search for workers + groups
+// here in global messages tab"). Several workers and several groups at once,
+// a union, applied by the SERVER (?session=a,b&group=x) so counts and pages
+// cover the whole store. Empty = every worker.
+let _msgsScope = { workers: new Set(), groups: new Set() };
+let _msgsGroupsList = null;   // [{name, workers}] from /api/groups; null = not fetched
+function _msgsScopeQuery() {
+  const w = [..._msgsScope.workers], g = [..._msgsScope.groups];
+  return (w.length ? '&session=' + encodeURIComponent(w.join(',')) : '')
+    + (g.length ? '&group=' + encodeURIComponent(g.join(',')) : '');
+}
+// The button says what is applied: never a silent pre-filter.
+function _msgsScopeLabel() {
+  const b = document.getElementById('msgs-session-filter');
+  if (!b) return;
+  const w = [..._msgsScope.workers], g = [..._msgsScope.groups];
+  const parts = [];
+  if (g.length) parts.push(g.length === 1 && !w.length ? 'group: ' + g[0] : g.length + (g.length === 1 ? ' group' : ' groups'));
+  if (w.length) parts.push(w.length === 1 && !g.length ? w[0] : w.length + (w.length === 1 ? ' worker' : ' workers'));
+  b.textContent = parts.length ? parts.join(' · ') : 'All workers';
+  b.title = parts.length ? [...g.map(x => 'group ' + x), ...w].join(', ') : 'Every worker';
+  b.classList.toggle('active', parts.length > 0);
+}
+function _msgsScopeClose() {
+  document.getElementById('msgs-scope-pop')?.remove();
+  document.getElementById('msgs-session-filter')?.setAttribute('aria-expanded', 'false');
+}
+async function _msgsScopeOpen(btn) {
+  if (document.getElementById('msgs-scope-pop')) { _msgsScopeClose(); return; }
+  const pop = document.createElement('div');
+  pop.id = 'msgs-scope-pop';
+  pop.className = 'msgs-scope-pop vault-ms';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'Filter by workers and groups');
+  pop.innerHTML = '<div class="vault-ms-chips" id="msgs-scope-chips" aria-live="polite"></div>'
+    + '<input id="msgs-scope-q" class="input vault-ms-q" type="search" autocomplete="off" spellcheck="false" placeholder="Search workers and groups" aria-label="Search workers and groups" oninput="_msgsScopeFilter()" onkeydown="_msgsScopeKey(event)">'
+    + '<div id="msgs-scope-list" class="msgs-scope-list"><div class="ui-help">Loading…</div></div>'
+    + '<div class="msgs-scope-foot"><button type="button" class="btn" onclick="_msgsScopeSet(null)">All workers</button>'
+    + '<button type="button" class="btn primary" onclick="_msgsScopeClose()">Done</button></div>';
+  document.body.appendChild(pop);
+  btn.setAttribute('aria-expanded', 'true');
+  const r = _cssRect(btn), z = _uiZoomFactor(), vw = window.innerWidth / z;
+  const w = Math.min(340, vw - 16);
+  pop.style.width = w + 'px';
+  pop.style.left = Math.max(8, Math.min(r.left, vw - w - 8)) + 'px';
+  pop.style.top = (r.bottom + 4) + 'px';
+  setTimeout(() => {
+    document.getElementById('msgs-scope-q')?.focus();
+    const off = e => { if (!pop.contains(e.target) && e.target !== btn) { _msgsScopeClose(); document.removeEventListener('pointerdown', off, true); } };
+    document.addEventListener('pointerdown', off, true);
+  }, 0);
+  if (!_msgsGroupsList) {
+    try {
+      const d = await (await fetch(API + '/api/groups', { headers: _authHeaders() })).json();
+      _msgsGroupsList = (d.groups || []).map(g => ({ name: g.name, workers: g.workers || [] }));
+    } catch (e) { _msgsGroupsList = []; }
   }
-  // The filter must be VISIBLE and removable — a silent pre-filter is how a
-  // scoped page gets read as the whole corpus (the tag-scoped board incident).
-  el.innerHTML = _msgsGroup
-    ? '<span class="msg-tag" style="background:rgba(88,166,255,0.14);color:var(--accent);cursor:pointer;"'
-      + ' title="Clear group filter" onclick="_msgsGroup=\'\';_msgsRenderGroupChip();_messagesLoad(true);">group: '
-      + esc(_msgsGroup) + ' \u2715</span>'
-    : '';
+  if (!_msgsAllSessions) {
+    try { const sr = await fetch(API + '/api/history?sessions=1'); if (sr.ok) _msgsAllSessions = (await sr.json()).map(x => x.session); } catch (e) {}
+  }
+  _msgsScopeRender();
+}
+function _msgsScopeRender() {
+  const list = document.getElementById('msgs-scope-list');
+  if (!list) return;
+  const groups = (_msgsGroupsList || []).map(g => g.name).sort();
+  const workers = (_msgsAllSessions || [...new Set(_msgsData.map(m => m.session).filter(Boolean))]).slice().sort();
+  const row = (kind, n, sub) => '<label class="vault-check" data-kind="' + kind + '" data-name="' + esc(n) + '">'
+    + '<input type="checkbox" value="' + esc(n) + '"' + (_msgsScope[kind].has(n) ? ' checked' : '') + ' onchange="_msgsScopeToggle(\'' + kind + '\',this.value,this.checked)">'
+    + '<span>' + esc(n) + (sub ? ' <span class="ui-help">' + esc(sub) + '</span>' : '') + '</span></label>';
+  const gw = Object.fromEntries((_msgsGroupsList || []).map(g => [g.name, g.workers.length]));
+  list.innerHTML = (groups.length ? '<div class="msgs-scope-head">Groups</div><div class="vault-checks">'
+      + groups.map(n => row('groups', n, gw[n] ? gw[n] + (gw[n] === 1 ? ' worker' : ' workers') : '')).join('') + '</div>' : '')
+    + '<div class="msgs-scope-head">Workers</div><div class="vault-checks">' + workers.map(n => row('workers', n)).join('') + '</div>'
+    + '<span class="ui-help" id="msgs-scope-none" hidden>Nothing matches</span>';
+  const chips = document.getElementById('msgs-scope-chips');
+  if (chips) chips.innerHTML = [...[..._msgsScope.groups].map(n => ['groups', n]), ...[..._msgsScope.workers].map(n => ['workers', n])]
+    .map(([k, n]) => '<span class="vault-ms-chip">' + (k === 'groups' ? 'group ' : '') + esc(n)
+      + '<button type="button" class="vault-ms-x" aria-label="Remove ' + esc(n) + '" onclick="_msgsScopeToggle(\'' + k + '\',\'' + escJs(n) + '\',false)">✕</button></span>').join('');
+  _msgsScopeFilter();
+}
+function _msgsScopeFilter() {
+  const q = (document.getElementById('msgs-scope-q')?.value || '').trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll('#msgs-scope-list .vault-check').forEach(l => { const hit = !q || l.dataset.name.toLowerCase().includes(q); l.hidden = !hit; shown += hit; });
+  // A section the search emptied loses its heading too.
+  document.querySelectorAll('#msgs-scope-list .msgs-scope-head').forEach(h => {
+    h.hidden = ![...(h.nextElementSibling?.children || [])].some(c => !c.hidden);
+  });
+  const none = document.getElementById('msgs-scope-none'); if (none) none.hidden = shown > 0;
+}
+// Enter picks the first match, so the filter works from the keyboard.
+function _msgsScopeKey(e) {
+  if (e.key === 'Escape') { _msgsScopeClose(); return; }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const first = [...document.querySelectorAll('#msgs-scope-list .vault-check')].find(l => !l.hidden);
+  if (first) _msgsScopeToggle(first.dataset.kind, first.dataset.name, !_msgsScope[first.dataset.kind].has(first.dataset.name));
+  const q = document.getElementById('msgs-scope-q'); if (q) q.value = '';
+  _msgsScopeFilter();
+}
+function _msgsScopeToggle(kind, name, on) {
+  if (on) _msgsScope[kind].add(name); else _msgsScope[kind].delete(name);
+  _msgsScopeApply();
+}
+function _msgsScopeSet(scope) {
+  _msgsScope = scope || { workers: new Set(), groups: new Set() };
+  _msgsScopeApply();
+}
+function _msgsScopeApply() {
+  _msgsScopeLabel();
+  _msgsScopeRender();
+  _msgsCounts = null;
+  _messagesLoad(true);
 }
 let _msgsOffset = 0;
 const _MSGS_PAGE = 60;   // AMUX-4476: smaller first page for a fast click-to-display; page older on demand
@@ -56632,18 +56726,17 @@ async function _messagesLoad(reset, presetSession) {
     // showed 48 human messages out of 6547 — the human rows never made it into
     // the window. ?counts=1 supplies true per-kind totals for the chips, which
     // a tally of the fetched page cannot (every unselected chip would read 0).
-    const _sf = document.getElementById('msgs-session-filter')?.value || '';
+    const _scope = _msgsScopeQuery();
     // The page is the unit now: offset is derived from it, never accumulated.
     _msgsOffset = (_msgsPage - 1) * _msgsPageSize;
     let _u = API + '/api/history?limit=' + _msgsPageSize + '&offset=' + _msgsOffset;
     if (_msgsKind !== 'all') _u += '&kind=' + encodeURIComponent(_msgsKind);
-    if (_sf) _u += '&session=' + encodeURIComponent(_sf);
+    _u += _scope;
     if (_msgsSender) _u += '&sender=' + encodeURIComponent(_msgsSender);
     // Deep search (Enter in the box): the SERVER scans all history, so hits
     // older than the loaded page exist. Typing still filters the loaded page
     // instantly — two speeds, one box (AMUX-2426).
     if (_msgsDeepQ) _u += '&q=' + encodeURIComponent(_msgsDeepQ);
-    if (_msgsGroup) _u += '&group=' + encodeURIComponent(_msgsGroup);
     const r = await fetch(_u);
     const rows = await r.json();
     // The count for THIS filter, from the same request that served the page.
@@ -56654,7 +56747,7 @@ async function _messagesLoad(reset, presetSession) {
     _msgsTotal = _t === null || _t === undefined || _t === '' ? null : +_t;
     // `senders_for` scopes only the SENDERS facet (the per-kind chip totals
     // stay kind-free), so the From menu lists who sent THIS kind.
-    fetch(API + '/api/history?counts=1' + (_sf ? '&session=' + encodeURIComponent(_sf) : '')
+    fetch(API + '/api/history?counts=1' + _scope
           + (_msgsKind !== 'all' ? '&senders_for=' + encodeURIComponent(_msgsKind) : ''))
       .then(x => x.json()).then(c => { _msgsCounts = c; _msgsRenderChips(); _msgsRenderSenders(); }).catch(() => {});
     if (!Array.isArray(rows)) return;
@@ -56679,23 +56772,9 @@ async function _messagesLoad(reset, presetSession) {
     // showed it fine: the same store, two windows, and the view's own control
     // silently limited to the window. The dropdown is the SCOPE control; it
     // must enumerate the store's scopes, which only the server can see.
-    const sel = document.getElementById('msgs-session-filter');
-    if (sel) {
-      const cur = (presetSession != null && presetSession !== '') ? presetSession : sel.value;
-      let names = _msgsAllSessions;
-      if (!names) {
-        try {
-          const sr = await fetch(API + '/api/history?sessions=1');
-          if (sr.ok) names = _msgsAllSessions = (await sr.json()).map(x => x.session);
-        } catch (e) {}
-      }
-      // Fallback keeps the old (window-derived) behaviour if the fetch failed,
-      // which can only ever show a subset — never nothing.
-      if (!names) names = [...new Set(_msgsData.map(m => m.session).filter(Boolean))].sort();
-      sel.innerHTML = '<option value="">All workers</option>' +
-        names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
-      if (cur && !names.includes(cur)) sel.value = '';
-    }
+    // The scope picker lists every worker with history FROM THE STORE when it
+    // opens (_msgsScopeOpen); a worker preset by a caller joins the picks.
+    if (presetSession) { _msgsScope.workers.add(presetSession); _msgsScopeLabel(); }
     _messagesRender();
   } catch (e) {
     const list = document.getElementById('msgs-list');
@@ -56756,7 +56835,7 @@ let _msgsKind = 'human';        // all | human | session | schedule
 let _msgsSender = '';
 function _msgsSetSender(v) {
   _msgsSender = v || '';
-  _messagesLoad(true, document.getElementById('msgs-session-filter')?.value || '');
+  _messagesLoad(true);
 }
 function _msgsRenderSenders() {
   const sel = document.getElementById('msgs-sender-filter');
@@ -56775,7 +56854,7 @@ function _msgsRenderSenders() {
 let _msgsCounts = null;         // true per-kind totals from the server
 function _msgsSetKind(k) {
   _msgsKind = k;
-  _messagesLoad(true, document.getElementById('msgs-session-filter')?.value || '');
+  _messagesLoad(true);
 }
 function _msgsRenderChips() {
   const bar = document.getElementById('msgs-kind-filter');
@@ -56890,10 +56969,8 @@ function _messagesRender() {
   const list = document.getElementById('msgs-list');
   if (!list) return;
   const q = (document.getElementById('msgs-search')?.value || '').trim().toLowerCase();
-  const sessF = document.getElementById('msgs-session-filter')?.value || '';
   _msgsRenderChips();
   let rows = _msgsData;
-  if (sessF) rows = rows.filter(m => (m.session || '') === sessF);
   if (_msgsSender) rows = rows.filter(m => !m.sender || m.sender === _msgsSender);
   // No client-side kind filter: the fetch is already kind-scoped, so the page
   // is 500 rows OF THAT KIND rather than 500 mixed rows filtered down to a
@@ -56950,8 +57027,8 @@ function _messagesRender() {
                : 'No matches in the ' + _msgsData.length + ' loaded messages. '
                  + '<a href="#" onclick="event.preventDefault();_msgsDeepQ=document.getElementById(\'msgs-search\').value.trim();_messagesLoad(true);" '
                  + 'style="color:var(--accent);">Search all history</a> (or press Enter).')
-           : kl ? 'No ' + kl.toLowerCase() + ' messages' + (_msgsSender ? ' from ' + esc(_msgsSender) : '') + (sessF ? ' for ' + esc(sessF) : '') + '.'
-                : (sessF ? 'No messages for ' + esc(sessF) + '.' : 'No messages yet.')) + '</div>';
+           : kl ? 'No ' + kl.toLowerCase() + ' messages' + (_msgsSender ? ' from ' + esc(_msgsSender) : '') + (_msgsScope.workers.size || _msgsScope.groups.size ? ' for ' + esc(document.getElementById('msgs-session-filter')?.textContent || '') : '') + '.'
+                : (_msgsScope.workers.size || _msgsScope.groups.size ? 'No messages for ' + esc(document.getElementById('msgs-session-filter')?.textContent || '') + '.' : 'No messages yet.')) + '</div>';
     return;
   }
   // Burst grouping + message→card join (AMUX-2143): you fire clusters
