@@ -140,6 +140,15 @@ pub(crate) async fn proxy(
         return page(StatusCode::BAD_GATEWAY, "Nothing is running on that port",
             &format!("<p>No server is listening on port {port} on this machine. It may have stopped; ask the worker that sent the link to start it again.</p>"));
     };
+    // BEHIND A FRONT PROXY THE BROWSER CANNOT REACH host:port, so relay. Caddy on an amux
+    // Cloud server hands amux `Host: 127.0.0.1:8824`; the redirect below then sent the
+    // owner's browser to http://127.0.0.1:8891/, their own machine (sandbox.amux.io,
+    // 2026-10-25: "i need to be able to view this app within the amux ui").
+    if let Some(via) = forwarded_by(&headers) {
+        tracing::info!(port, host = %host, via, measured = true, n_considered = 1,
+            verdict = "port_proxy_relay_forwarded", "request came through a front proxy; relaying the dev server through amux");
+        return relay(local, port, &format!("/proxy/{port}"), &tail, method, &headers, body).await;
+    }
     if !answers(&host, port).await {
         tracing::warn!(port, host = %host, measured = true, n_considered = 1,
             verdict = "port_proxy_loopback_only",
@@ -162,6 +171,14 @@ pub(crate) async fn local_listener(port: u16) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// The forwarding header a front proxy (Caddy, nginx, a tunnel) added, if any. Its
+/// presence means the browser is somewhere else and only reaches this box through it.
+fn forwarded_by(headers: &HeaderMap) -> Option<&'static str> {
+    ["x-forwarded-host", "x-forwarded-for", "forwarded"]
+        .into_iter()
+        .find(|h| headers.contains_key(*h))
 }
 
 /// HTML larger than this is passed through unrewritten rather than buffered.
@@ -373,6 +390,17 @@ mod tests {
         assert!(out.contains(r#"src="rel.webm""#), "relative stays: {out}");
         assert!(out.contains(r#"href="/proxy/3077/z""#), "already proxied stays: {out}");
         assert!(rewrite_html(r#"<a href="/">home</a>"#, p).contains(r#"href="/proxy/3077/""#));
+    }
+
+    #[test]
+    fn a_request_through_a_front_proxy_is_relayed_not_redirected() {
+        let mut h = HeaderMap::new();
+        assert_eq!(forwarded_by(&h), None, "a browser on this machine may be redirected");
+        h.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        assert_eq!(forwarded_by(&h), Some("x-forwarded-for"));
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-host", "sandbox.amux.io".parse().unwrap());
+        assert_eq!(forwarded_by(&h), Some("x-forwarded-host"));
     }
 
     #[test]

@@ -105,3 +105,42 @@ async fn a_loopback_only_server_the_browser_cannot_reach_is_relayed_through_amux
     assert!(body.contains("<h1>relayed</h1>"), "{body}");
     assert!(body.contains(&format!(r#"src="/proxy/{port}/pixel.png""#)), "absolute asset not routed back: {body}");
 }
+
+/// sandbox.amux.io, 2026-10-25: Caddy hands amux `Host: 127.0.0.1:8824`, the dev
+/// server answers there, and the browser was redirected to http://127.0.0.1:8891/,
+/// its own machine. A request a front proxy forwarded is relayed instead.
+#[tokio::test]
+async fn a_request_through_a_front_proxy_is_relayed_not_sent_to_loopback() {
+    let dev = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = dev.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut s, _)) = dev.accept().await {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            let body = "<h1>the demo</h1>";
+            let _ = s
+                .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+                .await;
+        }
+    });
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/proxy/{port}/"))
+                .header(header::HOST, "127.0.0.1:8824")
+                .header("x-forwarded-for", "203.0.113.9")
+                .header("x-forwarded-host", "sandbox.amux.io")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let loc = res.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, StatusCode::OK, "{loc} {body}");
+    assert!(loc.is_empty(), "a forwarded request must not be redirected to: {loc}");
+    assert!(body.contains("<h1>the demo</h1>"), "{body}");
+}
