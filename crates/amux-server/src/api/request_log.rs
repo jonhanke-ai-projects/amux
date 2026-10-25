@@ -2346,6 +2346,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["DELETE"],
     },
     RouteEntry {
+        path: "/api/page-links/{id}/approve",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/scope",
         methods: ANY,
     },

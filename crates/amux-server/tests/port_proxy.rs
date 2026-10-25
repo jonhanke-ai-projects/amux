@@ -7,7 +7,41 @@ use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
 
+/// This binary's own amux home: /proxy opens only ports a person added to
+/// Pages, and those live in <home>/public-links.json.
+fn home() -> &'static std::path::Path {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let h = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("AMUX_HOME", h.path()) };
+        h
+    })
+    .path()
+}
+
+/// Add `port` to Pages as an app inside amux, approved by a person.
+fn allow(port: u16) {
+    add(port, "owner")
+}
+
+/// Add `port` as a worker would: pending, approved by nobody.
+fn ask(port: u16) {
+    add(port, "")
+}
+
+fn add(port: u16, approved_by: &str) {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    let path = home().join("public-links.json");
+    let mut v: serde_json::Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({"links": []}));
+    v["links"].as_array_mut().unwrap().push(serde_json::json!({
+        "id": format!("{:032x}", port as u128), "kind": "internal", "port": port, "approved_by": approved_by}));
+    std::fs::write(&path, v.to_string()).unwrap();
+}
+
 fn app() -> axum::Router {
+    home();
     let dir = tempfile::tempdir().unwrap();
     let store = amux_server::db::Store::open(&dir.path().join("t.db")).unwrap();
     std::mem::forget(dir);
@@ -48,6 +82,7 @@ async fn get(path: &str) -> (StatusCode, String, String) {
 async fn a_proxy_link_opens_the_dev_server_on_its_own_port() {
     let dev = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = dev.local_addr().unwrap().port();
+    allow(port);
     let (st, loc, body) = get(&format!("/proxy/{port}/?hero=texture")).await;
     assert_eq!(st, StatusCode::TEMPORARY_REDIRECT, "{body}");
     assert_eq!(loc, format!("http://127.0.0.1:{port}/?hero=texture"));
@@ -65,6 +100,7 @@ async fn a_proxy_link_opens_the_dev_server_on_its_own_port() {
 async fn a_proxy_link_to_a_stopped_server_says_so_and_never_serves_the_dashboard() {
     let dev = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = dev.local_addr().unwrap().port();
+    allow(port);
     drop(dev);
     let (st, loc, body) = get(&format!("/proxy/{port}/")).await;
     assert_eq!(st, StatusCode::BAD_GATEWAY);
@@ -83,6 +119,7 @@ async fn a_loopback_only_server_the_browser_cannot_reach_is_relayed_through_amux
         return;
     };
     let port = dev.local_addr().unwrap().port();
+    allow(port);
     tokio::spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         while let Ok((mut s, _)) = dev.accept().await {
@@ -113,6 +150,7 @@ async fn a_loopback_only_server_the_browser_cannot_reach_is_relayed_through_amux
 async fn a_request_through_a_front_proxy_is_relayed_not_sent_to_loopback() {
     let dev = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = dev.local_addr().unwrap().port();
+    allow(port);
     tokio::spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         while let Ok((mut s, _)) = dev.accept().await {
@@ -143,4 +181,24 @@ async fn a_request_through_a_front_proxy_is_relayed_not_sent_to_loopback() {
     assert_eq!(status, StatusCode::OK, "{loc} {body}");
     assert!(loc.is_empty(), "a forwarded request must not be redirected to: {loc}");
     assert!(body.contains("<h1>the demo</h1>"), "{body}");
+}
+
+/// An app opened through /proxy shares the dashboard's origin and runs with the
+/// owner's amux access, so only a port a person added to Pages opens, and a
+/// local admin service never does (red-team, 2026-10-25).
+#[tokio::test]
+async fn a_port_nobody_added_to_pages_is_not_opened() {
+    let dev = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = dev.local_addr().unwrap().port();
+    let (st, loc, body) = get(&format!("/proxy/{port}/")).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{loc} {body}");
+    assert!(body.contains(&format!("add-internal={port}")), "the page links to adding it: {body}");
+    let (st, _, body) = get("/proxy/2019/config/").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "Caddy's admin API opened: {body}");
+    // Asked for by a worker and not yet approved: still not opened.
+    let asked = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = asked.local_addr().unwrap().port();
+    ask(port);
+    let (st, _, body) = get(&format!("/proxy/{port}/")).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "a pending app opened: {body}");
 }

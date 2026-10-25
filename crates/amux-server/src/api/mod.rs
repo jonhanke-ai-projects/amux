@@ -582,6 +582,10 @@ pub fn router_with_connector_transport(
             "/api/page-links/{id}",
             axum::routing::delete(static_files::public_links::revoke),
         )
+        .route(
+            "/api/page-links/{id}/approve",
+            axum::routing::post(static_files::public_links::approve),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             policy::enforce,

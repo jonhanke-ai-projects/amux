@@ -6977,7 +6977,8 @@ ${BOLD}amux publish${RESET} — apps and files in the Pages tab
   amux publish --list                    List them
   amux publish --revoke ID               Remove one (a public link stops working)
 
-Publish to the public only what the owner wants shared.
+Anything a worker adds stays PENDING (a public link serves nobody, an app
+inside amux does not open) until the owner approves it in the Pages tab.
 EOF
       return 0
       ;;
@@ -6997,7 +6998,8 @@ if not links:
     print("nothing published")
 for l in links:
     what = l["file"] if l["kind"] == "file" else "port %s" % l["port"]
-    print(l["id"], l["kind"], what, l.get("url") or l["path"], ("  " + l["title"]) if l.get("title") else "")
+    state = "PENDING" if l.get("pending") else ("public" if l.get("public") else "inside")
+    print(l["id"], l["kind"], state, what, l.get("url") or l["path"], ("  " + l["title"]) if l.get("title") else "")
 '
       return 0
       ;;
@@ -7043,7 +7045,13 @@ if "error" in d:
 print(d.get("url") or d["path"] + "   (address unknown: set AMUX_PUBLIC_URL in server.env)")
 if d["kind"] != "file" and not d.get("listening"):
     print("note: nothing listens on port %s yet; the link works once the app runs" % d["port"], file=sys.stderr)
-print(("public: anyone with the link can open it. " if d.get("public") else "only you, signed in. ") + "Listed in Pages; remove with: amux publish --revoke " + d["id"], file=sys.stderr)
+if d.get("pending"):
+    print("PENDING: it does not open until the owner approves it in the Pages tab. Tell the owner it is waiting there.", file=sys.stderr)
+elif d.get("public"):
+    print("public: anyone with the link can open it.", file=sys.stderr)
+else:
+    print("only you, signed in.", file=sys.stderr)
+print("Listed in Pages; remove with: amux publish --revoke " + d["id"], file=sys.stderr)
 '
 }
 

@@ -58124,6 +58124,12 @@ function _pagesEnter() {
   if (_pagesCur) return;
   _pagesList();
   _pubList();
+  // /proxy/<port>/ for a port not in Pages links here with #...&add-internal=<port>.
+  const m = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(location.hash);
+  if (m) {
+    history.replaceState(null, '', location.pathname + location.search + location.hash.replace(/&?add-internal=\d+/, ''));
+    _pubNew('internal', parseInt(m[1], 10));
+  }
 }
 // The rest of the Pages tab (static_files/public_links.rs): apps on this
 // machine for the owner inside amux, the same apps shared publicly, and public
@@ -58146,11 +58152,21 @@ function _pubRow(l) {
   const name = l.title || (l.kind === 'file' ? (l.file || '').split('/').pop() : 'Port ' + l.port);
   const what = l.kind === 'file' ? esc(l.file) : 'port ' + esc(String(l.port));
   const by = l.created_by ? ' · by ' + esc(l.created_by) : '';
-  if (l.kind === 'internal') {
+  if (l.kind === 'internal' && !l.pending) {
     return `<div class="pages-row pub-row" role="button" tabindex="0" data-pub="${esc(l.id)}"
       onclick="_pubOpenInternal('${escJs(l.id)}')" onkeydown="if(event.key==='Enter'){event.preventDefault();_pubOpenInternal('${escJs(l.id)}')}">
       <div class="pages-row-main"><b>${esc(name)}</b><span class="ui-help">${esc(l.path)} · ${what}${by}</span></div>
       <button class="btn danger" onclick="event.stopPropagation();_pubRevoke('${escJs(l.id)}')">Remove</button></div>`;
+  }
+  // A link a worker asked for does nothing until you approve it here: a public
+  // one serves nobody, and an app inside amux does not open.
+  if (l.pending) {
+    return `<div class="pages-row pub-row pub-pending" data-pub="${esc(l.id)}">
+    <div class="pages-row-main"><b>${esc(name)}</b>
+      <span class="ui-help pub-pending-note">Waiting for your approval: nobody can open it yet.</span>
+      <span class="ui-help">${what}${by}</span></div>
+    <button class="btn primary" onclick="_pubApprove('${escJs(l.id)}')">Approve</button>
+    <button class="btn danger" onclick="_pubRevoke('${escJs(l.id)}')">Decline</button></div>`;
   }
   return `<div class="pages-row pub-row" data-pub="${esc(l.id)}">
     <div class="pages-row-main"><b>${esc(name)}</b>
@@ -58158,6 +58174,17 @@ function _pubRow(l) {
       <span class="ui-help">${what}${by}</span></div>
     <button class="btn" onclick="_copyTextWithToast('${escJs(href)}', 'Link copied')">Copy</button>
     <button class="btn danger" onclick="_pubRevoke('${escJs(l.id)}')">Turn off</button></div>`;
+}
+async function _pubApprove(id) {
+  const l = _pubLinks.find(x => x.id === id);
+  const what = l && l.kind === 'file' ? 'the file or folder ' + (l.file || '') : 'the app on port ' + (l ? l.port : '');
+  const ask = l && l.kind === 'internal'
+    ? 'Open ' + what + ' inside amux? It runs with your amux access, so approve only an app you trust.'
+    : 'Make ' + what + ' public? Anyone with the link can open it, without signing in, until you turn it off.';
+  if (!(await showConfirm(ask, 'Approve', true))) return;
+  try { await _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' }); showToast('Public link approved'); }
+  catch (e) { showToast('Not approved: ' + e.message); }
+  _pubList();
 }
 async function _pubList() {
   const ids = { internal: 'pub-internal', app: 'pub-apps', file: 'pub-files' };
@@ -58176,13 +58203,14 @@ async function _pubList() {
       + (rows.length ? rows.map(_pubRow).join('') : '<div class="pages-empty">' + _PUB_EMPTY[kind] + '</div>');
   }
 }
-async function _pubNew(kind) {
+async function _pubNew(kind, prefill) {
   const titles = { internal: 'Add an app inside amux', app: 'Share an app', file: 'Share a file or folder' };
   const target = kind === 'file'
     ? '<label class="ui-field">Path<input id="pub-new-target" class="input" placeholder="/home/you/project/report.html" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="ui-help">A file, or a folder whose files are all shared. Hidden files never are.</span></label>'
     : '<label class="ui-field">Port<input id="pub-new-target" class="input" inputmode="numeric" placeholder="e.g. 8891" autocomplete="off"></label>';
-  const note = kind === 'internal' ? 'Only you can open it, signed in. It is listed here and opens inside amux.'
+  const note = kind === 'internal' ? 'Only you can open it, signed in, and it opens inside amux. It runs with your amux access, so add only an app you trust.'
     : 'Anyone with the link can open it, without signing in to amux, until you turn it off.';
+  if (prefill) setTimeout(() => { const t = document.getElementById('pub-new-target'); if (t && !t.value) t.value = String(prefill); }, 0);
   const ok = await showFormModal(titles[kind], target
     + '<label class="ui-field">Title (optional)<input id="pub-new-title" class="input" autocomplete="off"></label>'
     + '<span class="ui-help">' + note + '</span>', kind === 'internal' ? 'Add' : 'Create link');

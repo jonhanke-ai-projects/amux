@@ -133,6 +133,21 @@ pub(crate) async fn proxy(
         return page(StatusCode::BAD_REQUEST, "That is amux's own port",
             &format!("<p>Port {port} is the amux server itself. Use the port the dev server printed.</p>"));
     }
+    if let Some(why) = super::public_links::refused_port(port) {
+        tracing::warn!(port, why, measured = true, n_considered = 1, verdict = "port_proxy_refused_port", "proxy link to a refused port");
+        return page(StatusCode::FORBIDDEN, "amux does not open this port", &format!("<p>Port {port}: {}.</p>", html_escape(why)));
+    }
+    // AN APP OPENED HERE RUNS WITH THE OWNER'S AMUX ACCESS: it shares the
+    // dashboard's origin, so its scripts can call amux's API as the owner. So
+    // /proxy opens only ports a person added to Pages; a worker (or a prompt
+    // injected into one) can ask, and the owner decides (red-team, 2026-10-25).
+    if !super::public_links::internal_approved(port) {
+        tracing::warn!(port, measured = true, n_considered = 1, verdict = "port_proxy_not_in_pages",
+            "proxy link to a port no person has added to Pages; not opened");
+        return page(StatusCode::FORBIDDEN, "This app is not in Pages yet",
+            &format!("<p>amux opens an app on port {port} only after you add it to Pages, because an app opened here runs \
+              with your amux access.</p><p><a href=\"/#view=pages&amp;add-internal={port}\">Add port {port} to Pages</a></p>"));
+    }
     let local = local_listener(port).await;
     let Some(local) = local else {
         tracing::warn!(port, host = %host, measured = true, n_considered = 1,
@@ -252,6 +267,14 @@ pub(crate) async fn relay(local: &str, port: u16, prefix: &str, tail: &str, meth
         {
             continue;
         }
+        // An app relayed on amux's origin must not set amux's own cookies: a
+        // `Set-Cookie: amux_member=...` from it would replace the owner's sign-in
+        // for the whole dashboard (session fixation through a dev server).
+        if name == "set-cookie" && v.to_str().ok().is_some_and(sets_amux_cookie) {
+            tracing::warn!(port, measured = true, n_considered = 1, verdict = "port_proxy_amux_cookie_dropped",
+                "a relayed app tried to set one of amux's cookies; dropped");
+            continue;
+        }
         let Ok(hn) = HeaderName::from_bytes(name.as_bytes()) else { continue };
         let value = if name == "location" {
             v.to_str().ok().map(|l| rewrite_location(l, port, prefix)).and_then(|l| HeaderValue::from_str(&l).ok())
@@ -316,6 +339,12 @@ fn forward_request_header(k: &HeaderName) -> bool {
         "host" | "content-length" | "connection" | "keep-alive" | "transfer-encoding" | "upgrade"
             | "authorization" | "cookie" | "accept-encoding"
     )
+}
+
+/// A `Set-Cookie` value naming one of amux's (or the cloud door's) cookies.
+pub(crate) fn sets_amux_cookie(set_cookie: &str) -> bool {
+    let name = set_cookie.split('=').next().unwrap_or("").trim();
+    name.starts_with("amux_") || name.starts_with("__Host-amux") || name.starts_with("__Secure-amux")
 }
 
 fn strip_amux_cookies(headers: &HeaderMap) -> Option<String> {
@@ -411,6 +440,14 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("x-forwarded-host", "sandbox.amux.io".parse().unwrap());
         assert_eq!(forwarded_by(&h), Some("x-forwarded-host"));
+    }
+
+    #[test]
+    fn a_relayed_app_cannot_set_amux_cookies() {
+        for c in ["amux_member=x; Path=/", "amux_door=x", "__Host-amux_owner=x; Secure", "__Secure-amux=x"] {
+            assert!(sets_amux_cookie(c), "{c}");
+        }
+        assert!(!sets_amux_cookie("appsid=1; Path=/"));
     }
 
     #[test]

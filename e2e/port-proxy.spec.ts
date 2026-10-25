@@ -82,6 +82,19 @@ test('proxy links open a local app from a signed-in remote browser, and not with
       await rp.waitForURL(/_fresh=1/, { timeout: 20000 });
     }
 
+    // An app here runs with the owner's amux access, so a port opens only once a
+    // person added it to Pages; until then the page says so and links to adding it.
+    const gated = await rp.goto(`/proxy/${rPort}/`);
+    expect(gated!.status()).toBe(403);
+    await expect(rp.getByRole('link', { name: `Add port ${rPort} to Pages` })).toHaveAttribute('href', `/#view=pages&add-internal=${rPort}`);
+    expect(reachableSeen.length, 'a port not in Pages reached the app').toBe(0);
+    // Signed in, this browser is a person (bearer + owner cookie): add them.
+    for (const p of [rPort, lPort, 65001]) {
+      const st = await rp.evaluate(async ([p, t]) => (await fetch('/api/page-links', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ kind: 'internal', port: p }) })).status, [p, token] as const);
+      expect(st).toBe(201);
+    }
+
     // Reachable on its own port: sent there, so scripts and HMR work as locally.
     await rp.goto(`/proxy/${rPort}/`);
     await expect(rp.locator('#t')).toHaveText('proxied app ok');
@@ -131,10 +144,13 @@ test('proxy links open a local app from a signed-in remote browser, and not with
     await tab.goto(href);
     await expect(tab.locator('#t')).toHaveText('proxied app ok', { timeout: 15000 });
 
-    // A port nothing listens on says so instead of serving the dashboard.
-    const dead = await rp.evaluate(async () => { const r = await fetch('/proxy/1/'); return { s: r.status, b: await r.text() }; });
+    // A port in Pages that nothing listens on says so instead of serving the dashboard.
+    const dead = await rp.evaluate(async () => { const r = await fetch('/proxy/65001/'); return { s: r.status, b: await r.text() }; });
     expect(dead.s).toBe(502);
     expect(dead.b).toContain('Nothing is running on that port');
+    // A system or admin port never opens, in Pages or not.
+    const sys = await rp.evaluate(async () => (await fetch('/proxy/2019/')).status);
+    expect(sys).toBe(403);
     await remote.close();
   } finally {
     reachable.close();
