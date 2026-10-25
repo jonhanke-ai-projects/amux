@@ -149,11 +149,114 @@ try {
     await page.waitForFunction(() => !document.getElementById('present-overlay') && !document.fullscreenElement);
     assert.ok(await page.evaluate(() => document.getElementById('file-overlay').classList.contains('active')), 'Esc leaves the file viewer open');
 
+    // Esc pops the history entry Present pushed, so Back is not left pointing at a closed show.
+    assert.equal(await page.evaluate(() => !!(history.state && history.state.amuxPresent)), false, 'closing must pop the Back entry Present pushed');
+
+    // Leaving browser full screen any other way (Android Back, the OS gesture)
+    // ends the show too.
+    await page.click('#file-present-btn');
+    await page.waitForFunction(() => window._presentState && window._presentState.rendered > 0 && document.fullscreenElement);
+    await page.evaluate(() => document.exitFullscreen());
+    await page.waitForFunction(() => !document.getElementById('present-overlay'));
+
     // A PDF opened directly offers Present too.
     await page.evaluate(() => openFilePreview('/fixture/deck.pdf'));
     await page.waitForFunction(() => getComputedStyle(document.getElementById('file-present-btn')).display !== 'none');
     assert.deepEqual(errors, []);
     console.log(`PASS ${width}x${height}@${dpr}x: 3 slides full screen at device pixels, navigation, link and Esc`);
+    await context.close();
+  }
+
+  // PHONES (Ethan, 2026-10-25: "make sure that I can exit on mobile"). A phone
+  // has no Esc key, and iPhone Safari has no element full screen, so this run
+  // removes requestFullscreen the way the iPhone does. The exit must still be
+  // on screen while idle, and Back must close the show without leaving the file.
+  for (const [width, height] of [[390, 844], [844, 390]]) {
+    const context = await browser.newContext({ignoreHTTPSErrors: true, serviceWorkers: 'block',
+      viewport: {width, height}, deviceScaleFactor: 3, isMobile: true, hasTouch: true});
+    await context.addInitScript(() => {
+      localStorage.setItem('amux_walkthrough_done', '1');
+      Element.prototype.requestFullscreen = undefined;
+      Element.prototype.webkitRequestFullscreen = undefined;
+      window.EventSource = class {
+        static OPEN = 1; static CLOSED = 2; readyState = 1;
+        close() {this.readyState = 2;} addEventListener() {} removeEventListener() {}
+      };
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', e => errors.push(String(e)));
+    await page.route('**/app.js*', r => r.fulfill({contentType: 'text/javascript', body: source}));
+    await page.route('**/app.css*', r => r.fulfill({contentType: 'text/css', body: css}));
+    await page.route(u => u.pathname === '/' || u.pathname === '/index.html', async r => {
+      const resp = await r.fetch();
+      let body = await resp.text();
+      const [a, b] = [html.indexOf('<div id="file-overlay"'), html.indexOf('<div id="file-body"')];
+      const [a2, b2] = [body.indexOf('<div id="file-overlay"'), body.indexOf('<div id="file-body"')];
+      if (a > 0 && a2 > 0) body = body.slice(0, a2) + html.slice(a, b) + body.slice(b2);
+      return r.fulfill({response: resp, body});
+    });
+    await page.route('**/api/**', r => {
+      const u = new URL(r.request().url());
+      if (r.request().method() !== 'GET') return r.fulfill({status: 409, json: {error: 'read-only UI fixture'}});
+      if (u.pathname === '/api/file') {
+        const f = FILES[u.searchParams.get('path')];
+        return f ? r.fulfill({json: f}) : r.fulfill({status: 404, json: {error: 'not found'}});
+      }
+      if (u.pathname === '/api/file/raw' && u.searchParams.get('path') === '/fixture/deck.pdf') {
+        return r.fulfill({contentType: 'application/pdf', body: pdf});
+      }
+      return r.continue();
+    });
+    await page.goto(base + '/');
+    await page.waitForFunction(() => typeof openFilePreview === 'function' && typeof _filePresent === 'function');
+    const urlBefore = page.url();
+    const open = async () => {
+      await page.evaluate(() => openFilePreview('/fixture/deck.pdf'));
+      await page.waitForFunction(() => getComputedStyle(document.getElementById('file-present-btn')).display !== 'none');
+      const box = await page.locator('#file-present-btn').boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= width && box.y >= 0, `Present must be on screen at ${width}x${height}: ${JSON.stringify(box)}`);
+      await page.tap('#file-present-btn');
+      await page.waitForFunction(() => window._presentState && window._presentState.rendered > 0);
+    };
+    const swipe = dx => page.evaluate(dx => {
+      const ov = document.getElementById('present-overlay');
+      const t = x => new Touch({identifier: 1, target: ov, clientX: x, clientY: 200});
+      const x0 = innerWidth / 2;
+      ov.dispatchEvent(new TouchEvent('touchstart', {touches: [t(x0)], changedTouches: [t(x0)], bubbles: true}));
+      ov.dispatchEvent(new TouchEvent('touchend', {touches: [], changedTouches: [t(x0 + dx)], bubbles: true, cancelable: true}));
+    }, dx);
+
+    await open();
+    const cover = await page.evaluate(() => { const r = document.getElementById('present-overlay').getBoundingClientRect(); return [r.width, r.height, !!document.fullscreenElement]; });
+    assert.deepEqual(cover, [width, height, false], `without element full screen the show must still cover the screen at ${width}x${height}`);
+    await swipe(-120);
+    await page.waitForFunction(() => window._presentState.page === 2);
+    await swipe(120);
+    await page.waitForFunction(() => window._presentState.page === 1);
+    await page.waitForTimeout(2600);   // idle: counter and cursor fade
+    const close = await page.evaluate(() => {
+      const b = document.querySelector('#present-overlay .present-close');
+      const r = b.getBoundingClientRect();
+      return {op: +getComputedStyle(b).opacity, x: r.x, y: r.y, w: r.width, h: r.height,
+        top: document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === b};
+    });
+    assert.ok(close.op >= 0.4, `the exit button must stay visible while idle on a phone (opacity ${close.op})`);
+    assert.ok(close.w >= 44 && close.h >= 44 && close.x + close.w <= width && close.y >= 0 && close.top, `the exit button must be a reachable 44px target: ${JSON.stringify(close)}`);
+    await page.tap('#present-overlay .present-close');
+    await page.waitForFunction(() => !document.getElementById('present-overlay'));
+    assert.equal(await page.evaluate(() => window._presentState), null);
+    assert.ok(await page.evaluate(() => document.getElementById('file-overlay').classList.contains('active')), 'the exit button leaves the file viewer open');
+    assert.equal(page.url(), urlBefore);
+
+    // Back (the phone's back gesture) closes the show, not the page.
+    await open();
+    await page.goBack();
+    await page.waitForFunction(() => !document.getElementById('present-overlay'));
+    assert.ok(await page.evaluate(() => document.getElementById('file-overlay').classList.contains('active')), 'Back leaves the file viewer open');
+    assert.equal(page.url(), urlBefore, 'Back must not navigate away');
+    assert.deepEqual(errors, []);
+    console.log(`PASS phone ${width}x${height}: no element full screen, swipe, exit button visible while idle, tap to exit, Back to exit`);
     await context.close();
   }
 } finally {await browser.close();}

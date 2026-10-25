@@ -1346,6 +1346,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | + | `_peekToggleInherited` | onclick |
 | index.html | peek-plan-hdr | `_peekTogglePlan` | onclick |
 | app.js | + | `_peekToggleTool` | onclick |
+| app.js | ov.querySelector('.present-close') | `_presentClose` | addEventListener |
 | app.js | ov | `_presentGo` | addEventListener |
 | app.js | button | `_projectSelectTask` | onclick |
 | app.js | ${esc(lead&&key===tasks?Plan:label)} | `_projectSetTab` | onclick |

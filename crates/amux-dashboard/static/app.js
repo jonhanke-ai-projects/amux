@@ -28247,7 +28247,11 @@ async function _filePresent(path) {
   const ov = document.createElement('div');
   ov.id = 'present-overlay';
   ov.tabIndex = -1;
-  ov.innerHTML = '<div class="present-msg">Loading…</div><div class="present-hud"></div>';
+  // A phone has no Esc key, and iPhone Safari has no element full screen, so
+  // the exit is a button on the slide (always visible on touch screens) and
+  // the Back gesture (a history entry popped by Back closes the show).
+  ov.innerHTML = '<div class="present-msg">Loading…</div><div class="present-hud"></div>'
+    + '<button type="button" class="present-close" aria-label="Exit presentation" title="Exit (Esc)">✕</button>';
   document.body.appendChild(ov);
   const st = _present = {path, ov, pdf: null, page: 1, total: 0, cache: new Map(), gen: 0, idleT: 0, touchX: null};
   window._presentState = {path, page: 1, total: 0, rendered: 0, fullscreen: false};
@@ -28256,7 +28260,12 @@ async function _filePresent(path) {
   try { if (ov.requestFullscreen) await ov.requestFullscreen({navigationUI: 'hide'}); else if (ov.webkitRequestFullscreen) ov.webkitRequestFullscreen(); } catch (e) {}
   ov.focus();
   st.onKey = e => _presentKey(e);
-  st.onFs = () => { if (!document.fullscreenElement && !document.webkitFullscreenElement && _present === st && st.wasFs) _presentClose(); st.wasFs = !!(document.fullscreenElement || document.webkitFullscreenElement); window._presentState.fullscreen = st.wasFs; _presentRender(); };
+  st.onFs = () => {
+    const fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    if (!fs && st.wasFs && _present === st) { _presentClose(); return; }
+    st.wasFs = fs;
+    if (_present === st) { window._presentState.fullscreen = fs; _presentRender(); }
+  };
   st.onResize = () => { st.cache.clear(); _presentRender(); };
   document.addEventListener('keydown', st.onKey, true);
   document.addEventListener('fullscreenchange', st.onFs);
@@ -28264,9 +28273,13 @@ async function _filePresent(path) {
   window.addEventListener('resize', st.onResize);
   st.wasFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
   window._presentState.fullscreen = st.wasFs;
+  ov.querySelector('.present-close').addEventListener('click', e => { e.stopPropagation(); _presentClose(); });
+  st.onPop = () => { if (_present === st) { st.pushed = false; _presentClose(); } };
+  window.addEventListener('popstate', st.onPop);
+  try { history.pushState({amuxPresent: 1}, ''); st.pushed = true; } catch (e) {}
   ov.addEventListener('mousemove', () => _presentWake());
   ov.addEventListener('click', e => { _presentGo(e.clientX < window.innerWidth / 3 ? -1 : 1); });
-  ov.addEventListener('touchstart', e => { st.touchX = e.touches[0].clientX; }, {passive: true});
+  ov.addEventListener('touchstart', e => { st.touchX = e.target.closest('.present-close') ? null : e.touches[0].clientX; }, {passive: true});
   ov.addEventListener('touchend', e => {
     if (st.touchX == null) return;
     const dx = e.changedTouches[0].clientX - st.touchX; st.touchX = null;
@@ -28392,6 +28405,8 @@ function _presentClose() {
   document.removeEventListener('fullscreenchange', st.onFs);
   document.removeEventListener('webkitfullscreenchange', st.onFs);
   window.removeEventListener('resize', st.onResize);
+  window.removeEventListener('popstate', st.onPop);
+  if (st.pushed && history.state && history.state.amuxPresent) history.back();
   if (document.fullscreenElement === st.ov && document.exitFullscreen) document.exitFullscreen().catch(() => {});
   st.ov.remove();
   if (st.pdf) st.pdf.destroy();

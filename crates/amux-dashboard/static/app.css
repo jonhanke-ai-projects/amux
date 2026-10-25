@@ -1542,6 +1542,12 @@
     background:rgba(0,0,0,0.45); padding:3px 9px; border-radius:10px;
     transition:opacity 0.4s; pointer-events:none; }
   #present-overlay.idle .present-hud { opacity:0; }
+  #present-overlay .present-close { position:absolute; top:max(12px, env(safe-area-inset-top));
+    right:max(12px, env(safe-area-inset-right)); width:44px; height:44px; border-radius:22px;
+    border:0; background:rgba(0,0,0,0.5); color:#fff; font-size:20px; line-height:44px;
+    padding:0; cursor:pointer; z-index:2; transition:opacity 0.4s; }
+  #present-overlay.idle .present-close { opacity:0; }
+  @media (pointer: coarse) { #present-overlay.idle .present-close { opacity:0.45; } }
   #present-overlay .present-msg { color:#ccc; font:14px -apple-system,system-ui,sans-serif; }
 
   /* File explorer */
