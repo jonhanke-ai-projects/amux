@@ -2727,6 +2727,17 @@
     #peek-needs-input-row .status-badge.needs-input { flex-direction: row; align-items: center; gap: 8px; width: auto; max-width: 100%; }
     #peek-needs-input-row .status-badge.needs-input .ni-label { flex: 0 0 auto; }
     #peek-needs-input-row .status-badge.needs-input .ni-ask { display: block; flex: 1 1 auto; min-width: 0; white-space: nowrap; -webkit-line-clamp: unset; }
+    /* The band needs room for both the toolbar (about 440px of 44px controls)
+       and a readable title. A Mac app pane is its own page about 640px wide,
+       past the 601px above, and there the toolbar left the task one letter
+       wide, a column down the whole pane (Ethan, 2026-10-24 screenshot). So
+       the side-by-side band follows the WORKER VIEW's width, not the window's:
+       narrower than 980px, the toolbar goes under the title, still one line. */
+    #peek-overlay { container: peekview / inline-size; }
+    @container peekview (max-width: 979px) {
+      #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header { grid-template-columns: minmax(0, 1fr); }
+      #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-toolbar { grid-column: 1; grid-row: auto; justify-self: stretch; }
+    }
   }
   /* Wide enough: the ask takes the middle of the header band, between the
      worker's name and its toolbar, at the toolbar's own height, so a worker
