@@ -16414,6 +16414,23 @@ async function _chatReadAloud(btn) {
   evs.forEach(ev => el.addEventListener(ev, done));
 }
 
+// A send still in this device's outbox. Waiting is the only state with nothing to
+// do; a send the server refused (or could not confirm) says so in the same words as
+// the Messages tab and offers the same Send again / Remove. It used to read
+// "waiting to send" whatever happened: on the sandbox (2026-10-25) two messages
+// to mtp-demo's Chat tab sat that way for hours after the server had refused both.
+function _chatPendingBubble(p) {
+  const text = esc(p.text).replace(/\n/g, '<br>');
+  if (!online) return _chatBubble('user', text, 'saved offline &middot; sends when connected', 'chat-pending');
+  if (!p.decision && !p.attempted && !p.checking) return _chatBubble('user', text, 'waiting to send', 'chat-pending');
+  const st = _pendingMsgState(p), id = escJs(p.id);
+  const meta = '<span class="chat-pending-state">' + esc(st.label) + '</span> &middot; ' + esc(st.note)
+    + (p.decision && p.error ? ': ' + esc(p.error) : '')
+    + ' <button type="button" class="btn chat-pending-retry" onclick="_outboxRetryNow(\'' + id + '\')">' + esc(st.retry) + '</button>'
+    + ' <button type="button" class="btn chat-pending-remove" onclick="_outboxRemoveMessage(\'' + id + '\')">Remove</button>';
+  return _chatBubble('user', text, meta, 'chat-pending' + (p.decision === 'refused' ? ' is-refused' : ''), ' data-pending-id="' + esc(p.id) + '"');
+}
+
 function _chatBubble(role, html, meta, cls, attrs) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '"' + (attrs || '') + '>'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -16548,8 +16565,7 @@ function _chatRender(errorText) {
   for (const m of _chat.messages) html += _chatMessageHtml(m);
   // Messages sent while offline, shown in the conversation where they will
   // land (a coding worker shows them only in the pending pill).
-  for (const p of pendingSends) html += _chatBubble('user', esc(p.text).replace(/\n/g, '<br>'),
-    online ? 'waiting to send' : 'saved offline &middot; sends when connected', 'chat-pending');
+  for (const p of pendingSends) html += _chatPendingBubble(p);
   body.innerHTML = '<div class="chat-log">' + html + '<div class="chat-live-slot"></div>'
     + '<div class="chat-queued-slot">' + (_chat.queued > 0 ? '<div class="chat-queued">' + _chat.queued + ' message'
       + (_chat.queued > 1 ? 's' : '') + ' queued</div>' : '') + '</div></div>'
@@ -26070,7 +26086,7 @@ function _pendingSendsFor(session) {
     let text = '', msg_id = '';
     try { const body = JSON.parse(op.options?.body || '{}'); text = body.text || ''; msg_id = body.msg_id || ''; } catch(e) {}
     if (text) out.push({ text, msg_id, ts: op.timestamp, kind: m[2], idx, attempted: !!(op.attempted_at || op.attempts || !op.not_attempted), id:op.id,
-      decision: op.needs_decision || '', checking: !op.needs_decision && _outboxUncertainMessage(op) });
+      decision: op.needs_decision || '', checking: !op.needs_decision && _outboxUncertainMessage(op), error: op.error || '' });
   });
   return out;
 }
@@ -26108,8 +26124,12 @@ function _pendingMessageProjection(history, pending) {
 // need a notice above the composer; do not flash a queued pill on every Send.
 function _updatePendingPill() {
   // A mounted chat shows pending sends as bubbles; repaint when the queue moves.
-  if (_chat.name && _chatShowing() && _workerRenderer(_chat.name) === 'chat') {
-    const n = _pendingSendsFor(_chat.name).length;
+  // A worker's Chat tab (`<worker>@chat`) is not in `sessions`, so it reads as a terminal
+  // there; it must repaint too, or its bubbles never left "waiting to send".
+  if (_chat.name && _chatShowing() && (_workerRenderer(_chat.name) === 'chat' || String(_chat.name).endsWith('@chat'))) {
+    // The STATE of each pending send, not only their count: a send the server refused
+    // must turn from "waiting to send" into "Not sent" with a retry (sandbox, 2026-10-25).
+    const n = _pendingSendsFor(_chat.name).map(p => p.id + ':' + p.decision + ':' + p.checking + ':' + p.attempted).join('|');
     if (n !== _chat.pendingShown) { _chat.pendingShown = n; _chatRender(); }
   }
   const pill = document.getElementById('peek-pending-pill');

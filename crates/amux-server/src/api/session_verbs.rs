@@ -26372,8 +26372,9 @@ async fn dispatch(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
+        let person = super::chat_worker::caller_is_person(&headers, &caller);
         return super::chat_worker::companion_route(
-            &state, &worker, method == Method::POST, &action, receipt, &body, &caller,
+            &state, &worker, method == Method::POST, &action, receipt, &body, &caller, person,
         )
         .await;
     }
