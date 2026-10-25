@@ -1353,6 +1353,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["*"],
     },
     RouteEntry {
+        path: "/pub/{id}",
+        methods: &["*"],
+    },
+    RouteEntry {
+        path: "/pub/{id}/",
+        methods: &["*"],
+    },
+    RouteEntry {
+        path: "/pub/{id}/{*rest}",
+        methods: &["*"],
+    },
+    RouteEntry {
         path: "/api/_clear_sw",
         methods: &["GET"],
     },
@@ -2324,6 +2336,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/offline-origin",
         methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/public-links",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/public-links/{id}",
+        methods: &["DELETE"],
     },
     RouteEntry {
         path: "/api/scope",

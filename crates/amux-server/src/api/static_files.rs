@@ -82,6 +82,12 @@ pub fn routes() -> Router<AppState> {
         // Before the catch-all, which answered these with the dashboard.
         .route("/proxy/{port}", axum::routing::any(port_proxy::proxy))
         .route("/proxy/{port}/{*rest}", axum::routing::any(port_proxy::proxy))
+        // Public links (public_links.rs): anyone with the link, no sign-in.
+        .route("/pub/{id}", axum::routing::any(public_links::serve))
+        // `{*rest}` never matches an empty tail, so the app's root needs its own
+        // route or it falls through to the dashboard shell.
+        .route("/pub/{id}/", axum::routing::any(public_links::serve))
+        .route("/pub/{id}/{*rest}", axum::routing::any(public_links::serve))
         .route("/{*path}", axum::routing::any(serve_path))
 }
 
@@ -107,6 +113,11 @@ async fn index(
     peer: Peer,
     legacy: Legacy,
 ) -> Response {
+    // The owner's own address, so workers link to it (public_links.rs). Only an
+    // owner's request: a stranger's Host header must not steer workers' links.
+    if state.auth_token.is_none() || has_owner_session(&state, &headers) {
+        public_links::learn_public_url(&crate::config::amux_home(), &headers);
+    }
     serve_shell(
         &state,
         legacy_port_of(legacy),
@@ -375,6 +386,7 @@ mod clear_sw_landing_tests {
 }
 
 pub(crate) mod port_proxy;
+pub(crate) mod public_links;
 pub(crate) mod tailnet_auth;
 
 async fn serve_shell(

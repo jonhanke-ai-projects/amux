@@ -10276,6 +10276,10 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pages-row:hover, .pages-row:focus-visible { background:var(--bg); outline:none; }
 .pages-row-main { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
 .pages-row-main b, .pages-row-main span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pub-head { margin-top:12px; }
+.pub-row { cursor:default; }
+.pub-url { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pub-note { padding:10px 14px; border-bottom:1px solid var(--border); }
 .pages-row-when { white-space:nowrap; }
 .pages-empty { padding:24px 16px; color:var(--dim); font-size:0.88rem; line-height:1.5; }
 .pages-open { flex-direction:column; flex:1; min-height:0; gap:8px; }

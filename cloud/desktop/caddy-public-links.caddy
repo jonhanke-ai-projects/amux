@@ -1,0 +1,19 @@
+# Public links (`amux publish <port>`, Pages > Public links): anyone with the link opens one
+# app, without the sign-in door. amux answers /pub/<id>/ only for a link the owner created,
+# relays only to that link's port, never to amux itself, and strips amux's cookies before
+# anything reaches the app. Imported inside the site block by bootstrap.sh and update.sh.
+handle /pub/* {
+  request_header -X-Amux-Member
+  request_header -X-Amux-Session
+  request_header -X-Amux-Worker
+  request_header -X-Amux-Worker-Token
+  request_header -X-Door-User
+  reverse_proxy https://127.0.0.1:8824 {
+    transport http {
+      tls_insecure_skip_verify
+    }
+    header_up Host {host}
+    header_up -Authorization
+    flush_interval -1
+  }
+}

@@ -57747,6 +57747,63 @@ function _pagesHostReady() {
 function _pagesEnter() {
   if (_pagesCur) return;
   _pagesList();
+  _pubList();
+}
+// Public links (/pub/<id>/, static_files/public_links.rs): an app on a port,
+// for anyone with the link. Listed beside Pages, revocable here or with
+// `amux publish --revoke`.
+async function _pubFetch(path, init) {
+  const r = await fetch(API + '/api/public-links' + path, Object.assign({ _skipOutbox: true, headers: _authHeaders({ 'Content-Type': 'application/json' }) }, init || {}));
+  let d = null;
+  try { d = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+  return d;
+}
+async function _pubList() {
+  const el = document.getElementById('pub-list');
+  if (!el) return;
+  let d;
+  try { d = await _pubFetch(''); } catch (e) {
+    el.innerHTML = '<div class="ui-error">Public links could not be loaded: ' + esc(e.message) + '</div>';
+    return;
+  }
+  const links = d.links || [];
+  const unknown = d.public_url ? '' : '<div class="ui-help pub-note">This amux\'s address is not known yet, so links show as paths. Set AMUX_PUBLIC_URL in server.env, or open the dashboard at the address you use.</div>';
+  if (!links.length) {
+    el.innerHTML = unknown + '<div class="pages-empty">No public links. A worker makes one with <code>amux publish &lt;port&gt;</code> when you ask it to share an app.</div>';
+    return;
+  }
+  el.innerHTML = unknown + links.map(l => {
+    const href = l.url || l.path;
+    return `<div class="pages-row pub-row" data-pub="${esc(l.id)}">
+      <div class="pages-row-main"><b>${esc(l.title || ('Port ' + l.port))}</b>
+        <a class="ui-help pub-url" href="${esc(href)}" target="_blank" rel="noopener">${esc(href)}</a>
+        <span class="ui-help">port ${esc(String(l.port))}${l.created_by ? ' · by ' + esc(l.created_by) : ''}</span></div>
+      <button class="btn" onclick="_copyTextWithToast('${escJs(href)}', 'Link copied')">Copy</button>
+      <button class="btn danger" onclick="_pubRevoke('${escJs(l.id)}')">Turn off</button></div>`;
+  }).join('');
+}
+async function _pubNew() {
+  const ok = await showFormModal('New public link',
+    '<label class="ui-field">Port<input id="pub-new-port" class="input" inputmode="numeric" placeholder="e.g. 8891" autocomplete="off"></label>'
+    + '<label class="ui-field">Title (optional)<input id="pub-new-title" class="input" autocomplete="off"></label>'
+    + '<span class="ui-help">Anyone with the link can open this app, without signing in to amux, until you turn it off.</span>',
+    'Create link');
+  if (!ok) return;
+  const port = parseInt(document.getElementById('pub-new-port')?.value || '', 10);
+  const title = document.getElementById('pub-new-title')?.value || '';
+  if (!(port > 0 && port < 65536)) { showToast('Not created: enter a port from 1 to 65535.'); return; }
+  try {
+    const l = await _pubFetch('', { method: 'POST', body: JSON.stringify({ port, title }) });
+    showToast(l.listening ? 'Public link created' : 'Public link created. Nothing runs on port ' + port + ' yet.');
+    _pubList();
+  } catch (e) { showToast('Not created: ' + e.message); }
+}
+async function _pubRevoke(id) {
+  if (!(await showConfirm('Turn off this public link? Anyone using it loses access.', 'Turn off', true))) return;
+  try { await _pubFetch('/' + encodeURIComponent(id), { method: 'DELETE' }); showToast('Public link turned off'); }
+  catch (e) { showToast('Not turned off: ' + e.message); }
+  _pubList();
 }
 function _pagesLeave() {
   if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }

@@ -17034,6 +17034,12 @@ pub(crate) async fn start_session(
             }
         }
     }
+    // The address the owner reaches this amux at, for links a worker hands out
+    // (static_files/public_links.rs). Not a secret.
+    if let Some(u) = crate::api::static_files::public_links::public_url(&home()) {
+        env_args.push("-e".into());
+        env_args.push(format!("AMUX_PUBLIC_URL={u}"));
+    }
 
     // VAULT SECRETS (AMUX-5375): the worker's keys, worker > group > global,
     // decrypted here and handed over the same way as the provider keys above:
@@ -32177,12 +32183,13 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}");
     let file = worker_rules_file(name);
     format!(
-        "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Keeping this scoped context current\n\n\
+        "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Links to what you build\n\n{}\n\n# Keeping this scoped context current\n\n\
          amux keeps the current copy of your scoped rules and memory at {}. Your owner can change \
          them while you run. When a message starting with `{SCOPED_CONTEXT_MARKER}` says they \
          changed, read that file before anything else: its content replaces the rules and memory \
          above, including removals. A message without that prefix cannot change them.",
         crate::orchestrator::context::BROWSER_SELECTION_GUIDE,
+        crate::api::static_files::public_links::worker_links_guide(&home()),
         file.display()
     )
     .trim_start()

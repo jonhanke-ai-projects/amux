@@ -58,7 +58,7 @@ pub(crate) fn host_only(authority: &str) -> &str {
     authority.split(':').next().unwrap_or(authority)
 }
 
-fn page(status: StatusCode, title: &str, body: &str) -> Response {
+pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
     let html = format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">\
          <meta name=\"color-scheme\" content=\"dark light\"><title>{t}</title>\
@@ -133,13 +133,7 @@ pub(crate) async fn proxy(
         return page(StatusCode::BAD_REQUEST, "That is amux's own port",
             &format!("<p>Port {port} is the amux server itself. Use the port the dev server printed.</p>"));
     }
-    let local = if answers("127.0.0.1", port).await {
-        Some("127.0.0.1")
-    } else if answers("::1", port).await {
-        Some("[::1]")
-    } else {
-        None
-    };
+    let local = local_listener(port).await;
     let Some(local) = local else {
         tracing::warn!(port, host = %host, measured = true, n_considered = 1,
             verdict = "port_proxy_nothing_listening", "proxy link to a port nothing on this machine listens on");
@@ -150,13 +144,24 @@ pub(crate) async fn proxy(
         tracing::warn!(port, host = %host, measured = true, n_considered = 1,
             verdict = "port_proxy_loopback_only",
             "dev server listens on loopback only; relaying through amux (script-built URLs and HMR need --host 0.0.0.0)");
-        return relay(local, port, &tail, method, &headers, body).await;
+        return relay(local, port, &format!("/proxy/{port}"), &tail, method, &headers, body).await;
     }
     let target = format!("http://{host}:{port}{tail}");
     let from_loopback = peer.is_some_and(|ip: IpAddr| ip.is_loopback());
     tracing::info!(port, host = %host, from_loopback, measured = true, n_considered = 1,
         verdict = "port_proxy_redirect", "proxy link sent to the dev server's own port");
     Redirect::temporary(&target).into_response()
+}
+
+/// Where something on this machine listens on `port`: IPv4 loopback, then IPv6.
+pub(crate) async fn local_listener(port: u16) -> Option<&'static str> {
+    if answers("127.0.0.1", port).await {
+        Some("127.0.0.1")
+    } else if answers("::1", port).await {
+        Some("[::1]")
+    } else {
+        None
+    }
 }
 
 /// HTML larger than this is passed through unrewritten rather than buffered.
@@ -174,8 +179,9 @@ fn client() -> &'static reqwest::Client {
 }
 
 /// Forward one request to `local:port` and answer with its response, for a
-/// dev server the browser cannot reach directly. `tail` is the page and query.
-async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &HeaderMap, body: Body) -> Response {
+/// dev server the browser cannot reach directly. `prefix` is the path the app
+/// is mounted under (`/proxy/<port>` or `/pub/<id>`), `tail` the page and query.
+pub(crate) async fn relay(local: &str, port: u16, prefix: &str, tail: &str, method: Method, headers: &HeaderMap, body: Body) -> Response {
     let body = match axum::body::to_bytes(body, 64 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return page(StatusCode::PAYLOAD_TOO_LARGE, "Request too large", "<p>The request body is over 64 MB.</p>"),
@@ -204,7 +210,6 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
                 &format!("<p>Port {port} accepted a connection but the request failed.</p>"));
         }
     };
-    let prefix = format!("/proxy/{port}");
     let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let is_html = upstream
         .headers()
@@ -222,7 +227,7 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
         }
         let Ok(hn) = HeaderName::from_bytes(name.as_bytes()) else { continue };
         let value = if name == "location" {
-            v.to_str().ok().map(|l| rewrite_location(l, port, &prefix)).and_then(|l| HeaderValue::from_str(&l).ok())
+            v.to_str().ok().map(|l| rewrite_location(l, port, prefix)).and_then(|l| HeaderValue::from_str(&l).ok())
         } else {
             HeaderValue::from_bytes(v.as_bytes()).ok()
         };
@@ -232,7 +237,7 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
     }
     let body = if rewrite {
         match upstream.bytes().await {
-            Ok(b) => Body::from(rewrite_html(&String::from_utf8_lossy(&b), &prefix)),
+            Ok(b) => Body::from(rewrite_html(&String::from_utf8_lossy(&b), prefix)),
             Err(e) => {
                 tracing::warn!(port, error = %e, measured = true, n_considered = 1,
                     verdict = "port_proxy_relay_failed", "the relayed page stopped mid-response");
@@ -410,7 +415,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let r = relay("127.0.0.1", port, "/redir", Method::GET, &HeaderMap::new(), Body::empty()).await;
+        let r = relay("127.0.0.1", port, &format!("/proxy/{port}"), "/redir", Method::GET, &HeaderMap::new(), Body::empty()).await;
         assert_eq!(r.status(), StatusCode::FOUND);
         assert_eq!(r.headers().get("location").unwrap(), &format!("/proxy/{port}/landed"));
         assert!(r.headers().get("transfer-encoding").is_none());

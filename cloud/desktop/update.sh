@@ -133,6 +133,35 @@ if [[ -f $CF && -f "$SRC/cloud/desktop/caddy-errors.caddy" ]] && ! cmp -s "$SRC/
   fi
 fi
 
+# Public links (/pub/<id>/, `amux publish`): the snippet that lets them past the door, refreshed
+# from the checkout every run; a Caddyfile from before it gains the import line once.
+PUB="$SRC/cloud/desktop/caddy-public-links.caddy"
+if [[ -f $CF && -f "$PUB" ]] && { ! cmp -s "$PUB" /etc/caddy/amux-public-links.caddy || ! grep -q 'import /etc/caddy/amux-public-links.caddy' $CF; }; then
+  had=$([[ -f /etc/caddy/amux-public-links.caddy ]] && echo 1 || echo 0)
+  cp -p $CF $CF.prev; [[ $had == 1 ]] && cp -p /etc/caddy/amux-public-links.caddy /etc/caddy/amux-public-links.caddy.prev
+  install -m 644 "$PUB" /etc/caddy/amux-public-links.caddy
+  grep -q 'import /etc/caddy/amux-public-links.caddy' $CF \
+    || sed -i '0,/^  handle {$/s||  import /etc/caddy/amux-public-links.caddy\n  handle {|' $CF
+  if runuser -u caddy -- caddy validate --config $CF --adapter caddyfile >/dev/null 2>&1 && systemctl reload caddy; then
+    say "verdict=caddy_public_links_installed"
+  else
+    mv $CF.prev $CF
+    if [[ $had == 1 ]]; then mv /etc/caddy/amux-public-links.caddy.prev /etc/caddy/amux-public-links.caddy; else rm -f /etc/caddy/amux-public-links.caddy; fi
+    systemctl reload caddy; say "WARN verdict=caddy_public_links_rejected previous Caddyfile kept"
+  fi
+fi
+
+# The address workers build their links from, for servers bootstrapped before bootstrap.sh wrote
+# it: the site name Caddy serves. Read per call by the server, so no restart is needed.
+ENVF="$HOME_DIR/.amux/server.env"
+if [[ -f $CF && -f $ENVF ]] && ! grep -q '^AMUX_PUBLIC_URL=' "$ENVF"; then
+  site=$(grep -m1 -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,} *\{' $CF | cut -d' ' -f1)
+  if [[ -n "$site" ]]; then
+    printf 'AMUX_PUBLIC_URL=https://%s\n' "$site" >> "$ENVF"
+    say "verdict=public_url_set url=https://$site"
+  fi
+fi
+
 # The agent CLIs, once a day. bootstrap.sh installs them globally as root, so they cannot update
 # themselves (Claude Code showed "Auto-update failed: no write permission to npm prefix" to the
 # customer) and stayed at whatever the golden image had. Updating them here keeps every server on

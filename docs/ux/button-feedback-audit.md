@@ -514,6 +514,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Opened | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Size | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | div | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | New public link | `_pubNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Turn off | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Read aloud latest | `_readLatestMessage` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Stop scan | `_reclaimCancelScan` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${safeN ? Clean ${safeN} item${safeN === 1 ?  :  | `_reclaimCleanSafe` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
@@ -1154,6 +1156,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | MSG-${esc(_mid)} | `_copyMsgId` | onclick |
 | index.html | Copy | `_copyOwnerLink` | onclick |
 | app.js | ${id} | `_copySchedId` | onclick |
+| app.js | Copy | `_copyTextWithToast` | onclick |
 | app.js | Copy | `_copyTextWithToast` | onclick |
 | app.js | Copy id  | `_copyTextWithToast` | onclick |
 | app.js | ${_csvEsc(h) \|\| | `_csvSortBy` | onclick |

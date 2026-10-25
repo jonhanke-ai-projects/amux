@@ -145,6 +145,12 @@ fn rewrite_legacy_uri(uri: &Uri) -> Option<Uri> {
 fn trim_trailing_slash(uri: &Uri) -> Option<Uri> {
     let path = uri.path();
     let bare = path.strip_suffix('/').filter(|b| !b.is_empty())?;
+    // A public link's slash is the app's: `/pub/<id>` redirects to `/pub/<id>/`
+    // so the app's relative URLs resolve, and stripping it here looped that
+    // redirect (public_links.rs).
+    if bare.starts_with("/pub/") {
+        return None;
+    }
     // Only a path a declared route claims. An unrouted `/api/nope/` keeps its
     // 404, with the catalog and nearest_routes it already gets.
     if super::request_log::routed_methods_at(bare).is_empty() {

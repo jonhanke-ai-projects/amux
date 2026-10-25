@@ -567,6 +567,16 @@ pub fn router_with_connector_transport(
             "/api/offline-origin",
             axum::routing::get(offline_origin::offline_origin),
         )
+        // Public links to an app's port (static_files/public_links.rs). The
+        // list and its changes are the owner's; only /pub/<id>/ is public.
+        .route(
+            "/api/public-links",
+            axum::routing::get(static_files::public_links::list).post(static_files::public_links::create),
+        )
+        .route(
+            "/api/public-links/{id}",
+            axum::routing::delete(static_files::public_links::revoke),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             policy::enforce,

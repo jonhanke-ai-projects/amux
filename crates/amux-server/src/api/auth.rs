@@ -59,6 +59,7 @@ const PUBLIC_PREFIXES: &[&str] = &[
     "/api/share/",
     "/invite/",
     "/proxy/",
+    "/pub/",
     "/api/branding/",
 ];
 
