@@ -231,7 +231,10 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
          - A file or folder for anyone with the link, only when the owner wants it shared: \
          `amux publish --file <absolute path> [title]`. Never link a file as {base}/api/file/...: \
          that needs the owner's sign-in.\n\
-         `amux publish --list` lists them and `amux publish --revoke <id>` turns one off."
+         `amux publish --list` lists them and `amux publish --revoke <id>` turns one off.\n\n\
+         Build pages, demos and documents as files in your workspace and register them here. Never \
+         publish to claude.ai (the Artifact tool): that lives outside this amux, where the owner cannot \
+         list, serve or turn it off, and amux denies the tool."
     )
 }
 
