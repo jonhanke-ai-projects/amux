@@ -29,6 +29,9 @@ test('claude 2.1.291 auth login: its answer to a pasted code, success or refusal
   assert.deepEqual([ok.succeeded, ok.rejected], [true, false]);
   const refused = parseLogin('claude', base + 'Invalid code. Please make sure the full code was copied.\r\n');
   assert.deepEqual([refused.succeeded, refused.rejected], [false, true]);
+  // A well-formed code the server refused (sandbox, 2026-10-25).
+  const failed = parseLogin('claude', base + 'Login failed: Request failed with status code 400\r\n');
+  assert.deepEqual([failed.succeeded, failed.rejected], [false, true]);
 });
 
 test('claude: the sign-in is /login, not an inference-only setup-token', () => {

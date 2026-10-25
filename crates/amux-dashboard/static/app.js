@@ -2125,8 +2125,11 @@ async function modelLoginSubmitCode() {
     // "Paste code here" forever (amux Cloud e2e, 2026-10-19).
     await _mlInput(run, code);
     await new Promise(res => setTimeout(res, 400));
-    await _mlInput(run, '\r');
+    // Marked before the Enter: a CLI that refuses the code and exits at once can answer
+    // while this write is still in flight, and an answer read before codeSent was taken
+    // for a sign-in that stopped on its own (sandbox, 2026-10-25, "Login failed").
     run.codeSent = true;
+    await _mlInput(run, '\r');
     inp.value = '';
     _mlEl('model-login-err').textContent = '';
     _mlEl('model-login-status').textContent = 'Checking…';
