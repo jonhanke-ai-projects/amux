@@ -741,6 +741,7 @@ async fn async_main() {
         tracing::warn!(%error, measured = false, n_considered = 1, verdict = "native_status_observer_startup_install_failed",
             "passive observer could not be installed at startup; status_history's tick will retry");
     }
+    api::native_status::ensure_claude_hooks_here();
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));
