@@ -10349,3 +10349,11 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   #peek-issues-panel .peek-tasks-add > .board-search-wrap{flex:1 0 160px !important;order:6;}
 }
 #peek-board-config.peek-board-config{flex-direction:row;align-items:center;padding:0;}
+
+/* A queued steering message on a phone: its buttons (send, edit, delay,
+   remove) go under the text, which otherwise wrapped two words a line beside
+   them (2026-10-25, with the edit button added). */
+@media (max-width: 600px) {
+  .steer-row { flex-wrap: wrap; }
+  .steer-row-actions { width: 100%; justify-content: flex-end; }
+}

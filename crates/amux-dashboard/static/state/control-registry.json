@@ -3030,6 +3030,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxEditMessage": {
+      "kind": "command._outboxEditMessage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxFastConfirm": {
       "kind": "command._outboxFastConfirm",
       "feedback_required": true,
@@ -4592,6 +4598,12 @@
     },
     "_steeringDelayPrompt": {
       "kind": "command._steeringDelayPrompt",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_steeringEdit": {
+      "kind": "command._steeringEdit",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

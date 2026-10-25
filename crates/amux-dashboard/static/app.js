@@ -13856,8 +13856,11 @@ function _steeringRender() {
     const cancelBtn = m.local
       ? `<button class="btn steer-pending-remove" ${dis} onclick="_outboxRemoveMessage('${escJs(m.id)}')" title="Remove from this device" aria-label="Remove from this device">✕</button>`
       : `<button class="btn" ${dis} onclick="_steeringCancel('${m.id}')">✕</button>`;
+    // Edit before it goes out (Ethan, 2026-10-25). System pushes are amux's own
+    // prompts; a server row still settling has nothing to edit yet.
+    const editBtn = (!m.system && (m.local || !m.pending)) ? `<button class="btn steer-edit" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringEdit('${escJs(m.id)}')" title="Edit message" aria-label="Edit message">✎</button>` : '';
     const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery" aria-label="Delay delivery">⏱</button>` : '';
-    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid ${hasDelay ? 'rgba(99,102,241,0.25)' : m.pending ? 'rgba(210,153,34,0.45)' : 'var(--border)'};border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
+    return `<div class="steer-row" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid ${hasDelay ? 'rgba(99,102,241,0.25)' : m.pending ? 'rgba(210,153,34,0.45)' : 'var(--border)'};border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
       <div style="flex:1;min-width:0;">
         ${(sysTag || delayTag || pendTag) ? `<div style="margin-bottom:4px;">${sysTag}${delayTag}${pendTag}</div>` : ''}
         <div style="font-size:0.85rem;color:${m.system ? 'var(--dim)' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
@@ -13865,8 +13868,9 @@ function _steeringRender() {
         <div style="font-size:0.75rem;color:var(--dim);margin-top:4px;">Queued ${ago}</div>
         ${m.waiting_for ? `<div class="steer-waiting" style="font-size:0.75rem;color:var(--yellow,#d29922);margin-top:2px;">Waiting for ${esc(m.waiting_for)}</div>` : ''}
       </div>
-      <div style="display:flex;gap:4px;flex-shrink:0;">
+      <div class="steer-row-actions" style="display:flex;gap:4px;flex-shrink:0;">
         ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:0.75rem;color:var(--dim);">Automatic next turn</span>' : sendBtn}
+        ${editBtn}
         ${delayBtn}
         ${cancelBtn}
       </div>
@@ -14041,6 +14045,65 @@ async function _steeringSendNow(msgId) {
   } catch(e) { if (btn) { btn.textContent = 'Send now'; btn.disabled = false; btn.style.opacity = ''; } showToast('Failed to send'); }
 }
 
+// Edit a queued message in the shared dialog: several lines, and a live
+// re-render of the list cannot wipe the edit halfway. The server refuses once
+// delivery has claimed the message, and says so.
+async function _steeringEdit(msgId) {
+  if (!peekSession) return;
+  const forSess = peekSession;
+  const m = _steerQueueFor(sessions.find(s => s.name === forSess)).find(x => x.id === msgId);
+  if (!m) { showToast('Already delivered'); return; }
+  const shown = showFormModal('Edit queued message',
+    '<textarea id="steer-edit-input" class="dict-modal-input" rows="6" style="width:100%;resize:vertical;font:inherit;"'
+    + ' onkeydown="if(event.key===\'Enter\'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">'
+    + esc(m.text) + '</textarea>'
+    + '<div style="font-size:0.72rem;color:var(--dim);margin-top:6px;">Still delivers at the worker\'s next pause. ⌘↩ saves.</div>', 'Save');
+  setTimeout(() => { const t = document.getElementById('steer-edit-input'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 30);
+  if (!await shown) return;
+  const text = (document.getElementById('steer-edit-input')?.value || '').replace(/\s+$/, '');
+  if (!text.trim()) { showToast('Empty. Use ✕ to remove the message instead'); return; }
+  if (text === m.text) return;
+  if (m.local) { await _outboxEditMessage(msgId, text); return; }
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(forSess) + '/steer', {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: msgId, text})
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast(r.status === 404 ? 'Already delivered; not changed' : r.status === 409 ? 'Already being delivered; not changed' : 'Could not edit: ' + (d.error || r.status));
+      fetchSessions();
+      return;
+    }
+    const row = (sessions.find(s => s.name === forSess)?.steering || []).find(x => x.id === msgId);
+    if (row) row.text = d.text || text;
+    if (peekSession === forSess) _steeringRender();
+    showToast('Edited');
+  } catch (e) { showToast('Could not edit the message'); }
+}
+// A message still on this device (not yet accepted by the server): its saved
+// request carries the text, so the edit goes there.
+async function _outboxEditMessage(id, text) {
+  const q = (offlineQueue || []).find(entry => entry.id === id);
+  if (!q) { showToast('Already sent'); return; }
+  if (q.attempted_at || q.attempts || !q.not_attempted) {
+    const worker = decodeURIComponent((q.url.match(/\/api\/sessions\/([^/]+)\//) || [])[1] || 'the worker');
+    const ok = await showConfirm('This message may already be with ' + worker + ' as it was. Check its terminal first.\n\nSave the edit anyway?', 'Save', false);
+    if (!ok) return;
+  }
+  let edited = false;
+  await _mutateQueue(current => {
+    const entry = current.find(e => e.id === id);
+    if (!entry) return;
+    try {
+      const body = JSON.parse(entry.options.body);
+      body.text = text;
+      entry.options.body = JSON.stringify(body);
+      edited = true;
+    } catch (_) {}
+  });
+  showToast(edited ? 'Edited' : 'Already sent');
+}
 async function _steeringCancel(msgId) {
   if (!peekSession) return;
   const sess = sessions.find(s => s.name === peekSession);

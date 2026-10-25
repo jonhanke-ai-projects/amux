@@ -28417,6 +28417,11 @@ pub(crate) async fn steer_mutate(
         if msg_id.is_empty() {
             return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'id'"}));
         }
+        // {id, text}: edit a queued message before it is delivered (Ethan,
+        // 2026-10-25: "make it so i can edit steering/queued messages").
+        if body.get("text").is_some() {
+            return steer_edit_response(state, name, &msg_id, &body_str(body, "text")).await;
+        }
         let Some(deliver_at) = steer_deliver_at_from(body, now_f64()) else {
             return jresp(
                 StatusCode::BAD_REQUEST,
@@ -28458,6 +28463,99 @@ pub(crate) async fn steer_mutate(
         StatusCode::METHOD_NOT_ALLOWED,
         json!({"error": "method not allowed"}),
     )
+}
+
+/// What editing one queued message did.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SteerEdit {
+    /// Rewritten; the id of its Messages row, when it has one.
+    Edited(Option<i64>),
+    /// No such row: it was delivered or removed first.
+    Gone,
+    /// amux's own drive prompt, which only amux writes.
+    System,
+    /// Delivery has claimed it and may already be typing it.
+    Delivering,
+}
+
+/// Rewrite a queued steering message, and its Messages row so the log shows
+/// what will actually be sent. A row delivery has claimed (`delivering_since`)
+/// is refused rather than edited behind the delivery's back.
+pub(crate) fn steer_edit_in(conn: &rusqlite::Connection, session: &str, id: &str, text: &str) -> rusqlite::Result<SteerEdit> {
+    use rusqlite::OptionalExtension;
+    let row: Option<(String, Option<f64>)> = conn
+        .query_row(
+            "SELECT COALESCE(guard,''), delivering_since FROM steering_queue WHERE id=?1 AND session=?2",
+            rusqlite::params![id, session],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((guard, delivering)) = row else { return Ok(SteerEdit::Gone) };
+    if steer_guard_is_system(&guard) {
+        return Ok(SteerEdit::System);
+    }
+    if delivering.is_some() {
+        return Ok(SteerEdit::Delivering);
+    }
+    let n = conn.execute(
+        "UPDATE steering_queue SET text=?1 WHERE id=?2 AND session=?3 AND delivering_since IS NULL",
+        rusqlite::params![text, id, session],
+    )?;
+    if n == 0 {
+        return Ok(SteerEdit::Delivering);
+    }
+    let hist: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM cmd_history WHERE queue_id=?1 AND delivery='queued'",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(h) = hist {
+        conn.execute("UPDATE cmd_history SET text=?1 WHERE id=?2", rusqlite::params![text, h])?;
+    }
+    Ok(SteerEdit::Edited(hist))
+}
+
+async fn steer_edit_response(state: &AppState, name: &str, msg_id: &str, text: &str) -> Response {
+    let text = text.trim_end().to_string();
+    if text.trim().is_empty() {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "the text is empty; remove the message instead"}));
+    }
+    let out = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (session, id, t, slot) = (name.to_string(), msg_id.to_string(), text.clone(), out.clone());
+    let reply = state
+        .store
+        .write_async(move |conn| {
+            let r = steer_edit_in(conn, &session, &id, &t)?;
+            let events = match &r {
+                SteerEdit::Edited(Some(h)) => vec![crate::db::PendingEvent {
+                    entity_type: amux_core::revision::EntityType::Message,
+                    entity_id: format!("MSG-{h}"),
+                    mutation: amux_core::revision::MutationKind::Updated,
+                    payload: None,
+                }],
+                _ => vec![],
+            };
+            let applied = matches!(r, SteerEdit::Edited(_));
+            *slot.lock().unwrap() = Some(r);
+            Ok(crate::db::WriteOutcome { applied, events })
+        })
+        .await;
+    let outcome = out.lock().unwrap().take();
+    tracing::info!(session = name, id = msg_id, outcome = ?outcome, measured = reply.is_ok(), n_considered = 1,
+        verdict = "steering_edited", "a queued steering message was edited");
+    match (reply, outcome) {
+        (Err(e), _) => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+        (Ok(_), Some(SteerEdit::Edited(h))) => {
+            j200(json!({"ok": true, "id": msg_id, "text": text, "message_id": h.map(|h| format!("MSG-{h}"))}))
+        }
+        (Ok(_), Some(SteerEdit::System)) => jresp(StatusCode::FORBIDDEN,
+            json!({"error": "a system push is amux's own prompt and cannot be edited"})),
+        (Ok(_), Some(SteerEdit::Delivering)) => jresp(StatusCode::CONFLICT,
+            json!({"error": "already being delivered; it can no longer be edited"})),
+        (Ok(_), _) => jresp(StatusCode::NOT_FOUND, json!({"error": "message not found in queue (already delivered?)"})),
+    }
 }
 
 use super::py_truthy;
@@ -43524,6 +43622,38 @@ mod tests {
         assert!(keep_restamps("Fix the card titles"));
         // The title offered to the model is empty once a label is a day old.
         assert_eq!(current_task_title("Discard Worker Issues", 100, 100 + 86_401), "");
+    }
+
+    /// "make it so i can edit steering/queued messages" (Ethan, 2026-10-25).
+    /// A queued message and its Messages row take the new text; a row that
+    /// delivery has claimed, a system push, another lane's row and a delivered
+    /// one are each refused with their own outcome.
+    #[test]
+    fn a_queued_message_can_be_edited_until_delivery_claims_it() {
+        let conn = rusqlite::Connection::open_in_memory().expect("db");
+        conn.execute_batch(
+            "CREATE TABLE steering_queue(id TEXT PRIMARY KEY, session TEXT NOT NULL, text TEXT NOT NULL,
+                queued_at REAL NOT NULL, guard TEXT, delivering_since REAL);
+             CREATE TABLE cmd_history(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL,
+                session TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL, delivery TEXT, queue_id TEXT);
+             INSERT INTO steering_queue VALUES('q1','w','old',1,NULL,NULL),('q2','w','claimed',1,NULL,5),
+                ('q3','w','drive',1,'board-drive',NULL),('q4','w','answer',1,'selector-answer',NULL);
+             INSERT INTO cmd_history(text,session,ts,delivery,queue_id) VALUES('old','w',1,'queued','q1');",
+        )
+        .expect("schema");
+        let text = |table: &str, id: &str| -> String {
+            let col = if table == "cmd_history" { "queue_id" } else { "id" };
+            conn.query_row(&format!("SELECT text FROM {table} WHERE {col}=?1"), [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(steer_edit_in(&conn, "w", "q1", "new").unwrap(), SteerEdit::Edited(Some(1)));
+        assert_eq!(text("steering_queue", "q1"), "new");
+        assert_eq!(text("cmd_history", "q1"), "new", "the Messages log shows what will be sent");
+        assert_eq!(steer_edit_in(&conn, "w", "q2", "x").unwrap(), SteerEdit::Delivering);
+        assert_eq!(text("steering_queue", "q2"), "claimed");
+        assert_eq!(steer_edit_in(&conn, "w", "q3", "x").unwrap(), SteerEdit::System);
+        assert_eq!(steer_edit_in(&conn, "w", "q4", "a2").unwrap(), SteerEdit::Edited(None), "a selector answer is the owner's");
+        assert_eq!(steer_edit_in(&conn, "other", "q1", "x").unwrap(), SteerEdit::Gone, "another lane's row");
+        assert_eq!(steer_edit_in(&conn, "w", "nope", "x").unwrap(), SteerEdit::Gone);
     }
 
     /// "Delay it by x hours" (Ethan, 2026-10-15): the delay is wall-clock time
