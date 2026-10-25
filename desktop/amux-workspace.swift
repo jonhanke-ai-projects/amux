@@ -938,7 +938,8 @@ extension AppDelegate {
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
                 var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow, "number": w.windowNumber,
-                                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w]
+                                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w,
+                                        "connection": w.tab.accessoryView?.toolTip ?? ""]
                 if let g = c.grid {
                     d["grid"] = g.readingOrder
                     d["panes"] = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }

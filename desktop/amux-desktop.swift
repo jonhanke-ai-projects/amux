@@ -27,6 +27,57 @@ struct Connection: Codable {
     var url: String
 }
 
+/// Which server a page is on, as a color for its tab (Ethan, 2026-10-25: "put
+/// a color code based on the location/connection (so if its localhost/desktop
+/// vs sandbox, etc.) in the tabs"). This Mac is green, amux cloud (a sandbox
+/// on *.amux.io) blue, and any other server keeps one color of its own, picked
+/// from its host so it never changes between launches.
+struct ConnectionBadge {
+    let color: NSColor
+    let name: String
+    let host: String
+
+    private static var cache: [String: ConnectionBadge] = [:]
+
+    static func of(_ url: URL?) -> ConnectionBadge? {
+        guard let url = url, let host = url.host, url.scheme == "https" || url.scheme == "http" else { return nil }
+        let key = host + ":" + String(url.port ?? 0)
+        if let hit = cache[key] { return hit }
+        let named = loadConfig().connections.first { c in
+            URL(string: c.url).map { $0.host == host && ($0.port ?? 0) == (url.port ?? 0) } ?? false
+        }?.name
+        let local = ["localhost", "127.0.0.1", "::1"].contains(host) || host.hasSuffix(".local")
+            || host == ProcessInfo.processInfo.hostName
+        let color: NSColor
+        if local {
+            color = .systemGreen
+        } else if host == "amux.io" || host.hasSuffix(".amux.io") {
+            color = .systemBlue
+        } else {
+            let palette: [NSColor] = [.systemOrange, .systemPurple, .systemPink, .systemTeal, .systemYellow, .systemIndigo, .systemBrown]
+            var h: UInt32 = 5381
+            for b in host.utf8 { h = (h &* 33) ^ UInt32(b) }
+            color = palette[Int(h % UInt32(palette.count))]
+        }
+        let badge = ConnectionBadge(color: color, name: named ?? (local ? "This Mac" : host), host: host)
+        cache[key] = badge
+        return badge
+    }
+
+    /// The dot a tab shows beside its title.
+    func dot() -> NSView {
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 4
+        v.layer?.backgroundColor = color.cgColor
+        v.toolTip = "Connected to \(name) (\(host))"
+        v.identifier = NSUserInterfaceItemIdentifier("amux-connection-" + host)
+        v.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([v.widthAnchor.constraint(equalToConstant: 8), v.heightAnchor.constraint(equalToConstant: 8)])
+        return v
+    }
+}
+
 struct SavedWindow: Codable {
     var url: String
     var frame: String
@@ -411,6 +462,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
 
     func updateTitle() {
         window?.title = pageTitle
+        // The tab's dot says which server this page is on.
+        if let w = window, let badge = ConnectionBadge.of(webView.url ?? lastServerURL),
+           w.tab.accessoryView?.identifier?.rawValue != "amux-connection-" + badge.host {
+            w.tab.accessoryView = badge.dot()
+            w.tab.toolTip = pageTitle + " · " + badge.name
+        }
         // A grid's window is named by its panes, each pane by its page.
         if let host = paneHost ?? (grid != nil ? self : nil), let g = host.grid {
             g.refreshStrips()
