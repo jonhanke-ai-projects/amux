@@ -67,6 +67,7 @@ pub const PROXIED_FAMILIES: &[ProxiedFamily] = &[];
 pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/brex", "tokenized card issuance, webhook budget checks and credential health; disabled until configured (api/brex.rs)"),
     ("/api/_clear_sw", "service-worker cache reset landing page"),
+    ("/api/social", "publish to social platforms and read each post's results at 24h, 72h and 7d (api/social.rs)"),
     ("/health", "health + build discriminator"),
     // The /api-prefixed alias for the same handler. Lanes guess this path
     // because every sibling diagnostic is under /api/ (2026-08-30 sweep: 20
