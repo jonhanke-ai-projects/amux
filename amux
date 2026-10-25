@@ -9247,7 +9247,7 @@ cmd_contribute() {
   gh="$(_contrib_gh)" || { echo "  gh is not installed and could not be downloaded; nothing was changed."; _ct_done 4 gh_unavailable; return; }
   if ! "$gh" auth status --hostname github.com >/dev/null 2>&1; then
     echo "  GitHub is not connected, so the local work cannot be sent yet. Nothing was changed."
-    echo "  Connect it in Settings (Connect GitHub), or run: amux github login"
+    echo "  Connect it with Connect GitHub under About > Pull from remote, or run: amux github login"
     _ct_done 4 github_not_connected; return
   fi
   local me name email

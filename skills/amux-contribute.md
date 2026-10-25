@@ -133,7 +133,7 @@ plainly: no em-dashes, no "it's not X, it's Y".
 `amux contribute --title "<title>"` (run in the worktree) does this whole step:
 it pushes to `mixpeek/amux` when the user can, otherwise to their fork, opens the
 pull request, checks that its head is what was pushed, and prints the URL. Exit 4
-means GitHub is not connected: tell the user to use Settings > Connect GitHub or
+means GitHub is not connected: tell the user to use About > Pull from remote > Connect GitHub or
 run `! amux github login`. Its body is generic, so edit the PR body after with
 `gh pr edit <url> --body-file <file>`. The manual equivalent:
 
