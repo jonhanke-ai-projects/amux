@@ -2,7 +2,7 @@
 # post-commit names the lane's open owner requests when a commit cites none
 # (velocity audit 2026-10-25). Runs the real hook in a scratch repo against a
 # stub `amux` on PATH, so no server is needed.
-set -uo pipefail
+set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 hook="$here/git-hooks/post-commit"
 work="$(mktemp -d "${TMPDIR:-/tmp}/pc-requests.XXXXXX")"
