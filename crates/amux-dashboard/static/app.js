@@ -1206,13 +1206,28 @@ function _readQueue() {
 // whose own lock could be stolen in turn. A request granted and then stolen
 // now resolves with its own work's result; only a request that never ran
 // still rejects. Beaconed as verdict=outbox_lock_stolen_while_held.
-function _lockRequest(name, opts, work) {
+// A REQUEST STOLEN BEFORE ITS WORK STARTED waits its turn once (Ethan,
+// 2026-10-25, "still" after the fix above). With several Mac app windows
+// shown, each steals the replay lock from the others, and WebKit grants a
+// lock before it calls the callback, so a steal landing in that gap rejected
+// a request whose work never ran, and the toast read "Sync failed: Lock was
+// stolen by another request". It now queues once more without stealing,
+// bounded by _DELIVERY_STEAL_MS (verdict=outbox_lock_stolen_before_run). The
+// thief runs the same work, and every delivery re-reads the queue under its
+// own lock, so running after it is safe.
+function _lockRequest(name, opts, work, retried) {
   let ran = null;
   const held = lock => (ran = Promise.resolve().then(() => work(lock)));
   return navigator.locks.request(name, opts || {}, held).catch(e => {
-    if (!ran || !e || e.name !== 'AbortError') throw e;
-    _outboxDiagnostic('outbox_lock_stolen_while_held', {lock:name.split(':')[0]});
-    return ran;
+    if (!e || e.name !== 'AbortError') throw e;
+    if (ran) {
+      _outboxDiagnostic('outbox_lock_stolen_while_held', {lock:name.split(':')[0]});
+      return ran;
+    }
+    if (retried || opts?.signal?.aborted) throw e;
+    _outboxDiagnostic('outbox_lock_stolen_before_run', {lock:name.split(':')[0], steal:opts?.steal ? 1 : 0});
+    const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
+    return _lockRequest(name, signal ? {signal} : {}, work, true);
   });
 }
 function _outboxLock(name, work) {
@@ -4075,7 +4090,13 @@ function _syncLockRequest(run) {
     // A shown window takes the lock over, so the frozen holder stops blocking
     // every later pass too.
     _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:0, action:'stole'});
-    return _lockRequest('amux-outbox-replay', {steal:true}, held);
+    // Another shown window kept the lock past the retry: it is running this
+    // same pass, so this one yields, and the caller schedules the next pass.
+    return _lockRequest('amux-outbox-replay', {steal:true}, held).catch(e2 => {
+      if (granted || !e2 || (e2.name !== 'AbortError' && e2.name !== 'TimeoutError')) throw e2;
+      _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:_DELIVERY_STEAL_MS, hidden:0, action:'yielded'});
+      return undefined;
+    });
   });
 }
 function runSyncBanner(quiet = false) {

@@ -984,3 +984,51 @@ test('a lock stolen from a holder that already ran resolves with its own work, o
   await assert.rejects(ctx._lockRequest('amux-outbox-delivery:m2', {}, async () => 1), e => e.name === 'TimeoutError');
   void waiting;
 });
+
+// Web Locks with a queue, and WebKit's gap between granting a lock and calling
+// its callback: a steal in that gap rejects a request whose work never ran
+// (Ethan, 2026-10-25, "still" after the stolen-while-held fix).
+function queuedStealingLocks() {
+  const held = new Map(), queues = new Map();
+  const next = name => { const q = queues.get(name) || []; if (!held.has(name) && q.length) q.shift()(); };
+  return {request(name, options, work) {
+    if (typeof options === 'function') { work = options; options = {}; }
+    return new Promise((resolve, reject) => {
+      const grant = () => {
+        const me = {reject, ran: false};
+        held.set(name, me);
+        // The callback runs a macrotask after the grant: the gap a steal can land in.
+        setImmediate(() => {
+          if (held.get(name) !== me) return;
+          me.ran = true;
+          Promise.resolve().then(() => work({name})).then(resolve, reject)
+            .finally(() => { if (held.get(name) === me) { held.delete(name); next(name); } });
+        });
+      };
+      if (options.steal) {
+        const prev = held.get(name);
+        if (prev) { held.delete(name); const e = new Error('Lock was stolen by another request'); e.name = 'AbortError'; prev.reject(e); }
+        grant();
+      } else {
+        options.signal?.addEventListener?.('abort', () => reject(Object.assign(new Error('timed out'), {name: 'TimeoutError'})));
+        if (!queues.has(name)) queues.set(name, []);
+        queues.get(name).push(grant); next(name);
+      }
+    });
+  }};
+}
+
+test('a lock stolen before its work started waits its turn and runs once, instead of "lock was stolen"', async () => {
+  const locks = queuedStealingLocks();
+  const {ctx} = fixture([], {locks});
+  const beacons = [];
+  ctx.fetch = async (url, init) => { if (String(url).includes('client-debug')) beacons.push(JSON.parse(init.body)); return new Response('{}'); };
+  const order = [];
+  // Granted, then stolen by another shown window before its callback ran.
+  const first = ctx._lockRequest('amux-outbox-replay', {steal: true}, async () => { order.push('first'); return 'first-done'; });
+  const thief = ctx._lockRequest('amux-outbox-replay', {steal: true}, async () => { order.push('thief'); return 'thief-done'; });
+  assert.equal(await thief, 'thief-done');
+  assert.equal(await first, 'first-done', 'the request whose work never ran waits its turn rather than rejecting');
+  assert.deepEqual(order, ['thief', 'first'], 'each work runs once, the robbed one after the thief');
+  assert.ok(beacons.some(b => b.verdict === 'outbox_lock_stolen_before_run' && b.lock === 'amux-outbox-replay' && b.steal === 1), JSON.stringify(beacons));
+});
