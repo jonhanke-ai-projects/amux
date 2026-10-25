@@ -58178,7 +58178,7 @@ function _pubRow(l) {
   if (l.pending) {
     return `<div class="pages-row pub-row pub-pending" data-pub="${esc(l.id)}">
     <div class="pages-row-main"><b>${esc(name)}</b>
-      <span class="ui-help pub-pending-note">Waiting for your approval: nobody can open it yet.</span>
+      <span class="ui-help pub-pending-note">Waiting for your approval: ${l.kind === 'internal' ? 'it does not open yet.' : 'nobody can open it yet.'}</span>
       <span class="ui-help">${what}${by}</span></div>
     <button class="btn primary" onclick="_pubApprove('${escJs(l.id)}')">Approve</button>
     <button class="btn danger" onclick="_pubRevoke('${escJs(l.id)}')">Decline</button></div>`;
