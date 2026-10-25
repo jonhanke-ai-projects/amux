@@ -10,6 +10,7 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { geminiStubPort } from './test-env';
+import { cleanup } from './teardown';
 
 declare function switchView(view: string): void;
 
@@ -125,6 +126,6 @@ test('a recording that failed is transcribed again through the engine Dictate us
     await page.evaluate(() => switchView('record'));
     await expect(page.locator(`.recorder-item[data-rec-id="${id}"]`)).toContainText(STUB_TEXT);
   } finally {
-    await stub.close();
+    await cleanup('close the Gemini stub', () => stub.close());
   }
 });
