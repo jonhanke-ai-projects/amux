@@ -3,6 +3,7 @@
 // server and a real loopback app; everything is made and removed in the UI,
 // and the public links are opened with no amux credentials.
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
@@ -98,7 +99,7 @@ test('Pages provisions an app inside amux, a public app and a public folder', as
     await modalBtn('Remove').click();
     await expect(inside).toHaveCount(0);
   } finally {
-    await anon.dispose();
+    await cleanup('dispose the anonymous request context', () => anon.dispose());
     app.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
