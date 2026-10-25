@@ -110,6 +110,7 @@ pub mod reclaim;
 pub(crate) mod reclaim_owner;
 pub mod reconciliation;
 pub mod recordings;
+pub(crate) mod transcription;
 pub mod reports;
 pub mod request_log;
 pub mod review;
@@ -428,6 +429,7 @@ pub fn router_with_connector_transport(
         // worker, replay and expiry. The folder is the store (api/converse.rs).
         .merge(converse::routes())
         .nest("/api/dictation", dictation::routes())
+        .merge(transcription::routes())
         // Transcription lives at the TOP-LEVEL /api/dictate (python parity);
         // the dictation module owns it and answers NATIVELY (AMUX-2598:
         // whisper worker + gemini fallback in this process). Body limit off:

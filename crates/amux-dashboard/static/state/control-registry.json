@@ -4830,6 +4830,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_transcriptionOpenSettings": {
+      "kind": "command._transcriptionOpenSettings",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_transcriptionSave": {
+      "kind": "command._transcriptionSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_trendsFocusTheme": {
       "kind": "command._trendsFocusTheme",
       "feedback_required": true,

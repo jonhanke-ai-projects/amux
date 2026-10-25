@@ -27091,6 +27091,8 @@ function _dictRenderSettings() {
     '<div class="dict-settings">'
     + '<div class="dict-set-row"><b>Transcription</b><span>' + esc(c.model || '') + '</span></div>'
     + '<div class="dict-set-row"><b>Currently using</b><span>' + using + '</span></div>'
+    + '<div class="dict-sethint">Which engine Dictate and Recordings use is one setting: '
+    + '<button type="button" class="btn" onclick="_transcriptionOpenSettings()">Transcription settings</button></div>'
     + '<div class="dict-sethint">Bring your own Gemini API key (optional). If set, amux uses it instead of the '
     + 'server\'s key. It is stored on the amux server and is <b>never sent back to any browser</b>. '
     + 'Get one at <span style="color:var(--accent)">aistudio.google.com/apikey</span>.</div>'
@@ -51648,7 +51650,50 @@ function _settingsTab(name) {
   }
   try { localStorage.setItem('amux_settings_tab', name); } catch (e) {}
   menu.scrollTop = 0;
-  if(name==='integrations') { _connectionSessionControls(); _connectionSecurityLoad(); }
+  if(name==='integrations') { _connectionSessionControls(); _connectionSecurityLoad(); _transcriptionLoad(); }
+}
+
+// Settings > Connect > Transcription: the one engine setting Dictate and Recordings share
+// (GET/POST /api/transcription). Ethan, 2026-10-25: "we should have a centralized
+// transcription setting/config".
+function _transcriptionUsesText(u) {
+  if (!u || !u.available) return 'nothing (' + ((u && u.why_unavailable) || 'no engine') + ')';
+  return u.engine === 'gemini' ? 'Gemini' : 'local ' + u.engine;
+}
+function _transcriptionRender(d) {
+  const sel = document.getElementById('transcription-engine');
+  const st = document.getElementById('transcription-status');
+  if (!st) return;
+  if (!d || d.error) { st.textContent = 'Transcription settings unavailable: ' + ((d && d.error) || 'no answer'); return; }
+  if (sel && document.activeElement !== sel) sel.value = d.engine || 'auto';
+  const key = d.gemini && d.gemini.configured
+    ? 'Gemini key: ' + (d.gemini.source === 'byo' ? 'your own (Dictation tab)' : "this server's GOOGLE_API_KEY") + '.'
+    : 'No Gemini key: add your own in the Dictation tab, or set GOOGLE_API_KEY in server.env.';
+  st.textContent = 'Dictate uses ' + _transcriptionUsesText(d.dictate && d.dictate.uses)
+    + '. Recordings use ' + _transcriptionUsesText(d.recordings && d.recordings.uses) + '. ' + key;
+}
+async function _transcriptionLoad() {
+  try {
+    const r = await fetch(API + '/api/transcription', { cache: 'no-store', headers: _authHeaders() });
+    _transcriptionRender(await r.json().catch(() => ({ error: 'HTTP ' + r.status })));
+  } catch (e) { _transcriptionRender({ error: 'amux is unreachable' }); }
+}
+async function _transcriptionSave(engine) {
+  try {
+    const r = await fetch(API + '/api/transcription', { method: 'POST',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ engine }) });
+    const d = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+    if (!r.ok || d.error) { showToast('Transcription not saved: ' + (d.error || ('HTTP ' + r.status))); _transcriptionLoad(); return; }
+    _transcriptionRender(d);
+    showToast('Transcription engine saved');
+  } catch (e) { showToast('Transcription not saved: amux is unreachable'); }
+}
+function _transcriptionOpenSettings() {
+  const menu = document.getElementById('settings-menu');
+  if (menu && !menu.classList.contains('open')) toggleSettings();
+  _settingsTab('integrations');
+  const sec = document.getElementById('settings-transcription-section');
+  if (sec) sec.scrollIntoView({ block: 'start' });
 }
 function toggleSettings() {
   const menu = document.getElementById('settings-menu');
@@ -62338,9 +62383,11 @@ function _recorderRenderSettings() {
   }
   if (tr) {
     const t = c.transcriber || {};
-    tr.textContent = t.available
-      ? 'Transcripts: on, locally with ' + (t.engine || 'a local engine') + (t.model ? ' (' + t.model + ')' : '') + '.'
-      : 'Transcripts: off. ' + (t.why_unavailable || 'No local transcriber is configured on the server.');
+    // The engine is the shared transcription setting, the same one Dictate follows.
+    const how = t.engine === 'gemini' ? 'with Gemini, as Dictate does'
+      : 'locally with ' + (t.engine || 'a local engine') + (t.model ? ' (' + t.model + ')' : '');
+    tr.innerHTML = esc(t.available ? 'Transcripts: on, ' + how + '. ' : 'Transcripts: off. ' + (t.why_unavailable || 'No transcriber is configured on the server.') + ' ')
+      + '<button type="button" class="btn" id="recorder-transcription-settings" onclick="_transcriptionOpenSettings()">Transcription settings</button>';
   }
 }
 
@@ -62377,7 +62424,7 @@ function _recorderTranscriptWords(row) {
   if (!t) return row.local && row.local.state === 'empty' ? '' : 'Transcript after sync';
   return ({pending: 'Transcript queued', running: 'Transcribing', done: 'Transcript ready',
     failed: 'Transcription failed' + (t.error ? ': ' + t.error : ''),
-    unavailable: 'No local transcriber' + (t.error ? ': ' + t.error : '')})[t.status] || ('Transcript ' + (t.status || 'unknown'));
+    unavailable: 'Not transcribed' + (t.error ? ': ' + t.error : '')})[t.status] || ('Transcript ' + (t.status || 'unknown'));
 }
 
 async function _recorderRender() {

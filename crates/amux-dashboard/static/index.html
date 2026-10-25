@@ -587,6 +587,19 @@
           <details><summary>Browser blocks HTTPS before sign-in?</summary><p>On the server machine, open <code>http://localhost:&lt;this server's port&gt;/connection-setup</code> for local trust and install instructions. This page cannot grant OS/browser trust. Ask the operator to provide a trusted certificate; do not disable TLS checks.</p></details>
           </details>
         </section>
+        <div class="settings-sep"></div>
+        <section class="settings-section" id="settings-transcription-section">
+          <div class="settings-section-label">Transcription</div>
+          <p class="connection-help ui-help">One setting for Dictate and Recordings: which engine turns speech into text on this server.</p>
+          <label class="ui-field">Engine
+            <select id="transcription-engine" class="input" onchange="_transcriptionSave(this.value)">
+              <option value="auto">Automatic: local when this server has it, else Gemini</option>
+              <option value="local">Local only: nothing leaves this server</option>
+              <option value="gemini">Gemini only</option>
+            </select>
+          </label>
+          <div id="transcription-status" class="ui-help" aria-live="polite">Loading…</div>
+        </section>
         </div>
         <!-- Moved out of Settings > Connect (Ethan, 2026-10-14: "remove vault and secrets (this will be in a
              separate vault tab) remove chatgpt connector, api keys"). Kept hidden, not deleted: their scripts

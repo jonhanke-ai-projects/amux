@@ -52,9 +52,15 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 _scrubbed=""
 for _k in ${!AMUX_@}; do
   case "$_k" in
-    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_VAULT_KEYSTORE|AMUX_DASHBOARD_DIR|AMUX_E2E_*) ;;
+    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_VAULT_KEYSTORE|AMUX_DASHBOARD_DIR|AMUX_GEMINI_BASE|AMUX_E2E_*) ;;
     *) unset "$_k"; _scrubbed="$_scrubbed $_k" ;;
   esac
+done
+# A real Gemini key in the developer's shell must not reach a test server: with it,
+# a spec's request to the stub carries the real key, and a server whose stub base
+# was lost would spend it. Test servers have no Gemini key unless a spec saves one.
+for _k in GOOGLE_API_KEY GEMINI_API_KEY; do
+  [ -n "${!_k:-}" ] && { unset "$_k"; _scrubbed="$_scrubbed $_k"; }
 done
 [ -n "$_scrubbed" ] && echo "[e2e] ENV: scrubbed fleet vars:$_scrubbed (a throwaway home must not inherit fleet toggles)"
 
