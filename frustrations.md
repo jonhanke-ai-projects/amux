@@ -6062,3 +6062,27 @@ FIX: codex-send.py falls back to the tmux session name (amux-<worker> stripped
   verdict not_sent_no_origin in codex-send.log when no identity resolves,
   unless --no-origin is given. A mutation that drops the refusal turns the
   no-identity probe from rc 2 to rc 0.
+
+## An orchestrator lane blocked on its own AskUserQuestion for 8 h, and nothing in amux noticed
+AREA: instruments
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-25
+SESSION: amux-helper
+CARD: none (amux-helper is isolated and has no board)
+SYMPTOM: at ~04:2xZ amux-helper asked the owner a question with Claude Code's
+  AskUserQuestion. It blocks the turn until answered; the owner was asleep and
+  answered at 12:15:41Z. Meanwhile peer messages queued unread, the lane's
+  ScheduleWakeup chain could not fire (the turn never ended), and its sessions
+  API row kept reading status=active, turn_state=running, so no dashboard or
+  sweep showed a stall.
+COST: ~8 h with no orchestration on a deadline night. The TubeScience chain
+  failed three times and aborted, a breaker re-tripped hourly, and three release
+  decisions went unanswered until the owner noticed by hand.
+FIX: scripts/worker-stall-watch.sh, run every 5 min as a shell schedule for the
+  orchestrating lanes. Stall = last_progress_at older than STALL_MIN (20) with
+  inbound messages newer than it. If the turn is idle it sends a wake; if the
+  turn is running (blocked) it alerts the owner once per stall. Every check logs
+  a line, and a stall logs a WARN line, to ~/.amux/logs/worker-stall-watch.log.
+  Fixture controls cover blocked->alert once, idle->wake, fresh->ok,
+  no-unread->ok, unreadable API->unmeasured.
