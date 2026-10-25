@@ -6493,6 +6493,9 @@ ${BOLD}Coordination:${RESET}
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
                                  Raise it: clears every waiting card, wakes their lanes
+  amux social post youtube <file> --caption-stdin [--title T] [--privacy P]
+                                 Publish a video; prints the post id. Results land at 24h, 72h, 7d
+  amux social track|ls|stats     Measure a post made elsewhere, list posts, read one post live
 
 ${BOLD}Info:${RESET}
   amux ls                        List all workers with status and previews
@@ -10940,6 +10943,72 @@ print(f"saved to {os.environ['WHO']}'s amux memory ({d.get('bytes', '?')} bytes)
 PY2
 }
 
+cmd_social() {
+  # Social posting and results (api/social.rs). The caption comes from stdin
+  # with --caption-stdin, so backticks and $(...) in it stay literal.
+  local sub="${1:-status}"; shift 2>/dev/null || true
+  local me="${AMUX_SESSION:-}"
+  case "$sub" in
+    status|"")
+      _curl -sk "$AMUX_API/api/social" | python3 -m json.tool ;;
+    post)
+      local platform="${1:-}" file="${2:-}"; shift 2 2>/dev/null || true
+      [[ -n "$platform" && -n "$file" ]] || die "Usage: amux social post <platform> <file> [--title T] [--privacy public|unlisted|private] [--tag T]... [--account A] (--caption-stdin | --caption TEXT)"
+      local title="" privacy="" account="" caption="" tags=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --title) title="${2:-}"; shift 2 ;;
+          --privacy) privacy="${2:-}"; shift 2 ;;
+          --account) account="${2:-}"; shift 2 ;;
+          --tag) tags+=("${2:-}"); shift 2 ;;
+          --caption) caption="${2:-}"; shift 2 ;;
+          --caption-stdin) caption="$(cat)"; shift ;;
+          *) die "amux social post: unknown option $1" ;;
+        esac
+      done
+      [[ "$file" == /* ]] || file="$PWD/$file"
+      P="$platform" F="$file" T="$title" V="$privacy" A="$account" C="$caption" G="$(printf '%s\n' "${tags[@]+"${tags[@]}"}")" python3 -c '
+import json, os
+b = {"platform": os.environ["P"], "file": os.environ["F"], "caption": os.environ["C"]}
+for k, e in (("title", "T"), ("privacy", "V"), ("account", "A")):
+    if os.environ[e]: b[k] = os.environ[e]
+b["tags"] = [t for t in os.environ["G"].splitlines() if t]
+print(json.dumps(b))' | _curl -sk --max-time 900 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $me" -d @- "$AMUX_API/api/social/posts" | python3 -m json.tool ;;
+    track)
+      local platform="${1:-}" pid="${2:-}"; shift 2 2>/dev/null || true
+      [[ -n "$platform" && -n "$pid" ]] || die "Usage: amux social track <platform> <post_id> [--posted-at EPOCH] [--url URL] [--account A]"
+      local at="" url="" account=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --posted-at) at="${2:-}"; shift 2 ;;
+          --url) url="${2:-}"; shift 2 ;;
+          --account) account="${2:-}"; shift 2 ;;
+          *) die "amux social track: unknown option $1" ;;
+        esac
+      done
+      P="$platform" I="$pid" W="$at" U="$url" A="$account" python3 -c '
+import json, os
+b = {"platform": os.environ["P"], "post_id": os.environ["I"]}
+if os.environ["W"]: b["posted_at"] = int(os.environ["W"])
+if os.environ["U"]: b["url"] = os.environ["U"]
+if os.environ["A"]: b["account"] = os.environ["A"]
+print(json.dumps(b))' | _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $me" -d @- "$AMUX_API/api/social/posts/track" | python3 -m json.tool ;;
+    ls)
+      _curl -sk "$AMUX_API/api/social/posts${1:+?platform=$1}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for p in d.get("posts", []):
+    w = p.get("windows", {})
+    snap = " ".join("%s=%s" % (k, (v.get("metrics") or {}).get("views", "-") if v.get("measured") else "-") for k, v in w.items())
+    print("%-5s %-9s %-14s %-9s views %s  %s" % (p["id"], p["platform"], p["post_id"], p.get("visibility") or "?", snap, p.get("title") or p.get("url")))
+print("%d post(s)" % len(d.get("posts", [])))' ;;
+    stats)
+      [[ -n "${1:-}" ]] || die "Usage: amux social stats <id>"
+      _curl -sk "$AMUX_API/api/social/posts/$1/metrics" | python3 -m json.tool ;;
+    *) die "Usage: amux social [status|post|track|ls|stats]" ;;
+  esac
+}
+
 cmd_signal() {
   local sub="${1:-help}"; shift 2>/dev/null || true
   local me="${AMUX_WORKER:-${AMUX_SESSION:-}}"
@@ -11061,6 +11130,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
     signal)           shift; cmd_signal "$@" ;;
+    social)           shift; cmd_social "$@" ;;
     memory|mem)       shift; cmd_memory "$@" ;;
     land)             shift; cmd_land "$@" ;;
     ci)               shift; cmd_ci "$@" ;;

@@ -31884,6 +31884,7 @@ const _CONN_CAPS = {
   'google-calendar': [['Read and create events', 'Every calendar the account can see'], ['Schedule for workers', 'Workers mint a short-lived token per call']],
   'google-drive': [['Find and read files', 'Drive and shared drives'], ['Create and edit', 'Docs and files on the account\'s behalf']],
   'google-admin': [['Directory lookups', 'Users and groups in the Workspace']],
+  'google-youtube': [['Upload videos', 'Through /api/social, as the connected channel'], ['Read results', 'Views and engagement at 24h, 72h and 7d']],
   'slack': [['Read channels', 'Channel list and history'], ['Post messages', 'As the installed app']],
   'telegram': [['Bot messages', 'Send and receive through your bot']],
   'mattermost': [['Read and post', 'Channels the login can see']],

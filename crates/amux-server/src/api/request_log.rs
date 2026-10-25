@@ -2831,6 +2831,27 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/layout-presets/{name}",
         methods: &["DELETE"],
     },
+    // -- Social posting (api/social.rs, AA-42)
+    RouteEntry {
+        path: "/api/social",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/social/posts",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/social/posts/track",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/social/posts/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/social/posts/{id}/metrics",
+        methods: &["GET"],
+    },
     // -- New Worker / Connect modals (api/worker_create.rs, AMUX-2871)
     RouteEntry {
         path: "/api/templates",

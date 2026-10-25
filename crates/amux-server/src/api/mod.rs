@@ -76,6 +76,7 @@ pub mod invariants_api;
 pub mod journal;
 pub mod launch_context;
 pub mod layout_presets;
+pub mod social;
 pub mod log_search;
 pub mod lookup;
 pub mod location;
@@ -367,6 +368,8 @@ pub fn router_with_connector_transport(
         .nest("/api/crm", crm::routes())
         .nest("/api/speedtest", speedtest::routes())
         .nest("/api/layout-presets", layout_presets::routes())
+        // Social posting and results (AA-42): YouTube first, the rest report their gate.
+        .nest("/api/social", social::routes())
         .nest("/api/pinned", pinned::routes())
         // The New Worker / Connect modals' supporting reads (AMUX-2871).
         .merge(worker_create::routes())

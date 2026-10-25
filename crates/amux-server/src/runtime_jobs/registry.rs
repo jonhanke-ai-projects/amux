@@ -133,6 +133,7 @@ pub mod ids {
     pub const STATUS_HISTORY: &str = "status-history";
     pub const BROWSER_LOGIN_SYNC: &str = "browser-login-sync";
     pub const CONNECTOR_MAINTENANCE: &str = "connector-maintenance";
+    pub const SOCIAL_METRICS: &str = "social-metrics";
     pub const EPISODES: &str = "episodes";
     pub const TOKEN_LEDGER: &str = "token-ledger";
     pub const BOARD_HYGIENE: &str = "board-hygiene";
@@ -196,6 +197,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
+    ids::SOCIAL_METRICS,
     ids::EPISODES,
     ids::TOKEN_LEDGER,
     ids::BOARD_HYGIENE,
@@ -835,6 +837,14 @@ pub const CATALOG: &[Doc] = &[
         env: &[EnvControl { var: "AMUX_CONNECTOR_MAINTENANCE_SECS", effect: "pass interval in seconds (default 300, 0 disables)", off: Some("0") }],
         pref: None,
         detail: Some("/api/connectors/maintenance"),
+    },
+    Doc {
+        id: ids::SOCIAL_METRICS,
+        name: "Social metrics",
+        purpose: "Reads each social post's views and engagement once its 24h, 72h and 7d windows pass, and stores one snapshot per window. A failed read is stored unmeasured with its error and retried.",
+        env: &[EnvControl { var: "AMUX_SOCIAL_METRICS_SECS", effect: "pass interval in seconds (default 600, 0 disables)", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/social/posts"),
     },
     Doc {
         id: ids::BROWSER_LOGIN_SYNC,
