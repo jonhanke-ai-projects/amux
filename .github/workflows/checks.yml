@@ -550,6 +550,10 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-pre-commit-migration-guard.sh
+      - name: a commit that cites no owner request names the lane's open ones (post-commit)
+        run: |
+          set -uo pipefail
+          bash scripts/test-post-commit-open-requests.sh
       - name: install.sh's hook install references the real source path
         run: |
           set -uo pipefail
