@@ -1335,6 +1335,52 @@ for app, k in c.most_common():
 PY
 }
 
+# What the reports themselves say about who crashed, appended to the crashes
+# line. Mac crashes RCA 20261025-060129: "bash crashed 10 times" took an hour
+# to place. The .ips files already held it: all 10 were /bin/bash translated
+# by Rosetta, under coalition com.amux.tmux-watchdog (the watchdog restarted
+# the tmux server on 10-23, so EVERY worker shell carries that coalition and
+# runs under Rosetta with the Intel tmux), parent bash, SIGSEGV re-raised by
+# the process itself, each alive about 0.2s. Prints "" when no report parses.
+crash_context() { # <dir> <app>
+  python3 - "$1" "$2" <<'PY' 2>/dev/null
+import collections, json, os, re, sys, time
+d, app = sys.argv[1], sys.argv[2]
+cut = time.time() - 86400
+coal, par, sig = collections.Counter(), collections.Counter(), collections.Counter()
+n = tr = selfk = short = 0
+for name in os.listdir(d):
+    if re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", name) != app or not name.endswith(".ips"):
+        continue
+    p = os.path.join(d, name)
+    if os.stat(p).st_mtime < cut:
+        continue
+    try:
+        b = json.loads(open(p, errors="replace").read().split("\n", 1)[1])
+    except Exception:
+        continue
+    n += 1
+    coal[b.get("coalitionName") or "?"] += 1
+    par[b.get("parentProc") or "?"] += 1
+    sig[(b.get("exception") or {}).get("signal") or "?"] += 1
+    tr += 1 if b.get("translated") else 0
+    t = b.get("termination") or {}
+    selfk += 1 if t.get("byPid") is not None and t.get("byPid") == b.get("pid") else 0
+    try:
+        # mach absolute time ticks at 24MHz on Apple silicon (125/3 ns a tick)
+        short += 1 if (b["procExitAbsTime"] - b["procStartAbsTime"]) * 125 / 3 / 1e9 < 1 else 0
+    except Exception:
+        pass
+if n:
+    top = lambda c: ", ".join("%s x%d" % kv for kv in c.most_common(2))
+    out = ["coalition " + top(coal), "parent " + top(par), "signal " + top(sig), "%d/%d under Rosetta" % (tr, n)]
+    if selfk: out.append("%d raised by the process itself" % selfk)
+    if short: out.append("%d alive under 1s" % short)
+    note = " (the watchdog started the tmux server: this means a process under tmux, a worker's shell)" if coal.most_common(1)[0][0] == "com.amux.tmux-watchdog" else ""
+    print("reports: " + "; ".join(out) + note)
+PY
+}
+
 crash_newest() { # <dir> <app>: epoch of the app's newest crash, dated as crash_counts dates it
   python3 - "$1" "$2" <<'PY' 2>/dev/null
 import os, re, sys, time
@@ -1497,7 +1543,8 @@ check_crash_reports() { # <dry:0|1>
         # earlier, and the 24h total of 13 escalated a loop that was not there.
         echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h, but only $episode since its last $(( CRASH_RECENT_MIN / 60 ))h without a crash; the rest is a loop that ended (verdict=crash_new_episode_under_threshold)"
       elif [ "$recent" -gt 0 ]; then
-        HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
+        local ctx; ctx=$(crash_context "$CRASH_DIR" "$name")
+        HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)%s\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N" "${ctx:+ ($ctx)}")
       else
         echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h but none in the last $(( CRASH_RECENT_MIN / 60 ))h, so the loop has stopped; not a constraint (verdict=crash_loop_ended)"
       fi

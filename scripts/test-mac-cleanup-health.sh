@@ -162,6 +162,17 @@ check "the count is reported"                         yes   "$(has "$out" 'prune
 check "a file that is not a crash report is kept, however old" yes "$([ -e "$CRASH_DIR/notes.txt" ] && echo yes || echo no)"
 check "a recent report is kept"                       yes   "$([ -e "$CRASH_DIR/$ONCE" ] && echo yes || echo no)"
 
+# Mac crashes RCA 20261025-060129: the line says what the reports say about who
+# crashed, so "bash crashed 10 times" names its coalition, parent and Rosetta.
+CRASH_DIR="$FIX/crash-ctx"; mkdir -p "$CRASH_DIR"
+for i in $(seq 1 11); do
+  python3 -c 'import json,sys; print(json.dumps({"bug_type":"309"})); print(json.dumps({"pid":100+int(sys.argv[1]),"parentProc":"bash","coalitionName":"com.amux.tmux-watchdog","translated":True,"exception":{"type":"EXC_CRASH","signal":"SIGSEGV"},"termination":{"byPid":100+int(sys.argv[1])},"procStartAbsTime":1000,"procExitAbsTime":1000+4800000}))' "$i" > "$CRASH_DIR/bash-$(stamp $((i * 60))).ips"
+done
+: > "$CRASH_DIR/bash-$(stamp 900).ips"   # an empty report is skipped, not counted as context
+HEALTH_VERDICTS=""; check_crash_reports 0 >/dev/null
+check "the crashes line carries what the reports say" yes "$(has "$HEALTH_VERDICTS" '^crashes bash crashed 12 times in 24h (at or over 10) (reports: coalition com.amux.tmux-watchdog x11; parent bash x11; signal SIGSEGV x11; 11/11 under Rosetta; 11 raised by the process itself; 11 alive under 1s (the watchdog started the tmux server: this means a process under tmux, a worker.s shell))$')"
+check "a report with no body adds no context"         ""    "$(crash_context "$FIX/crash" Looper)"
+
 echo "4b. a loop that stopped crashing 6h+ ago is reported, not escalated (RCA crashes 20261017-022150)"
 CRASH_DIR="$FIX/crash-ended"; mkdir -p "$CRASH_DIR"
 for i in $(seq 10 21); do : > "$CRASH_DIR/git-$(stamp $((8 * 3600 + i * 60))).ips"; done
