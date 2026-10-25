@@ -392,6 +392,7 @@ VM_PS_CMD=${AMUX_CLEANUP_VM_PS_CMD:-docker --context colima-PROFILE ps --format 
 # Which container inside a VM writes its disk (the RCA bundle's writers list).
 # Prints "S<TAB>name<TAB>blockio" and "I<TAB>/name<TAB>startedAt" lines.
 VM_WRITERS_CMD=${AMUX_CLEANUP_VM_WRITERS_CMD:-vm_writers_raw PROFILE}
+OPEN_WRITERS_CMD=${AMUX_CLEANUP_OPEN_WRITERS_CMD:-open_writers_raw}
 VM_IDLE_IGNORE=${AMUX_CLEANUP_VM_IDLE_IGNORE:-gs12-pypi-cache}
 VM_STOP_CMD=${AMUX_CLEANUP_VM_STOP_CMD:-colima stop -p PROFILE}
 # Docker Desktop runs its own VM that `colima list` never shows. On 2026-10-05
@@ -2440,6 +2441,50 @@ for i, (rate, gb, up, n) in enumerate(rows[:3]):
 ' "$p" "$now"
 }
 
+# A WRITER OUTSIDE THE SEARCHED ROOTS IS STILL HOLDING ITS FILE OPEN. RCA
+# 20261025-100211: the find above ran out of budget, never looked in
+# ~/.config, and the bundle blamed ts-dropin-mx (its VM disk was flat) while a
+# pg_dump wrote ss_s1.dir/5040.dat.gz at 34G/h. lsof found it in 1s. Two
+# samples of each open-for-write file's ALLOCATED bytes (a sparse VM disk's
+# apparent size never moves) give its growth rate wherever it lives.
+open_writers_raw() { # one sample: pid<TAB>command<TAB>allocated bytes<TAB>path, files over 500M open for write
+  perl -e 'alarm 20; exec @ARGV' lsof -nP -w 2>/dev/null \
+    | awk '$5=="REG" && $4 ~ /^[0-9]+[wu]/ && $7+0>536870912 {n=$9; for(i=10;i<=NF;i++) n=n" "$i; print $2"\t"$1"\t"n}' \
+    | sort -u | while IFS=$'\t' read -r pid cmd path; do
+        b=$(stat -f %b "$path" 2>/dev/null) && printf '%s\t%s\t%s\t%s\n' "$pid" "$cmd" "$((b * 512))" "$path"
+      done
+}
+open_file_writers() { # [interval_s] [pane map text]: the top 3 growing files, one bundle line each
+  local iv=${1:-10} pmap=${2:-} a b
+  a=$($OPEN_WRITERS_CMD 2>/dev/null) || a=""
+  [ -n "$a" ] || return 0
+  sleep "$iv"
+  b=$($OPEN_WRITERS_CMD 2>/dev/null) || b=""
+  python3 -c '
+import sys
+iv, a, b, floor = float(sys.argv[1]), sys.argv[2], sys.argv[3], float(sys.argv[4])
+def rows(t):
+    d = {}
+    for l in t.splitlines():
+        f = l.split("\t")
+        if len(f) == 4 and f[2].isdigit():
+            d[(f[0], f[3])] = (f[1], int(f[2]))
+    return d
+A, B = rows(a), rows(b)
+out = []
+for k, (cmd, nb) in B.items():
+    rate = (nb - A[k][1]) / 2**30 * 3600 / iv if k in A else 0
+    if rate >= floor:   # a trickle (a VM disk at 0.0G/h) is not the writer
+        out.append((rate, nb / 2**30, k[0], cmd, k[1]))
+out.sort(reverse=True)
+for r in out[:3]:
+    print("%.1f\t%.1f\t%s\t%s\t%s" % r)
+' "$iv" "$a" "$b" "${OPEN_WRITERS_MIN_GBH:-1}" | { i=0; while IFS=$'\t' read -r rate gb pid cmd path; do
+    tag=""; [ "$i" -eq 0 ] && tag=" (verdict=open_file_writer)"; i=$((i+1))
+    echo "- open for write: $path growing ${rate}G/h (${gb}G now) by pid=$pid $cmd, lane: $(lane_for_pid "$pid" "$pmap")$tag"
+  done; }
+}
+
 # Burn rate from the host-metrics history (5-minute samples), by least squares
 # over the window. Two readings 15 minutes apart are noise: round 2 of DESKT-57
 # read 65 G/h off exactly that while a peer's delete sat in the window. Prints
@@ -3508,6 +3553,8 @@ else
       echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")"; done
     if printf '%s\n' "$verdicts" | grep -q '^disk '; then
       echo; echo "## Files over 500M written in the last hour (the writers)"
+      # Open files first: wherever they live, and only seconds of the budget.
+      open_file_writers "${AMUX_CLEANUP_OPEN_WRITERS_IV_S:-10}" "$pmap"
       IFS=':' read -r -a wroots <<< "$TARGET_ROOTS"
       # ONE budget for the whole search, not one per root: 9 roots at 45s each
       # was 405s on its own and pushed the tick past the scheduler's 600s kill.
@@ -3536,7 +3583,7 @@ else
     fi
     echo; echo "## Full tick output"; echo "~/.amux/logs/mac-cleanup-tick.last"
   } > "$bundle"
-  grep -a 'verdict=vm_container_writer' "$bundle" | sed 's/^- /mac-cleanup: disk writer /' 
+  grep -a 'verdict=vm_container_writer\|verdict=open_file_writer' "$bundle" | sed 's/^- /mac-cleanup: disk writer /'
   while IFS= read -r v; do
     cls=${v%% *}
     if [ "$DRY" = "1" ]; then echo "mac-cleanup: constraint $v — would escalate (dry run)"; continue; fi

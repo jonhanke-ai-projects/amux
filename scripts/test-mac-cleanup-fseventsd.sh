@@ -4,6 +4,7 @@
 # its cause. When it is hot the tick now names the busiest directories and
 # escalates the class. Each cell fails if its guard is removed (ethos rule 7).
 set -euo pipefail
+export AMUX_CLEANUP_OPEN_WRITERS_CMD=false   # a disk bundle must not read the live lsof
 HERE=$(cd "$(dirname "$0")" && pwd)
 TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane
