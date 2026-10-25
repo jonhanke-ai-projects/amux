@@ -63853,7 +63853,7 @@ function _cvSelect(sel, auto) {
   document.getElementById('cv-meta').textContent = '';
   document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
   const inp = document.getElementById('cv-input');
-  inp.placeholder = 'Message ' + _cvFindName(sel) + (sel[0] === 'p' || _cvMobile() ? '' : ' (use @ to mention a person or worker)');
+  inp.placeholder = 'Message ' + _cvFindName(sel) + (_cvMobile() ? '' : sel[0] === 'p' ? ' (use @ to give a worker a task)' : ' (use @ to mention a person or worker)');
   _cvPoll(true);
   _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel) _cvPoll(false); }, 2500);
   if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
@@ -63953,8 +63953,11 @@ function _cvDelivHtml(p) {
   const chips = want.map(w => {
     const d = got.find(x => x.worker === w);
     if (!d) return '<span>sending to ' + esc(w) + '…</span>';
-    if (d.state === 'queued') return '<span title="' + esc(d.detail || '') + '">&#x23F3; queued for ' + esc(w) + '</span>';
-    return d.ok ? '<span class="ok">&#x2713; delivered to ' + esc(w) + '</span>'
+    // Where its answer will be: here, its own thread (from a direct message), or its
+    // terminal (an isolated worker gets the owner's words with no reply route).
+    const where = d.reply === 'pane' ? '; it answers in its terminal' : d.reply === 'thread' ? '; it answers in its thread' : '';
+    if (d.state === 'queued') return '<span title="' + esc(d.detail || '') + '">&#x23F3; queued for ' + esc(w) + esc(where) + '</span>';
+    return d.ok ? '<span class="ok">&#x2713; delivered to ' + esc(w) + esc(where) + '</span>'
       : '<span class="bad" title="' + esc(d.detail || '') + '">&#x2715; not delivered to ' + esc(w) + (d.detail ? ': ' + esc(String(d.detail).slice(0, 60)) : '') + '</span>';
   });
   return '<div class="cv-deliv">' + chips.join('') + '</div>';
