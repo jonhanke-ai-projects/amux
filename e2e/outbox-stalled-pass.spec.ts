@@ -82,38 +82,3 @@ test('a pass stuck in any phase is abandoned, named, and replaced', async ({ pag
   await expect.poll(() => beacons.find(b => b.verdict === 'outbox_flight_stalled')?.phase, { timeout: 70_000 }).toBe('test_hang');
   await expect.poll(() => posts.includes('m-stall'), { timeout: 30_000 }).toBe(true);
 });
-
-// Ethan, 2026-10-25: "if i make a change to amux server/mac os ... the os app
-// stops sending messages to the server" (Chrome on 8824 fine). WebKit's storage
-// process can stop answering after a reload: a Web Lock is never granted and
-// the lock manager does not answer a query either. Every lock the outbox
-// takes is made to hang that way here; the message must still go out, and the
-// fallback must be beaconed.
-test('a lock system that never answers does not hold the message', async ({ page }) => {
-  test.setTimeout(90_000);
-  const posts: string[] = [], beacons: any[] = [];
-  await sendRoute(page, posts);
-  await boot(page, beacons);
-  await page.evaluate(() => {
-    const locks = navigator.locks as any;
-    locks.request = () => new Promise(() => {});
-    locks.query = () => new Promise(() => {});
-    (window as any).eval('_syncFlight = null');
-  });
-  const t0 = Date.now();
-  await seedAndSync(page);
-  await expect.poll(() => posts.includes('m-stall'), { timeout: 45_000 }).toBe(true);
-  const took = Date.now() - t0;
-  expect(beacons.some(b => b.verdict === 'web_locks_unresponsive'), JSON.stringify(beacons.map(b => b.verdict))).toBe(true);
-  // Once declared dead, later work does not wait again: a second message goes at once.
-  await page.evaluate(async (w) => {
-    const g = window as any;
-    await g._mutateQueue((rows: any[]) => rows.push({ id: 'stall-2', url: '/api/sessions/' + w + '/send',
-      options: { method: 'POST', body: JSON.stringify({ text: 'second', msg_id: 'm-stall-2' }) }, timestamp: Date.now(), state: 'pending', not_attempted: true }));
-    g.runSyncBanner(true);
-  }, W);
-  const t1 = Date.now();
-  await expect.poll(() => posts.includes('m-stall-2'), { timeout: 15_000 }).toBe(true);
-  expect(Date.now() - t1, 'no second 10s wait').toBeLessThan(8_000);
-  expect(took).toBeLessThan(40_000);
-});

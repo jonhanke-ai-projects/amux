@@ -1206,61 +1206,14 @@ function _readQueue() {
 // whose own lock could be stolen in turn. A request granted and then stolen
 // now resolves with its own work's result; only a request that never ran
 // still rejects. Beaconed as verdict=outbox_lock_stolen_while_held.
-//
-// A LOCK SYSTEM THAT NEVER ANSWERS IS NOT A BUSY LOCK (Ethan, 2026-10-25:
-// "if i make a change to amux server/mac os ... the os app stops sending
-// messages to the server", Chrome on 8824 fine). In the Mac app, WebKit keeps
-// Web Locks and IndexedDB in one storage process; after a reload it can stop
-// answering, so a lock request is never granted and an AbortSignal never
-// fires. The outbox then sat 110-133s in queue_read / replay_lock_wait with a
-// message queued (verdict=outbox_flight_stalled), beside a steady
-// outbox_upload_list_timeout with after_reset=1. A request still ungranted
-// after _LOCK_GRANT_MS asks the lock manager what it holds; if that probe gets
-// no answer either, locks are treated as dead for _LOCK_DEAD_MS and work runs
-// without them (beaconed verdict=web_locks_unresponsive). That is safe for the
-// same reason stealing is: deliveries are de-duplicated by msg_id at the
-// server, and storage work is synchronous localStorage. A probe that answers
-// means the lock is merely held, and the request keeps waiting. A grant that
-// arrives after the work ran unlocked does not run it twice.
-const _LOCK_GRANT_MS = 10000, _LOCK_PROBE_MS = 1500, _LOCK_DEAD_MS = 300000;
-let _webLocksDeadUntil = 0;
-function _webLocksAnswer() {
-  if (!navigator.locks.query) return Promise.resolve(true);
-  let t;
-  return Promise.race([
-    navigator.locks.query().then(() => true, () => true),
-    new Promise(r => { t = setTimeout(() => r(false), _LOCK_PROBE_MS); }),
-  ]).finally(() => clearTimeout(t));
-}
 function _lockRequest(name, opts, work) {
-  const lock = name.split(':')[0];
-  if (Date.now() < _webLocksDeadUntil) return Promise.resolve().then(() => work(null));
-  let ran = null, unlocked = false, watchdog = null;
-  const held = l => {
-    clearTimeout(watchdog);
-    if (unlocked) return ran;   // a late grant: the work already ran without it
-    return (ran = Promise.resolve().then(() => work(l)));
-  };
-  const locked = navigator.locks.request(name, opts || {}, held).catch(e => {
-    if (unlocked) return ran;
+  let ran = null;
+  const held = lock => (ran = Promise.resolve().then(() => work(lock)));
+  return navigator.locks.request(name, opts || {}, held).catch(e => {
     if (!ran || !e || e.name !== 'AbortError') throw e;
-    _outboxDiagnostic('outbox_lock_stolen_while_held', {lock});
+    _outboxDiagnostic('outbox_lock_stolen_while_held', {lock:name.split(':')[0]});
     return ran;
   });
-  const dead = new Promise(resolve => {
-    const check = async () => {
-      if (ran || unlocked) return;
-      if (await _webLocksAnswer()) { watchdog = setTimeout(check, _LOCK_GRANT_MS); return; }
-      if (ran) return;
-      unlocked = true;
-      _webLocksDeadUntil = Date.now() + _LOCK_DEAD_MS;
-      _outboxDiagnostic('web_locks_unresponsive', {lock, waited_ms:_LOCK_GRANT_MS, dead_for_ms:_LOCK_DEAD_MS,
-        hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0});
-      resolve(ran = Promise.resolve().then(() => work(null)));
-    };
-    watchdog = setTimeout(check, _LOCK_GRANT_MS);
-  });
-  return Promise.race([locked, dead]);
 }
 function _outboxLock(name, work) {
   if (!navigator.locks) return Promise.reject(new Error('Safe pending-change storage is unavailable in this browser; keep your draft and use a secure connection'));
