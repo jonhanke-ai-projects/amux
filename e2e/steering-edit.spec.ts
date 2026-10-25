@@ -27,6 +27,11 @@ test('a queued message is edited from the Steering tab, on the server and in the
     const list = page.locator('#peek-steering-list');
     await expect(list).toContainText('Ship the report tonight');
 
+    // Prime the 2s sessions cache with the pre-edit queue, so the read after
+    // the edit proves the edit invalidated it rather than that it had expired.
+    const queued = async () => ((await (await request.get('/api/sessions', { headers: auth })).json()) as any[])
+      .find(s => s.name === name)?.steering?.find((m: any) => m.id === id)?.text;
+    expect(await queued()).toBe('Ship the report tonight');
     await list.getByRole('button', { name: 'Edit message' }).click();
     const box = page.locator('#steer-edit-input');
     await expect(box).toHaveValue('Ship the report tonight');
@@ -38,6 +43,7 @@ test('a queued message is edited from the Steering tab, on the server and in the
     await expect(list).not.toContainText('tonight');
     const stored = await (await request.get(`/api/sessions/${name}/steer`, { headers: auth })).json();
     expect(stored.find((m: any) => m.id === id)?.text, 'the server queue holds the edit').toBe('Ship the report tomorrow morning\nand cc the team');
+    expect(await queued(), 'the sessions list shows the edit at once, not the cached old text').toBe('Ship the report tomorrow morning\nand cc the team');
 
     // A poll re-renders from the server; the edit is what comes back.
     await page.evaluate(() => { (window as any).fetchSessions(); });

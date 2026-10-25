@@ -28550,8 +28550,15 @@ async fn steer_edit_response(state: &AppState, name: &str, msg_id: &str, text: &
         })
         .await;
     let outcome = out.lock().unwrap().take();
+    // The sessions list carries each worker's queue and is cached for 2s: an
+    // edit that does not invalidate it is painted back to the old text by the
+    // dashboard's next poll (steering-edit flaked red on main, 2026-10-25).
+    let invalidated = matches!(outcome, Some(SteerEdit::Edited(_)));
+    if invalidated {
+        crate::api::sessions_legacy::invalidate_sessions_cache();
+    }
     tracing::info!(session = name, id = msg_id, outcome = ?outcome, measured = reply.is_ok(), n_considered = 1,
-        verdict = "steering_edited", "a queued steering message was edited");
+        sessions_cache_invalidated = invalidated, verdict = "steering_edited", "a queued steering message was edited");
     match (reply, outcome) {
         (Err(e), _) => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
         (Ok(_), Some(SteerEdit::Edited(h))) => {
