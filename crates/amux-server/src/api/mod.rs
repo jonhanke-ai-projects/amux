@@ -1207,6 +1207,9 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         // with one must not be told "no key" (amux Cloud e2e, 2026-10-18).
         "has_any_model": has_key_in_env || has_oauth || has_proxy || any_model_auth(&model_auth),
         "model_auth": model_auth,
+        // Kept out of model_auth: a GitHub sign-in runs no worker. It is what
+        // `amux contribute` (Pull from remote on a cloud server) needs.
+        "github": {"signed_in": github_signed_in(&user_home)},
         "managed_upstream": has_proxy,
         "key_valid": serde_json::Value::Null,
         "key_error": "",
@@ -1271,6 +1274,34 @@ pub(crate) fn model_auth_status(env_text: &str, user_home: &std::path::Path) -> 
     })
 }
 
+/// True when `gh` holds a github.com sign-in: its hosts.yml names the host with
+/// a user or a token (the token sits in a keyring on a desktop, in the file on
+/// a server). Presence only; nothing is read out.
+pub(crate) fn github_signed_in(user_home: &std::path::Path) -> bool {
+    let dir = std::env::var_os("GH_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| user_home.join(".config"))
+            .join("gh")
+    });
+    github_hosts_signed_in(&std::fs::read_to_string(dir.join("hosts.yml")).unwrap_or_default())
+}
+
+fn github_hosts_signed_in(hosts: &str) -> bool {
+    let mut in_github = false;
+    for line in hosts.lines() {
+        if !line.starts_with(' ') && !line.trim().is_empty() {
+            in_github = line.trim_end() == "github.com:";
+        } else if in_github {
+            let t = line.trim();
+            if (t.starts_with("user:") || t.starts_with("oauth_token:")) && t.split_once(':').is_some_and(|(_, v)| !v.trim().is_empty()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// True when any provider in a [`model_auth_status`] answer has a credential.
 pub(crate) fn any_model_auth(v: &serde_json::Value) -> bool {
     v.as_object().is_some_and(|providers| {
@@ -1289,6 +1320,16 @@ mod model_auth_tests {
         assert_eq!(account_url(env, true), None, "an invited member cannot delete the owner's account");
         assert_eq!(account_url("AMUX_AUTH_TOKEN=none\n", false), None, "self-hosted: no account page");
         assert_eq!(account_url("AMUX_ACCOUNT_URL=javascript:alert(1)\n", false), None, "only an https link");
+    }
+
+    #[test]
+    fn github_sign_in_is_read_from_gh_hosts_file() {
+        use super::github_hosts_signed_in as s;
+        assert!(s("github.com:\n    users:\n        tester:\n    git_protocol: https\n    user: tester\n"));
+        assert!(s("github.com:\n    oauth_token: gho_fake\n"));
+        assert!(!s(""), "no file");
+        assert!(!s("github.com:\n    git_protocol: https\n"), "host listed, nobody signed in");
+        assert!(!s("ghe.example.com:\n    user: tester\n"), "another host");
     }
 
     #[test]

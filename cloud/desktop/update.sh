@@ -104,6 +104,13 @@ if [[ -f "$HOOKS" ]]; then
   fi
 fi
 
+# Pull from remote sends local amux changes upstream as a pull request before replacing them
+# (bootstrap.sh sets it on new servers). Added once; an owner who sets it to 0 keeps 0.
+EF="$HOME_DIR/.amux/server.env"
+if [[ -f "$EF" ]] && ! grep -q '^AMUX_PULL_SENDS_LOCAL_AS_PR=' "$EF"; then
+  printf 'AMUX_PULL_SENDS_LOCAL_AS_PR=1\n' >> "$EF" && say "verdict=pull_sends_local_as_pr_enabled"
+fi
+
 # Config fixes that bootstrap.sh now writes, applied to servers bootstrapped before them. Each is
 # idempotent, validated before it is used, and reverted if Caddy rejects it.
 CF=/etc/caddy/Caddyfile

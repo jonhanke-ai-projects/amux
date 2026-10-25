@@ -341,6 +341,9 @@ set_env AMUX_AUTH_TOKEN none
 [[ -n "$DOMAIN" ]] && set_env AMUX_PUBLIC_URL "https://$DOMAIN"
 # Source mode: the Pull button and the served-commit check find the checkout.
 [[ "$UPDATES" == source ]] && set_env AMUX_REPO_DIR "$SRC"
+# One owner, one checkout: Pull from remote sends local amux changes upstream as a pull
+# request (amux contribute), then replaces them with remote main.
+set_env AMUX_PULL_SENDS_LOCAL_AS_PR 1
 chown "$USER_NAME:$USER_NAME" "$ENV_FILE"; chmod 600 "$ENV_FILE"
 
 # ── Claude Code first-run gates ──

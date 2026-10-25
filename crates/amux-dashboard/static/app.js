@@ -2010,7 +2010,7 @@ async function _mlPollOutput(run) {
           if (await _mlSignedIn(run)) return;
           await new Promise(res => setTimeout(res, 1000));
         }
-        _mlShow({ status: a.label + ' sign-in stopped before finishing.', error: 'The sign-in exited. Try again, or use an API key below.' });
+        _mlShow({ status: a.label + ' sign-in stopped before finishing.', error: a.notModel ? 'The sign-in exited. Try again.' : 'The sign-in exited. Try again, or use an API key below.' });
         return;
       }
       if (run.codeSent) { _mlShow({ status: 'Checking…', url: p.url }); continue; }
@@ -2030,7 +2030,7 @@ async function _mlPollIdentity(run) {
     await new Promise(res => setTimeout(res, 3000));
     if (await _mlSignedIn(run)) return;
   }
-  if (_modelLogin === run && !run.done) _mlShow({ status: a.label + ' sign-in did not finish.', error: 'Try again, or use an API key below.' });
+  if (_modelLogin === run && !run.done) _mlShow({ status: a.label + ' sign-in did not finish.', error: a.notModel ? 'Try again.' : 'Try again, or use an API key below.' });
 }
 
 // True once the server reports the provider signed in by THIS run, and then finishes it:
@@ -2043,7 +2043,7 @@ async function _mlSignedIn(run) {
   if (a.succeeded && !window.AmuxState.cliLogin.parseLogin(run.provider, run.raw).succeeded) return false;
   let d;
   try { d = await (await fetch(API + '/api/identity')).json(); } catch (e) { return false; }
-  if (!a.done(d.model_auth) || run.done || _modelLogin !== run) return false;
+  if (!a.done(d.model_auth, d) || run.done || _modelLogin !== run) return false;
   run.done = true;
   if (a.clearEnv && a.clearEnv.length) {
     const body = {}; a.clearEnv.forEach(k => { body[k] = ''; });
@@ -2054,7 +2054,7 @@ async function _mlSignedIn(run) {
   modelLoginCancel(true);
   const m = _mlEl('apikey-setup-modal'); if (m) m.style.display = 'none';
   const banner = _mlEl('no-apikey-banner'); if (banner) banner.style.display = 'none';
-  showToast(a.label + ' is connected. Your workers can use it now.');
+  showToast(a.label + (a.notModel ? ' is connected.' : ' is connected. Your workers can use it now.'));
   if (document.getElementById('settings-usage-body')) loadUsage();   // the row stops saying "Connect account"
   return true;
 }
@@ -53263,6 +53263,30 @@ async function _loadServerDeployStatus() {
   } catch (e) { /* the card keeps its last line; the button still works */ }
 }
 
+// Pull from remote on a server with AMUX_PULL_SENDS_LOCAL_AS_PR: local amux work goes
+// upstream as a pull request before the checkout is replaced (amux contribute). Say where
+// the PR is, or offer the GitHub sign-in the PR needs.
+function _pullContributeNote(el, d) {
+  const pr = d.contribute && d.contribute.pr_url;
+  if (pr) {
+    const p = document.createElement('div');
+    p.className = 'pull-contribute';
+    p.append('Your local changes were sent as a pull request: ');
+    const a = document.createElement('a');
+    a.href = pr; a.target = '_blank'; a.rel = 'noopener'; a.textContent = pr;
+    p.append(a);
+    el.prepend(p);
+  }
+  if (d.needs_github) {
+    const b = document.createElement('button');
+    b.className = 'btn pull-connect-github'; b.type = 'button'; b.textContent = 'Connect GitHub';
+    b.onclick = () => usageConnect('github');
+    const p = document.createElement('div');
+    p.append('Your local changes go upstream as a pull request before they are replaced, and that needs your GitHub account. ', b);
+    el.append(p);
+  }
+}
+
 async function pullFromRemote(btn) {
   const el = document.getElementById('pull-status');
   btn.disabled = true; btn.textContent = '⏳ Pulling...';
@@ -53285,6 +53309,7 @@ async function pullFromRemote(btn) {
       el.textContent = (d.output || (d.ok ? 'Fetched' : 'Failed'))
         + (d.builder ? (d.builder.kicked ? '\nBuilder started.' : '\nBuilder not started: ' + (d.builder.why || 'unknown')) : '');
       el.style.color = d.ok ? 'var(--dim)' : 'var(--red)';
+      _pullContributeNote(el, d);
       if (d.ok && !(d.output || '').includes('Already up to date')) {
         setTimeout(() => forceUpdate(), 1500);
       }
