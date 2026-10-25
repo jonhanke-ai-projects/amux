@@ -97,6 +97,8 @@ struct SavedWindow: Codable {
     var title: String?
     // Added 2026-10-23 (amux-panes.swift): the window split into panes.
     var grid: SavedGrid?
+    // Added 2026-10-25: a name the owner gave the tab (right-click > Rename Tab).
+    var name: String?
 }
 
 struct Config: Codable {
@@ -455,9 +457,24 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     }
 
     /// The page's own name ("mixpeek-general", "Board").
+    /// A name the owner gave this tab (Ethan, 2026-10-25: "right click a tab
+    /// and name it"). It wins over the page's own name until cleared, and is
+    /// saved with the window and its workspace.
+    var customName: String?
+
     var pageTitle: String {
+        if let n = customName, !n.isEmpty { return n }
         let page = (webView.title ?? "").trimmingCharacters(in: .whitespaces)
         return !pageLabel.isEmpty ? pageLabel : (page.isEmpty ? "amux" : page)
+    }
+
+    func rename(_ name: String?) {
+        let n = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        customName = (n?.isEmpty ?? true) ? nil : n
+        dlog("verdict=tab_renamed named=\(customName == nil ? 0 : 1) view=\(viewHash)")
+        updateTitle()
+        (paneHost ?? self).updateTitle()
+        app?.saveWindowsSoon()
     }
 
     func updateTitle() {
@@ -1058,6 +1075,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // verdict of memory_pressure says the tabs are pushing this Mac into swap.
     var resourcesTimer: Timer?
     var memoryGuardTimer: Timer?
+    var tabMenuMonitor: Any?
+    var lastDuplicateWarned = Set<String>()
+    weak var tabMenuTarget: DashboardWindowController?
     var deferredTimer: Timer?
 
     func envSeconds(_ key: String, _ fallback: Double) -> Double {

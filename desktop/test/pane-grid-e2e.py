@@ -472,6 +472,78 @@ try:
 finally:
     app.stop()
 
+print("17. panes with their own tabs survive a workspace save and reopen, and a quit and relaunch")
+app = App()
+try:
+    st = app.state()
+    cx, cy, cw, ch = rect(st["content_frame"])
+    drag_tab(app, "Messages", cx + cw * 0.9, cy + ch * 0.5)
+    g = grid_window(app.state())
+    right = rect(g["pane_frames"][1]) if g else (0, 0, 0, 0)
+    drag_tab(app, "Calendar", right[0] + right[2] * 0.5, right[1] + right[3] * 0.5)
+    g0 = grid_window(app.state())
+    want = (g0["grid"], g0["pane_tabs"], g0["pane_active"]) if g0 else None
+    check("set up: two panes, the right one with two tabs", g0 is not None and len(g0["pane_tabs"][1]) == 2, str(g0))
+    n = log().count("verdict=layout_saved")
+    sh(os.path.join(TMP, "wsctl"), "send", str(app.p.pid), "amux://save-workspace/pane-ws")
+    end = time.time() + 5
+    while log().count("verdict=layout_saved") <= n and time.time() < end:
+        time.sleep(0.1)
+    saved = json.load(open(CFG))
+    ws = [l for l in saved.get("layouts", []) if l["name"] == "pane-ws"]
+    check("the workspace records the grid", bool(ws) and any(w.get("grid") for w in ws[0]["windows"]), str(ws)[:400])
+    # Change the layout: close the right pane.
+    app.send("pane-close?i=1", 1)
+    g1 = grid_window(app.state())
+    check("changed: the grid is gone", g1 is None, str(g1))
+    sh(os.path.join(TMP, "wsctl"), "send", str(app.p.pid), "amux://workspace/pane-ws")
+    time.sleep(4)
+    g2 = grid_window(app.state())
+    got = (g2["grid"], g2["pane_tabs"], g2["pane_active"]) if g2 else None
+    check("opening the workspace brings the panes and their tabs back", got == want, f"{got} vs {want}")
+    app.stop()
+    app = App(fresh=False)
+    g3 = grid_window(app.state())
+    got = (g3["grid"], g3["pane_tabs"], g3["pane_active"]) if g3 else None
+    check("a quit and relaunch keeps the panes and their tabs", got == want, f"{got} vs {want}")
+    pages = [w["title"] for w in app.state()["windows"]]
+    check("no page is open twice", len(pages) == len(set(pages)), str(pages))
+    # Opening the workspace again while its panes are showing (the Workspaces
+    # menu, 2026-10-25 09:54:01 in Ethan's log): the same panes, no page twice.
+    sh(os.path.join(TMP, "wsctl"), "send", str(app.p.pid), "amux://workspace/pane-ws")
+    time.sleep(4)
+    st = app.state()
+    g4 = grid_window(st)
+    got = (g4["grid"], g4["pane_tabs"], g4["pane_active"]) if g4 else None
+    check("reopening the shown workspace keeps the panes and their tabs", got == want, f"{got} vs {want}")
+    tabs = [t for w in st["windows"] for t in ([w["title"]] if "grid" not in w else [x for pt in w["pane_tabs"] for x in pt])]
+    check("reopening opens no page twice", len(tabs) == len(set(tabs)), str(tabs))
+    saved = json.load(open(CFG))
+    dup = [w for w in saved.get("windows", []) if w.get("grid")]
+    urls = [u for w in dup for u in [w["url"]] + [t["url"] for t in (w["grid"].get("hostTabs") or [])]
+            + [x for p in w["grid"]["panes"] for x in [p["url"]] + [t["url"] for t in (p.get("tabs") or [])]]]
+    check("the saved grid names no page twice", len(urls) == len(set(urls)), str(urls))
+finally:
+    app.stop()
+
+print("18. a tab named by its owner keeps the name, across a relaunch, until cleared")
+app = App()
+try:
+    app.send("rename-tab?view=view=board&name=Planning", 1)
+    titles = [w["title"] for w in app.state()["windows"]]
+    check("the tab shows its new name", "Planning" in titles and "Board" not in titles, str(titles))
+    check("the rename is logged", "verdict=tab_renamed named=1" in log())
+    time.sleep(2)   # the debounced save
+    app.stop()
+    app = App(fresh=False)
+    titles = [w["title"] for w in app.state()["windows"]]
+    check("a relaunch keeps the name", "Planning" in titles, str(titles))
+    app.send("rename-tab?view=view=board&name=", 1)
+    titles = [w["title"] for w in app.state()["windows"]]
+    check("clearing it brings the page's own name back", "Board" in titles and "Planning" not in titles, str(titles))
+finally:
+    app.stop()
+
 if vdisp:
     vdisp.terminate()
     vdisp.wait(10)

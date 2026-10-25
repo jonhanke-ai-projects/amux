@@ -198,6 +198,7 @@ extension AppDelegate {
                 s.url = url
                 let t = m.pageTitle
                 if !t.isEmpty, t != "amux" { s.title = t }
+                s.name = m.customName
                 s.tabGroup = group
                 if group != nil { s.selected = m.window === selected }
                 s.grid = self.savedGrid(m)
@@ -277,6 +278,8 @@ extension AppDelegate {
                 if let t = s.title, !t.isEmpty { c.pageLabel = t; c.updateTitle() }
             }
             c.home = s
+            c.customName = s.name
+            if s.name != nil { c.updateTitle() }
             c.home?.display = s.display ?? screen?.uuid
             c.home?.grid = nil
             if let g = s.grid { restoreGrid(g, in: c, pool: &pool) }
@@ -609,6 +612,9 @@ extension AppDelegate {
             self?.tabPressed(e)
             return e
         }
+        tabMenuMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] e in
+            (self?.tabRightClicked(e) ?? false) ? nil : e
+        }
         // The fallback that needs no press: a window that leaves a tab group
         // while the button is down is a tab being dragged out, however AppKit
         // delivered (or did not deliver) the press.
@@ -743,6 +749,53 @@ extension AppDelegate {
         }
         RunLoop.main.add(t, forMode: .common)
         tabDragTimer = t
+    }
+
+    /// A right-click on a tab: its own menu, with Rename Tab (Ethan,
+    /// 2026-10-25: "right click a tab and name it"). AppKit offers no way to add
+    /// to the tab bar's menu, so this replaces it, keeping the items it had
+    /// that matter: move to a new window, close, close the others.
+    func tabRightClicked(_ e: NSEvent) -> Bool {
+        guard let w = e.window, controllers.contains(where: { $0.window === w }), !w.styleMask.contains(.fullScreen),
+              e.locationInWindow.y >= (w.contentView?.frame.maxY ?? .infinity) else { return false }
+        let group = w.tabbedWindows ?? [w]
+        guard group.count > 1, let tw = tabWindow(at: e.locationInWindow, in: w, group: group),
+              let c = controllers.first(where: { $0.window === tw }) else { return false }
+        tabMenuTarget = c
+        let m = NSMenu()
+        func add(_ title: String, _ sel: Selector) { let i = NSMenuItem(title: title, action: sel, keyEquivalent: ""); i.target = self; m.addItem(i) }
+        add("Rename Tab…", #selector(renameTargetTab(_:)))
+        if c.customName != nil { add("Use Page Name", #selector(clearTargetTabName(_:))) }
+        m.addItem(.separator())
+        add("Move Tab to New Window", #selector(moveTargetTab(_:)))
+        add("Close Tab", #selector(closeTargetTab(_:)))
+        add("Close Other Tabs", #selector(closeOtherTabs(_:)))
+        NSMenu.popUpContextMenu(m, with: e, for: w.contentView?.superview ?? w.contentView!)
+        return true
+    }
+    @objc func renameTargetTab(_ sender: Any?) { if let c = tabMenuTarget { promptRename(c) } }
+    @objc func clearTargetTabName(_ sender: Any?) { tabMenuTarget?.rename(nil) }
+    @objc func moveTargetTab(_ sender: Any?) { tabMenuTarget?.window?.moveTabToNewWindow(nil) }
+    @objc func closeTargetTab(_ sender: Any?) { tabMenuTarget?.window?.performClose(nil) }
+    @objc func closeOtherTabs(_ sender: Any?) {
+        guard let w = tabMenuTarget?.window else { return }
+        for o in (w.tabbedWindows ?? []) where o !== w { o.performClose(nil) }
+    }
+
+    /// Ask for a tab's name; empty puts the page's own name back.
+    func promptRename(_ c: DashboardWindowController) {
+        let a = NSAlert()
+        a.messageText = "Rename Tab"
+        a.informativeText = "Leave it empty to use the page's own name."
+        let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        f.stringValue = c.customName ?? c.pageTitle
+        a.accessoryView = f
+        a.addButton(withTitle: "Rename")
+        a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = f
+        let win = (c.paneHost ?? c).window
+        let done: (NSApplication.ModalResponse) -> Void = { r in if r == .alertFirstButtonReturn { c.rename(f.stringValue) } }
+        if let win = win { a.beginSheetModal(for: win, completionHandler: done) } else { done(a.runModal()) }
     }
 
     /// Which tab of `group` is at `p` (window coordinates) in `w`'s tab bar:
@@ -927,6 +980,12 @@ extension AppDelegate {
                     dlog("verdict=test_settings_click id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
                 }
             }
+        // Name a tab, as Rename Tab does (empty clears it).
+        case "/rename-tab":
+            let want = "#" + (q.first { $0.name == "view" }?.value ?? "")
+            // A tab still waiting to load has no view yet; its saved URL names it.
+            controllers.first { $0.viewHash == want || $0.savedURL().flatMap { URL(string: $0)?.fragment }.map { "#" + $0 } == want }?
+                .rename(q.first { $0.name == "name" }?.value)
         // Show the tab whose page is on #<view> (perf-bench.py times the switch).
         case "/select-view":
             let want = "#" + (q.first { $0.name == "view" }?.value ?? "")
