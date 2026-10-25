@@ -29138,9 +29138,12 @@ async function _cacheStreamedImage(path, data) {
 }
 // The "Opened" column: tell the server this file was opened, then refresh the
 // cell in any listing showing it, so the time is right without a reload.
+// The last record still in flight: a list reloaded right after closing a file
+// waits for it, or it sorts by the time before this open (closeMdaiNode).
+let _feOpenRecording = null;
 function _feRecordOpen(path) {
   if (!path) return;
-  fetch(API + '/api/fs/opened', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  return _feOpenRecording = fetch(API + '/api/fs/opened', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }), keepalive: true })
     .then(r => r.ok ? r.json() : null)
     .then(d => {
@@ -32937,7 +32940,16 @@ function closeMdaiNode() {
   document.getElementById('mdai-overlay').classList.remove('active');
   _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null;
   _mdaiChat = []; _mdaiChatBusy = false; _mdaiChatPending = null; _mdaiChatErr = null;
-  if (activeView === 'mdai') { _mdaiListData = null; _mdaiTabLoad(); }
+  // Escape right after opening reloaded the list before the open was recorded,
+  // so the node just opened did not lead it (mdai-pages "last opened" red CI).
+  // Bounded: a record that never answers delays the list by 3s at most.
+  if (activeView === 'mdai') {
+    _mdaiListData = null;
+    const rec = _feOpenRecording;
+    if (!rec) { _mdaiTabLoad(); return; }
+    let t; Promise.race([rec.catch(() => {}), new Promise(r => { t = setTimeout(r, 3000); })])
+      .finally(() => { clearTimeout(t); if (activeView === 'mdai' && !_mdaiCur) _mdaiTabLoad(); });
+  }
 }
 async function _mdaiLoadHistory() {
   if (!_mdaiCur) return;
