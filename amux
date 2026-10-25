@@ -7011,7 +7011,7 @@ for l in links:
       return 0
       ;;
     --internal) kind=internal; shift ;;
-    --file) kind=file; shift ;;
+    --file) kind="file"; shift ;;
   esac
   target="${1:-}"; title="${2:-}"
   if [[ "$kind" == file ]]; then
