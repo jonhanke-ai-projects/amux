@@ -133,7 +133,10 @@ test('phone: one toolbar row, full-width message text, no repeated chrome', asyn
   await expect(rows.first().locator('.msg-body')).toHaveClass(/collapsed/);
 });
 
-test('phone: terminal-only controls and the folder path leave content tabs', async ({ page }) => {
+// The filter, up/down and Find used to leave content tabs on a phone; since
+// 2026-10-24 they work on every tab's own items (peek-toolbar-every-tab.spec.ts),
+// so they stay. The folder path still leaves where it is not context.
+test('phone: the toolbar stays on every tab, the folder path leaves content tabs', async ({ page }) => {
   await showMessages(page);
   const phone = (page.viewportSize()?.width || 1200) <= 600;
   const shown = (sel: string) => page.locator(sel).evaluate(e => getComputedStyle(e).display !== 'none');
@@ -144,8 +147,8 @@ test('phone: terminal-only controls and the folder path leave content tabs', asy
   expect(await shown('.peek-dir-bar')).toBe(true);
   for (const t of ['messages', 'tasks', 'issues', 'memory', 'cost', 'scope']) {
     await set(t);
-    expect(await shown('#peek-msg-nav'), t).toBe(!phone);
-    expect(await shown('#peek-find-toggle'), t).toBe(!phone);
+    expect(await shown('#peek-msg-nav'), t).toBe(true);
+    expect(await shown('#peek-find-toggle'), t).toBe(true);
     expect(await shown('.peek-dir-bar'), t).toBe(!phone);
   }
   // The folder path stays where it is context.

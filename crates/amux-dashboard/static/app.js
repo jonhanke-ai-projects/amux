@@ -13697,6 +13697,8 @@ function setPeekTab(tab) {
   const logsP = document.getElementById('peek-logs-panel');
   if (tab === 'logs') { logsP.classList.add('active'); _peekLogsLoad(); }
   else { logsP.classList.remove('active'); }
+  // The toolbar's Find, filter and up/down follow the tab (_peekTabActivate).
+  try { _peekTabActivate(tab); } catch (e) {}
 
   requestAnimationFrame(() => {
     const selected=document.getElementById('peek-tab-'+tab);
@@ -20425,6 +20427,7 @@ function applyPeekSearch(keepIndex, doScroll) {
   const body = document.getElementById('peek-body');
   const countEl = document.getElementById('peek-search-count');
   if (!body) return;
+  if (_peekTabMode()) { _peekTabApply(true); return; }
   if (body.classList.contains('peek-chat')) { _peekChatPaintSkips++; return; }
   const q = peekSearchQuery.trim();
   if (!q) {
@@ -20514,6 +20517,8 @@ function applyPeekSearch(keepIndex, doScroll) {
 // transcripts and every message sent to it, ranked (/api/search opt-in types).
 let _peekDeepAbort = null;
 async function _peekDeepSearch() {
+  // Older terminal history is the terminal's; another tab steps through its own matches.
+  if (_peekTabMode()) { _peekTabStep(1); return; }
   const box = document.getElementById('peek-deep-results');
   const q = (peekSearchQuery || '').trim();
   if (!box || !q || !peekSession) return;
@@ -20581,12 +20586,14 @@ function togglePeekFind(open) {
 }
 function peekSearchNext() {
   _peekSearchFlush();
+  if (_peekTabMode()) { _peekTabStep(1); return; }
   if (!_peekMatches.length) return;
   peekSearchIndex = (peekSearchIndex + 1) % _peekMatches.length;
   _peekScrollTo(peekSearchIndex);
 }
 function peekSearchPrev() {
   _peekSearchFlush();
+  if (_peekTabMode()) { _peekTabStep(-1); return; }
   if (!_peekMatches.length) return;
   peekSearchIndex = (peekSearchIndex - 1 + _peekMatches.length) % _peekMatches.length;
   _peekScrollTo(peekSearchIndex);
@@ -20735,6 +20742,7 @@ function _peekFiltersReset() {
   _peekFiltersChanged();
 }
 function _peekFiltersChanged() {
+  if (_peekTabMode()) { _peekFilterSync(); _peekTabIdx = -1; _peekTabApply(true); return; }
   _peekMsgIndex = -1;
   document.querySelectorAll('#peek-body .peek-msg-current').forEach(p => p.classList.remove('peek-msg-current'));
   if (peekSearchQuery.trim()) applyPeekSearch(false, true);
@@ -20780,6 +20788,7 @@ function _peekMsgPrompts() {
     _peekPromptMatchesFilters(el));
 }
 function _peekMsgCount(prompts) {
+  if (_peekTabMode()) return;   // another tab owns the count (_peekTabCount)
   const searching = !!peekSearchQuery.trim();
   const selectedKind = _peekFilterSummary();
   const label = searching ? selectedKind + ' matches' : selectedKind;
@@ -20955,6 +20964,7 @@ async function _peekLoadEarlierUntil(found) {
 }
 async function _peekMsgMove(direction, event) {
   _peekSearchFlush();
+  if (_peekTabMode()) { _peekTabStep(direction); return; }
   if (!_peekMsgNavIsExplicit(event)) {
     const prompts = _peekMsgPrompts();
     _peekNavBeacon('suppressed-scroll-gesture', prompts, null);
@@ -21019,6 +21029,138 @@ async function _peekMsgMove(direction, event) {
 }
 function peekMsgNext(event) { _peekMsgMove(1, event); }
 function peekMsgPrev(event) { _peekMsgMove(-1, event); }
+
+// ── The toolbar on every worker tab (Ethan, 2026-10-24: "the header should
+// work on every tab. like schedule i should be able to search across runs") ──
+// The filter, up/down and Find above drive the terminal's prompts. On any
+// other tab they drive that tab's own items: a search highlights the words and
+// hides the items without them, the content filters (board references, files,
+// links) keep the items that have one, up/down steps through what is left, and
+// the count says how many. A tab not listed here still gets Find: its matches
+// are highlighted and up/down steps between them.
+const _PEEK_TAB_ITEMS = {
+  chat: '.chat-msg', schedules: '.sx-row, .sx-fleet-run', messages: '.pm-row', logs: '.wlog-row',
+  commits: '.commits-item', shell: '.peek-shell-card', issues: '.peek-issue-item', dictation: '.dict-row',
+  scope: '.worker-config-row', cost: '.cost-row, .cost-day', tasks: '.board-card, .peek-issue-item',
+};
+const _PEEK_TAB_LABELS = { chat: 'chat', schedules: 'schedules and runs', messages: 'messages', logs: 'logs',
+  commits: 'commits', shell: 'shell runs', issues: 'board', dictation: 'dictation', scope: 'settings', tasks: 'tasks' };
+let _peekTabIdx = -1, _peekTabObs = null, _peekTabObsRoot = null, _peekTabApplying = false, _peekTabTimer = 0;
+function _peekTabName() { return document.getElementById('peek-overlay')?.dataset.peekTab || 'terminal'; }
+function _peekTabRoot(tab = _peekTabName()) {
+  if (tab === 'terminal') return null;
+  if (tab === 'chat') { const b = document.querySelector('#peek-body.peek-chat'); if (b) return b; }
+  return document.getElementById('peek-' + tab + '-panel');
+}
+function _peekTabMode() { return !!_peekTabRoot(); }
+// The tab's items and, of those, the ones the search and filters keep.
+function _peekTabMatches() {
+  const root = _peekTabRoot(), sel = _PEEK_TAB_ITEMS[_peekTabName()];
+  if (!root) return [];
+  if (!sel) return [...root.querySelectorAll('span.peek-highlight')];
+  return [...root.querySelectorAll(sel)].filter(el => !el.classList.contains('peek-tab-miss'));
+}
+function _peekTabItemKeeps(el, q) {
+  if (q && !el.textContent.toLowerCase().includes(q)) return false;
+  if (_peekMsgNavKind !== 'all' && el.dataset.msgKind && el.dataset.msgKind !== _peekMsgNavKind) return false;
+  if (_peekMsgNavContent === 'board') return _peekHasBoardRef(el.textContent);
+  if (_peekMsgNavContent === 'files') return !!el.querySelector('.file-link, .md-link, .md-file-link');
+  if (_peekMsgNavContent === 'links') return !!el.querySelector('a[href^="https://"], a[href^="http://"]');
+  return true;
+}
+function _peekTabHighlight(root, q) {
+  if (!q) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: n =>
+    n.nodeValue.toLowerCase().includes(q) && !n.parentElement.closest('script,style,textarea,input,.peek-tab-miss')
+      ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
+  const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const text = node.nodeValue, low = text.toLowerCase(), frag = document.createDocumentFragment();
+    let at = 0, i;
+    while ((i = low.indexOf(q, at)) >= 0) {
+      if (i > at) frag.appendChild(document.createTextNode(text.slice(at, i)));
+      const mark = document.createElement('span'); mark.className = 'peek-highlight'; mark.textContent = text.slice(i, i + q.length);
+      frag.appendChild(mark); at = i + q.length;
+    }
+    if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+    node.replaceWith(frag);
+  }
+}
+// Re-run on the current tab: after a search or filter change, after a tab
+// switch, and when the tab repaints its own content (a poll, a new message).
+function _peekTabApply(report) {
+  const root = _peekTabRoot(), tab = _peekTabName();
+  if (!root) return;
+  _peekTabApplying = true;
+  try {
+    const q = peekSearchQuery.trim().toLowerCase(), sel = _PEEK_TAB_ITEMS[tab];
+    _peekClearHighlights(root);
+    root.querySelectorAll('.peek-tab-current').forEach(el => el.classList.remove('peek-tab-current'));
+    if (sel) for (const el of root.querySelectorAll(sel)) el.classList.toggle('peek-tab-miss', !_peekTabItemKeeps(el, q));
+    _peekTabHighlight(root, q);
+    // A match inside a collapsed section (Schedules' Recent Runs) is opened
+    // to, or the search finds runs nobody can see.
+    if (q) for (const d of root.querySelectorAll('details:not([open])'))
+      if (d.querySelector(sel ? sel.split(',').map(x => x.trim() + ':not(.peek-tab-miss)').join(',') : 'span.peek-highlight')) d.open = true;
+  } finally { _peekTabApplying = false; }
+  const matches = _peekTabMatches();
+  if (_peekTabIdx >= matches.length) _peekTabIdx = -1;
+  if (_peekTabIdx >= 0) matches[_peekTabIdx].classList.add(_PEEK_TAB_ITEMS[tab] ? 'peek-tab-current' : 'current');
+  _peekTabCount(matches);
+  _peekTabObserve(root);
+  if (report) {
+    try {
+      fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'peek-tab-find', tab, session: peekSession, searching: !!q, content_filter: _peekMsgNavContent,
+          source_filter: _peekMsgNavKind, matches: matches.length, items: sel ? root.querySelectorAll(sel).length : null,
+          verdict: matches.length ? 'matches' : 'no-matches', measured: true, n_considered: sel ? root.querySelectorAll(sel).length : 1, ver: APP_VER }) }).catch(() => {});
+    } catch (e) {}
+  }
+}
+function _peekTabCount(matches) {
+  const count = document.getElementById('peek-msg-count'), found = document.getElementById('peek-search-count');
+  const value = _peekTabIdx >= 0 ? (_peekTabIdx + 1) + '/' + matches.length : String(matches.length);
+  if (count) count.textContent = value;
+  if (found) found.textContent = peekSearchQuery.trim() ? value : '';
+}
+function _peekTabStep(direction) {
+  const matches = _peekTabMatches(), tab = _peekTabName();
+  if (!matches.length) { _peekTabCount(matches); return; }
+  const cls = _PEEK_TAB_ITEMS[tab] ? 'peek-tab-current' : 'current';
+  if (_peekTabIdx >= 0 && matches[_peekTabIdx]) matches[_peekTabIdx].classList.remove(cls);
+  _peekTabIdx = _peekTabIdx < 0 ? (direction > 0 ? 0 : matches.length - 1)
+    : (_peekTabIdx + direction + matches.length) % matches.length;
+  const el = matches[_peekTabIdx];
+  el.classList.add(cls);
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  _peekTabCount(matches);
+}
+// A tab repaints its own content (logs poll, chat stream, schedule runs); the
+// search and filters are put back on what it drew.
+function _peekTabObserve(root) {
+  if (_peekTabObsRoot === root) return;
+  if (_peekTabObs) _peekTabObs.disconnect();
+  _peekTabObsRoot = root;
+  _peekTabObs = new MutationObserver(() => {
+    if (_peekTabApplying || (!peekSearchQuery.trim() && !_peekFiltersActive() && _peekTabIdx < 0)) return;
+    clearTimeout(_peekTabTimer);
+    _peekTabTimer = setTimeout(() => { if (_peekTabRoot() === root) _peekTabApply(false); }, 150);
+  });
+  _peekTabObs.observe(root, { childList: true, subtree: true });
+}
+// On a tab switch: say what Find searches, and apply what is set to the new tab.
+function _peekTabActivate(tab) {
+  _peekTabIdx = -1;
+  const label = tab === 'terminal' ? 'terminal' : (_PEEK_TAB_LABELS[tab] || (document.querySelector('#peek-tab-' + tab + ' .tab-lbl')?.textContent || tab).trim().toLowerCase());
+  const input = document.getElementById('peek-search'), btn = document.getElementById('peek-find-toggle');
+  if (input) { input.placeholder = 'Find in ' + label + '…'; input.setAttribute('aria-label', 'Find in ' + label); }
+  if (btn) { btn.title = 'Find in ' + label; btn.setAttribute('aria-label', 'Find in ' + label); }
+  if (_peekTabObs && tab === 'terminal') { _peekTabObs.disconnect(); _peekTabObs = null; _peekTabObsRoot = null; }
+  if (tab === 'terminal') { applyPeekSearch(); return; }
+  // Tabs fill in after their own fetch; apply now and once the first paint lands.
+  _peekTabApply(false);
+  setTimeout(() => { if (_peekTabName() === tab) _peekTabApply(false); }, 600);
+}
 function _peekMsgNavSelect(kind) {
   if (!Object.hasOwn(_PEEK_SOURCE_LABELS, kind)) return;
   _peekMsgNavKind = kind;

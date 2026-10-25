@@ -2617,6 +2617,11 @@
   /* Peek search highlight */
   .peek-highlight { background: rgba(210,153,34,0.35); color: #fff; border-radius: 2px; }
   .peek-highlight.current { background: rgba(210,153,34,0.85); color: #000; }
+  /* Another tab's items under the worker-view toolbar (_peekTabApply): the
+     current one is outlined like a terminal prompt, and a search or filter
+     hides the rest. */
+  .peek-tab-current { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+  .peek-tab-miss { display: none !important; }
   .peek-prompt { display: block; border-left: 3px solid transparent; padding-left: 4px; margin-left: -7px; }
   .peek-prompt-human    { border-left-color: #58a6ff; background: rgba(88,166,255,0.09); }
   /* Messages delivered mid-turn that the terminal never echoed (_peekUnechoedHtml). */
@@ -10297,65 +10302,11 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 /* Phone real estate per worker tab (Ethan, 2026-10-23: "analyze every tab
    contents for the most important part"). Each tab's content is what it is
    for; chrome that serves another tab goes. The filter, up/down and Find
-   drive the terminal's output only (their own footer says so), so they leave
-   every other tab. The folder path is context for the terminal, Shell,
+   work on every tab's own items (Ethan, 2026-10-24: "the header should work
+   on every tab"), so they stay. The folder path is context for the terminal, Shell,
    Transcript, Commits and Worktree; the rest show their own content. A tab
    absent from both lists keeps everything, so a new tab is never stripped. */
 @media (max-width: 600px) {
-  #peek-overlay[data-peek-tab="simple"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="chat"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="converse"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="steering"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="schedules"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="shell"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="scope"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="messages"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="tasks"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="dictation"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="readalouds"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="issues"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="cost"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="transcript"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="commits"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="memory"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="git"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="logs"] #peek-msg-nav,
-  #peek-overlay[data-peek-tab="simple"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="chat"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="converse"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="steering"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="schedules"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="shell"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="scope"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="messages"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="tasks"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="dictation"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="readalouds"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="issues"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="cost"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="transcript"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="commits"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="memory"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="git"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="logs"] #peek-find-toggle,
-  #peek-overlay[data-peek-tab="simple"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="chat"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="converse"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="steering"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="schedules"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="shell"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="scope"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="messages"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="tasks"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="dictation"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="readalouds"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="issues"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="cost"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="transcript"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="commits"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="memory"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="git"] #peek-search-wrap,
-  #peek-overlay[data-peek-tab="logs"] #peek-search-wrap { display: none !important; }
   #peek-overlay[data-peek-tab="simple"] .peek-dir-bar,
   #peek-overlay[data-peek-tab="chat"] .peek-dir-bar,
   #peek-overlay[data-peek-tab="converse"] .peek-dir-bar,
@@ -10370,24 +10321,6 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   #peek-overlay[data-peek-tab="cost"] .peek-dir-bar,
   #peek-overlay[data-peek-tab="memory"] .peek-dir-bar,
   #peek-overlay[data-peek-tab="logs"] .peek-dir-bar { display: none !important; }
-  #peek-overlay[data-peek-tab="simple"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="chat"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="converse"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="steering"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="schedules"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="shell"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="scope"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="messages"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="tasks"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="dictation"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="readalouds"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="issues"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="cost"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="transcript"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="commits"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="memory"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="git"] .peek-toolbar,
-  #peek-overlay[data-peek-tab="logs"] .peek-toolbar { justify-content: flex-end; }
 }
 
 /* ONE CONTROL ROW PER WORKER TAB (Ethan, 2026-10-23: "everything below the dir

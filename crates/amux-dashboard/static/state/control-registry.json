@@ -3498,6 +3498,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekTabActivate": {
+      "kind": "command._peekTabActivate",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekTabApply": {
+      "kind": "command._peekTabApply",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekTabObserve": {
+      "kind": "command._peekTabObserve",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekToggleSchedule": {
       "kind": "command._peekToggleSchedule",
       "feedback_required": true,
