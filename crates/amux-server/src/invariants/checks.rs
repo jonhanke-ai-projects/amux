@@ -1085,6 +1085,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
     // they are the whole trap.
     ("_amux_invariant_incident", "resolved_at", false),
+    // Social posts (0134): api/social.rs now() is chrono timestamp(), epoch seconds.
+    ("social_posts", "posted_at", false),
+    ("social_post_metrics", "fetched_at", false),
     // Map store (0128): map_store::now() is epoch seconds as f64.
     ("map_meta", "updated_at", false),
     ("map_pins", "created_at", false),

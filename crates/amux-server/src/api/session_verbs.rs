@@ -3762,6 +3762,10 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
         RenameDisposition::KeepForAudit("a scan is a dated observation, not live state"),
     ),
     (
+        "social_posts",
+        RenameDisposition::KeepForAudit("a post records which worker published it at the time"),
+    ),
+    (
         "worker_resource_samples",
         RenameDisposition::KeepForAudit("a sample is a dated measurement of the processes under that name"),
     ),
