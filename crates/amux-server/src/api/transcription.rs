@@ -100,13 +100,14 @@ pub(crate) fn gemini_key(conn: &rusqlite::Connection) -> (String, &'static str) 
     super::dictation::dictation_key(conn)
 }
 
-/// How to install a missing tool on THIS host. A Linux box was told to run
-/// `brew install whisper-cpp` (sandbox, 2026-10-25).
-pub(crate) fn install_hint(brew: &str, apt: &str) -> String {
+/// How to install a missing tool on THIS host: the Homebrew formula on a Mac,
+/// `elsewhere` (a full instruction) on any other system. A Linux box was told
+/// to run `brew install whisper-cpp` (sandbox, 2026-10-25).
+pub(crate) fn install_hint(brew: &str, elsewhere: &str) -> String {
     if cfg!(target_os = "macos") {
         format!("brew install {brew}")
     } else {
-        format!("apt install {apt}")
+        elsewhere.to_string()
     }
 }
 
@@ -235,7 +236,7 @@ mod tests {
 
     #[test]
     fn no_brew_command_off_a_mac() {
-        let h = install_hint("whisper-cpp", "whisper-cpp");
+        let h = install_hint("whisper-cpp", "build it from github.com/ggml-org/whisper.cpp");
         assert_eq!(h.starts_with("brew "), cfg!(target_os = "macos"));
     }
 }

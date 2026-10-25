@@ -3770,6 +3770,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/transcription",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
         path: "/api/recordings",
         methods: &["GET"],
     },

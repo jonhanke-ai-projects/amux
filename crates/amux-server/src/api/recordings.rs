@@ -671,7 +671,7 @@ pub(crate) fn transcriber() -> Result<Transcriber, String> {
         .ok_or_else(|| {
             format!(
                 "whisper-cli is not installed on this server ({})",
-                super::transcription::install_hint("whisper-cpp", "whisper-cpp")
+                super::transcription::install_hint("whisper-cpp", "build it from github.com/ggml-org/whisper.cpp")
             )
         })?;
     let model = model_path();
@@ -700,7 +700,7 @@ pub(crate) struct Segment {
 }
 
 fn ffmpeg_missing() -> String {
-    format!("ffmpeg is not installed ({})", super::transcription::install_hint("ffmpeg", "ffmpeg"))
+    format!("ffmpeg is not installed ({})", super::transcription::install_hint("ffmpeg", "apt install ffmpeg"))
 }
 
 /// The local engine for the transcription setting: `Ok(model)` when

@@ -590,11 +590,11 @@
         <div class="settings-sep"></div>
         <section class="settings-section" id="settings-transcription-section">
           <div class="settings-section-label">Transcription</div>
-          <p class="connection-help ui-help">One setting for Dictate and Recordings: which engine turns speech into text on this server.</p>
+          <p class="connection-help ui-help">One setting for Dictate and Recordings: which engine turns speech into text on this server. Automatic uses a local engine when this server has one, else Gemini. Local only sends nothing off this server.</p>
           <label class="ui-field">Engine
             <select id="transcription-engine" class="input" onchange="_transcriptionSave(this.value)">
-              <option value="auto">Automatic: local when this server has it, else Gemini</option>
-              <option value="local">Local only: nothing leaves this server</option>
+              <option value="auto">Automatic</option>
+              <option value="local">Local only</option>
               <option value="gemini">Gemini only</option>
             </select>
           </label>
