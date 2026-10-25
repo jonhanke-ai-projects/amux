@@ -1526,6 +1526,23 @@
     white-space:nowrap; flex-shrink:0; transition:all 0.15s; }
   #file-save-btn:hover { background:var(--green); color:#fff; }
   #file-save-btn.saving { opacity:0.5; pointer-events:none; }
+  #file-present-btn { font-size:0.72rem; padding:3px 10px; border:1px solid var(--accent);
+    border-radius:6px; color:var(--accent); background:none; cursor:pointer;
+    white-space:nowrap; flex-shrink:0; }
+  #file-present-btn:hover { background:var(--accent); color:#fff; }
+  /* Present mode: one slide per screen, letterboxed on black. */
+  #present-overlay { position:fixed; inset:0; z-index:100000; background:#000;
+    display:flex; align-items:center; justify-content:center; user-select:none;
+    -webkit-user-select:none; touch-action:none; }
+  #present-overlay:focus, #present-overlay:focus-visible { outline:none; }
+  #present-overlay.idle { cursor:none; }
+  #present-overlay canvas { display:block; }
+  #present-overlay .present-hud { position:absolute; right:16px; bottom:12px;
+    font:12px/1.4 -apple-system,system-ui,sans-serif; color:rgba(255,255,255,0.75);
+    background:rgba(0,0,0,0.45); padding:3px 9px; border-radius:10px;
+    transition:opacity 0.4s; pointer-events:none; }
+  #present-overlay.idle .present-hud { opacity:0; }
+  #present-overlay .present-msg { color:#ccc; font:14px -apple-system,system-ui,sans-serif; }
 
   /* File explorer */
   .explore-breadcrumb { font-size: 0.8rem; overflow-x: auto; white-space: nowrap; scrollbar-width: none; -webkit-overflow-scrolling: touch; }

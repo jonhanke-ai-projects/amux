@@ -234,6 +234,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Contents | `_filesFtsToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Create a new file here | `_filesNewFile` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | button | `_filesNewFile` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Create a new folder here | `_filesNewFolder` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | button | `_filesNewFolder` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Remove  | `_filesRemoveBookmark` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -1208,10 +1210,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Export | `_drawToggleExportMenu` | onclick |
 | index.html | Lock | `_drawToggleLock` | onclick |
 | app.js | // Star is the flag, in the position every clien | `_emailToggleBody` | onclick |
+| index.html | Present | `_filePresent` | onclick |
 | index.html | Save | `_fileSave` | onclick |
 | index.html | button | `_filesClearOfflineCache` | onclick |
-| index.html | Create a new file here | `_filesNewFile` | onclick |
-| index.html | button | `_filesNewFile` | onclick |
 | index.html | Teleprompter | `_filesOpenTeleprompter` | onclick |
 | index.html | More actions | `_filesOverflowToggle` | onclick |
 | app.js | ${esc(b)} | `_filterBranches` | onclick |
@@ -1342,6 +1343,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | + | `_peekToggleInherited` | onclick |
 | index.html | peek-plan-hdr | `_peekTogglePlan` | onclick |
 | app.js | + | `_peekToggleTool` | onclick |
+| app.js | ov | `_presentGo` | addEventListener |
 | app.js | button | `_projectSelectTask` | onclick |
 | app.js | ${esc(lead&&key===tasks?Plan:label)} | `_projectSetTab` | onclick |
 | app.js | +action+(assets.length? · … artifacts:)+ | `_projectSetTab` | onclick |
@@ -1550,6 +1552,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Console | `dtSwitchTab` | onclick |
 | index.html | Info | `dtSwitchTab` | onclick |
 | index.html | Network | `dtSwitchTab` | onclick |
+| app.js | a | `e` | addEventListener |
 | app.js | draw-dir-pop | `e` | addEventListener |
 | app.js | grid | `e` | addEventListener |
 | app.js | el | `ev` | addEventListener |

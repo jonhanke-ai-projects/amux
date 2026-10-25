@@ -28132,7 +28132,218 @@ async function _renderPdf(data, body) {
   }
 }
 
+// PRESENT MODE (Ethan, 2026-10-25: "amux file view of ppt (or pdf) can be used
+// to present full screen to an audience"). One page per screen, letterboxed on
+// black, drawn by pdf.js at the screen's device pixels so the slide is the PDF's
+// own pixels and nothing of the dashboard shows. The native frame viewer can't
+// do this: it scrolls, shows its toolbar, and can't be driven by a clicker.
+//
+// A .pptx/.ppt/.key/.odp presents the PDF export saved beside it under the same
+// name (deck.pptx -> deck.pdf). The browser has no PowerPoint renderer, and a
+// re-render from the slide XML would not match the deck: an exported deck's XML
+// often names fallback fonts (Arial, Georgia) while its PDF embeds the real ones.
+// With no export beside it the deck card says so instead of offering a button.
+const _PRESENT_DECK_RE = /\.(pptx|ppt|key|odp)$/i;
+let _presentSrc = '';
+let _present = null;
+
+function _presentDeckPdfPath(path) {
+  return path.replace(_PRESENT_DECK_RE, '.pdf');
+}
+
+function _presentSetup(data) {
+  const btn = document.getElementById('file-present-btn');
+  _presentSrc = '';
+  if (btn) btn.style.display = 'none';
+  if (!data || !data.path) return;
+  if (data.is_pdf) {
+    _presentSrc = data.path;
+    if (btn) { btn.style.display = ''; btn.title = 'Present full screen (arrow keys to move, Esc to exit)'; }
+    return;
+  }
+  if (!data.is_binary || !_PRESENT_DECK_RE.test(data.path)) return;
+  const pdfPath = _presentDeckPdfPath(data.path);
+  const forPath = data.path;
+  fetch(API + '/api/file?path=' + encodeURIComponent(pdfPath)).then(r => r.ok ? r.json() : null).catch(() => null).then(d => {
+    if (!_fileData || _fileData.path !== forPath) return;
+    const card = document.querySelector('#file-body > div');
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:0.78rem;color:var(--dim);text-align:center;max-width:26em;';
+    if (d && d.is_pdf) {
+      _presentSrc = pdfPath;
+      if (btn) { btn.style.display = ''; btn.title = 'Present ' + pdfPath.split('/').pop() + ', the PDF export of this deck'; }
+      note.textContent = 'Presents ' + pdfPath.split('/').pop() + ', the PDF export saved beside this deck.';
+      const go = document.createElement('button');
+      go.className = 'btn';
+      go.textContent = '▶ Present';
+      go.onclick = () => _filePresent();
+      if (card) { card.appendChild(note); card.appendChild(go); }
+    } else {
+      note.textContent = 'To present this deck, export it to PDF and save it beside the deck as ' + pdfPath.split('/').pop() + '.';
+      if (card) card.appendChild(note);
+    }
+  });
+}
+
+async function _filePresent(path) {
+  path = path || _presentSrc;
+  if (!path || _present) return;
+  const ov = document.createElement('div');
+  ov.id = 'present-overlay';
+  ov.tabIndex = -1;
+  ov.innerHTML = '<div class="present-msg">Loading…</div><div class="present-hud"></div>';
+  document.body.appendChild(ov);
+  const st = _present = {path, ov, pdf: null, page: 1, total: 0, cache: new Map(), gen: 0, idleT: 0, touchX: null};
+  window._presentState = {path, page: 1, total: 0, rendered: 0, fullscreen: false};
+  // Fullscreen must be asked for inside the click, before any await. Where the
+  // API is missing (iPhone Safari) the fixed overlay still fills the window.
+  try { if (ov.requestFullscreen) await ov.requestFullscreen({navigationUI: 'hide'}); else if (ov.webkitRequestFullscreen) ov.webkitRequestFullscreen(); } catch (e) {}
+  ov.focus();
+  st.onKey = e => _presentKey(e);
+  st.onFs = () => { if (!document.fullscreenElement && !document.webkitFullscreenElement && _present === st && st.wasFs) _presentClose(); st.wasFs = !!(document.fullscreenElement || document.webkitFullscreenElement); window._presentState.fullscreen = st.wasFs; _presentRender(); };
+  st.onResize = () => { st.cache.clear(); _presentRender(); };
+  document.addEventListener('keydown', st.onKey, true);
+  document.addEventListener('fullscreenchange', st.onFs);
+  document.addEventListener('webkitfullscreenchange', st.onFs);
+  window.addEventListener('resize', st.onResize);
+  st.wasFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  window._presentState.fullscreen = st.wasFs;
+  ov.addEventListener('mousemove', () => _presentWake());
+  ov.addEventListener('click', e => { _presentGo(e.clientX < window.innerWidth / 3 ? -1 : 1); });
+  ov.addEventListener('touchstart', e => { st.touchX = e.touches[0].clientX; }, {passive: true});
+  ov.addEventListener('touchend', e => {
+    if (st.touchX == null) return;
+    const dx = e.changedTouches[0].clientX - st.touchX; st.touchX = null;
+    if (Math.abs(dx) > 40) { e.preventDefault(); _presentGo(dx < 0 ? 1 : -1); }
+  });
+  try {
+    const pdfjs = await _ensurePdfjs();
+    st.pdf = await pdfjs.getDocument({url: _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(path))}).promise;
+  } catch (e) {
+    if (_present !== st) return;
+    ov.querySelector('.present-msg').textContent = 'Could not open this PDF to present (' + ((e && e.message) || e) + '). Esc to close.';
+    return;
+  }
+  if (_present !== st) return;
+  st.total = st.pdf.numPages;
+  window._presentState.total = st.total;
+  _presentWake();
+  _presentRender();
+}
+
+// Render one page to its own canvas at device pixels, fitted to the screen.
+async function _presentCanvas(st, n) {
+  const W = window.innerWidth, H = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  const key = n + '@' + W + 'x' + H + '@' + dpr;
+  if (st.cache.has(key)) return st.cache.get(key);
+  const job = (async () => {
+    const page = await st.pdf.getPage(n);
+    const base = page.getViewport({scale: 1});
+    const fit = Math.min(W / base.width, H / base.height);
+    const vp = page.getViewport({scale: fit * dpr});
+    const c = document.createElement('canvas');
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
+    c.style.width = (c.width / dpr) + 'px';
+    c.style.height = (c.height / dpr) + 'px';
+    c.dataset.page = String(n);
+    await page.render({canvasContext: c.getContext('2d'), viewport: vp}).promise;
+    // The PDF's link annotations (a deck's "open the video" or results-doc
+    // links) stay clickable over the slide. Rectangles in CSS pixels.
+    c._links = [];
+    try {
+      const cssVp = page.getViewport({scale: fit});
+      for (const a of await page.getAnnotations()) {
+        if (a.subtype !== 'Link' || !a.url) continue;
+        const [x1, y1, x2, y2] = cssVp.convertToViewportRectangle(a.rect);
+        c._links.push({url: a.url, x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1)});
+      }
+    } catch (e) {}
+    return c;
+  })();
+  st.cache.set(key, job);
+  if (st.cache.size > 8) st.cache.delete(st.cache.keys().next().value);
+  return job;
+}
+
+async function _presentRender() {
+  const st = _present;
+  if (!st || !st.pdf) return;
+  const gen = ++st.gen;
+  const n = st.page;
+  const c = await _presentCanvas(st, n);
+  if (_present !== st || gen !== st.gen) return;
+  const old = st.ov.querySelector('canvas, .present-msg');
+  if (old) old.replaceWith(c); else st.ov.insertBefore(c, st.ov.firstChild);
+  let layer = st.ov.querySelector('.present-links');
+  if (!layer) { layer = document.createElement('div'); layer.className = 'present-links'; st.ov.appendChild(layer); }
+  const r = c.getBoundingClientRect();
+  layer.style.cssText = 'position:absolute;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;pointer-events:none;';
+  layer.innerHTML = '';
+  for (const l of c._links || []) {
+    const a = document.createElement('a');
+    a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = l.url;
+    a.style.cssText = 'position:absolute;pointer-events:auto;cursor:pointer;left:' + l.x + 'px;top:' + l.y + 'px;width:' + l.w + 'px;height:' + l.h + 'px;';
+    a.addEventListener('click', e => e.stopPropagation());
+    layer.appendChild(a);
+  }
+  st.ov.querySelector('.present-hud').textContent = n + ' / ' + st.total;
+  window._presentState.page = n;
+  window._presentState.rendered++;
+  // Warm the neighbours so the next keypress swaps instantly.
+  if (n < st.total) _presentCanvas(st, n + 1).catch(() => {});
+  if (n > 1) _presentCanvas(st, n - 1).catch(() => {});
+}
+
+function _presentGo(delta, abs) {
+  const st = _present;
+  if (!st || !st.total) return;
+  const next = abs ? Math.max(1, Math.min(st.total, abs)) : Math.max(1, Math.min(st.total, st.page + delta));
+  _presentWake();
+  if (next === st.page) return;
+  st.page = next;
+  _presentRender();
+}
+
+function _presentKey(e) {
+  if (!_present) return;
+  const k = e.key;
+  let used = true;
+  if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === ' ' || k === 'Enter' || k === 'n') _presentGo(e.shiftKey && k === ' ' ? -1 : 1);
+  else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp' || k === 'Backspace' || k === 'p') _presentGo(-1);
+  else if (k === 'Home') _presentGo(0, 1);
+  else if (k === 'End') _presentGo(0, _present.total);
+  else if (k === 'Escape') _presentClose();
+  else used = false;
+  if (used) { e.preventDefault(); e.stopPropagation(); }
+}
+
+function _presentWake() {
+  const st = _present;
+  if (!st) return;
+  st.ov.classList.remove('idle');
+  clearTimeout(st.idleT);
+  st.idleT = setTimeout(() => { if (_present === st) st.ov.classList.add('idle'); }, 2000);
+}
+
+function _presentClose() {
+  const st = _present;
+  if (!st) return;
+  _present = null;
+  clearTimeout(st.idleT);
+  document.removeEventListener('keydown', st.onKey, true);
+  document.removeEventListener('fullscreenchange', st.onFs);
+  document.removeEventListener('webkitfullscreenchange', st.onFs);
+  window.removeEventListener('resize', st.onResize);
+  if (document.fullscreenElement === st.ov && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  st.ov.remove();
+  if (st.pdf) st.pdf.destroy();
+  window._presentState = null;
+}
+
 function _renderFileBody(data, mode) {
+  _presentSetup(data);
   _readPosDetach();   // flush + detach the previous file's reading-position tracker
   // Tear down any active markdown-search highlights before re-rendering
   if (_mdSearchHits && _mdSearchHits.length) { _mdSearchHits = []; _mdSearchIdx = -1; }
@@ -29210,7 +29421,7 @@ async function openFilePreview(path, options = {}) {
   document.getElementById('file-view-tabs').style.display = 'none';
   document.getElementById('file-tab-preview').classList.add('active');
   document.getElementById('file-tab-raw').classList.remove('active');
-  document.getElementById('file-download-btn').style.display = 'none';
+  document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   document.getElementById('file-overlay').classList.add('active');
   // CACHE FIRST, like the Files listing (Ethan, 2026-10-04: a file marked
   // saved-offline sat on "Loading..." while the server was unreachable,
@@ -29416,7 +29627,7 @@ function closeFilePreview() {
   _cTitleEl.onkeydown = null;
   delete _cTitleEl.dataset.spEditable;
   document.getElementById('file-overlay').classList.remove('active');
-  document.getElementById('file-download-btn').style.display = 'none';
+  document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   document.getElementById('file-save-btn').style.display = 'none';
   const tpTab = document.getElementById('file-tab-teleprompter');
   if (tpTab) tpTab.style.display = 'none';
@@ -30833,7 +31044,7 @@ async function _filesNewFile() {
   const editTab = document.getElementById('file-tab-edit');
   if (editTab) { editTab.style.display = ''; editTab.classList.add('active'); }
   document.getElementById('file-save-btn').style.display = '';
-  document.getElementById('file-download-btn').style.display = 'none';
+  document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   const ta = document.getElementById('file-edit-ta');
   const wrap = document.getElementById('file-edit-wrap');
   ta.value = '';
@@ -31232,7 +31443,7 @@ async function _scratchpadNewNote() {
   const editTab = document.getElementById('file-tab-edit');
   if (editTab) { editTab.style.display = ''; editTab.classList.add('active'); }
   document.getElementById('file-save-btn').style.display = '';
-  document.getElementById('file-download-btn').style.display = 'none';
+  document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   const ta = document.getElementById('file-edit-ta');
   const wrap = document.getElementById('file-edit-wrap');
   ta.value = '';
