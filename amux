@@ -6572,8 +6572,9 @@ ${BOLD}Browser:${RESET}
                                  ${DIM}asking anyone to sign in — amux opens a SECOND${RESET}
                                  ${DIM}Chrome beside their own and they look identical.${RESET}
 
-${BOLD}Public links (an app on this machine, for anyone with the link):${RESET}
-  amux publish PORT [TITLE]      Print a public link; --list, --revoke ID
+${BOLD}Pages links (apps and files, managed in the Pages tab):${RESET}
+  amux publish [--internal] PORT [TITLE]   An app: public, or inside amux only
+  amux publish --file PATH [TITLE]         A public file or folder; --list, --revoke ID
 
 ${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${RESET}
   amux tunnel status             Show tunnel state and public URL
@@ -6960,25 +6961,28 @@ EOF
 }
 
 cmd_publish() {
-  # Public links (static_files/public_links.rs): anyone with the link opens the
-  # app on PORT, no amux sign-in, until it is revoked. The inside-amux link for
-  # the owner is <address>/proxy/PORT/ and needs no command.
+  # The Pages tab's links (static_files/public_links.rs): an app for the owner
+  # inside amux (--internal), an app for anyone with the link, or a file or
+  # folder for anyone with the link (--file). All listed and removable in Pages.
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
+  local kind=app target title
   case "${1:-}" in
     ""|-h|--help|help)
       cat <<EOF
-${BOLD}amux publish${RESET} — a public link to an app running on this machine
+${BOLD}amux publish${RESET} — apps and files in the Pages tab
 
-  amux publish PORT [TITLE]      Make a link anyone can open, no amux sign-in
-  amux publish --list            List public links
-  amux publish --revoke ID       Turn a link off
+  amux publish --internal PORT [TITLE]   An app for you, opened inside amux (signed in)
+  amux publish PORT [TITLE]              An app for anyone with the link, no amux sign-in
+  amux publish --file PATH [TITLE]       A file or folder for anyone with the link
+  amux publish --list                    List them
+  amux publish --revoke ID               Remove one (a public link stops working)
 
-Only for something the owner wants shared. For the owner alone use the
-inside-amux link, <address>/proxy/PORT/. Links are listed in the Pages view.
+Publish to the public only what the owner wants shared.
 EOF
+      return 0
       ;;
     --list|-l|list)
-      _curl -sk -m 15 "$AMUX_API/api/public-links" | python3 -c '
+      _curl -sk -m 15 "$AMUX_API/api/page-links" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -6990,26 +6994,45 @@ links = d.get("links") or []
 if not d.get("public_url"):
     print("(this amux address is not known yet; set AMUX_PUBLIC_URL in server.env)")
 if not links:
-    print("no public links")
+    print("nothing published")
 for l in links:
-    print(l["id"], "port", l["port"], l.get("url") or l["path"], ("  " + l["title"]) if l.get("title") else "")
+    what = l["file"] if l["kind"] == "file" else "port %s" % l["port"]
+    print(l["id"], l["kind"], what, l.get("url") or l["path"], ("  " + l["title"]) if l.get("title") else "")
 '
+      return 0
       ;;
     --revoke|revoke)
       [[ -n "${2:-}" ]] || die "usage: amux publish --revoke ID"
       local code
       code=$(_curl -sk -m 15 -o /dev/null -w '%{http_code}' -X DELETE -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-        "$AMUX_API/api/public-links/$2" 2>/dev/null || echo 000)
-      [[ "$code" == 2* ]] || die "not revoked: server answered HTTP $code"
-      echo "revoked $2"
+        "$AMUX_API/api/page-links/$2" 2>/dev/null || echo 000)
+      [[ "$code" == 2* ]] || die "not removed: server answered HTTP $code"
+      echo "removed $2"
+      return 0
       ;;
-    *)
-      local port="$1" title="${2:-}"
-      [[ "$port" =~ ^[0-9]+$ ]] || die "usage: amux publish PORT [TITLE]"
-      local body
-      body=$(python3 -c 'import json,sys; print(json.dumps({"port": int(sys.argv[1]), "title": sys.argv[2]}))' "$port" "$title")
-      _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-        -d "$body" "$AMUX_API/api/public-links" | python3 -c '
+    --internal) kind=internal; shift ;;
+    --file) kind=file; shift ;;
+  esac
+  target="${1:-}"; title="${2:-}"
+  if [[ "$kind" == file ]]; then
+    [[ -n "$target" ]] || die "usage: amux publish --file PATH [TITLE]"
+    [[ -e "$target" ]] || die "no such file or folder: $target"
+    target="$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+  else
+    [[ "$target" =~ ^[0-9]+$ ]] || die "usage: amux publish [--internal] PORT [TITLE]"
+  fi
+  local body
+  body=$(python3 -c '
+import json, sys
+kind, target, title = sys.argv[1:4]
+d = {"kind": kind, "title": title}
+if kind == "file":
+    d["path"] = target
+else:
+    d["port"] = int(target)
+print(json.dumps(d))' "$kind" "$target" "$title")
+  _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+    -d "$body" "$AMUX_API/api/page-links" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -7018,12 +7041,10 @@ except ValueError:
 if "error" in d:
     sys.exit("not published: " + str(d["error"]))
 print(d.get("url") or d["path"] + "   (address unknown: set AMUX_PUBLIC_URL in server.env)")
-if not d.get("listening"):
+if d["kind"] != "file" and not d.get("listening"):
     print("note: nothing listens on port %s yet; the link works once the app runs" % d["port"], file=sys.stderr)
-print("revoke with: amux publish --revoke " + d["id"], file=sys.stderr)
+print(("public: anyone with the link can open it. " if d.get("public") else "only you, signed in. ") + "Listed in Pages; remove with: amux publish --revoke " + d["id"], file=sys.stderr)
 '
-      ;;
-  esac
 }
 
 cmd_pin() {

@@ -57852,62 +57852,117 @@ function _pagesEnter() {
   _pagesList();
   _pubList();
 }
-// Public links (/pub/<id>/, static_files/public_links.rs): an app on a port,
-// for anyone with the link. Listed beside Pages, revocable here or with
-// `amux publish --revoke`.
+// The rest of the Pages tab (static_files/public_links.rs): apps on this
+// machine for the owner inside amux, the same apps shared publicly, and public
+// files and folders. One list from /api/page-links, three sections.
 async function _pubFetch(path, init) {
-  const r = await fetch(API + '/api/public-links' + path, Object.assign({ _skipOutbox: true, headers: _authHeaders({ 'Content-Type': 'application/json' }) }, init || {}));
+  const r = await fetch(API + '/api/page-links' + path, Object.assign({ _skipOutbox: true, headers: _authHeaders({ 'Content-Type': 'application/json' }) }, init || {}));
   let d = null;
   try { d = await r.json(); } catch (_) {}
   if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
   return d;
 }
+let _pubLinks = [];
+const _PUB_EMPTY = {
+  internal: 'No apps yet. A worker adds one with <code>amux publish --internal &lt;port&gt;</code>, or use Add app.',
+  app: 'Nothing shared. A worker shares an app with <code>amux publish &lt;port&gt;</code> when you ask it to.',
+  file: 'No public files. Only a file or folder you add here can be opened by others.',
+};
+function _pubRow(l) {
+  const href = l.url || l.path;
+  const name = l.title || (l.kind === 'file' ? (l.file || '').split('/').pop() : 'Port ' + l.port);
+  const what = l.kind === 'file' ? esc(l.file) : 'port ' + esc(String(l.port));
+  const by = l.created_by ? ' · by ' + esc(l.created_by) : '';
+  if (l.kind === 'internal') {
+    return `<div class="pages-row pub-row" role="button" tabindex="0" data-pub="${esc(l.id)}"
+      onclick="_pubOpenInternal('${escJs(l.id)}')" onkeydown="if(event.key==='Enter'){event.preventDefault();_pubOpenInternal('${escJs(l.id)}')}">
+      <div class="pages-row-main"><b>${esc(name)}</b><span class="ui-help">${esc(l.path)} · ${what}${by}</span></div>
+      <button class="btn danger" onclick="event.stopPropagation();_pubRevoke('${escJs(l.id)}')">Remove</button></div>`;
+  }
+  return `<div class="pages-row pub-row" data-pub="${esc(l.id)}">
+    <div class="pages-row-main"><b>${esc(name)}</b>
+      <a class="ui-help pub-url" href="${esc(href)}" target="_blank" rel="noopener">${esc(href)}</a>
+      <span class="ui-help">${what}${by}</span></div>
+    <button class="btn" onclick="_copyTextWithToast('${escJs(href)}', 'Link copied')">Copy</button>
+    <button class="btn danger" onclick="_pubRevoke('${escJs(l.id)}')">Turn off</button></div>`;
+}
 async function _pubList() {
-  const el = document.getElementById('pub-list');
-  if (!el) return;
+  const ids = { internal: 'pub-internal', app: 'pub-apps', file: 'pub-files' };
   let d;
   try { d = await _pubFetch(''); } catch (e) {
-    el.innerHTML = '<div class="ui-error">Public links could not be loaded: ' + esc(e.message) + '</div>';
+    for (const id of Object.values(ids)) { const el = document.getElementById(id); if (el) el.innerHTML = '<div class="ui-error">Could not be loaded: ' + esc(e.message) + '</div>'; }
     return;
   }
-  const links = d.links || [];
+  _pubLinks = d.links || [];
   const unknown = d.public_url ? '' : '<div class="ui-help pub-note">This amux\'s address is not known yet, so links show as paths. Set AMUX_PUBLIC_URL in server.env, or open the dashboard at the address you use.</div>';
-  if (!links.length) {
-    el.innerHTML = unknown + '<div class="pages-empty">No public links. A worker makes one with <code>amux publish &lt;port&gt;</code> when you ask it to share an app.</div>';
-    return;
+  for (const [kind, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const rows = _pubLinks.filter(l => l.kind === kind);
+    el.innerHTML = (kind !== 'internal' && rows.length ? unknown : '')
+      + (rows.length ? rows.map(_pubRow).join('') : '<div class="pages-empty">' + _PUB_EMPTY[kind] + '</div>');
   }
-  el.innerHTML = unknown + links.map(l => {
-    const href = l.url || l.path;
-    return `<div class="pages-row pub-row" data-pub="${esc(l.id)}">
-      <div class="pages-row-main"><b>${esc(l.title || ('Port ' + l.port))}</b>
-        <a class="ui-help pub-url" href="${esc(href)}" target="_blank" rel="noopener">${esc(href)}</a>
-        <span class="ui-help">port ${esc(String(l.port))}${l.created_by ? ' · by ' + esc(l.created_by) : ''}</span></div>
-      <button class="btn" onclick="_copyTextWithToast('${escJs(href)}', 'Link copied')">Copy</button>
-      <button class="btn danger" onclick="_pubRevoke('${escJs(l.id)}')">Turn off</button></div>`;
-  }).join('');
 }
-async function _pubNew() {
-  const ok = await showFormModal('New public link',
-    '<label class="ui-field">Port<input id="pub-new-port" class="input" inputmode="numeric" placeholder="e.g. 8891" autocomplete="off"></label>'
+async function _pubNew(kind) {
+  const titles = { internal: 'Add an app inside amux', app: 'Share an app', file: 'Share a file or folder' };
+  const target = kind === 'file'
+    ? '<label class="ui-field">Path<input id="pub-new-target" class="input" placeholder="/home/you/project/report.html" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="ui-help">A file, or a folder whose files are all shared. Hidden files never are.</span></label>'
+    : '<label class="ui-field">Port<input id="pub-new-target" class="input" inputmode="numeric" placeholder="e.g. 8891" autocomplete="off"></label>';
+  const note = kind === 'internal' ? 'Only you can open it, signed in. It is listed here and opens inside amux.'
+    : 'Anyone with the link can open it, without signing in to amux, until you turn it off.';
+  const ok = await showFormModal(titles[kind], target
     + '<label class="ui-field">Title (optional)<input id="pub-new-title" class="input" autocomplete="off"></label>'
-    + '<span class="ui-help">Anyone with the link can open this app, without signing in to amux, until you turn it off.</span>',
-    'Create link');
+    + '<span class="ui-help">' + note + '</span>', kind === 'internal' ? 'Add' : 'Create link');
   if (!ok) return;
-  const port = parseInt(document.getElementById('pub-new-port')?.value || '', 10);
+  const raw = (document.getElementById('pub-new-target')?.value || '').trim();
   const title = document.getElementById('pub-new-title')?.value || '';
-  if (!(port > 0 && port < 65536)) { showToast('Not created: enter a port from 1 to 65535.'); return; }
+  const body = { kind, title };
+  if (kind === 'file') {
+    if (!raw.startsWith('/')) { showToast('Not shared: give the full path, starting with /.'); return; }
+    body.path = raw;
+  } else {
+    const port = parseInt(raw, 10);
+    if (!(port > 0 && port < 65536)) { showToast('Not added: enter a port from 1 to 65535.'); return; }
+    body.port = port;
+  }
   try {
-    const l = await _pubFetch('', { method: 'POST', body: JSON.stringify({ port, title }) });
-    showToast(l.listening ? 'Public link created' : 'Public link created. Nothing runs on port ' + port + ' yet.');
+    const l = await _pubFetch('', { method: 'POST', body: JSON.stringify(body) });
+    showToast(kind === 'file' ? 'Public link created' : (l.listening ? (kind === 'internal' ? 'App added' : 'Public link created') : 'Saved. Nothing runs on port ' + body.port + ' yet.'));
     _pubList();
-  } catch (e) { showToast('Not created: ' + e.message); }
+  } catch (e) { showToast('Not saved: ' + e.message); }
+}
+// An app inside amux: the Pages open view, framed at /proxy/<port>/. The app
+// is the owner's own, so the frame has what /proxy/ already gives it in a tab.
+function _pubOpenInternal(id) {
+  const l = _pubLinks.find(x => x.id === id);
+  if (!l) return;
+  if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
+  _pagesCur = 'app:' + id; _pagesMeta = null;
+  document.getElementById('pages-list-wrap').style.display = 'none';
+  document.getElementById('pages-open').style.display = 'flex';
+  document.getElementById('pages-page-actions').style.display = 'none';
+  document.getElementById('pages-title').textContent = l.title || ('Port ' + l.port);
+  document.getElementById('pages-standalone').href = l.path;
+  document.getElementById('pages-status').textContent = 'port ' + l.port;
+  const host = document.getElementById('pages-frame');
+  const f = document.createElement('iframe');
+  f.className = 'pub-app-frame';
+  f.title = l.title || ('App on port ' + l.port);
+  f.src = l.path;
+  host.replaceChildren(f);
+  _pagesMounted = { destroy() { f.remove(); } };
+  _pagesFit();
 }
 async function _pubRevoke(id) {
-  if (!(await showConfirm('Turn off this public link? Anyone using it loses access.', 'Turn off', true))) return;
-  try { await _pubFetch('/' + encodeURIComponent(id), { method: 'DELETE' }); showToast('Public link turned off'); }
-  catch (e) { showToast('Not turned off: ' + e.message); }
+  const l = _pubLinks.find(x => x.id === id);
+  const internal = l && l.kind === 'internal';
+  const ask = internal ? 'Remove this app from Pages? The app keeps running.' : 'Turn off this public link? Anyone using it loses access.';
+  if (!(await showConfirm(ask, internal ? 'Remove' : 'Turn off', true))) return;
+  try { await _pubFetch('/' + encodeURIComponent(id), { method: 'DELETE' }); showToast(internal ? 'Removed from Pages' : 'Public link turned off'); }
+  catch (e) { showToast('Not changed: ' + e.message); }
   _pubList();
 }
+
 function _pagesLeave() {
   if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
   _pagesCur = null;
@@ -57966,6 +58021,7 @@ async function _pagesOpen(name) {
   document.getElementById('pages-open').style.display = 'flex';
   document.getElementById('pages-title').textContent = name;
   document.getElementById('pages-standalone').href = '/pages/' + encodeURIComponent(name);
+  document.getElementById('pages-page-actions').style.display = '';
   document.getElementById('pages-status').textContent = '';
   try { await _pagesHostReady(); } catch (e) { document.getElementById('pages-status').textContent = e.message; return; }
   if (_pagesMounted) _pagesMounted.destroy();
@@ -57993,6 +58049,7 @@ window.addEventListener('resize', () => { if (_pagesCur) _pagesFit(); });
 function _pagesClose() {
   _pagesLeave();
   _pagesList();
+  _pubList();
 }
 async function _pagesAskCount() {
   const name = _pagesCur;

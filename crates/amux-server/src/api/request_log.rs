@@ -2338,11 +2338,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/api/public-links",
+        path: "/api/page-links",
         methods: &["GET", "POST"],
     },
     RouteEntry {
-        path: "/api/public-links/{id}",
+        path: "/api/page-links/{id}",
         methods: &["DELETE"],
     },
     RouteEntry {

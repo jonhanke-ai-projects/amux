@@ -14,7 +14,10 @@ fn app() -> axum::Router {
     let home = HOME.get_or_init(|| tempfile::tempdir().unwrap());
     // Links live under the amux home; this binary owns its own.
     unsafe { std::env::set_var("AMUX_HOME", home.path()) };
-    let store = amux_server::db::Store::open(&home.path().join("t.db")).unwrap();
+    // A database per router: tests run in parallel and one file has one owner.
+    let db = tempfile::tempdir().unwrap();
+    let store = amux_server::db::Store::open(&db.path().join("t.db")).unwrap();
+    std::mem::forget(db);
     router(AppState {
         store: std::sync::Arc::new(store),
         started: std::time::Instant::now(),
@@ -73,16 +76,16 @@ async fn a_public_link_opens_without_sign_in_and_only_the_owner_manages_links() 
     let port = echo_app().await;
 
     // Managing links is the owner's.
-    let (st, _, _) = call("GET", "/api/public-links", false, None, None).await;
+    let (st, _, _) = call("GET", "/api/page-links", false, None, None).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "the list must need the owner");
-    let (st, _, _) = call("POST", "/api/public-links", false, Some(&format!(r#"{{"port":{port}}}"#)), None).await;
+    let (st, _, _) = call("POST", "/api/page-links", false, Some(&format!(r#"{{"port":{port}}}"#)), None).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "creating must need the owner");
 
     // amux itself is never published.
-    let (st, _, body) = call("POST", "/api/public-links", true, Some(r#"{"port":8824}"#), None).await;
+    let (st, _, body) = call("POST", "/api/page-links", true, Some(r#"{"port":8824}"#), None).await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
 
-    let (st, _, body) = call("POST", "/api/public-links", true, Some(&format!(r#"{{"port":{port},"title":"demo"}}"#)), None).await;
+    let (st, _, body) = call("POST", "/api/page-links", true, Some(&format!(r#"{{"port":{port},"title":"demo"}}"#)), None).await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     let link: serde_json::Value = serde_json::from_str(&body).unwrap();
     let id = link["id"].as_str().unwrap().to_string();
@@ -108,17 +111,56 @@ async fn a_public_link_opens_without_sign_in_and_only_the_owner_manages_links() 
     // An id nobody created, or a path trick, is a 404 and never the API.
     let (st, _, _) = call("GET", "/pub/0123456789abcdef0123456789abcdef/", false, None, None).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
-    let (st, _, body) = call("GET", "/pub/../api/public-links", false, None, None).await;
+    let (st, _, body) = call("GET", "/pub/../api/page-links", false, None, None).await;
     assert!(!body.contains(&id), "a path trick listed the links: {st} {body}");
 
     // The owner sees it, and turning it off ends it.
-    let (st, _, body) = call("GET", "/api/public-links", true, None, None).await;
+    let (st, _, body) = call("GET", "/api/page-links", true, None, None).await;
     assert_eq!(st, StatusCode::OK);
     assert!(body.contains(&id), "{body}");
-    let (st, _, _) = call("DELETE", &format!("/api/public-links/{id}"), false, None, None).await;
+    let (st, _, _) = call("DELETE", &format!("/api/page-links/{id}"), false, None, None).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "revoking must need the owner");
-    let (st, _, _) = call("DELETE", &format!("/api/public-links/{id}"), true, None, None).await;
+    let (st, _, _) = call("DELETE", &format!("/api/page-links/{id}"), true, None, None).await;
     assert_eq!(st, StatusCode::OK);
     let (st, _, _) = call("GET", &format!("/pub/{id}/"), false, None, None).await;
     assert_eq!(st, StatusCode::NOT_FOUND, "a revoked link still opened");
+}
+
+#[tokio::test]
+async fn an_internal_app_is_never_public_and_a_shared_folder_stays_inside_itself() {
+    let port = echo_app().await;
+    let (st, _, body) = call("POST", "/api/page-links", true, Some(&format!(r#"{{"kind":"internal","port":{port}}}"#)), None).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let link: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(link["public"], false);
+    assert_eq!(link["path"], format!("/proxy/{port}/"));
+    let id = link["id"].as_str().unwrap();
+    let (st, _, _) = call("GET", &format!("/pub/{id}/"), false, None, None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "an internal app opened publicly");
+
+    // A folder under HOME with a visible name (hidden paths are never published).
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+    let base = tempfile::Builder::new().prefix("pubint-").tempdir_in(&home).unwrap();
+    let root = base.path().join("share");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("report.txt"), "quarterly").unwrap();
+    std::fs::write(root.join(".env"), "SECRET=1").unwrap();
+    std::fs::write(base.path().join("outside.txt"), "outside").unwrap();
+    let (st, _, body) = call("POST", "/api/page-links", true,
+        Some(&serde_json::json!({"kind": "file", "path": root}).to_string()), None).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"].as_str().unwrap().to_string();
+    let (st, _, listing) = call("GET", &format!("/pub/{id}/"), false, None, None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(listing.contains("report.txt") && !listing.contains(".env"), "{listing}");
+    let (st, _, file) = call("GET", &format!("/pub/{id}/report.txt"), false, None, None).await;
+    assert_eq!((st, file.as_str()), (StatusCode::OK, "quarterly"));
+    for bad in [".env", "../outside.txt", "%2e%2e/outside.txt"] {
+        let (st, _, b) = call("GET", &format!("/pub/{id}/{bad}"), false, None, None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{bad} was served: {b}");
+    }
+    // Hidden paths are refused at creation.
+    let (st, _, _) = call("POST", "/api/page-links", true,
+        Some(&serde_json::json!({"kind": "file", "path": root.join(".env")}).to_string()), None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
 }

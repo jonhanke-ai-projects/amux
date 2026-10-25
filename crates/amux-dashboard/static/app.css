@@ -10277,6 +10277,10 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pages-row-main { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
 .pages-row-main b, .pages-row-main span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pub-head { margin-top:12px; }
+.pages-head-actions { display:flex; gap:8px; flex-wrap:nowrap; }
+.pages-page-actions { display:contents; }
+.pub-list:empty { display:none; }
+.pub-app-frame { width:100%; height:100%; border:0; background:#fff; border-radius:8px; }
 .pub-row { cursor:default; }
 .pub-url { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pub-note { padding:10px 14px; border-bottom:1px solid var(--border); }

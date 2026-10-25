@@ -155,6 +155,16 @@ pub(crate) async fn proxy(
             "dev server listens on loopback only; relaying through amux (script-built URLs and HMR need --host 0.0.0.0)");
         return relay(local, port, &format!("/proxy/{port}"), &tail, method, &headers, body).await;
     }
+    // Only a top-level page load may be sent to the app's own http:// port. A
+    // frame inside the amux UI (Pages > Inside amux), and the scripts, styles
+    // and images that frame loads, cannot follow that redirect from an https
+    // page: the browser blocks it as mixed content and the frame stays blank.
+    // Relay those instead. Browsers name the destination in Sec-Fetch-Dest.
+    if headers.get("sec-fetch-dest").is_some_and(|d| d != "document") {
+        tracing::info!(port, measured = true, n_considered = 1, verdict = "port_proxy_framed_relay",
+            "proxy request from inside a page or frame; relaying rather than redirecting to the app's own port");
+        return relay(local, port, &format!("/proxy/{port}"), &tail, method, &headers, body).await;
+    }
     let target = format!("http://{host}:{port}{tail}");
     let from_loopback = peer.is_some_and(|ip: IpAddr| ip.is_loopback());
     tracing::info!(port, host = %host, from_loopback, measured = true, n_considered = 1,

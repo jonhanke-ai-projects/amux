@@ -1,43 +1,68 @@
-//! Two kinds of link to an app a worker runs on this machine.
+//! What the Pages tab provisions besides Pages themselves, one store, three
+//! kinds (Ethan, 2026-10-25: "pages = internal apps, external apps, external
+//! facing files", proxies consolidated into it):
 //!
-//! - Inside amux, for the signed-in owner: `/proxy/<port>/` (port_proxy.rs)
-//!   and Pages (`/pages/<name>`). Behind amux's sign-in, and on a cloud box
-//!   behind its front door.
-//! - Public, for anyone with the link: `/pub/<id>/`. The owner (or a worker,
-//!   with `amux publish <port>`) creates one for a port; it is listed in the
-//!   Pages view and works until revoked. The id is 128 random bits, the only
-//!   thing that grants access, and the relay strips amux's cookies and
-//!   credentials before anything reaches the app.
+//! - `internal`: an app on a port, for the signed-in owner only. Opened inside
+//!   the amux UI from Pages, or at `/proxy/<port>/` (port_proxy.rs).
+//! - `app`: the same, public: `/pub/<id>/`, anyone with the link, no amux
+//!   sign-in, until turned off.
+//! - `file`: a file or folder, public at `/pub/<id>/`, opt in per path. A
+//!   folder lists its files; nothing outside it, nothing hidden and nothing
+//!   amux's own file guard refuses is ever served.
 //!
-//! Both are built from the server's own address ([`public_url`]), so a worker
+//! The id is 128 random bits and the only credential. Every public HTML
+//! response carries a CSP sandbox, so a published page runs in an opaque
+//! origin and cannot act as the owner who happens to open it, and amux's
+//! cookies and Authorization never reach a relayed app.
+//!
+//! Links are built from the server's own address ([`public_url`]), so a worker
 //! never hands the owner `https://<raw ip>:8824/...` (sandbox, 2026-10-25:
 //! mtp-demo did exactly that, because nothing told it the address).
 use super::port_proxy;
 use super::AppState;
 use axum::body::Body;
 use axum::extract::{Path as AxPath, State};
-use axum::http::{HeaderMap, Method, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 const LINKS_FILE: &str = "public-links.json";
 const LEARNED_URL_FILE: &str = "public-url.json";
 static WRITE: Mutex<()> = Mutex::new(());
 
+/// The sandbox `/api/file/raw-path` already puts on HTML, minus nothing.
+const HTML_SANDBOX: &str = "sandbox allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox allow-modals allow-downloads";
+
+fn default_kind() -> String {
+    "app".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Link {
     pub id: String,
+    /// `internal`, `app` or `file`.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    #[serde(default)]
     pub port: u16,
+    #[serde(default)]
+    pub path: String,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub created_by: String,
     #[serde(default)]
     pub created_at: i64,
+}
+
+impl Link {
+    fn is_public(&self) -> bool {
+        self.kind == "app" || self.kind == "file"
+    }
 }
 
 fn links_path(home: &Path) -> PathBuf {
@@ -87,20 +112,41 @@ pub(crate) fn valid_id(s: &str) -> bool {
     s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-/// Ports a public link may never reach: amux itself (its API and dashboard),
+/// Ports an app link may never reach: amux itself (its API and dashboard),
 /// the cloud front door, and SSH.
 pub(crate) fn refused_port(port: u16) -> Option<&'static str> {
     if port == 0 {
         return Some("not a port");
     }
     if port == crate::config::canonical_port() || (8822..=8824).contains(&port) {
-        return Some("that is amux's own port; a public link never exposes amux itself");
+        return Some("that is amux's own port; a link never exposes amux itself");
     }
     match port {
         8890 => Some("that is the cloud sign-in door"),
         22 => Some("that is SSH"),
         _ => None,
     }
+}
+
+/// Whether a canonical path may be published: amux's own file guard allows it
+/// (no ~/.ssh, credentials, system paths), it is outside amux's home, and no
+/// part of it is hidden (a dotfile or dot-directory).
+pub(crate) fn file_refused(canon: &Path) -> Option<&'static str> {
+    if !canon.is_absolute() {
+        return Some("give an absolute path");
+    }
+    if canon.components().any(|c| matches!(c, Component::Normal(s) if s.to_string_lossy().starts_with('.'))) {
+        return Some("hidden files and folders are never published");
+    }
+    if let Ok(home) = crate::config::amux_home().canonicalize() {
+        if canon.starts_with(&home) {
+            return Some("amux's own files are never published");
+        }
+    }
+    if !crate::api::fs::is_path_allowed(canon) {
+        return Some("amux's file guard does not allow that path");
+    }
+    None
 }
 
 /// `https://host[:port]` with no trailing slash, or None.
@@ -132,7 +178,7 @@ fn is_loopback_host(host: &str) -> bool {
 /// The origin a dashboard request was made at, from its Host header. None for
 /// loopback (a worker on the box, not the owner's address).
 pub(crate) fn origin_of(headers: &HeaderMap) -> Option<String> {
-    let host = headers.get(axum::http::header::HOST)?.to_str().ok()?.trim();
+    let host = headers.get(header::HOST)?.to_str().ok()?.trim();
     if host.is_empty() || is_loopback_host(host) || !host.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b)) {
         return None;
     }
@@ -175,22 +221,30 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
     };
     format!(
         "{address}\n\n\
-         - Inside amux, for the owner (signed in): {base}/proxy/<port>/ opens an app you run on <port>, \
-         and a Page is {base}/pages/<name>.\n\
-         - Public, for anyone with the link (no amux sign-in): only when the owner wants it shared, \
-         run `amux publish <port> [title]`. It prints {base}/pub/<id>/. The owner sees and turns off \
-         public links in the Pages view; `amux publish --list` and `amux publish --revoke <id>` do the same."
+         The owner manages everything below in the Pages tab ({base}/#view=pages), so register what you \
+         build there rather than only printing a link:\n\
+         - An app for the owner, inside amux: `amux publish --internal <port> [title]`. It is listed in \
+         Pages and opens inside the amux UI; its direct link is {base}/proxy/<port>/. A Page is \
+         {base}/pages/<name>.\n\
+         - An app for anyone with the link (no amux sign-in), only when the owner wants it shared: \
+         `amux publish <port> [title]`, which prints {base}/pub/<id>/.\n\
+         - A file or folder for anyone with the link, only when the owner wants it shared: \
+         `amux publish --file <absolute path> [title]`. Never link a file as {base}/api/file/...: \
+         that needs the owner's sign-in.\n\
+         `amux publish --list` lists them and `amux publish --revoke <id>` turns one off."
     )
 }
 
 fn link_json(home: &Path, l: &Link) -> Value {
     let base = public_url(home);
-    let path = format!("/pub/{}/", l.id);
+    let path = if l.is_public() { format!("/pub/{}/", l.id) } else { format!("/proxy/{}/", l.port) };
     json!({
-        "id": l.id, "port": l.port, "title": l.title, "created_by": l.created_by, "created_at": l.created_at,
+        "id": l.id, "kind": l.kind, "port": l.port, "file": l.path, "title": l.title,
+        "created_by": l.created_by, "created_at": l.created_at,
+        "public": l.is_public(),
         "path": path,
         "url": base.as_ref().map(|b| format!("{b}{path}")),
-        "inside_url": base.as_ref().map(|b| format!("{b}/proxy/{}/", l.port)),
+        "inside_url": (l.port > 0).then(|| format!("/proxy/{}/", l.port)),
     })
 }
 
@@ -211,18 +265,40 @@ pub(crate) async fn list(State(_): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 pub(crate) struct CreateBody {
+    #[serde(default)]
+    kind: Option<String>,
     port: Option<u16>,
+    #[serde(default)]
+    path: Option<String>,
     #[serde(default)]
     title: String,
 }
 
 pub(crate) async fn create(State(_): State<AppState>, headers: HeaderMap, body: Option<Json<CreateBody>>) -> Response {
-    let Some(Json(body)) = body else { return bad(StatusCode::BAD_REQUEST, "send {\"port\": <port>}") };
-    let Some(port) = body.port else { return bad(StatusCode::BAD_REQUEST, "port is required") };
-    if let Some(why) = refused_port(port) {
-        tracing::warn!(port, measured = true, n_considered = 1, verdict = "public_link_refused", why, "public link refused");
-        return bad(StatusCode::BAD_REQUEST, why);
-    }
+    let Some(Json(body)) = body else { return bad(StatusCode::BAD_REQUEST, "send {\"kind\": ..., \"port\" or \"path\": ...}") };
+    let kind = body.kind.clone().unwrap_or_else(|| if body.path.is_some() { "file".into() } else { "app".into() });
+    let (port, path) = match kind.as_str() {
+        "app" | "internal" => {
+            let Some(port) = body.port else { return bad(StatusCode::BAD_REQUEST, "port is required") };
+            if let Some(why) = refused_port(port) {
+                tracing::warn!(port, kind = %kind, measured = true, n_considered = 1, verdict = "public_link_refused", why, "link refused");
+                return bad(StatusCode::BAD_REQUEST, why);
+            }
+            (port, String::new())
+        }
+        "file" => {
+            let raw = body.path.as_deref().unwrap_or("").trim();
+            let Ok(canon) = Path::new(raw).canonicalize() else {
+                return bad(StatusCode::BAD_REQUEST, "no such file or folder");
+            };
+            if let Some(why) = file_refused(&canon) {
+                tracing::warn!(kind = %kind, measured = true, n_considered = 1, verdict = "public_link_refused", why, "file link refused");
+                return bad(StatusCode::BAD_REQUEST, why);
+            }
+            (0, canon.to_string_lossy().into_owned())
+        }
+        _ => return bad(StatusCode::BAD_REQUEST, "kind is internal, app or file"),
+    };
     let Some(id) = new_id() else {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, "no secure randomness available; no link was made");
     };
@@ -233,7 +309,7 @@ pub(crate) async fn create(State(_): State<AppState>, headers: HeaderMap, body: 
         .unwrap_or("owner")
         .to_string();
     let title: String = body.title.trim().chars().take(120).collect();
-    let link = Link { id, port, title, created_by: created_by.clone(), created_at: crate::config::now_f64() as i64 };
+    let link = Link { id, kind: kind.clone(), port, path, title, created_by: created_by.clone(), created_at: crate::config::now_f64() as i64 };
     let home = crate::config::amux_home();
     {
         let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
@@ -243,9 +319,10 @@ pub(crate) async fn create(State(_): State<AppState>, headers: HeaderMap, body: 
             return bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save the link: {e}"));
         }
     }
-    let listening = port_proxy::local_listener(port).await.is_some();
-    tracing::warn!(port, created_by = %created_by, listening, measured = true, n_considered = 1,
-        verdict = "public_link_created", "public link created: anyone with it can open this port's app");
+    let listening = port > 0 && port_proxy::local_listener(port).await.is_some();
+    tracing::warn!(kind = %kind, port, created_by = %created_by, listening, public = link.is_public(),
+        measured = true, n_considered = 1, verdict = "public_link_created",
+        "Pages link created (public ones open for anyone with the link)");
     let mut out = link_json(&home, &link);
     out["listening"] = json!(listening);
     (StatusCode::CREATED, Json(out)).into_response()
@@ -258,12 +335,12 @@ pub(crate) async fn revoke(State(_): State<AppState>, AxPath(id): AxPath<String>
     let before = links.len();
     links.retain(|l| l.id != id);
     if links.len() == before {
-        return bad(StatusCode::NOT_FOUND, "no such public link");
+        return bad(StatusCode::NOT_FOUND, "no such link");
     }
     if let Err(e) = save(&home, &links) {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save: {e}"));
     }
-    tracing::warn!(measured = true, n_considered = 1, verdict = "public_link_revoked", "public link revoked");
+    tracing::warn!(measured = true, n_considered = 1, verdict = "public_link_revoked", "Pages link removed");
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -287,7 +364,89 @@ fn not_found() -> Response {
         "<p>This link does not exist or was turned off by the person who shared it.</p>")
 }
 
-/// Anyone with the link: no amux sign-in. Everything is relayed from loopback,
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn pct_encode_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+/// The file a public file link's `tail` names: the shared file itself, or a
+/// path inside the shared folder. None for anything that leaves the folder,
+/// is hidden, or is refused by [`file_refused`].
+pub(crate) fn resolve_shared(root: &Path, tail: &str) -> Option<PathBuf> {
+    let rel = pct_decode(tail.split('?').next().unwrap_or("/"));
+    let rel = rel.trim_start_matches('/');
+    if root.is_file() {
+        return rel.is_empty().then(|| root.to_path_buf());
+    }
+    if Path::new(rel).components().any(|c| !matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    let canon = root.join(rel).canonicalize().ok()?;
+    (canon.starts_with(root) && file_refused(&canon).is_none()).then_some(canon)
+}
+
+fn folder_listing(link: &Link, dir: &Path, tail: &str) -> Response {
+    let mut entries: Vec<(String, bool)> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path().is_dir()))
+                .filter(|(n, _)| !n.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    let title = if link.title.is_empty() { Path::new(&link.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { link.title.clone() };
+    let here = tail.split('?').next().unwrap_or("/");
+    let rows: String = entries
+        .iter()
+        .map(|(n, d)| format!("<li><a href=\"{}{}\">{}{}</a></li>", pct_encode_segment(n), if *d { "/" } else { "" }, esc(n), if *d { "/" } else { "" }))
+        .collect();
+    let up = if here.trim_matches('/').is_empty() { String::new() } else { "<li><a href=\"../\">..</a></li>".to_string() };
+    let html = format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">\
+         <meta name=\"color-scheme\" content=\"dark light\"><title>{t}</title>\
+         <style>body{{font-family:system-ui,sans-serif;max-width:48em;margin:6vh auto;padding:0 16px;line-height:1.7}}li{{list-style:none}}</style>\
+         </head><body><h1 style=\"font-size:1.3em\">{t}<span style=\"opacity:.6\">{h}</span></h1><ul style=\"padding:0\">{up}{rows}</ul></body></html>",
+        t = esc(&title), h = esc(if here == "/" { "" } else { here }),
+    );
+    let mut r = (StatusCode::OK, Html(html)).into_response();
+    r.headers_mut().insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(HTML_SANDBOX));
+    r
+}
+
+/// Any HTML a public link serves runs in an opaque origin.
+fn sandbox_html(mut r: Response) -> Response {
+    let html = r.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|ct| ct.starts_with("text/html"));
+    if html {
+        r.headers_mut().insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(HTML_SANDBOX));
+    }
+    r
+}
+
+/// Anyone with the link: no amux sign-in. Apps are relayed from loopback,
 /// never redirected to the raw port (a cloud box's firewall closes those).
 pub(crate) async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Response {
     let Some((id, tail)) = parse_pub(&uri) else { return not_found() };
@@ -299,12 +458,50 @@ pub(crate) async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Bo
         tracing::info!(measured = true, n_considered = 1, verdict = "public_link_unknown", "public link not found");
         return not_found();
     };
-    if refused_port(link.port).is_some() {
+    if !link.is_public() {
         return not_found();
     }
     if uri.path() == format!("/pub/{id}") {
         // Without the slash the app's relative URLs would resolve under /pub/.
         return axum::response::Redirect::permanent(&format!("/pub/{id}/{}", uri.query().map(|q| format!("?{q}")).unwrap_or_default())).into_response();
+    }
+    if link.kind == "file" {
+        if method != Method::GET && method != Method::HEAD {
+            return not_found();
+        }
+        let Some(root) = Path::new(&link.path).canonicalize().ok().filter(|r| file_refused(r).is_none()) else {
+            tracing::warn!(measured = true, n_considered = 1, verdict = "public_link_file_gone",
+                "public file link opened while its file is gone or no longer allowed");
+            return not_found();
+        };
+        let Some(target) = resolve_shared(&root, &tail) else { return not_found() };
+        if target.is_dir() {
+            if !tail.split('?').next().unwrap_or("").ends_with('/') {
+                return axum::response::Redirect::permanent(&format!("{}/", uri.path())).into_response();
+            }
+            let index = target.join("index.html");
+            if index.is_file() {
+                return sandbox_html(crate::api::file_viewer::serve_file(&index, &headers).await);
+            }
+            return folder_listing(&link, &target, &tail);
+        }
+        return sandbox_html(crate::api::file_viewer::serve_file(&target, &headers).await);
+    }
+    if refused_port(link.port).is_some() {
+        return not_found();
+    }
+    // The sandbox makes the app's origin opaque, so its own fetches to
+    // /pub/<id>/... are cross-origin with `Origin: null`. Answer those, and
+    // their preflight, so a sandboxed app still works. Never with credentials.
+    let from_sandbox = headers.get(header::ORIGIN).is_some_and(|o| o == "null");
+    if from_sandbox && method == Method::OPTIONS {
+        let mut r = StatusCode::NO_CONTENT.into_response();
+        let h = r.headers_mut();
+        h.insert("access-control-allow-origin", HeaderValue::from_static("null"));
+        h.insert("access-control-allow-methods", HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE, OPTIONS"));
+        h.insert("access-control-allow-headers", HeaderValue::from_static("*"));
+        h.insert("access-control-max-age", HeaderValue::from_static("600"));
+        return r;
     }
     let Some(local) = port_proxy::local_listener(link.port).await else {
         tracing::warn!(port = link.port, measured = true, n_considered = 1, verdict = "public_link_nothing_listening",
@@ -312,7 +509,11 @@ pub(crate) async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Bo
         return port_proxy::page(StatusCode::BAD_GATEWAY, "This app is not running",
             "<p>The app behind this link is not running right now. Ask the person who shared it.</p>");
     };
-    port_proxy::relay(local, link.port, &format!("/pub/{id}"), &tail, method, &headers, body).await
+    let mut r = sandbox_html(port_proxy::relay(local, link.port, &format!("/pub/{id}"), &tail, method, &headers, body).await);
+    if from_sandbox {
+        r.headers_mut().insert("access-control-allow-origin", HeaderValue::from_static("null"));
+    }
+    r
 }
 
 #[cfg(test)]
@@ -330,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_link_never_reaches_amux_itself() {
+    fn a_link_never_reaches_amux_itself() {
         assert!(refused_port(crate::config::canonical_port()).is_some());
         assert!(refused_port(8824).is_some() && refused_port(8823).is_some());
         assert!(refused_port(8890).is_some());
@@ -344,6 +545,41 @@ mod tests {
         assert_eq!(parse_pub(&u), Some(("abc".into(), "/x/y.js?v=1".into())));
         let u: Uri = "/pub/abc".parse().unwrap();
         assert_eq!(parse_pub(&u), Some(("abc".into(), "/".into())));
+    }
+
+    #[test]
+    fn a_shared_folder_serves_only_what_is_inside_it_and_visible() {
+        // Under HOME with a visible name: the OS temp dir is ".tmpXXXX" (hidden)
+        // and may sit under a system prefix the file guard refuses.
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        let base = tempfile::Builder::new().prefix("pubtest-").tempdir_in(&home).unwrap();
+        let root = base.path().canonicalize().unwrap().join("share");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        std::fs::write(root.join("sub/b b.txt"), "b").unwrap();
+        std::fs::write(root.join(".env"), "secret").unwrap();
+        std::fs::write(base.path().join("outside.txt"), "x").unwrap();
+        assert_eq!(resolve_shared(&root, "/a.txt"), Some(root.join("a.txt")));
+        assert_eq!(resolve_shared(&root, "/sub/b%20b.txt"), Some(root.join("sub/b b.txt")));
+        assert_eq!(resolve_shared(&root, "/"), Some(root.clone()));
+        for bad in ["/../outside.txt", "/sub/../../outside.txt", "/%2e%2e/outside.txt", "/.env", "/nope"] {
+            assert_eq!(resolve_shared(&root, bad), None, "{bad}");
+        }
+        // A shared FILE serves itself and nothing beside it.
+        let f = root.join("a.txt");
+        assert_eq!(resolve_shared(&f, "/"), Some(f.clone()));
+        assert_eq!(resolve_shared(&f, "/sub/b%20b.txt"), None);
+    }
+
+    #[test]
+    fn hidden_and_amux_paths_are_never_published() {
+        assert!(file_refused(Path::new("/home/x/.ssh/id_ed25519")).is_some());
+        assert!(file_refused(Path::new("/home/x/proj/.git/config")).is_some());
+        assert!(file_refused(Path::new("relative/path")).is_some());
+        let amux = crate::config::amux_home();
+        if let Ok(h) = amux.canonicalize() {
+            assert!(file_refused(&h.join("server.env")).is_some());
+        }
     }
 
     #[test]

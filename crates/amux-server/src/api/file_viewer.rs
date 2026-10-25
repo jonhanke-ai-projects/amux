@@ -1120,6 +1120,23 @@ async fn raw_path(req: Request) -> Response {
     resp
 }
 
+/// GET one file exactly as `/api/file/raw` does (MIME, ETag, Range, inline or
+/// download), for a caller that has already decided the path may be served
+/// (public file links, static_files/public_links.rs).
+pub(crate) async fn serve_file(path: &Path, headers: &axum::http::HeaderMap) -> Response {
+    let uri = format!("/api/file/raw?path={}", pct_encode_query(&path.to_string_lossy()));
+    let mut b = Request::builder().method(Method::GET).uri(uri);
+    for k in ["range", "if-none-match", "if-range"] {
+        if let Some(v) = headers.get(k) {
+            b = b.header(k, v);
+        }
+    }
+    match b.body(Body::empty()) {
+        Ok(req) => raw(req).await,
+        Err(_) => (StatusCode::BAD_REQUEST, "bad path").into_response(),
+    }
+}
+
 async fn raw(req: Request) -> Response {
     if req.method() != Method::GET {
         return not_found().await;
