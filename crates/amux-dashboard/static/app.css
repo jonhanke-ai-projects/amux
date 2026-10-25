@@ -2649,9 +2649,11 @@
   .peek-prompt-human    { border-left-color: #58a6ff; background: rgba(88,166,255,0.09); }
   /* Messages delivered mid-turn that the terminal never echoed (_peekUnechoedHtml). */
   .peek-unechoed { margin: 6px 0; white-space: normal; font-family: inherit; }
-  .peek-unechoed-row { display: flex; align-items: baseline; gap: 8px; margin: 2px 0; }
-  .peek-unechoed-row .peek-prompt { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; word-break: break-word; }
-  .peek-unechoed-time { flex: 0 0 auto; font-size: 0.7rem; color: var(--dim); }
+  /* The time goes under the message: beside it, it took a fixed width and
+     squeezed the message into a narrow column on a phone (Ethan, 2026-10-25). */
+  .peek-unechoed-row { display: flex; flex-direction: column; margin: 2px 0; }
+  .peek-unechoed-row .peek-prompt { min-width: 0; white-space: pre-wrap; word-break: break-word; }
+  .peek-unechoed-time { align-self: flex-end; font-size: 0.7rem; color: var(--dim); }
   .peek-prompt-chat     { border-left-color: #db61a2; background: rgba(219,97,162,0.08); }
   .peek-prompt-session  { border-left-color: #a78bfa; background: rgba(137,87,229,0.10); }
   .peek-prompt-schedule { border-left-color: #3fb950; background: rgba(63,185,80,0.08); }

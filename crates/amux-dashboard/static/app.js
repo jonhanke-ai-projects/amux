@@ -19302,7 +19302,27 @@ let _peekKindHintsFor = '';
 // claimed. They are drawn as ❯ prompts above the input box, so search, message
 // navigation and the kind colours treat them like any prompt.
 const _PEEK_UNECHOED_GRACE_MS = 8000;   // a prompt sent at idle takes a moment to draw
+// A FINISHED TURN TOOK ITS MESSAGES WITH IT (Ethan, 2026-10-25, "this is still
+// stuck"): tubescience-parity's 6:21 PM message stayed above the input box
+// under a turn that printed "done 7:33 PM". Its later turns began from input
+// the ledger does not hold as this worker's prompt, so the newest printed
+// prompt stayed at 6:21 and kept claiming the message for the running turn.
+// Claude Code prints "✻ <verb> for <time> · done 7:33 PM" when a turn ends; a
+// message sent before the newest such minute went to a turn that is over.
+function _peekLastTurnDoneMs(text, now) {
+  let last = null;
+  for (const m of String(text || '').matchAll(/✻ [^\n]*? for [^\n]*?· done (\d{1,2}):(\d{2}) ?([AP]M)/g)) last = m;
+  if (!last) return 0;
+  let h = Number(last[1]) % 12;
+  if (last[3] === 'PM') h += 12;
+  const d = new Date(now);
+  d.setHours(h, Number(last[2]), 0, 0);
+  // A time later than now was printed yesterday.
+  if (d.getTime() > now + 60000) d.setDate(d.getDate() - 1);
+  return d.getTime();
+}
 let _peekUnechoedReported = '';
+let _peekUnechoedEndedReported = '';
 function _peekUnechoedHtml(output, historyRaw) {
   if (!peekSession) return '';
   const canon = t => String(t || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '');
@@ -19348,7 +19368,18 @@ function _peekUnechoedHtml(output, historyRaw) {
   let anchor = -1;
   for (let i = recent.length - 1; i >= 0; i--) if (recent[i].shown) { anchor = i; break; }
   if (anchor < 0) return '';
-  const out = recent.slice(anchor + 1).filter(r => !r.shown && now - r.ts >= _PEEK_UNECHOED_GRACE_MS).slice(-5);
+  const doneMs = _peekLastTurnDoneMs(_stripAnsi((historyRaw || '') + '\n' + (output || '')), now);
+  const unprinted = recent.slice(anchor + 1).filter(r => !r.shown && now - r.ts >= _PEEK_UNECHOED_GRACE_MS);
+  const out = unprinted.filter(r => r.ts >= doneMs).slice(-5);
+  const ended = unprinted.length - unprinted.filter(r => r.ts >= doneMs).length;
+  if (ended) {
+    const endedTag = peekSession + ':ended:' + doneMs;
+    if (_peekUnechoedEndedReported !== endedTag) {
+      _peekUnechoedEndedReported = endedTag;
+      try { window._clientDebug && window._clientDebug('peek-unechoed-messages', { session: peekSession, hidden: ended,
+        verdict: 'taken_message_turn_ended', measured: true, n_considered: unprinted.length }); } catch (_) {}
+    }
+  }
   if (!out.length) return '';
   const tag = peekSession + ':' + out.map(r => r.ts).join(',');
   if (_peekUnechoedReported !== tag) {
