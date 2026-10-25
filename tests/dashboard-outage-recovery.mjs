@@ -49,7 +49,7 @@ function fixture(names = [], shared = {}) {
   const ctx = vm.createContext(sandbox);
   // Load production dependencies too: replay must execute, not fail on a stale fixture.
   for (const name of ['_DELIVERY_STEAL_MS', '_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_syncPhase']) vm.runInContext(declaration(name), ctx);
-  for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxViewsRefresh', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
+  for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_lockRequest', '_outboxLock', '_mutateQueue', '_outboxViewsRefresh', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -936,4 +936,51 @@ test('identity arriving after settings opened refreshes billing without another 
     _loadCloudPlan(){calls.push('plan')},loadBillingSection(){calls.push('billing')}});
   vm.runInContext(code('_initIdentity'),ctx);await ctx._initIdentity();
   assert.deepEqual(calls,['plan','billing']);assert.equal(ctx._cloudEmail,'owner@example.test');
+});
+
+// A lock stub with Web Locks' steal: a {steal:true} request is granted at once,
+// and the request it took the lock from rejects with an AbortError while that
+// holder's callback keeps running. That rejection is WebKit's "lock was stolen
+// by another request" (Ethan, 2026-10-25).
+function stealingLocks() {
+  const holders = new Map();
+  return {request(name, options, work) {
+    if (typeof options === 'function') { work = options; options = {}; }
+    return new Promise((resolve, reject) => {
+      const grant = () => {
+        const prev = holders.get(name);
+        holders.set(name, {reject});
+        Promise.resolve().then(() => work({name})).then(resolve, reject)
+          .finally(() => { if (holders.get(name)?.reject === reject) holders.delete(name); });
+        return prev;
+      };
+      if (options.steal) {
+        const prev = grant();
+        if (prev) { const e = new Error('Lock was stolen by another request'); e.name = 'AbortError'; prev.reject(e); }
+      } else if (!holders.has(name)) grant();
+      else reject(Object.assign(new Error('busy'), {name: 'TimeoutError'}));
+    });
+  }};
+}
+
+test('a lock stolen from a holder that already ran resolves with its own work, once, and says so', async () => {
+  const locks = stealingLocks();
+  const {ctx} = fixture([], {locks});
+  const beacons = [];
+  ctx.fetch = async (url, init) => { if (String(url).includes('client-debug')) beacons.push(JSON.parse(init.body)); return new Response('{}'); };
+  let release; let runs = 0;
+  const slow = () => { runs++; return new Promise(r => { release = r; }); };
+  const holder = ctx._lockRequest('amux-outbox-delivery:m1', {}, slow);
+  await new Promise(setImmediate);
+  const stealer = ctx._lockRequest('amux-outbox-delivery:m1', {steal: true}, async () => 'stealer-done');
+  assert.equal(await stealer, 'stealer-done');
+  release('holder-done');
+  assert.equal(await holder, 'holder-done', 'the stolen holder resolves with its own result, not "lock was stolen"');
+  assert.equal(runs, 1, 'the holder\'s work is not run a second time');
+  assert.ok(beacons.some(b => b.verdict === 'outbox_lock_stolen_while_held' && b.lock === 'amux-outbox-delivery'), JSON.stringify(beacons));
+  // A request that never got the lock still rejects: only a granted one is resolved.
+  const waiting = ctx._lockRequest('amux-outbox-delivery:m2', {}, () => new Promise(() => {}));
+  await new Promise(setImmediate);
+  await assert.rejects(ctx._lockRequest('amux-outbox-delivery:m2', {}, async () => 1), e => e.name === 'TimeoutError');
+  void waiting;
 });

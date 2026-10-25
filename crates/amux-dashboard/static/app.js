@@ -1197,9 +1197,27 @@ function _readQueue() {
   if (!Array.isArray(value)) throw new Error('Pending changes need recovery: invalid queue');
   return value;
 }
+// A HOLDER WHOSE LOCK IS STOLEN IS NOT A FAILURE (Ethan, 2026-10-25: "keep
+// getting 'lock was stolen by another request'"). The outbox steals a lock from
+// a frozen holder (a background Mac app tab) on purpose, 161 times by then. The
+// holder's work keeps running, but WebKit rejects its lock request with that
+// AbortError, and the rejection surfaced: as "Sync failed: ..." from a replay
+// pass, and in the delivery lock it ran the message's delivery a second time,
+// whose own lock could be stolen in turn. A request granted and then stolen
+// now resolves with its own work's result; only a request that never ran
+// still rejects. Beaconed as verdict=outbox_lock_stolen_while_held.
+function _lockRequest(name, opts, work) {
+  let ran = null;
+  const held = lock => (ran = Promise.resolve().then(() => work(lock)));
+  return navigator.locks.request(name, opts || {}, held).catch(e => {
+    if (!ran || !e || e.name !== 'AbortError') throw e;
+    _outboxDiagnostic('outbox_lock_stolen_while_held', {lock:name.split(':')[0]});
+    return ran;
+  });
+}
 function _outboxLock(name, work) {
   if (!navigator.locks) return Promise.reject(new Error('Safe pending-change storage is unavailable in this browser; keep your draft and use a secure connection'));
-  return navigator.locks.request(name, work);
+  return _lockRequest(name, {}, work);
 }
 // A message's delivery lock, taken over from a holder that has stopped.
 // Every window of the Mac app shares one website data store and so one set of
@@ -1216,12 +1234,15 @@ const _DELIVERY_STEAL_MS = 30000;
 function _outboxDeliveryLock(name, work) {
   if (!navigator.locks) return _outboxLock(name, work);
   const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
-  if (!signal) return navigator.locks.request(name, work);
-  return navigator.locks.request(name, {signal}, work).catch(e => {
+  if (!signal) return _lockRequest(name, {}, work);
+  // _lockRequest resolves a granted-then-stolen request with its own result, so
+  // an error reaching this catch is always a wait that timed out before the
+  // work started: the work never runs twice.
+  return _lockRequest(name, {signal}, work).catch(e => {
     if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
-    if (document.hidden) return navigator.locks.request(name, work);
+    if (document.hidden) return _lockRequest(name, {}, work);
     _outboxDiagnostic('outbox_delivery_lock_stolen', {waited_ms:_DELIVERY_STEAL_MS, lock:name.split(':')[0]});
-    return navigator.locks.request(name, {steal:true}, work);
+    return _lockRequest(name, {steal:true}, work);
   });
 }
 // User intent has priority over reproducible offline caches. Safari's measured
@@ -4035,9 +4056,10 @@ function _syncLockRequest(run) {
   let granted = false;
   const held = () => { granted = true; return run(); };
   const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(waitMs) : undefined;
-  return navigator.locks.request('amux-outbox-replay', signal ? {signal} : {}, held).catch(async e => {
+  return _lockRequest('amux-outbox-replay', signal ? {signal} : {}, held).catch(async e => {
     if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
-    // Our own lock was stolen by a shown tab after we started: the pass ran.
+    // A stolen-after-grant request resolves in _lockRequest with the pass's own
+    // result; this guard only keeps a late timeout from running it twice.
     if (granted) return undefined;
     let nHeld = -1, pending = -1;
     try { const q = await navigator.locks.query(); nHeld = (q.held || []).filter(l => l.name === 'amux-outbox-replay').length; pending = (q.pending || []).filter(l => l.name === 'amux-outbox-replay').length; } catch (_) {}
@@ -4050,7 +4072,7 @@ function _syncLockRequest(run) {
     // A shown window takes the lock over, so the frozen holder stops blocking
     // every later pass too.
     _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:0, action:'stole'});
-    return navigator.locks.request('amux-outbox-replay', {steal:true}, held);
+    return _lockRequest('amux-outbox-replay', {steal:true}, held);
   });
 }
 function runSyncBanner(quiet = false) {

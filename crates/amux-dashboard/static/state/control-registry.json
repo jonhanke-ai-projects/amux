@@ -2376,6 +2376,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_lockRequest": {
+      "kind": "command._lockRequest",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mapBulk": {
       "kind": "command._mapBulk",
       "feedback_required": true,
@@ -3044,6 +3050,12 @@
     },
     "_outboxFetch": {
       "kind": "command._outboxFetch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outboxLock": {
+      "kind": "command._outboxLock",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
