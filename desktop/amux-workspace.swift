@@ -224,6 +224,18 @@ extension DashboardWindowController {
 
 // ── Restore ──
 extension AppDelegate {
+    /// After a page finishes loading, start the next restored tab that is waiting,
+    /// so tabs behind others load one at a time instead of all at launch. A
+    /// fallback timer keeps the queue moving if a page never finishes.
+    func loadNextDeferred(after c: DashboardWindowController?) {
+        guard let next = controllers.first(where: { $0.deferredURL != nil }) else { return }
+        deferredTimer?.invalidate()
+        deferredTimer = Timer.scheduledTimer(withTimeInterval: envSeconds("AMUX_DESKTOP_DEFER_STEP_S", 4), repeats: false) { [weak self] _ in
+            self?.loadNextDeferred(after: nil)
+        }
+        next.loadDeferred(c == nil ? "timer" : "queue")
+    }
+
     /// Opens saved windows where they were: display, frame, Desktop, tabs,
     /// minimized and full screen. Windows already showing the same page are
     /// reused rather than opened again, so switching workspaces keeps their
@@ -253,6 +265,13 @@ extension AppDelegate {
                     if let f = frame { w.setFrame(f, display: false) }
                     w.orderFront(nil)
                 }
+            } else if s.tabGroup != nil, s.selected != true, s.grid == nil, let u = URL(string: s.url),
+                      ProcessInfo.processInfo.environment["AMUX_DESKTOP_DEFER_TABS"] != "0" {
+                // A tab behind another: it loads after the shown ones (loadNextDeferred).
+                c = openWindow(url: nil, frame: frame, activate: false, load: false)
+                c.deferredURL = u
+                c.lastServerURL = u
+                if let t = s.title, !t.isEmpty { c.pageLabel = t; c.updateTitle() }
             } else {
                 c = openWindow(url: URL(string: s.url), frame: frame, activate: false)
                 if let t = s.title, !t.isEmpty { c.pageLabel = t; c.updateTitle() }
@@ -307,6 +326,12 @@ extension AppDelegate {
         // came back showing Workers where Calendar had been).
         if let front = placed.reversed().first(where: { $0.0.window?.isOnActiveSpace == true && $0.1.minimized != true && $0.1.selected != false })?.0 {
             front.window?.makeKeyAndOrderFront(nil)
+        }
+        if controllers.contains(where: { $0.deferredURL != nil }) {
+            // The queue also starts on its own if no shown page ever finishes.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                if self?.deferredTimer == nil { self?.loadNextDeferred(after: nil) }
+            }
         }
         NSLog("amux-desktop: verdict=windows_restored n_considered=%d desktops_moved=%d desktops_current=%d desktops_unavailable=%d spaces_readable=%d spaces_movable=%d displays=%d",
               saved.count, moved, stayed, missing, Spaces.canRead ? 1 : 0, Spaces.canMove ? 1 : 0, NSScreen.screens.count)
@@ -902,6 +927,13 @@ extension AppDelegate {
                     dlog("verdict=test_settings_click id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
                 }
             }
+        // Show the tab whose page is on #<view> (perf-bench.py times the switch).
+        case "/select-view":
+            let want = "#" + (q.first { $0.name == "view" }?.value ?? "")
+            if let c = controllers.first(where: { $0.viewHash == want || $0.webView.url?.fragment.map { "#" + $0 } == want }), let w = c.window {
+                w.tabGroup?.selectedWindow = w
+                w.orderFrontRegardless()
+            }
         case "/state":
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
@@ -931,6 +963,13 @@ extension AppDelegate {
                                      "visible_frame": NSStringFromRect(arrangeTarget?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero),
                                      "screen_frame": NSStringFromRect(arrangeTarget?.screen?.frame ?? NSScreen.main?.frame ?? .zero),
                                      "windows": ws,
+                                     // Every page, shown or not: its web process and what it costs.
+                                     "pages": controllers.map { c -> [String: Any] in
+                                         let pid = webPID(c)
+                                         return ["view": c.viewHash, "shown": isShown(c), "pid": pid ?? 0,
+                                                 "mb": pid.flatMap { footprintMB($0) } ?? -1, "cpu_s": pid.flatMap { cpuSeconds($0) } ?? -1]
+                                     },
+                                     "app_mb": footprintMB(getpid()) ?? -1, "app_cpu_s": cpuSeconds(getpid()) ?? -1,
                                      "update": ["state": "\(Updater.shared.state)", "detail": Updater.shared.detail,
                                                 "commit": Updater.shared.commit, "latest": Updater.shared.latest]]
             if let path = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST_STATE"],

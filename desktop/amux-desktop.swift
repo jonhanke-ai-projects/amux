@@ -300,8 +300,24 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     var pageLabel = ""
     // What the page shows, posted by windowLabelJS; saved with the window.
     var viewHash = ""
+    /// When this page was last on screen (the memory guard reloads only pages
+    /// that have been out of sight a while).
+    var lastShown = Date()
+    var lastMemoryReload = Date.distantPast
     // The last amux page this window showed, kept while it shows the connect page.
     var lastServerURL: URL?
+    /// A restored tab that is not showing waits to load (launch speed, 2026-10-25):
+    /// the shown tabs load first, then these one at a time, or at once when picked.
+    var deferredURL: URL?
+
+    func loadDeferred(_ why: String) {
+        guard let u = deferredURL else { return }
+        deferredURL = nil
+        dlog("verdict=deferred_tab_loaded why=\(why) url=\(u.fragment ?? "")")
+        load(u)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) { loadDeferred("selected") }
     // Where you last put it (amux-workspace.swift).
     var home: SavedWindow?
     var lastSpace: Spaces.Info?
@@ -470,6 +486,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let u = webView.url, app?.isServerURL(u) == true { lastServerURL = u }
+        app?.loadNextDeferred(after: self)
     }
 
     // The tab bar's "+" button and File > New Tab.
@@ -753,6 +770,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         needsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.pollNeedsInput() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in self?.reportResources() }
         resourcesTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.reportResources() }
+        memoryGuardTimer = Timer.scheduledTimer(withTimeInterval: envSeconds("AMUX_DESKTOP_MEM_TICK_S", 60), repeats: true) { [weak self] _ in self?.guardTabMemory() }
         NSApp.activate(ignoringOtherApps: true)
         // `amux amux://worker/x` on the command line, once the pins are known.
         let links = CommandLine.arguments.dropFirst().compactMap { URL(string: $0) }.filter { $0.scheme == "amux" }
@@ -763,12 +781,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     // ── Windows ──
     @discardableResult
-    func openWindow(url: URL?, frame: NSRect?, configuration: WKWebViewConfiguration? = nil, activate: Bool = true) -> DashboardWindowController {
+    func openWindow(url: URL?, frame: NSRect?, configuration: WKWebViewConfiguration? = nil, activate: Bool = true, load: Bool = true) -> DashboardWindowController {
         let c = DashboardWindowController(app: self, frame: frame ?? cascadeFrame(), configuration: configuration)
         controllers.append(c)
         // Every new window or tab says so, so a tab nobody asked for is traceable.
-        dlog("verdict=window_opened url=\(url?.absoluteString ?? (configuration != nil ? "page-window.open" : "server")) windows=\(controllers.count)")
-        if let url = url { c.load(url) } else if configuration == nil {
+        dlog("verdict=window_opened url=\(url?.absoluteString ?? (configuration != nil ? "page-window.open" : load ? "server" : "deferred")) windows=\(controllers.count)")
+        if !load {
+        } else if let url = url { c.load(url) } else if configuration == nil {
             if let s = serverURL { c.load(s) } else { c.showConnectPage() }
         }
         if activate {
@@ -981,6 +1000,50 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // through a dashboard page (the page's beacon path needs no token). A
     // verdict of memory_pressure says the tabs are pushing this Mac into swap.
     var resourcesTimer: Timer?
+    var memoryGuardTimer: Timer?
+    var deferredTimer: Timer?
+
+    func envSeconds(_ key: String, _ fallback: Double) -> Double {
+        ProcessInfo.processInfo.environment[key].flatMap(Double.init) ?? fallback
+    }
+
+    /// On screen: the selected tab of a visible window, or a pane of one.
+    func isShown(_ c: DashboardWindowController) -> Bool {
+        let host = c.paneHost?.window ?? c.window
+        return (host?.isVisible ?? false) && (host?.tabGroup?.selectedWindow ?? host) === host
+            && (c.paneHost == nil || c.webView.window != nil)
+    }
+
+    // ── Memory guard (Ethan, 2026-10-25: "reduce footprint ... with zero
+    // degradation of capability") ──
+    // A page normally settles at 150-500 MB, but the desktop-resources reports
+    // show single tabs at 1.8, 3.2 and 6.3 GB. A page that has been out of
+    // sight for a while and is over the limit is reloaded on the same URL: its
+    // view, worker and tab come back from the URL, drafts from local storage,
+    // and the shown page is never touched. Each reload is logged and reported.
+    func guardTabMemory() {
+        let limit = Int(envSeconds("AMUX_DESKTOP_TAB_MB_LIMIT", 1536))
+        let grace = envSeconds("AMUX_DESKTOP_TAB_HIDDEN_S", 120)
+        let now = Date()
+        for c in controllers {
+            if isShown(c) { c.lastShown = now; continue }
+            let hidden = now.timeIntervalSince(c.lastShown)
+            // At most one reload per page per cooldown: a page that grows straight
+            // back is a leak to find (its view is in the log), not one to churn.
+            guard hidden >= grace, now.timeIntervalSince(c.lastMemoryReload) >= envSeconds("AMUX_DESKTOP_TAB_RELOAD_COOLDOWN_S", 600),
+                  let pid = webPID(c), let mb = footprintMB(pid), mb > limit,
+                  let url = c.webView.url, isServerURL(url) else { continue }
+            c.lastMemoryReload = now
+            dlog("verdict=tab_reloaded_for_memory mb=\(mb) limit=\(limit) hidden_s=\(Int(hidden)) view=\(c.viewHash)")
+            let payload: [String: Any] = ["kind": "desktop-tab-reloaded", "verdict": "tab_reloaded_for_memory", "measured": true,
+                                          "n_considered": 1, "mb": mb, "limit_mb": limit, "hidden_s": Int(hidden), "view": c.viewHash]
+            if let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8),
+               let r = controllers.first(where: { $0 !== c && ($0.webView.url.map(isServerURL) ?? false) }) {
+                r.webView.evaluateJavaScript("fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))}).catch(()=>{}); 0", completionHandler: nil)
+            }
+            c.webView.load(URLRequest(url: url))
+        }
+    }
 
     func footprintMB(_ pid: pid_t) -> Int? {
         var info = rusage_info_v2()
@@ -990,6 +1053,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         return r == 0 ? Int(info.ri_phys_footprint / 1_048_576) : nil
     }
 
+    /// CPU seconds a process has used. proc_pid_rusage counts in mach time units,
+    /// which are not nanoseconds on Apple silicon.
+    func cpuSeconds(_ pid: pid_t) -> Double? {
+        var info = rusage_info_v2()
+        let r = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V2, $0) }
+        }
+        guard r == 0 else { return nil }
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        let ticks = Double(info.ri_user_time + info.ri_system_time)
+        return ticks * Double(tb.numer) / Double(tb.denom) / 1e9
+    }
+
+    /// One page's web process, when WebKit exposes it.
+    func webPID(_ c: DashboardWindowController) -> pid_t? {
+        let key = NSSelectorFromString("_webProcessIdentifier")
+        guard c.webView.responds(to: key), let pid = (c.webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0 else { return nil }
+        return pid
+    }
+
     func reportResources() {
         let pidKey = NSSelectorFromString("_webProcessIdentifier")
         var seen = Set<pid_t>(), tabs: [[String: Any]] = [], total = 0, shown = 0
@@ -997,7 +1081,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             let w = c.window
             let visible = (w?.isVisible ?? false) && (w?.occlusionState.contains(.visible) ?? false)
             if visible { shown += 1 }
-            var row: [String: Any] = ["shown": visible ? 1 : 0]
+            var row: [String: Any] = ["shown": visible ? 1 : 0, "view": c.viewHash]
             if c.webView.responds(to: pidKey), let pid = (c.webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0 {
                 if let mb = footprintMB(pid) {
                     row["mb"] = mb
@@ -1017,6 +1101,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             "why_unmeasured": measured ? "" : "no tab exposed its web process",
             "tabs": tabs.count, "shown": shown, "web_processes": seen.count, "web_mb_total": total,
             "tab_mb": tabs.compactMap { $0["mb"] as? Int }, "ram_mb": ramMB, "swap_used_mb": swapMB,
+            // Which page each figure is, so a 6 GB tab names its view (2026-10-25).
+            "tab_views": tabs.filter { $0["mb"] != nil }.map { ($0["view"] as? String) ?? "" },
             "pressure_level": pressure, "app_mb": footprintMB(getpid()) ?? -1,
             "verdict": pressure >= 2 ? "memory_pressure" : (measured ? "ok" : "unmeasured"),
         ]
