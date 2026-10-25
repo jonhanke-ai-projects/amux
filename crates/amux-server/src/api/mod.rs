@@ -90,6 +90,7 @@ pub mod needs_input_auto;
 pub mod memories;
 pub mod messages;
 pub(crate) mod native_status;
+pub(crate) mod cross_site;
 pub mod metrics;
 pub mod traces;
 pub mod observability;
@@ -731,6 +732,10 @@ pub fn router_with_connector_transport(
     // Synthesizes ONLY into an empty body: a handler that returned its own 405
     // with prose knows more than this layer does and must not be overwritten.
     let app = app.layer(axum::middleware::from_fn(explain_method_not_allowed));
+    // A browser acting for another site may not change anything (cross_site.rs):
+    // on amux Cloud every server is under amux.io, so the door cookie alone
+    // would let one customer's page act on another's server.
+    let app = app.layer(axum::middleware::from_fn(cross_site::guard));
     // A chat delegate may only read (AMUX-5432): refused before any handler.
     let app = app.layer(axum::middleware::from_fn(chat_delegate::delegate_read_only));
     let app = app.layer(axum::middleware::from_fn_with_state(
