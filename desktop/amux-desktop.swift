@@ -635,14 +635,22 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             decisionHandler(.cancel)
             return
         }
-        // Links off the amux server open in the default browser.
-        if navigationAction.navigationType == .linkActivated, !(app?.isServerURL(url) ?? true) {
-            NSWorkspace.shared.open(url)
-            decisionHandler(.cancel)
+        // A download first: a page saving a file (an <a download> on a blob: or
+        // data: URL, as the file viewer's Download does) is not a link to
+        // another site. Checked after the link rule, a blob: URL is not a server
+        // URL, so it went to macOS, which offered to find an app for
+        // "blob:https://..." (Ethan, 2026-10-26 screenshot).
+        if navigationAction.shouldPerformDownload {
+            dlog("verdict=download_started url_scheme=\(url.scheme ?? "-")")
+            decisionHandler(.download)
             return
         }
-        if navigationAction.shouldPerformDownload {
-            decisionHandler(.download)
+        // Links off the amux server open in the default browser. blob: and
+        // data: belong to this page, never to another app.
+        if navigationAction.navigationType == .linkActivated, !(app?.isServerURL(url) ?? true),
+           url.scheme != "blob", url.scheme != "data" {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
             return
         }
         decisionHandler(.allow)
@@ -681,7 +689,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     // ── WKDownloadDelegate: into ~/Downloads, never overwriting ──
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        // AMUX_DESKTOP_DOWNLOADS_DIR: where a test copy saves (download-e2e.py).
+        let dir = ProcessInfo.processInfo.environment["AMUX_DESKTOP_DOWNLOADS_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
         var dest = dir.appendingPathComponent(suggestedFilename)
         let base = dest.deletingPathExtension().lastPathComponent
         let ext = dest.pathExtension
@@ -694,7 +704,16 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     }
 
     func downloadDidFinish(_ download: WKDownload) {
+        dlog("verdict=download_finished")
         NSSound(named: "Glass")?.play()
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        dlog("verdict=download_failed error=\(error.localizedDescription)")
+        let a = NSAlert()
+        a.messageText = "The download did not finish"
+        a.informativeText = error.localizedDescription
+        a.runModal()
     }
 
     // ── WKUIDelegate ──
@@ -707,6 +726,13 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
                 dlog("verdict=page_opened_window url=\(url.absoluteString) from=\(webView.url?.absoluteString ?? "-")")
                 let c = app.openWindow(url: nil, frame: nil, configuration: configuration)
                 return c.webView
+            }
+            // A blob: or data: URL opened in a new window (target=_blank) is a
+            // file this page made: save it, rather than asking macOS for an app.
+            if url.scheme == "blob" || url.scheme == "data" {
+                dlog("verdict=download_started url_scheme=\(url.scheme ?? "-") via=new_window")
+                webView.startDownload(using: navigationAction.request) { $0.delegate = self }
+                return nil
             }
             NSWorkspace.shared.open(url)
         }

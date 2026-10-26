@@ -988,6 +988,13 @@ extension AppDelegate {
             // A tab still waiting to load has no view yet; its saved URL names it.
             controllers.first { $0.viewHash == want || $0.savedURL().flatMap { URL(string: $0)?.fragment }.map { "#" + $0 } == want }?
                 .rename(q.first { $0.name == "name" }?.value)
+        // Run a script in the shown tab's page (download-e2e.py starts a page
+        // download with it). Test mode only, like every hook here.
+        case "/js":
+            if let code = q.first(where: { $0.name == "code" })?.value,
+               let c = controllers.first(where: { isShown($0) }) ?? controllers.first {
+                c.webView.evaluateJavaScript(code) { _, err in if let err = err { dlog("verdict=test_js_failed error=\(err.localizedDescription)") } }
+            }
         // Show the tab whose page is on #<view> (perf-bench.py times the switch).
         case "/select-view":
             let want = "#" + (q.first { $0.name == "view" }?.value ?? "")
