@@ -2,6 +2,7 @@ import { test, expect } from './fixtures';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { cleanup } from './teardown';
 
 // Ethan, 2026-10-26: "when i close and re-open it doesnt open the file that
 // was open". Only folders were ever written to the address, and a deep-linked
@@ -35,7 +36,7 @@ test('an open file is in the address, so a reload opens it again; closing it ret
     await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
     expect(await decoded()).toBe('#path=' + dir);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));
   }
 });
 
@@ -52,6 +53,6 @@ test('a file opened over a worker leaves the worker link alone', async ({ page }
     await expect(page.locator('#file-overlay')).toHaveClass(/active/);
     expect(await page.evaluate(() => location.hash)).toBe('#peek=someone&tab=terminal');
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));
   }
 });
