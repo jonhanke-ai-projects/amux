@@ -672,8 +672,32 @@ def usage_headroom() -> dict:
             "window": top.get("kind") or top.get("group") or "", "resets_at": top.get("resets_at") or ""}
 
 
+def scoped_env_value(key: str) -> str | None:
+    """The worker's live scoped value for key, from $AMUX_HOME/sessions/<worker>.env.
+
+    The process env is fixed at launch, so a cap the owner raises in the Scope
+    tab used to apply only after a restart (2026-10-26: a doubled cap for three
+    lanes mid-incident read the old value). The env file is what the server
+    writes on every scope change, so it wins when it names the key.
+    """
+    if not WORKER:
+        return None
+    try:
+        with open(os.path.join(amux_home(), "sessions", WORKER + ".env")) as f:
+            for line in f:
+                k, sep, v = line.strip().partition("=")
+                if sep and k == key:
+                    return v.strip().strip('"').strip("'")
+    except OSError:
+        return None
+    return None
+
+
 def subagent_max(cfg: dict) -> int | None:
-    raw = os.environ.get(cfg.get("env_max") or "AMUX_MAX_SUBAGENTS")
+    key = cfg.get("env_max") or "AMUX_MAX_SUBAGENTS"
+    raw = scoped_env_value(key)
+    if raw is None:
+        raw = os.environ.get(key)
     try:
         n = int(raw) if raw not in (None, "") else int(cfg.get("max_running_default", 4))
     except ValueError:

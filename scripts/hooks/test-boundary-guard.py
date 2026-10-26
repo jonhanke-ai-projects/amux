@@ -268,6 +268,19 @@ def main() -> int:
             expect("subagents: AMUX_MAX_SUBAGENTS=2 lowers the cap", code == 2 and bool(refused(ev, "running_cap")), f"exit {code} {ev}")
             code, ev = run_payload(agent_call(tp), home, {"AMUX_MAX_SUBAGENTS": "0"})
             expect("subagents: AMUX_MAX_SUBAGENTS=0 turns the count cap off", code == 0 and not refused(ev, "running_cap"), f"exit {code} {ev}")
+            # A scope change writes sessions/<worker>.env; the guard reads it live,
+            # and it wins over the launch-time process env.
+            sess_dir = os.path.join(home, "sessions"); os.makedirs(sess_dir, exist_ok=True)
+            env_file = os.path.join(sess_dir, "boundary-test.env")
+            with open(env_file, "w") as f:
+                f.write('# updated: test\nAMUX_MAX_SUBAGENTS="6"\n')
+            code, ev = run_payload(agent_call(tp), home)
+            expect("subagents: a scoped AMUX_MAX_SUBAGENTS in sessions/<worker>.env applies without a restart", code == 0, f"exit {code} {ev}")
+            with open(env_file, "w") as f:
+                f.write("AMUX_MAX_SUBAGENTS=2\n")
+            code, ev = run_payload(agent_call(tp), home, {"AMUX_MAX_SUBAGENTS": "6"})
+            expect("subagents: the scoped value wins over the launch env", code == 2 and bool(refused(ev, "running_cap")), f"exit {code} {ev}")
+            os.unlink(env_file)
             code, ev = run_payload(agent_call(None), home)
             un = [e for e in ev if e.get("verdict") == "subagent_cap_allowed_unmeasured"]
             expect("subagents: an unmeasured count (no transcript_path) is allowed and logged measured=false",
