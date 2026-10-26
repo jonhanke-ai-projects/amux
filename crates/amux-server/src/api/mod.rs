@@ -11,6 +11,7 @@ pub mod auth;
 pub mod board;
 pub mod boundaries;
 pub mod contract;
+pub mod deep_links;
 pub mod scratchpad;
 pub mod prompt_block;
 pub mod land_queue;
@@ -596,6 +597,8 @@ pub fn router_with_connector_transport(
             "/api/page-links/{id}/open",
             axum::routing::post(static_files::apps_origin::open),
         )
+        // The address copied links are built on (deep_links.rs).
+        .merge(deep_links::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             policy::enforce,
@@ -698,6 +701,9 @@ pub fn router_with_connector_transport(
         // a revocable member cookie; the outer identity layer below resolves
         // it before auth and request logging.
         .merge(org::public_routes())
+        // Copied file links (/f/<path>) and the file that lets the iOS app
+        // claim them; neither reveals anything (deep_links.rs).
+        .merge(deep_links::public_routes())
         // The ChatGPT app (AMUX-5396): /mcp and its OAuth server. Outside
         // require_bearer on purpose; each route authenticates for itself and
         // the loopback bypass earns nothing here (chatgpt_app.rs, trust rule).

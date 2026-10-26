@@ -8475,6 +8475,9 @@ function _workerActionDefinitions(s) {
       run: "showToast('Worker messages stay within a shared group.')" } : null,
     { key: 'directory', icon: '&#x1F4C1;', label: 'Change directory',
       run: "editField('" + name + "','dir','" + escJs(s.dir || '') + "')" },
+    { key: 'copy-worker-link', icon: '&#x1F517;', label: 'Copy worker link',
+      title: 'A link that opens this worker: in the browser, or in the amux app on a phone or Mac.',
+      run: "closeAllMenus();_copyWorkerDeeplink('" + escJs(name) + "')" },
     s.dir ? { key: 'copy-directory-link', icon: '&#x1F517;', label: 'Copy directory link',
       run: "closeAllMenus();_copyFileDeeplink('" + escJs(s.dir) + "')" } : null,
     s.running ? { key: 'restart', icon: '&#x21BB;', label: 'Restart',
@@ -35534,9 +35537,45 @@ function _encodeHashPath(p) {
   // Encode only chars that break fragment parsing - keep slashes readable
   return p.replace(/%/g,'%25').replace(/#/g,'%23').replace(/\?/g,'%3F').replace(/ /g,'%20');
 }
+// A copied file link is https://<this amux>/f/<path> (deep_links.rs): a
+// browser lands on #path= with the file open, and the iOS app claims the link
+// and opens the file itself. It is built on the server's public address when
+// known, so a link copied inside an app pointed at an IP still opens for others.
+let _deepLinkBase = '';
+function _loadDeepLinkBase() {
+  fetch(API + '/api/deep-link', { headers: _authHeaders() }).then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && d.base) _deepLinkBase = String(d.base).replace(/\/+$/, ''); }).catch(() => {});
+}
+function _fileLinkUrl(path) {
+  const p = String(path || '').split('/').map(encodeURIComponent).join('/');
+  return (_deepLinkBase || location.origin) + '/f' + (p.startsWith('/') ? p : '/' + p);
+}
 function _copyFileDeeplink(path) {
-  const url = location.origin + location.pathname + '#path=' + _encodeHashPath(path);
-  _copyTextWithToast(url, 'Link copied');
+  _copyTextWithToast(_fileLinkUrl(path), 'Link copied');
+}
+// https://<this amux>/w/<worker>: the worker's peek, in the browser or the app.
+function _copyWorkerDeeplink(name) {
+  _copyTextWithToast((_deepLinkBase || location.origin) + '/w/' + encodeURIComponent(name), 'Worker link copied');
+}
+// A file or worker link opened in a Mac browser (/f/ and /w/ redirect with ?via=link): offer the
+// Mac app, which macOS cannot hand https links to (it is signed ad hoc). The
+// app opens it only on a server already among its connections.
+function _offerOpenInMacApp() {
+  const q = new URLSearchParams(location.search);
+  if (q.get('via') !== 'link') return;
+  q.delete('via');
+  history.replaceState(history.state, '', location.pathname + (q.toString() ? '?' + q : '') + location.hash);
+  const mac = /Macintosh/.test(navigator.userAgent || '') && !(navigator.maxTouchPoints > 1);
+  if (!mac || _nativeTabs || !/^#(path|peek)=/.test(location.hash)) return;
+  const el = document.createElement('div');
+  el.className = 'toast visible open-in-app'; el.id = 'open-in-app'; el.setAttribute('role', 'status');
+  el.innerHTML = '<span>Open this ' + (location.hash.startsWith('#peek=') ? 'worker' : 'file') + ' in the amux Mac app?</span>'
+    + '<a class="btn primary" href="' + esc('amux://open?server=' + encodeURIComponent(location.origin) + location.hash) + '">Open in app</a>'
+    + '<button class="btn" type="button">Not now</button>';
+  el.querySelector('button').onclick = () => el.remove();
+  el.querySelector('a').addEventListener('click', () => setTimeout(() => el.remove(), 300));
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 20000);
 }
 function _copyFilePath(path) {
   _copyTextWithToast(path, 'Path copied');
@@ -54184,6 +54223,8 @@ function _restoreScreen(bootHash) {
   }
 }
 function _restoreAppScreen() {
+  _offerOpenInMacApp();
+  _loadDeepLinkBase();
   const bootHash = location.hash;
   _handleDeeplink(bootHash);
   _restoreScreen(bootHash);

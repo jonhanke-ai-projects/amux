@@ -57,6 +57,12 @@ targets:
         #
         # Same key drives the home-screen icon label, which also read "AmuxApp".
         CFBundleDisplayName: amux
+        # amux://open?server=<origin>#path=<file> and amux://file?... open a
+        # file on a saved server (DeepLink.swift).
+        CFBundleURLTypes:
+          - CFBundleURLName: io.amux.link
+            CFBundleURLSchemes:
+              - amux
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
@@ -96,6 +102,13 @@ targets:
         # Sign in with Apple finds an amux Cloud customer's server (ServerPickerView).
         com.apple.developer.applesignin:
           - Default
+        # Copied file links (https://<server>/f/<path>) open in the app: each
+        # server publishes /.well-known/apple-app-site-association naming it
+        # (crates/amux-server/src/api/deep_links.rs). The App ID capability is
+        # enabled by the create_certs lane, which re-mints the profile.
+        com.apple.developer.associated-domains:
+          - applinks:*.amux.io
+          - applinks:sandbox.amux.io
 
   # Unit tests (AMUX-4981). Hostless logic tests: they exercise pure parsing,
   # so they need no app to launch and run in seconds.
@@ -126,6 +139,7 @@ targets:
       - path: AmuxShare/Sources/ShareOutbox.swift
       - path: AmuxApp/Sources/AmuxStore.swift
       - path: AmuxApp/Sources/LocationHistory.swift
+      - path: AmuxApp/Sources/DeepLink.swift
 
   # UI tests that drive the SYSTEM SHARE SHEET from another app (AMUX-4990).
   #

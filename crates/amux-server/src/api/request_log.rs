@@ -2345,6 +2345,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/page-links/{id}/open",
         methods: &["POST"],
     },
+    // Copied file and worker links build on this (deep_links.rs).
+    RouteEntry {
+        path: "/api/deep-link",
+        methods: &["GET"],
+    },
     RouteEntry {
         path: "/api/scope",
         methods: ANY,

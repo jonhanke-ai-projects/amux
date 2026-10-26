@@ -855,6 +855,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         config.connections.isEmpty ? nil : URL(string: normalized(config.lastUrl))
     }
 
+    /// The saved connection `url` names (same scheme, host and port), if any.
+    func knownConnection(_ url: URL) -> URL? {
+        func key(_ u: URL) -> String? {
+            guard let scheme = u.scheme?.lowercased(), scheme == "https" || scheme == "http", let host = u.host?.lowercased() else { return nil }
+            return "\(scheme)://\(host):\(u.port ?? (scheme == "https" ? 443 : 80))"
+        }
+        guard let want = key(url) else { return nil }
+        return config.connections.compactMap { URL(string: normalized($0.url)) }.first { key($0) == want }
+    }
+
     func isServerURL(_ url: URL) -> Bool {
         guard let s = serverURL else { return false }
         return url.host == s.host && (url.port ?? (url.scheme == "https" ? 443 : 80)) == (s.port ?? (s.scheme == "https" ? 443 : 80))
@@ -1104,7 +1114,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                 openWindow(url: self.url(withHash: "#peek=" + enc), frame: nil)
             }
         case "view": openWindow(url: self.url(withHash: "#view=" + enc), frame: nil)
-        case "open": openWindow(url: self.url(withHash: url.fragment.map { "#" + $0 } ?? ""), frame: nil)
+        case "open":
+            // amux://open?server=<origin>#path=<file> comes from a copied file link
+            // opened in a browser (deep_links.rs, app.js _offerOpenInMacApp). Any web
+            // page can fire an amux:// link, so only a server already among your
+            // connections is honoured; anything else opens on the default server.
+            let asked = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "server" })?.value.flatMap(URL.init(string:))
+            let server = asked.flatMap { knownConnection($0) }
+            if asked != nil { dlog("verdict=\(server != nil ? "open_link_known_server" : "open_link_unknown_server_refused") server=\(asked?.host ?? "-")") }
+            openWindow(url: self.url(withHash: url.fragment.map { "#" + $0 } ?? "", on: server), frame: nil)
         case "pin": if let id = Int(arg) { openPin(id: id) }
         case "layout", "workspace": openLayout(named: arg)
         case "save-layout", "save-workspace": saveLayout(named: arg)
