@@ -3429,7 +3429,8 @@ if [ -n "$fse_reading" ]; then
     # In this shell, not $(...): churn_census sets CHURN_COMPLETE, which a subshell would lose.
     churn_f=$(mktemp "${TMPDIR:-/tmp}/churn-out.XXXXXX")
     churn_unit="files modified in ${CHURN_MIN}m"; churn_top_unit="files in ${CHURN_MIN}m"; churn_floor=$CHURN_FILES
-    if ! tick_arm "fseventsd churn census" CHURN_BUDGET_S; then CHURN_COMPLETE=no; : > "$churn_f"
+    churn_measured=1
+    if ! tick_arm "fseventsd churn census" CHURN_BUDGET_S; then CHURN_COMPLETE=no; churn_measured=0; : > "$churn_f"
     elif [ -n "$CHURN_SAMPLE_CMD" ]; then
       churn_s=$CHURN_SAMPLE_S; [ "$churn_s" -le "$CHURN_BUDGET_S" ] 2>/dev/null || churn_s=$CHURN_BUDGET_S
       # The census floor is per CHURN_MIN minutes; scale it to the sample window.
@@ -3444,6 +3445,12 @@ if [ -n "$fse_reading" ]; then
     if [ -n "$churn" ]; then
       printf '%s\n' "$churn" | while read -r n d; do echo "mac-cleanup:   fseventsd feed: $n $churn_unit under $d"; done
       fse_top=$(printf '%s\n' "$churn" | head -1 | { read -r n d; echo "$n $churn_top_unit under $d"; })
+    elif [ "$churn_measured" = 0 ]; then
+      # Nothing was sampled, so there is no "no directory over N" to report: that
+      # line used to print here and reached the escalation as the measured feed
+      # (Mac fseventsd RCA 20261026-130357, with the census skipped out of time).
+      fse_top="not measured: the churn census was skipped because the tick ran out of time"
+      echo "mac-cleanup:   fseventsd feed: $fse_top (verdict=fseventsd_feed_unmeasured)"
     elif [ -n "$CHURN_SAMPLE_CMD" ]; then
       fse_top="no directory over ${churn_floor} ${churn_unit} (FSEvents sample, deletions included)"
       echo "mac-cleanup:   fseventsd feed: $fse_top"

@@ -115,6 +115,14 @@ if [ "$(uname)" = Darwin ]; then
   check "and the escalation names the memory and the restart" "yes" "$(grep -q 'holding 30G with no file churn.*sudo killall fseventsd' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
   check "and does not ask anyone to stop churn or reboot" "no" "$(grep -q 'stop the file churn' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
 
+  echo "3e. a census the tick had no time for is reported as unmeasured (RCA fseventsd 20261026-130357)"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  out=$(AMUX_CLEANUP_TICK_BUDGET_S=1 AMUX_CLEANUP_TICK_RESERVE_S=0 AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP" tick "echo 0.02 133")
+  check "the feed says it was not measured, with a verdict" "yes" "$(has "$out" 'verdict=fseventsd_feed_unmeasured')"
+  check "and claims no quiet feed"                       "no"  "$(has "$out" 'fseventsd feed: no directory over')"
+  check "the escalation does not claim a quiet feed"     "no"  "$(grep -q 'no directory over' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+  check "and does not call it a stuck thread"            "no"  "$(has "$out" 'verdict=fseventsd_spin_no_churn')"
+
   echo "3c. the same spinning pid is escalated once; a new pid is escalated again (RCA fseventsd 20261021-195930)"
   rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
   # Count fseventsd escalations only: a second tick also compares the live disk
