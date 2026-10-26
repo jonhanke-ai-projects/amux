@@ -3018,6 +3018,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_openXlsxEditor": {
+      "kind": "command._openXlsxEditor",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_openXlsxPreview": {
       "kind": "command._openXlsxPreview",
       "feedback_required": true,

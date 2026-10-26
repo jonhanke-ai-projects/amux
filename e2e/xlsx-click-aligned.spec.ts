@@ -63,3 +63,44 @@ test('the Mac app is recognised as WebKit, so it never takes the CSS-zoom path',
   expect(await webkit('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Amux-Desktop/2.0')).toBe(true);
   expect(await webkit('Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0 Safari/537.36')).toBe(false);
 });
+
+// Excel parity (Ethan, 2026-10-26: "iterate until it has full parity with
+// excel"). Opening, clicking and scrolling a workbook changes nothing in it, so
+// it never asks to save. Escape belongs to the sheet: it cancels a half-typed
+// cell and leaves the workbook open, as in Excel.
+test('opening and clicking is not an edit, and Escape cancels a cell without closing the workbook', async ({ page }) => {
+  test.setTimeout(150_000);
+  const dir = await mkdtemp(join(tmpdir(), 'amux-xlsx-esc-'));
+  try {
+    execFileSync('python3', [join(__dirname, 'file-view-fixtures.py'), dir, 'END-OF-FILE']);
+    await page.goto('/');
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.evaluate(p => (window as any).openFilePreview(p), join(dir, 'workbook.xlsx'));
+    await page.waitForFunction(() => _xlsxEd && _xlsxEd.api && _xlsxEd.api.getActiveWorkbook(), null, { timeout: 90_000 });
+    await page.waitForTimeout(1500);
+    const canvas = page.locator('#xlsx-univer canvas[id^="univer-sheet-main-canvas"]');
+    await canvas.click({ position: { x: 120, y: 60 } });
+    // Mobile WebKit has no wheel events; scroll through the sheet there.
+    if (test.info().project.name === 'ios-safari') await page.evaluate(() => _xlsxEd.api.getActiveWorkbook().getActiveSheet().scrollToCell(30, 0));
+    else await page.mouse.wheel(0, 200);
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => _xlsxEd.dirty), 'a click and a scroll are not edits').toBe(false);
+    const before = await page.evaluate(() => {
+      const r = _xlsxEd.api.getActiveWorkbook().getActiveSheet().getSelection().getActiveRange();
+      return { a1: r.getA1Notation(), v: r.getValue() };
+    });
+    await page.keyboard.type('zzz');
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(600);
+    const after = await page.evaluate(a1 => ({
+      open: !!_xlsxEd && document.getElementById('file-overlay')!.classList.contains('active'),
+      v: _xlsxEd && _xlsxEd.api.getActiveWorkbook().getActiveSheet().getRange(a1).getValue(),
+      dirty: _xlsxEd && _xlsxEd.dirty,
+    }), before.a1);
+    expect(after).toEqual({ open: true, v: before.v, dirty: false });
+    await page.evaluate(() => (window as any).closeFilePreview());
+  } finally {
+    await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));
+  }
+});

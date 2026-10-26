@@ -29464,12 +29464,40 @@ function _mdSearchHighlightCurrent() {
 // cannot load, the read-only SheetJS / server-parsed viewer is used instead.
 // ---------------------------------------------------------------------------
 const _UNIVER_V = '1.0.3';
+// Excel's everyday tools beyond the grid (2026-10-26, "full parity with
+// excel"): find and replace, sort, filter, conditional formatting, data
+// validation, hyperlinks. Each is an open-source Univer plugin; which extra
+// files each publishes (facade, locale, css) was checked on the CDN at 1.0.3.
 const _UNIVER_PKGS = ['themes', 'protocol', 'core', 'network', 'rpc', 'design', 'engine-render', 'engine-formula',
   'drawing', 'telemetry', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-formula-ui',
-  'sheets-numfmt', 'sheets-numfmt-ui'];
-const _UNIVER_FACADES = ['core', 'engine-formula', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-numfmt'];
-const _UNIVER_LOCALES = ['design', 'ui', 'sheets', 'sheets-ui', 'docs-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
-const _UNIVER_CSS = ['design', 'ui', 'docs-ui', 'sheets-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
+  'sheets-numfmt', 'sheets-numfmt-ui',
+  'find-replace', 'sheets-find-replace', 'sheets-sort', 'sheets-sort-ui', 'sheets-filter', 'sheets-filter-ui',
+  'sheets-conditional-formatting', 'sheets-conditional-formatting-ui', 'data-validation', 'sheets-data-validation',
+  'sheets-data-validation-ui', 'sheets-hyper-link', 'sheets-hyper-link-ui'];
+const _UNIVER_FACADES = ['core', 'engine-formula', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-numfmt',
+  'sheets-find-replace', 'sheets-sort', 'sheets-filter', 'sheets-conditional-formatting', 'sheets-data-validation',
+  'sheets-hyper-link', 'sheets-hyper-link-ui'];
+const _UNIVER_LOCALES = ['design', 'ui', 'sheets', 'sheets-ui', 'docs-ui', 'sheets-formula-ui', 'sheets-numfmt-ui',
+  'find-replace', 'sheets-sort-ui', 'sheets-filter', 'sheets-filter-ui', 'sheets-conditional-formatting',
+  'sheets-conditional-formatting-ui', 'data-validation', 'sheets-data-validation', 'sheets-data-validation-ui',
+  'sheets-hyper-link', 'sheets-hyper-link-ui'];
+const _UNIVER_CSS = ['design', 'ui', 'docs-ui', 'sheets-ui', 'sheets-formula-ui', 'sheets-numfmt-ui',
+  'find-replace', 'sheets-sort-ui', 'sheets-filter-ui', 'sheets-conditional-formatting-ui', 'sheets-data-validation-ui',
+  'sheets-hyper-link-ui'];
+// The tool plugins, in dependency order: [UMD global, plugin export].
+const _UNIVER_TOOL_PLUGINS = [
+  ['UniverFindReplace', 'UniverFindReplacePlugin'], ['UniverSheetsFindReplace', 'UniverSheetsFindReplacePlugin'],
+  ['UniverSheetsSort', 'UniverSheetsSortPlugin'], ['UniverSheetsSortUi', 'UniverSheetsSortUIPlugin'],
+  ['UniverSheetsFilter', 'UniverSheetsFilterPlugin'], ['UniverSheetsFilterUi', 'UniverSheetsFilterUIPlugin'],
+  ['UniverSheetsConditionalFormatting', 'UniverSheetsConditionalFormattingPlugin'],
+  ['UniverSheetsConditionalFormattingUi', 'UniverSheetsConditionalFormattingUIPlugin'],
+  ['UniverDataValidation', 'UniverDataValidationPlugin'], ['UniverSheetsDataValidation', 'UniverSheetsDataValidationPlugin'],
+  ['UniverSheetsDataValidationUi', 'UniverSheetsDataValidationUIPlugin'],
+  ['UniverSheetsHyperLink', 'UniverSheetsHyperLinkPlugin'], ['UniverSheetsHyperLinkUi', 'UniverSheetsHyperLinkUIPlugin'],
+];
+const _UNIVER_TOOL_LOCALES = ['UniverFindReplaceEnUS', 'UniverSheetsSortUiEnUS', 'UniverSheetsFilterEnUS', 'UniverSheetsFilterUiEnUS',
+  'UniverSheetsConditionalFormattingEnUS', 'UniverSheetsConditionalFormattingUiEnUS', 'UniverDataValidationEnUS',
+  'UniverSheetsDataValidationEnUS', 'UniverSheetsDataValidationUiEnUS', 'UniverSheetsHyperLinkEnUS', 'UniverSheetsHyperLinkUiEnUS'];
 let _univerLoading = null;
 const _UNIVER_LOAD_BUDGET_MS = 30000;
 let _xlsxEd = null;   // { univer, api, wb (ExcelJS), initial, path, etag, dirty, sub }
@@ -29872,6 +29900,9 @@ function _xlsxSetDirty(d) {
 
 async function _openXlsxEditor(path, body) {
   await _loadUniver();
+  // The canvas draws with whatever font is ready and never redraws for a late
+  // one, so Office's metric-compatible stand-ins (app.css) load first.
+  try { await Promise.all(['400 11pt Calibri', '700 11pt Calibri', 'italic 400 11pt Calibri', '400 11pt Cambria', '700 11pt Cambria'].map(f => document.fonts.load(f))); } catch (e) {}
   const res = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const etag = res.headers.get('etag') || '';
@@ -29888,7 +29919,8 @@ async function _openXlsxEditor(path, body) {
     theme: (window.UniverThemes && UniverThemes.defaultTheme) || undefined,
     locale: LocaleType.EN_US,
     locales: { [LocaleType.EN_US]: mergeLocales(UniverDesignEnUS, UniverUiEnUS, UniverSheetsEnUS, UniverSheetsUiEnUS,
-      UniverDocsUiEnUS, UniverSheetsFormulaUiEnUS, UniverSheetsNumfmtUiEnUS) },
+      UniverDocsUiEnUS, UniverSheetsFormulaUiEnUS, UniverSheetsNumfmtUiEnUS,
+      ..._UNIVER_TOOL_LOCALES.map(n => window[n]).filter(Boolean)) },
   });
   univer.registerPlugin(UniverEngineRender.UniverRenderEnginePlugin);
   univer.registerPlugin(UniverEngineFormula.UniverFormulaEnginePlugin);
@@ -29901,6 +29933,16 @@ async function _openXlsxEditor(path, body) {
   univer.registerPlugin(UniverSheetsFormulaUi.UniverSheetsFormulaUIPlugin);
   univer.registerPlugin(UniverSheetsNumfmt.UniverSheetsNumfmtPlugin);
   univer.registerPlugin(UniverSheetsNumfmtUi.UniverSheetsNumfmtUIPlugin);
+  // A tool that did not load (a CDN hiccup) leaves the editor without it, not broken.
+  const tools = { loaded: [], missing: [] };
+  for (const [g, name] of _UNIVER_TOOL_PLUGINS) {
+    const plugin = window[g] && window[g][name];
+    if (!plugin) { tools.missing.push(g); continue; }
+    try { univer.registerPlugin(plugin); tools.loaded.push(g); } catch (e) { tools.missing.push(g + ':' + (e && e.message || e)); }
+  }
+  if (tools.missing.length) fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'tools_missing', missing: tools.missing, loaded: tools.loaded.length,
+      measured: true, n_considered: _UNIVER_TOOL_PLUGINS.length, ver: APP_VER }) }).catch(() => {});
   univer.createUnit(UniverInstanceType.UNIVER_SHEET, data);
   const api = UniverCoreFacade.FUniver.newAPI(univer);
   const fwb = api.getActiveWorkbook();
@@ -29918,9 +29960,16 @@ async function _openXlsxEditor(path, body) {
 // doc.mutation.rich-text-editing (the cell editor initialising) and
 // formula.mutation.* (the engine starting), which made a just-opened file read
 // as unsaved. Switching tabs is a mutation too but is not worth a save prompt.
+// An edit is a sheet COMMAND (what a person's typing, formatting, resizing or
+// undo runs), not a bare mutation: opening a workbook with formulas makes the
+// formula engine write its results through sheet.mutation.set-range-values,
+// so counting mutations showed "Save •" on a file nobody touched (2026-10-26).
+// Switching sheets, zooming, scrolling and selecting change only the view.
+const _XLSX_VIEW_ONLY = /worksheet-activate|zoom-ratio|scroll|selection|set-active|freeze-pane-view/;
 function _xlsxIsEdit(e) {
-  return !!e && e.type === 2 && typeof e.id === 'string' && e.id.startsWith('sheet.mutation.')
-    && e.id !== 'sheet.mutation.set-worksheet-activate';
+  if (!e || typeof e.id !== 'string') return false;
+  if (e.id === 'univer.command.undo' || e.id === 'univer.command.redo') return true;
+  return e.type === 0 && e.id.startsWith('sheet.command.') && !_XLSX_VIEW_ONLY.test(e.id);
 }
 
 async function _xlsxSave() {
@@ -37005,6 +37054,10 @@ document.addEventListener('keydown', (e) => {
       if (sr && sr.classList.contains('active')) { _mdSearchClose(); return; }
       const fa = document.getElementById('file-actions');
       if (fa && fa.classList.contains('open')) { fa.classList.remove('open'); return; }
+      // In the spreadsheet editor Escape belongs to the sheet, as in Excel: it
+      // cancels a cell edit or closes a panel, and never closes the workbook
+      // (closing on Escape threw away a half-typed cell, 2026-10-26). The ✕ closes.
+      if (_xlsxEd) return;
       closeFilePreview();
     }
     return;
