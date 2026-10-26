@@ -1431,9 +1431,19 @@ pub(crate) async fn send_key(name: &str, key: &str) {
     let pt = pt(name);
     let _ = tmux(&["send-keys", "-t", &pt, key]).await;
 }
-async fn send_literal(name: &str, text: &str) -> bool {
+async fn send_literal(name: &str, text: &str) -> Result<(), String> {
     let pt = pt(name);
-    matches!(tmux(&["send-keys", "-t", &pt, "-l", text]).await, Some(o) if o.status.success())
+    match tmux(&["send-keys", "-t", &pt, "-l", text]).await {
+        Some(o) if o.status.success() => Ok(()),
+        Some(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let code = o.status.code().unwrap_or(-1);
+            Err(format!(
+                "send-keys exit {code}: {}", stderr.trim().chars().take(200).collect::<String>()
+            ))
+        }
+        None => Err("send-keys timed out".into()),
+    }
 }
 
 /// Pastes `text` into the lane's composer through a named tmux buffer and
@@ -14514,8 +14524,10 @@ async fn send_text_inner_bound(
         _ => (None, staged.to_string()),
     };
     if let Some(prefix) = typed_prefix.as_deref() {
-        if !send_literal(name, prefix).await {
-            return (false, "send-keys failed".into());
+        if let Err(detail) = send_literal(name, prefix).await {
+            tracing::warn!(session = %name, %detail, verdict = "send_keys_failed",
+                "tmux send-keys failed on slash-command prefix");
+            return (false, format!("send-keys failed ({detail})"));
         }
         sleep_ms(60).await;
     }
@@ -14524,8 +14536,10 @@ async fn send_text_inner_bound(
         if let Err(why) = paste_into_composer(name, &staged).await {
             return (false, why.into());
         }
-    } else if !send_literal(name, &staged).await {
-        return (false, "send-keys failed".into());
+    } else if let Err(detail) = send_literal(name, &staged).await {
+        tracing::warn!(session = %name, %detail, verdict = "send_keys_failed",
+            "tmux send-keys failed on message text");
+        return (false, format!("send-keys failed ({detail})"));
     }
     // HOW LONG THE COMPOSER NEEDS BEFORE Enter MEANS "SUBMIT".
     //
@@ -54282,6 +54296,8 @@ mod refusal_status_tests {
     fn real_failures_are_still_500() {
         for msg in [
             "send-keys failed",
+            "send-keys failed (send-keys exit 1: no server running on /tmp/tmux-501/default)",
+            "send-keys failed (send-keys timed out)",
             "paste-buffer failed",
             "could not stage paste buffer",
             "tmux not found or timed out",
