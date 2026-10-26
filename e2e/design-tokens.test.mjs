@@ -66,6 +66,11 @@ test('every built-in theme validates, with the five families asked for', () => {
   for (const t of BUILTIN_THEMES) {
     const v = themeValidate(t);
     assert.ok(v.ok, `${t.name}: ${v.errors.join(' ')}`);
+    // Built-ins are the examples: no warnings either. The one exception is
+    // GitHub's own dark palette (white on its #3fb950 green), kept as amux has
+    // always looked.
+    const known = ['amux-dark', 'github-dark'].includes(t.id) ? v.warnings.filter(w => !/green fill/.test(w)) : v.warnings;
+    assert.equal(known.length, 0, `${t.name} warnings: ${known.join(" ")}`);
     assert.equal(new Set(BUILTIN_THEMES.map(x => x.id)).size, BUILTIN_THEMES.length, 'theme ids are unique');
   }
 });

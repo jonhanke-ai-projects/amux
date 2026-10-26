@@ -156,10 +156,10 @@
 </div>
 <!-- API key setup modal — shown on cloud when no user key is configured (dismissible) -->
 <div id="apikey-setup-modal" style="display:none;position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 75%, transparent);z-index:9999;align-items:center;justify-content:center;">
-  <div style="background:color-mix(in srgb, var(--purple) 10%, var(--bg));border:1px solid color-mix(in srgb, var(--shade) 80%, var(--on-solid));border-radius:var(--radius-2xl);padding:var(--space-8);max-width:440px;width:90%;box-shadow:var(--shadow-xl);position:relative;color:color-mix(in srgb, var(--shade) 9%, var(--on-solid));">
-    <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:color-mix(in srgb, var(--shade) 20%, var(--on-solid));font-size:var(--fs-4xl);cursor:pointer;padding:var(--space-1);" title="Close">&#x2715;</button>
+  <div style="background:color-mix(in srgb, var(--purple) 10%, var(--bg));border:1px solid color-mix(in srgb, var(--shade) 80%, var(--on-solid));border-radius:var(--radius-2xl);padding:var(--space-8);max-width:440px;width:90%;box-shadow:var(--shadow-xl);position:relative;color:var(--dim);">
+    <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:var(--dim);font-size:var(--fs-4xl);cursor:pointer;padding:var(--space-1);" title="Close">&#x2715;</button>
     <div style="font-size:var(--fs-5xl);font-weight:700;margin-bottom:var(--space-2);color:var(--on-solid);">Get started</div>
-    <div style="font-size:var(--fs-lg);color:color-mix(in srgb, var(--shade) 20%, var(--on-solid));margin-bottom:var(--space-4);line-height:1.5;">
+    <div style="font-size:var(--fs-lg);color:var(--dim);margin-bottom:var(--space-4);line-height:1.5;">
       Sign in with the plan you already pay for. Your sign-in stays on this server.
     </div>
     <div id="model-login-choices" style="display:flex;flex-direction:column;gap:var(--space-2);margin-bottom:var(--space-3);">
@@ -168,15 +168,15 @@
       <button class="btn" id="model-login-gemini" onclick="modelLogin('gemini')" style="min-height:44px;justify-content:center;">Sign in with Google (Gemini)</button>
     </div>
     <div id="model-login-panel" style="display:none;margin-bottom:var(--space-3-5);padding:var(--space-3);border:1px solid color-mix(in srgb, var(--shade) 80%, var(--on-solid));border-radius:var(--radius-lg);" aria-live="polite">
-      <div id="model-login-status" style="font-size:var(--fs-lg);color:color-mix(in srgb, var(--shade) 9%, var(--on-solid));margin-bottom:var(--space-2-5);"></div>
+      <div id="model-login-status" style="font-size:var(--fs-lg);color:var(--dim);margin-bottom:var(--space-2-5);"></div>
       <a id="model-login-link" class="btn primary" target="_blank" rel="noopener" style="display:none;min-height:44px;justify-content:center;margin-bottom:var(--space-2-5);">Open the sign-in page</a>
       <div id="model-login-code-wrap" style="display:none;margin-bottom:var(--space-2-5);">
-        <div style="font-size:var(--fs-base);color:color-mix(in srgb, var(--shade) 31%, var(--on-solid));">Enter this code on that page:</div>
+        <div style="font-size:var(--fs-base);color:var(--dim);">Enter this code on that page:</div>
         <div id="model-login-code" style="font:600 1.4rem monospace;letter-spacing:2px;user-select:all;"></div>
       </div>
       <div id="model-login-paste-wrap" style="display:none;gap:var(--space-2);">
         <input id="model-login-paste" type="text" autocomplete="off" spellcheck="false" placeholder="Paste the code from the sign-in page"
-          style="flex:1;min-width:0;box-sizing:border-box;min-height:44px;padding:0 var(--space-3);border-radius:var(--radius-lg);border:1px solid color-mix(in srgb, var(--shade) 67%, var(--on-solid));background:color-mix(in srgb, var(--text) 7%, var(--shade));color:color-mix(in srgb, var(--shade) 9%, var(--on-solid));font-family:var(--font-mono);"
+          style="flex:1;min-width:0;box-sizing:border-box;min-height:44px;padding:0 var(--space-3);border-radius:var(--radius-lg);border:1px solid color-mix(in srgb, var(--shade) 67%, var(--on-solid));background:color-mix(in srgb, var(--text) 7%, var(--shade));color:var(--dim);font-family:var(--font-mono);"
           onkeydown="if(event.key==='Enter')modelLoginSubmitCode()">
         <button class="btn" id="model-login-paste-btn" onclick="modelLoginSubmitCode()" style="min-height:44px;">Continue</button>
       </div>
@@ -189,17 +189,17 @@
       <div style="flex:1;height:1px;background:color-mix(in srgb, var(--shade) 80%, var(--on-solid));"></div>
     </div>
     <input id="apikey-setup-input" type="password" placeholder="sk-ant-api03-..." autocomplete="off" spellcheck="false"
-      style="width:100%;box-sizing:border-box;padding:var(--space-2-5) var(--space-3);border-radius:var(--radius-lg);border:1px solid color-mix(in srgb, var(--shade) 67%, var(--on-solid));background:color-mix(in srgb, var(--text) 7%, var(--shade));color:color-mix(in srgb, var(--shade) 9%, var(--on-solid));font-size:var(--fs-xl);font-family:var(--font-mono);margin-bottom:var(--space-2);"
+      style="width:100%;box-sizing:border-box;padding:var(--space-2-5) var(--space-3);border-radius:var(--radius-lg);border:1px solid color-mix(in srgb, var(--shade) 67%, var(--on-solid));background:color-mix(in srgb, var(--text) 7%, var(--shade));color:var(--dim);font-size:var(--fs-xl);font-family:var(--font-mono);margin-bottom:var(--space-2);"
       onkeydown="if(event.key==='Enter')apikeySetupSave()">
     <div id="apikey-setup-err" style="color:color-mix(in srgb, var(--red) 80%, var(--on-solid));font-size:var(--fs-md);min-height:18px;margin-bottom:var(--space-3);"></div>
     <button id="apikey-setup-btn" onclick="apikeySetupSave()"
-      style="width:100%;padding:var(--space-2-5);border-radius:var(--radius-lg);border:none;background:color-mix(in srgb, var(--shade) 73%, var(--on-solid));color:color-mix(in srgb, var(--shade) 9%, var(--on-solid));font-size:var(--fs-xl);font-weight:500;cursor:pointer;">
+      style="width:100%;padding:var(--space-2-5);border-radius:var(--radius-lg);border:none;background:color-mix(in srgb, var(--shade) 73%, var(--on-solid));color:var(--dim);font-size:var(--fs-xl);font-weight:500;cursor:pointer;">
       Save API key
     </button>
     <div style="text-align:center;margin-top:var(--space-2);">
       <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:color-mix(in srgb, var(--purple) 82%, var(--text));font-size:var(--fs-base);">Get a key at console.anthropic.com &rarr;</a>
     </div>
-    <div style="text-align:center;margin-top:var(--space-2);font-size:var(--fs-base);color:color-mix(in srgb, var(--shade) 31%, var(--on-solid));">You can change this later in Settings</div>
+    <div style="text-align:center;margin-top:var(--space-2);font-size:var(--fs-base);color:var(--dim);">You can change this later in Settings</div>
   </div>
 </div>
 <div id="org-banner" style="display:none;background:color-mix(in srgb, var(--purple) 39%, var(--bg));border-bottom:1px solid color-mix(in srgb, var(--purple) 85%, var(--bg));color:color-mix(in srgb, var(--accent) 20%, var(--on-solid));padding:var(--space-1-5) var(--space-4);text-align:center;font-size:var(--fs-md);z-index:90;position:relative;display:none;">
@@ -2502,12 +2502,12 @@
   <div id="tp-toolbar" style="position:absolute;bottom:20px;left:50%;transform:translateX(-50%);background:color-mix(in srgb, color-mix(in srgb, var(--pink) 4%, var(--bg)) 92%, transparent);backdrop-filter:blur(8px);border:1px solid color-mix(in srgb, var(--shade) 80%, var(--on-solid));border-radius:var(--radius-xl);padding:var(--space-2-5) var(--space-3-5);display:flex;align-items:center;gap:var(--space-3-5);font-size:var(--fs-lg);transition:opacity 0.3s;z-index:2;flex-wrap:wrap;justify-content:center;max-width:calc(100% - 40px);">
     <button id="tp-play" onclick="_tpToggle()" style="background:color-mix(in srgb, var(--purple) 80%, var(--card));border:none;color:var(--on-solid);width:40px;height:40px;border-radius:var(--radius-round);font-size:var(--fs-3xl);cursor:pointer;">&#x25B6;</button>
     <div style="display:flex;align-items:center;gap:var(--space-1-5);">
-      <span style="color:color-mix(in srgb, var(--shade) 33%, var(--on-solid));font-size:var(--fs-sm);">WPM</span>
+      <span style="color:var(--dim);font-size:var(--fs-sm);">WPM</span>
       <input id="tp-wpm" type="range" min="10" max="400" step="5" value="150" oninput="_tpSetWpm(this.value)" style="width:120px;accent-color:color-mix(in srgb, var(--purple) 80%, var(--card));">
       <span id="tp-wpm-val" style="min-width:32px;font-variant-numeric:tabular-nums;">150</span>
     </div>
     <div style="display:flex;align-items:center;gap:var(--space-1-5);">
-      <span style="color:color-mix(in srgb, var(--shade) 33%, var(--on-solid));font-size:var(--fs-sm);">Size</span>
+      <span style="color:var(--dim);font-size:var(--fs-sm);">Size</span>
       <input id="tp-size" type="range" min="24" max="96" step="2" value="48" oninput="_tpSetSize(this.value)" style="width:80px;accent-color:color-mix(in srgb, var(--purple) 80%, var(--card));">
     </div>
     <button onclick="_tpRestart()" title="Restart (R)" style="background:none;border:1px solid color-mix(in srgb, var(--shade) 67%, var(--on-solid));color:var(--on-solid);padding:var(--space-1-5) var(--space-2-5);border-radius:var(--radius-md);cursor:pointer;">&#x21BB;</button>

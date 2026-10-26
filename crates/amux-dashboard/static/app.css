@@ -1396,7 +1396,7 @@
     color:var(--shade);background:var(--on-solid); }
   .csv-table th,.csv-table td { border:1px solid color-mix(in srgb, var(--shade) 17%, var(--on-solid));padding:var(--space-1) var(--space-2);text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative; }
   .csv-table td { background:var(--on-solid);color:var(--shade); }
-  .csv-table th { background:color-mix(in srgb, var(--shade) 5%, var(--on-solid));color:color-mix(in srgb, var(--shade) 73%, var(--on-solid));font-weight:600;position:sticky;top:0;z-index:2;user-select:none;
+  .csv-table th { background:color-mix(in srgb, var(--shade) 5%, var(--on-solid));color:var(--dim);font-weight:600;position:sticky;top:0;z-index:2;user-select:none;
     border-color:color-mix(in srgb, var(--shade) 28%, var(--on-solid));text-align:center;font-size:var(--fs-sm); }
   .csv-table th .csv-th-text { cursor:pointer;display:block;overflow:hidden;text-overflow:ellipsis; }
   .csv-table th:hover { background:color-mix(in srgb, var(--bg-inset) 10%, var(--on-solid)); }
@@ -1409,7 +1409,7 @@
   .csv-resize { position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:col-resize;z-index:3;user-select:none;-webkit-user-select:none; }
   .csv-resize:hover,.csv-resize.active { background:color-mix(in srgb, var(--green) 56%, var(--card));opacity:0.5; }
   /* Row number column — Excel-style gray gutter */
-  .csv-table th.csv-rownum,.csv-table td.csv-rownum { width:42px;min-width:42px;max-width:42px;text-align:center;color:color-mix(in srgb, var(--shade) 73%, var(--on-solid));font-size:var(--fs-2xs);padding:var(--space-1) var(--space-1);background:color-mix(in srgb, var(--shade) 5%, var(--on-solid));position:sticky;left:0;z-index:1;border-right:1px solid color-mix(in srgb, var(--shade) 28%, var(--on-solid));font-weight:400; }
+  .csv-table th.csv-rownum,.csv-table td.csv-rownum { width:42px;min-width:42px;max-width:42px;text-align:center;color:var(--dim);font-size:var(--fs-2xs);padding:var(--space-1) var(--space-1);background:color-mix(in srgb, var(--shade) 5%, var(--on-solid));position:sticky;left:0;z-index:1;border-right:1px solid color-mix(in srgb, var(--shade) 28%, var(--on-solid));font-weight:400; }
   .csv-table th.csv-rownum { z-index:3;background:color-mix(in srgb, var(--bg-inset) 10%, var(--on-solid));border-right:1px solid color-mix(in srgb, var(--shade) 28%, var(--on-solid)); }
   /* Frozen first column */
   .csv-table.csv-frozen th:nth-child(2),.csv-table.csv-frozen td:nth-child(2) { position:sticky;left:42px;z-index:1;background:var(--on-solid);border-right:2px solid color-mix(in srgb, var(--shade) 28%, var(--on-solid)); }
@@ -1584,7 +1584,7 @@
     padding:0; cursor:pointer; z-index:2; transition:opacity 0.4s; }
   #present-overlay.idle .present-close { opacity:0; }
   @media (pointer: coarse) { #present-overlay.idle .present-close { opacity:0.45; } }
-  #present-overlay .present-msg { color:color-mix(in srgb, var(--shade) 20%, var(--on-solid)); font:14px -apple-system,system-ui,sans-serif; }
+  #present-overlay .present-msg { color:var(--dim); font:14px -apple-system,system-ui,sans-serif; }
 
   /* File explorer */
   .explore-breadcrumb { font-size: var(--fs-md); overflow-x: auto; white-space: nowrap; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
@@ -2695,7 +2695,7 @@
   .peek-prompt-schedule { border-left-color: var(--green); background: color-mix(in srgb, var(--green) 8%, transparent); }
   .peek-prompt-amux     { border-left-color: var(--dim); }
   .peek-prompt-unknown { border-left-color: var(--yellow); border-left-style: dotted; }
-  .peek-queued-msg { margin:var(--space-1-5) 0; padding:var(--space-0-5) var(--space-2); font:12px/1.4 monospace; white-space:pre-wrap; overflow-wrap:anywhere; color:color-mix(in srgb, var(--shade) 20%, var(--on-solid)); opacity:.75; }
+  .peek-queued-msg { margin:var(--space-1-5) 0; padding:var(--space-0-5) var(--space-2); font:12px/1.4 monospace; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--dim); opacity:.75; }
   .peek-queued-prompt { color:color-mix(in srgb, var(--yellow) 68%, var(--text)); font-weight:600; }
   .peek-worker-footer { opacity:.65; margin-top:var(--space-2); }
   .peek-prompt::before { content: attr(data-msg-label); display: block; font: 600 10px/1.6 system-ui, sans-serif; color: var(--dim); letter-spacing: 0.03em; }
@@ -9290,7 +9290,9 @@ button.cv-sec:hover { color:var(--text); }
 .sx-chip-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
 .sx-chip-none { color:var(--dim); font-size:var(--fs-md); font-style:italic; }
 .sx-avatar { width:22px; height:22px; border-radius:var(--radius-round); flex-shrink:0; display:inline-flex; align-items:center; justify-content:center;
-  font-size:var(--fs-4xs); font-weight:700; color:var(--on-solid); background:var(--h, var(--accent)); }
+  font-size:var(--fs-4xs); font-weight:700;
+  /* A tinted chip, like the worker badges: readable on every theme's palette. */
+  color:color-mix(in srgb, var(--h, var(--accent)) 30%, var(--text)); background:color-mix(in srgb, var(--h, var(--accent)) 15%, var(--bg)); }
 .sx-freq { display:flex; flex-direction:column; gap:1px; overflow:hidden; }
 .sx-freq > span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sx-sub { font-size:var(--fs-xs); line-height:1.35; }

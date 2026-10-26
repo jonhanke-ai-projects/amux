@@ -82,8 +82,9 @@ test('calendar subscription renders without the retired tunnel and stays dismiss
 });
 
 test('dialog surfaces are opaque and readable in both themes and report theme regressions',async({page})=>{
+ // Switch themes the way the app does: a theme sets every token, not just the class.
  for(const light of [true,false]){
-  await page.evaluate(light=>document.body.classList.toggle('light',light),light);
+  await page.evaluate(light=>(window as any).themeActivate(light?'amux-light':'amux-dark',{local:true}),light);
   for(const [open,root] of [
    ["_connScopePicker('github','worker',true)",'.conn-picker-overlay'],
    ['_jrnlShowConfig()','#jrnl-config-overlay'],

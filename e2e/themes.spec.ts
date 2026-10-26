@@ -124,6 +124,8 @@ test('a theme reaches every surface: no element keeps its old color under a prob
 
 test('themes change colors only: the layout of every view is identical under each', async ({ page }) => {
   await boot(page);
+  // Dialogs animate open; measure where things land, not where they pass.
+  await page.addStyleTag({ content: '*,*::before,*::after{transition:none!important;animation:none!important}' });
   // Surfaces no other test writes to (the e2e server is shared by parallel
   // workers, so the board and the fleet change underneath a measurement).
   const surfaces: [string, () => Promise<void>][] = [
@@ -150,7 +152,17 @@ test('themes change colors only: the layout of every view is identical under eac
     expect(live.size, `${v}: most of the page holds still`).toBeLessThan(a.length / 20);
     for (const id of ['dracula', 'atom-one-light', 'ayu-mirage']) {
       await page.evaluate(id => (window as any).themeActivate(id, { local: true }), id);
-      expect(steady(await boxes()), `${v} under ${id}`).toEqual(steady(a));
+      let got = await boxes();
+      if (JSON.stringify(steady(got)) !== JSON.stringify(steady(a))) {
+        // A relative time ("1m ago") can tick between samples. Re-measure the
+        // default theme once; a change the theme made shows up both times.
+        await page.evaluate(() => (window as any).themeActivate('amux-dark', { local: true }));
+        const base = await boxes();
+        base.forEach((b, i) => { if (b !== a[i]) live.add(i); });
+        await page.evaluate(id => (window as any).themeActivate(id, { local: true }), id);
+        got = await boxes();
+        expect(steady(got), `${v} under ${id}`).toEqual(steady(base));
+      }
     }
   }
 });

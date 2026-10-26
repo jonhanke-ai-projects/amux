@@ -312,17 +312,17 @@ const BUILTIN_THEMES = [
   _th('github-dark', 'GitHub Dark', 'dark', _GH_DARK),
   _th('github-light', 'GitHub Light', 'light', _GH_LIGHT),
   _th('github-dark-dimmed', 'GitHub Dark Dimmed', 'dark', { bg: '#22272e', bgInset: '#1c2128', card: '#2d333b', border: '#444c56',
-    text: '#adbac7', dim: '#768390', accent: '#539bf5', onAccent: '#22272e', onSolid: '#22272e', green: '#57ab5a', red: '#e5534b', yellow: '#c69026',
-    cyan: '#39c5cf', orange: '#cc6b2c', purple: '#986ee2', pink: '#c96198', termBg: '#1c2128', termText: '#adbac7' }),
+    text: '#adbac7', dim: '#828f9c', accent: '#539bf5', onAccent: '#22272e', onSolid: '#22272e', green: '#57ab5a', red: '#d66e6b', yellow: '#c69026',
+    cyan: '#39c5cf', orange: '#c67b4b', purple: '#9c7cdd', pink: '#c375a2', termBg: '#1c2128', termText: '#adbac7' }),
   _th('one-dark-pro', 'One Dark Pro', 'dark', { bg: '#282c34', bgInset: '#1e2227', card: '#21252b', border: '#3e4452',
-    text: '#abb2bf', dim: '#7f848e', accent: '#61afef', onAccent: '#282c34', onSolid: '#282c34', green: '#98c379', red: '#e06c75', yellow: '#e5c07b',
-    cyan: '#56b6c2', orange: '#d19a66', purple: '#c678dd', pink: '#d55fde', termBg: '#21252b', termText: '#abb2bf' }),
+    text: '#abb2bf', dim: '#8d939e', accent: '#61afef', onAccent: '#282c34', onSolid: '#282c34', green: '#98c379', red: '#db737c', yellow: '#e5c07b',
+    cyan: '#56b6c2', orange: '#d19a66', purple: '#c678dd', pink: '#cf6bda', termBg: '#21252b', termText: '#abb2bf' }),
   _th('dracula', 'Dracula', 'dark', { bg: '#282a36', bgInset: '#191a21', card: '#21222c', border: '#44475a',
     text: '#f8f8f2', dim: '#8b93b8', accent: '#bd93f9', onAccent: '#282a36', onSolid: '#282a36', green: '#50fa7b', red: '#ff5555', yellow: '#f1fa8c',
     cyan: '#8be9fd', orange: '#ffb86c', purple: '#bd93f9', pink: '#ff79c6', termBg: '#21222c', termText: '#f8f8f2' }),
   _th('atom-one-light', 'Atom One Light', 'light', { bg: '#fafafa', bgInset: '#eaeaeb', card: '#f0f0f1', border: '#d3d3d5',
-    text: '#383a42', dim: '#696c77', accent: '#3366d6', onAccent: '#ffffff', green: '#50a14f', red: '#e45649', yellow: '#986801',
-    cyan: '#0184bc', orange: '#c18401', purple: '#a626a4', pink: '#ca1243', termBg: '#282c34', termText: '#abb2bf',
+    text: '#383a42', dim: '#696c77', accent: '#3366d6', onAccent: '#ffffff', green: '#40813f', red: '#c44a3f', yellow: '#986801',
+    cyan: '#0179ad', orange: '#9a6a01', purple: '#a626a4', pink: '#ca1243', termBg: '#282c34', termText: '#abb2bf',
     termDim: '#7f848e', termAccent: '#61afef', termBorder: '#3e4452', termGreen: '#98c379', termRed: '#e06c75', termYellow: '#e5c07b', termCyan: '#56b6c2' }),
   _th('ayu-dark', 'Ayu Dark', 'dark', { bg: '#0d1017', bgInset: '#05070a', card: '#131721', border: '#2d3640',
     text: '#bfbdb6', dim: '#7c838f', accent: '#e6b450', onAccent: '#0d1017', onSolid: '#0d1017', green: '#aad94c', red: '#f07178', yellow: '#ffb454',
@@ -331,8 +331,8 @@ const BUILTIN_THEMES = [
     text: '#cccac2', dim: '#8a919e', accent: '#ffcc66', onAccent: '#1f2430', onSolid: '#1f2430', green: '#d5ff80', red: '#f28779', yellow: '#ffd173',
     cyan: '#95e6cb', orange: '#ffad66', purple: '#dfbfff', pink: '#f29e74', termBg: '#1c212b', termText: '#cccac2' }),
   _th('ayu-light', 'Ayu Light', 'light', { bg: '#fcfcfc', bgInset: '#eef0f2', card: '#f3f4f5', border: '#d8dbe0',
-    text: '#5c6166', dim: '#787b80', accent: '#2470b6', onAccent: '#ffffff', green: '#6a9a1f', red: '#e65050', yellow: '#b07800',
-    cyan: '#3a9b91', orange: '#d77a2a', purple: '#a37acc', pink: '#e0687d', termBg: '#1f2430', termText: '#cccac2',
+    text: '#5c6166', dim: '#717478', accent: '#2470b6', onAccent: '#ffffff', green: '#577e19', red: '#ca4646', yellow: '#9b6a00',
+    cyan: '#307f77', orange: '#ac6222', purple: '#8664a7', pink: '#b85567', termBg: '#1f2430', termText: '#cccac2',
     termDim: '#8a919e', termAccent: '#ffcc66', termBorder: '#3a4558', termGreen: '#d5ff80', termRed: '#f28779', termYellow: '#ffd173', termCyan: '#95e6cb' }),
 // Completed through the validator, so a built-in carries every token (and
 // exports as a whole theme), filled from its base where it names none.
@@ -416,6 +416,8 @@ function themeValidate(doc) {
     need('accent', 'bg', 3, 'Accent on background', false);
     need('onAccent', 'accent', 4.5, 'Text on accent', true);
     need('onSolid', 'green', 3, 'Text on a green fill', false);
+    // Status colors are also text (labels, chips, "online"): readable on the background.
+    for (const k of ['green', 'red', 'yellow']) need(k, 'bg', 3, k[0].toUpperCase() + k.slice(1) + ' on background', false);
   }
   const theme = errors.length ? null : { schema: THEME_SCHEMA, version: THEME_VERSION,
     id: typeof doc.id === 'string' && /^[a-z0-9-]{1,48}$/.test(doc.id) ? doc.id : 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40),
@@ -900,17 +902,17 @@ function _showUpgradeModal(d) {
       '<div style="font-size:var(--fs-3xl);font-weight:700;margin-bottom:var(--space-1-5);">' +
         (isBudget ? 'Your trial budget is used up' : 'Your trial has ended') + '</div>' +
       (isBudget && spent ? '<div style="color:color-mix(in srgb, var(--yellow) 91%, var(--on-solid));font-size:var(--fs-3xl);font-weight:600;margin-bottom:var(--space-2-5);">$' + spent + ' of $' + budget + ' used</div>' : '') +
-      '<div style="color:color-mix(in srgb, var(--shade) 40%, var(--on-solid));font-size:var(--fs-lg);margin-bottom:var(--space-4);line-height:1.5;">Your workspace and workers are safe. Upgrade to keep your agents running.</div>' +
-      '<div style="background:color-mix(in srgb, var(--purple) 12%, var(--shade));border:1px solid color-mix(in srgb, var(--purple) 17%, var(--card));border-radius:var(--radius-xl);padding:var(--space-3-5) var(--space-4);text-align:left;margin-bottom:var(--space-4);">' +
+      '<div style="color:var(--dim);font-size:var(--fs-lg);margin-bottom:var(--space-4);line-height:1.5;">Your workspace and workers are safe. Upgrade to keep your agents running.</div>' +
+      '<div style="background:color-mix(in srgb, var(--purple) 12%, var(--bg));border:1px solid color-mix(in srgb, var(--purple) 17%, var(--card));border-radius:var(--radius-xl);padding:var(--space-3-5) var(--space-4);text-align:left;margin-bottom:var(--space-4);">' +
         '<div style="color:color-mix(in srgb, var(--purple) 47%, var(--text));font-size:var(--fs-md);font-weight:600;margin-bottom:var(--space-2);">What you get when you upgrade</div>' +
         ['Your workers made production-grade, with our team onboarding you',
          'A dedicated, isolated machine for your workloads',
          'Support and maintenance from the amux team',
          'Ongoing workflow creation, tuning, and teaching'].map(f =>
-          '<div style="color:color-mix(in srgb, var(--shade) 33%, var(--on-solid));font-size:var(--fs-md);padding:var(--space-0-5) 0 var(--space-0-5) var(--space-5);position:relative;"><span style="position:absolute;left:2px;color:var(--green);font-weight:700;">✓</span>' + f + '</div>').join('') +
+          '<div style="color:var(--dim);font-size:var(--fs-md);padding:var(--space-0-5) 0 var(--space-0-5) var(--space-5);position:relative;"><span style="position:absolute;left:2px;color:var(--green);font-weight:700;">✓</span>' + f + '</div>').join('') +
       '</div>' +
       '<div style="font-size:var(--fs-3xl);font-weight:700;color:color-mix(in srgb, var(--purple) 47%, var(--text));margin-bottom:var(--space-0-5);">$5,000/month</div>' +
-      '<div style="color:color-mix(in srgb, var(--shade) 47%, var(--on-solid));font-size:var(--fs-sm);margin-bottom:var(--space-3-5);">amux Platform · includes implementation &amp; enablement</div>' +
+      '<div style="color:var(--dim);font-size:var(--fs-sm);margin-bottom:var(--space-3-5);">amux Platform · includes implementation &amp; enablement</div>' +
       '<button onclick="_upgradeCheckout(\'platform\')" style="display:block;width:100%;min-height:44px;background:color-mix(in srgb, var(--purple) 80%, var(--card));color:var(--on-solid);border:none;border-radius:var(--radius-xl);padding:var(--space-3);font-size:var(--fs-xl);font-weight:600;cursor:pointer;margin-bottom:var(--space-2);">Talk to us &amp; get started</button>' +
       '<div id="upgrade-modal-err" style="color:color-mix(in srgb, var(--red) 80%, var(--on-solid));font-size:var(--fs-md);min-height:1.1em;"></div>' +
     '</div>';
@@ -36730,7 +36732,7 @@ function _peekShowLookupModal(query, result, loading) {
     modal = document.createElement('div');
     modal.id = 'peek-lookup-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 70%, transparent);z-index:10001;display:flex;align-items:center;justify-content:center;padding:var(--space-5);';
-    modal.innerHTML = '<div style="background:color-mix(in srgb, var(--purple) 10%, var(--bg));border:1px solid color-mix(in srgb, var(--shade) 73%, var(--on-solid));border-radius:var(--radius-2xl);max-width:560px;width:100%;max-height:80dvh;overflow:auto;padding:var(--space-5);box-shadow:var(--shadow-xl);color:color-mix(in srgb, var(--shade) 9%, var(--on-solid));position:relative;"><button id="peek-lookup-close" style="position:absolute;top:10px;right:12px;background:none;border:none;color:color-mix(in srgb, var(--shade) 33%, var(--on-solid));font-size:var(--fs-3xl);cursor:pointer;">&#x2715;</button><div style="font-size:var(--fs-xs);color:color-mix(in srgb, var(--shade) 47%, var(--on-solid));text-transform:uppercase;letter-spacing:0.05em;margin-bottom:var(--space-1-5);">Looking up</div><div id="peek-lookup-query" style="font-family:var(--font-mono);font-size:var(--fs-lg);background:color-mix(in srgb, var(--text) 7%, var(--shade));padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);margin-bottom:var(--space-3-5);word-break:break-word;max-height:120px;overflow:auto;"></div><div style="font-size:var(--fs-xs);color:color-mix(in srgb, var(--shade) 47%, var(--on-solid));text-transform:uppercase;letter-spacing:0.05em;margin-bottom:var(--space-1-5);">Explanation</div><div id="peek-lookup-result" style="font-size:var(--fs-xl);line-height:1.55;white-space:pre-wrap;"></div></div>';
+    modal.innerHTML = '<div style="background:color-mix(in srgb, var(--purple) 10%, var(--bg));border:1px solid color-mix(in srgb, var(--shade) 73%, var(--on-solid));border-radius:var(--radius-2xl);max-width:560px;width:100%;max-height:80dvh;overflow:auto;padding:var(--space-5);box-shadow:var(--shadow-xl);color:var(--dim);position:relative;"><button id="peek-lookup-close" style="position:absolute;top:10px;right:12px;background:none;border:none;color:var(--dim);font-size:var(--fs-3xl);cursor:pointer;">&#x2715;</button><div style="font-size:var(--fs-xs);color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:var(--space-1-5);">Looking up</div><div id="peek-lookup-query" style="font-family:var(--font-mono);font-size:var(--fs-lg);background:color-mix(in srgb, var(--text) 7%, var(--shade));padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);margin-bottom:var(--space-3-5);word-break:break-word;max-height:120px;overflow:auto;"></div><div style="font-size:var(--fs-xs);color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:var(--space-1-5);">Explanation</div><div id="peek-lookup-result" style="font-size:var(--fs-xl);line-height:1.55;white-space:pre-wrap;"></div></div>';
     document.body.appendChild(modal);
     modal.querySelector('#peek-lookup-close').onclick = () => { modal.style.display = 'none'; };
     modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
@@ -38077,7 +38079,7 @@ const _BUILT_IN_STATUS_STYLE = {
   'doing':     {bg:'color-mix(in srgb, var(--yellow) 15%, transparent)',color:'var(--yellow)',border:'color-mix(in srgb, var(--yellow) 40%, transparent)',dot:'var(--yellow)'},
   'done':      {bg:'color-mix(in srgb, var(--green) 15%, transparent)',color:'var(--green)',border:'color-mix(in srgb, var(--green) 40%, transparent)',dot:'var(--green)'},
   'verified':  {bg:'color-mix(in srgb, var(--cyan) 15%, transparent)',color:'var(--cyan)',border:'color-mix(in srgb, var(--cyan) 40%, transparent)',dot:'var(--cyan)'},
-  'discarded': {bg:'color-mix(in srgb, var(--dim) 8%, transparent)',color:'color-mix(in srgb, var(--dim) 50%, transparent)',border:'color-mix(in srgb, var(--dim) 20%, transparent)',dot:'color-mix(in srgb, var(--dim) 40%, transparent)'},
+  'discarded': {bg:'color-mix(in srgb, var(--dim) 8%, transparent)',color:'var(--dim)',border:'color-mix(in srgb, var(--dim) 20%, transparent)',dot:'color-mix(in srgb, var(--dim) 40%, transparent)'},
 };
 // Light-mode versions of the same statuses — opaque/dark enough on white
 // Tokens adapt to the theme, so light mode shares the same map.
@@ -39212,10 +39214,10 @@ function _mapRenderMarkers() {
         '<div style="font-weight:600;margin-bottom:var(--space-1)">' + escHtml(pin.name||'Unnamed') + '</div>' +
         _mapStatusLine(pin) +
         _mapMetaRow(pin) +
-        (pin.desc ? '<div style="font-size:var(--fs-sm);color:color-mix(in srgb, var(--shade) 47%, var(--on-solid));margin-bottom:var(--space-1)">' + escHtml(pin.desc) + '</div>' : '') +
-        (notesPreview ? '<div style="font-size:var(--fs-xs);color:color-mix(in srgb, var(--shade) 33%, var(--on-solid));margin-bottom:var(--space-1);white-space:pre-wrap;line-height:1.4;border-left:2px solid color-mix(in srgb, var(--shade) 73%, var(--on-solid));padding-left:var(--space-1-5);">' + escHtml(notesPreview) + '</div>' : '') +
+        (pin.desc ? '<div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-1)">' + escHtml(pin.desc) + '</div>' : '') +
+        (notesPreview ? '<div style="font-size:var(--fs-xs);color:var(--dim);margin-bottom:var(--space-1);white-space:pre-wrap;line-height:1.4;border-left:2px solid color-mix(in srgb, var(--shade) 73%, var(--on-solid));padding-left:var(--space-1-5);">' + escHtml(notesPreview) + '</div>' : '') +
         (tagChips ? '<div style="margin-bottom:var(--space-1)">' + tagChips + '</div>' : '') +
-        '<div style="font-size:var(--fs-2xs);color:color-mix(in srgb, var(--shade) 40%, var(--on-solid));margin-bottom:var(--space-1-5)">' + parseFloat(pin.lat).toFixed(5) + ', ' + parseFloat(pin.lng).toFixed(5) + ' \u2022 <a href="' + _mapGeoMapsUrl(pin.lat, pin.lng, pin.name) + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Google Maps \u2197</a></div>' +
+        '<div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-1-5)">' + parseFloat(pin.lat).toFixed(5) + ', ' + parseFloat(pin.lng).toFixed(5) + ' \u2022 <a href="' + _mapGeoMapsUrl(pin.lat, pin.lng, pin.name) + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Google Maps \u2197</a></div>' +
         '<button onclick="_mapOpenPinModal(\x27' + pin.id + '\x27)" style="padding:var(--space-0-5) var(--space-2);font-size:var(--fs-sm);cursor:pointer;border:1px solid color-mix(in srgb, var(--shade) 33%, var(--on-solid));border-radius:var(--radius-sm);background:transparent;color:inherit">Edit</button>' +
       '</div>'
     );
@@ -40552,7 +40554,7 @@ function _mapMetaRow(pin) {
   var parts = [];
   if (typeof pin.rating === 'number') {
     parts.push('<span style="color:var(--yellow);font-weight:600">★ ' + pin.rating.toFixed(1) + '</span>' +
-      (pin.ratingCount ? '<span style="color:color-mix(in srgb, var(--shade) 40%, var(--on-solid))"> (' + pin.ratingCount + ')</span>' : ''));
+      (pin.ratingCount ? '<span style="color:var(--dim)"> (' + pin.ratingCount + ')</span>' : ''));
   }
   if (typeof pin.priceLevel === 'number') {
     parts.push('<span style="color:var(--green);font-weight:600">' + (pin.priceLevel === 0 ? 'Free' : '$'.repeat(pin.priceLevel)) + '</span>');
@@ -40603,7 +40605,7 @@ function _mapGeoSelect(idx) {
     '<div style="min-width:200px;font-family:inherit;font-size:var(--fs-md)">' +
     (staticUrl ? '<img src="' + staticUrl + '" style="width:100%;border-radius:var(--radius-md);margin-bottom:var(--space-1-5);display:block" onerror="this.style.display=\'none\'">' : '') +
     '<strong>' + escHtml(name) + '</strong><br>' +
-    '<span style="font-size:var(--fs-2xs);color:color-mix(in srgb, var(--shade) 47%, var(--on-solid))">' + escHtml(r.display_name) + '</span><br>' +
+    '<span style="font-size:var(--fs-2xs);color:var(--dim)">' + escHtml(r.display_name) + '</span><br>' +
     '<div style="margin-top:var(--space-1-5);display:flex;gap:var(--space-1-5);align-items:center">' +
     '<button onclick="_mapGeoSavePin(' + idx + ')" style="padding:var(--space-0-5) var(--space-2-5);font-size:var(--fs-sm);cursor:pointer;background:var(--accent);color:var(--on-solid);border:none;border-radius:var(--radius-md);font-family:inherit">+ Save as Pin</button>' +
     '<a href="' + mapsUrl + '" target="_blank" rel="noopener" style="font-size:var(--fs-2xs);color:var(--accent);text-decoration:none">View on Google Maps ↗</a>' +
