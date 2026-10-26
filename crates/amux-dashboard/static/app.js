@@ -29553,6 +29553,9 @@ function _fileHashSync(path) {
   try {
     const h = location.hash;
     if (h && !h.startsWith('#path=') && h !== '#view=files') return;
+    // A split pane's page (?peekEmbed=) is addressed by its worker and tab; a
+    // file opened from its Chat must not rewrite that address.
+    if (/[?&]peekEmbed=/.test(location.search)) return;
     const want = path ? '#path=' + _encodeHashPath(path)
       : (activeView === 'files' && _filesPath && _filesPath !== '/' ? '#path=' + _encodeHashPath(_filesPath) : '');
     if (h !== want) history.replaceState(history.state, '', location.pathname + location.search + want);
@@ -30573,9 +30576,19 @@ async function loadFiles(path) {
   const body = document.getElementById('files-body');
   body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
   _filesPath = path;
-  // Update URL hash so path is shareable / bookmarkable (hash works in PWA mode)
+  // Update URL hash so path is shareable / bookmarkable (hash works in PWA mode).
+  // A file open over the listing keeps the address: the listing behind a
+  // deep-linked or just-opened file loads after it, and writing the folder
+  // here made the next reload show the folder (4f6fe1ad5's CI red, run 40328729066).
   try {
-    history.replaceState({}, '', location.pathname + (path && path !== '/' ? '#path=' + _encodeHashPath(path) : ''));
+    const ov = document.getElementById('file-overlay');
+    const openFile = ov && ov.classList.contains('active') ? ov.dataset.path : '';
+    if (openFile) {
+      try { amuxTrack('file_hash_kept_open_file', {measured: true, n_considered: 1}); } catch (_) {}
+      history.replaceState({}, '', location.pathname + location.search + '#path=' + _encodeHashPath(openFile));
+    } else {
+      history.replaceState({}, '', location.pathname + (path && path !== '/' ? '#path=' + _encodeHashPath(path) : ''));
+    }
   } catch(e) {}
   const srch = document.getElementById('files-search'); if (srch) srch.value = '';
   _updateFilesCwdBtn();
