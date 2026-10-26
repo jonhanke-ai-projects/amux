@@ -1407,7 +1407,22 @@ if (!ZOOM_STEPS.includes(_zoomLevel)) _zoomLevel = 100;
 // Safari, the macOS web app and other WebKit browsers that are not Chromium.
 function _isAppleWebKit() {
   const ua = navigator.userAgent || '';
-  return /AppleWebKit/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua);
+  // The Mac app is WebKit too. Its user agent used to be only "Amux-Desktop/2.0"
+  // (no "AppleWebKit"), so it took the CSS-zoom path WebKit cannot use: at the
+  // owner's 110% its zoom-mode beacon read apple_webkit:false, mode css-zoom,
+  // and the spreadsheet editor clicked the wrong cell (2026-10-26).
+  return /Amux-Desktop/.test(ua) || (/AppleWebKit/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua));
+}
+// Canvas editors map the pointer for an unzoomed page, so under the root's CSS
+// zoom a click lands on the wrong place: Draw's strokes 100-200px off (Ethan,
+// 2026-10-13), and the spreadsheet editor's clicks on the wrong cell (Ethan,
+// 2026-10-26: "i click somewhere the cell clicked is wrong"; measured in
+// Chromium at 125%, a click on row 20 selected row 13). While either is open
+// the root zooms by font size instead, which leaves canvases at scale 1.
+let _xlsxCanvasOpen = false;
+function _zoomFontModeSync(view) {
+  const fm = (view || activeView) === 'draw' || _xlsxCanvasOpen;
+  if (fm !== !!window._zoomFontMode) { window._zoomFontMode = fm; _applyZoom(); }
 }
 function _applyZoom() {
   // CSS zoom on the root breaks position:fixed geometry in WebKit — a zoomed
@@ -29839,6 +29854,7 @@ function _uvPatchWorkbook(wb, before, after) {
 
 // -- Open / save / close ------------------------------------------------------
 function _xlsxEditorTeardown() {
+  if (_xlsxCanvasOpen) { _xlsxCanvasOpen = false; _zoomFontModeSync(); }
   if (!_xlsxEd) return;
   try { _xlsxEd.sub && _xlsxEd.sub.dispose && _xlsxEd.sub.dispose(); } catch (e) {}
   try { _xlsxEd.univer.dispose(); } catch (e) {}
@@ -29963,6 +29979,7 @@ function _xlsxBeacon(verdict, changed, error) {
 }
 
 async function _openXlsxPreview(path) {
+  _xlsxCanvasOpen = true; _zoomFontModeSync();   // before the editor measures its canvas
   _fileData = null;
   _fileViewMode = 'preview';
   const titleEl = document.getElementById('file-title');
@@ -38371,7 +38388,7 @@ function switchView(view) {
   if (typeof _peekOpenGeneration !== 'undefined' && !peekSession) _peekOpenGeneration++;
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  { const fm = view === 'draw'; if (fm !== !!window._zoomFontMode) { window._zoomFontMode = fm; _applyZoom(); } }
+  _zoomFontModeSync(view);
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}

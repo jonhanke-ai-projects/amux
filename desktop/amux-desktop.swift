@@ -420,8 +420,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         if !cfg.userContentController.userScripts.contains(where: { $0.source == windowLabelJS }) {
             cfg.userContentController.addUserScript(WKUserScript(source: windowLabelJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         }
+        // WebKit's own user agent with the app's name after it. A custom agent of
+        // only "Amux-Desktop/2.0" hid that this is WebKit, so the dashboard took
+        // its CSS-zoom path, and at 110% the spreadsheet editor selected the
+        // wrong cell (2026-10-26; the page's zoom-mode beacon read apple_webkit:false).
+        cfg.applicationNameForUserAgent = "Amux-Desktop/2.0"
         webView = WKWebView(frame: .zero, configuration: cfg)
-        webView.customUserAgent = "Amux-Desktop/2.0"
         webView.allowsMagnification = true
         webView.allowsBackForwardNavigationGestures = true
 

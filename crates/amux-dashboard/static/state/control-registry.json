@@ -5292,8 +5292,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_xlsxEditorTeardown": {
+      "kind": "command._xlsxEditorTeardown",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_xlsxSave": {
       "kind": "command._xlsxSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_zoomFontModeSync": {
+      "kind": "command._zoomFontModeSync",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
