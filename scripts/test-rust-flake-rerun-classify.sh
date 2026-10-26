@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cells for scripts/rust-flake-rerun-classify.sh. Logs come from fixtures.
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.."
 FIX=$(mktemp -d); trap 'rm -rf "$FIX"' EXIT
 printf 'error writing file `target/debug/deps/x` to disk\nCaused by:\n  failed to unpack `target/debug/deps/x` into `/w/target/debug/deps/x`\nCaused by:\n  incomplete frame\n' > "$FIX/101"
@@ -10,7 +10,7 @@ export FLAKE_LOG_CMD="cat '$FIX'/\$1"
 fails=0
 cell() { # label, expected exit, expected verdict fragment, input
   local out code
-  out=$(printf '%b' "$4" | scripts/rust-flake-rerun-classify.sh); code=$?
+  code=0; out=$(printf '%b' "$4" | scripts/rust-flake-rerun-classify.sh) || code=$?
   if [ "$code" = "$2" ] && printf '%s' "$out" | grep -q -- "$3"; then echo "  ok   $1"
   else echo "  FAIL $1 (exit $code: $out)"; fails=$((fails + 1)); fi
 }
