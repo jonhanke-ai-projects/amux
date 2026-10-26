@@ -2,6 +2,7 @@ import {test, expect} from './fixtures';
 import {mkdtemp, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {cleanup} from './teardown';
 
 // A worker texts the owner a link to a markdown note to answer in place
 // (Ethan, 2026-10-26: the self worker's 14-day check-in). #edit=<path> opens
@@ -30,6 +31,6 @@ test('#edit= opens a markdown file in Edit, #path= in Preview', async ({page}) =
     await expect.poll(() => page.evaluate('_fileData && _fileData.path'), {timeout: 15000}).toBe(txt);
     await expect(page.locator('#file-tab-edit')).not.toHaveClass(/active/);
   } finally {
-    await rm(dir, {recursive: true, force: true});
+    await cleanup('remove the fixture folder', () => rm(dir, {recursive: true, force: true}));
   }
 });
