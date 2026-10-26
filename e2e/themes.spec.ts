@@ -147,31 +147,51 @@ test('themes change colors only: the layout of every view is identical under eac
     await page.waitForTimeout(1500);
     // The two Settings rows that NAME the theme ("Light mode", the picker's
     // label) change text with it; that is content, not layout.
-    const boxes = async () => page.evaluate(() => [...document.querySelectorAll('body *')].slice(0, 1500).map(e => {
-      if (e.closest('.settings-row')?.querySelector('#theme-select, #theme-label')) return 'names-the-theme';
-      const r = e.getBoundingClientRect(); return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)].join(',');
-    }));
+    // Boxes are keyed by element, not by position in the page: a node added
+    // or removed anywhere (Settings closing, the file list refreshing) shifts
+    // every later position, which read as hundreds of moves (6516a0006's CI
+    // red: "files: most of the page holds still", 89 received).
+    const boxes = async () => page.evaluate(() => {
+      const w = window as any;
+      w.__boxIds = w.__boxIds || new WeakMap();
+      w.__boxNext = w.__boxNext || 0;
+      const out: Record<string, string> = {};
+      for (const e of [...document.querySelectorAll('body *')].slice(0, 1500)) {
+        let id = w.__boxIds.get(e);
+        if (id === undefined) { id = w.__boxNext++; w.__boxIds.set(e, id); }
+        if (e.closest('.settings-row')?.querySelector('#theme-select, #theme-label')) { out[id] = 'names-the-theme'; continue; }
+        const r = e.getBoundingClientRect(); out[id] = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)].join(',');
+      }
+      return out;
+    });
     await page.evaluate(() => (window as any).themeActivate('amux-dark', { local: true }));
     const a = await boxes();
     await page.waitForTimeout(300);
-    // Live content (a ticking "3s ago") moves on its own; measure it out.
+    // Live content (a ticking "3s ago") moves on its own; measure it out. A
+    // node that was replaced is not a move, but it cannot be compared either.
     const again = await boxes();
-    const live = new Set(a.map((b, i) => b !== again[i] ? i : -1).filter(i => i >= 0));
-    const steady = (list: string[]) => list.filter((_, i) => !live.has(i));
-    expect(live.size, `${v}: most of the page holds still`).toBeLessThan(a.length / 20);
+    const live = new Set(Object.keys(a).filter(k => again[k] !== a[k]));
+    const moved = Object.keys(a).filter(k => k in again && again[k] !== a[k]).length;
+    expect(moved, `${v}: most of the page holds still`).toBeLessThan(Object.keys(a).length / 20);
+    // Elements present in both samples and still, as [element, box] pairs.
+    const steady = (base: Record<string, string>, got: Record<string, string>) =>
+      Object.keys(base).filter(k => !live.has(k) && k in got).map(k => [k, got[k]]);
     for (const id of ['dracula', 'atom-one-light', 'ayu-mirage']) {
       await page.evaluate(id => (window as any).themeActivate(id, { local: true }), id);
       let got = await boxes();
-      if (JSON.stringify(steady(got)) !== JSON.stringify(steady(a))) {
+      let base = a;
+      if (JSON.stringify(steady(base, got)) !== JSON.stringify(steady(base, base))) {
         // A relative time ("1m ago") can tick between samples. Re-measure the
         // default theme once; a change the theme made shows up both times.
         await page.evaluate(() => (window as any).themeActivate('amux-dark', { local: true }));
-        const base = await boxes();
-        base.forEach((b, i) => { if (b !== a[i]) live.add(i); });
+        base = await boxes();
+        Object.keys(a).forEach(k => { if (base[k] !== a[k]) live.add(k); });
         await page.evaluate(id => (window as any).themeActivate(id, { local: true }), id);
         got = await boxes();
-        expect(steady(got), `${v} under ${id}`).toEqual(steady(base));
+        expect(steady(base, got), `${v} under ${id}`).toEqual(steady(base, base).filter(([k]) => k in got));
       }
+      // The comparison really covered the page, not a handful of survivors.
+      expect(steady(base, got).length, `${v} under ${id}: elements compared`).toBeGreaterThan(Object.keys(a).length / 2);
     }
   }
 });
