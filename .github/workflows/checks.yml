@@ -433,6 +433,8 @@ jobs:
           set -uo pipefail
           ./scripts/test-sync-checkout-override.sh
           ./scripts/test-contribute.sh
+      - name: amux-cloud opens a Cloud instance's workers over SSH as its amux user, messages byte for byte
+        run: ./scripts/test-amux-cloud.sh
       - name: Python reading a shared site-packages defaults grpc to fork-safe (Mac crashes RCA 20261018-105230)
         run: |
           set -uo pipefail
