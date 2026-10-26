@@ -29570,6 +29570,56 @@ function _univerShimReact() {
   }
 }
 
+// Excel's General format in a column too narrow for the number drops decimal
+// places first (96670.39, 96670.4, 96670) and only goes to scientific
+// notation when the whole part does not fit. Univer 1.0.3 goes straight to
+// scientific (9.7E+04), and does it inside a private function of its
+// renderer. _univerPatchGeneral puts one call to _xlsxGeneralFit at the top of
+// that function; null keeps Univer's own answer.
+function _xlsxGeneralFit(v, text, fits) {
+  // Excel shows the number whole when it fits inside the cell's padding.
+  // Univer also wants a spare digit's width, so 96670.39 did not fit a
+  // default 64px column that Excel shows it in.
+  if (fits(String(text))) return text;
+  const a = Math.abs(v);
+  if (!(a >= 1e-4 && a < 1e11)) return null;
+  const m = /\.(\d+)$/.exec(String(text));
+  if (!m) return null;
+  for (let d = m[1].length - 1; d >= 0; d--) {
+    let t = v.toFixed(d);
+    if (t.includes('.')) t = t.replace(/0+$/, '').replace(/\.$/, '');
+    if (t === '-0') t = '0';
+    if (fits(t)) return t;
+  }
+  return null;
+}
+// Matched by shape, not by its minified name. A miss loads Univer unpatched and
+// says so in the xlsx-editor beacon (general_fmt_unpatched).
+const _UNIVER_GENERAL_FN = /(function \w+\((\w+),(\w+),(\w+),(\w+)\)\{if\(\5<=0\)return \3;let (\w+)=(\w+)\.getMeasureText\(`0`,\4\)\.width;)(?=if\(\7\.getMeasureText\(\3,\4\)\.width\+\6<=\5\)return \3;)/;
+function _univerPatchGeneral(src) {
+  let hit = false;
+  const out = src.replace(_UNIVER_GENERAL_FN, (all, head, v, text, font, width, _pad, meas) => {
+    hit = true;
+    return head + 'if(typeof _xlsxGeneralFit==`function`){let __f=_xlsxGeneralFit(' + v + ',' + text + ',s=>' + meas
+      + '.getMeasureText(s,' + font + ').width<=' + width + ');if(__f!==null)return __f}';
+  });
+  return hit ? out : null;
+}
+let _univerGeneralPatched = null;
+async function _univerRendererSrc(url) {
+  try {
+    const r = await fetch(url, { mode: 'cors' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const patched = _univerPatchGeneral(await r.text());
+    if (!patched) throw new Error('the General-format function was not found');
+    _univerGeneralPatched = true;
+    return URL.createObjectURL(new Blob([patched], { type: 'text/javascript' }));
+  } catch (e) {
+    _univerGeneralPatched = String(e && e.message || e);
+    return url;
+  }
+}
+
 function _loadUniver() {
   if (_univerLoading) return _univerLoading;
   const U = 'https://unpkg.com/';
@@ -29599,12 +29649,15 @@ function _loadUniver() {
         + (_UNIVER_LOAD_BUDGET_MS / 1000) + 's: ' + [...pending].map(x => x.replace(U, '')).join(', '))), _UNIVER_LOAD_BUDGET_MS);
     });
     try {
+      const renderUrl = U + '@univerjs/engine-render@' + _UNIVER_V + '/lib/umd/index.js';
+      const renderSrc = _univerRendererSrc(renderUrl);
       await Promise.race([track(U + 'react@18.3.1/umd/react.production.min.js'), stall]);
       await Promise.race([track(U + 'react-dom@18.3.1/umd/react-dom.production.min.js'), stall]);
       _univerShimReact();
       const rest = [U + 'rxjs@7.8.1/dist/bundles/rxjs.umd.min.js', U + 'echarts@5.6.0/dist/echarts.min.js',
         U + '@wendellhu/redi@1.1.2/dist/umd/index.js', U + '@wendellhu/redi@1.1.2/dist/umd/react-bindings/index.js',
-        ..._UNIVER_PKGS.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/index.js'),
+        ...await (async () => { const r = await Promise.race([renderSrc, stall]);
+          return _UNIVER_PKGS.map(p => p === 'engine-render' ? r : U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/index.js'); })(),
         ..._UNIVER_FACADES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/facade.js'),
         ..._UNIVER_LOCALES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/locale/en-US.js'),
         U + 'exceljs@4.4.0/dist/exceljs.min.js'];
@@ -29940,6 +29993,8 @@ async function _openXlsxEditor(path, body) {
     if (!plugin) { tools.missing.push(g); continue; }
     try { univer.registerPlugin(plugin); tools.loaded.push(g); } catch (e) { tools.missing.push(g + ':' + (e && e.message || e)); }
   }
+  if (_univerGeneralPatched !== true) fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'general_fmt_unpatched', why: _univerGeneralPatched, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
   if (tools.missing.length) fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
     body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'tools_missing', missing: tools.missing, loaded: tools.loaded.length,
       measured: true, n_considered: _UNIVER_TOOL_PLUGINS.length, ver: APP_VER }) }).catch(() => {});

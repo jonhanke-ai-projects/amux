@@ -104,3 +104,27 @@ test('opening and clicking is not an edit, and Escape cancels a cell without clo
     await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));
   }
 });
+
+// Excel's General format (Ethan, 2026-10-26, parity with Excel): a number too
+// long for its column loses decimal places before it turns scientific.
+// Before, a default-width column showed 96670.39 as 9.7E+04.
+test('a General number in a narrow column rounds like Excel before going scientific', async ({ page }) => {
+  test.setTimeout(150_000);
+  const dir = await mkdtemp(join(tmpdir(), 'amux-xlsx-general-'));
+  try {
+    execFileSync('python3', [join(__dirname, 'file-view-fixtures.py'), dir, 'END-OF-FILE']);
+    await page.goto('/');
+    await page.evaluate(p => (window as any).openFilePreview(p), join(dir, 'workbook.xlsx'));
+    await page.waitForFunction(() => _xlsxEd && _xlsxEd.api && _xlsxEd.api.getActiveWorkbook(), null, { timeout: 90_000 });
+    // The renderer the page loaded is the patched one, so the rule below is live.
+    expect(await page.evaluate(() => (0, eval)('_univerGeneralPatched'))).toBe(true);
+    const fit = (chars: number) => page.evaluate(c => (window as any)._xlsxGeneralFit(96670.39, '96670.39', (s: string) => s.length <= c), chars);
+    expect(await fit(8)).toBe('96670.39');
+    expect(await fit(7)).toBe('96670.4');
+    expect(await fit(5)).toBe('96670');
+    expect(await fit(4)).toBe(null);   // the whole part does not fit: scientific, as in Excel
+    await page.evaluate(() => (window as any).closeFilePreview());
+  } finally {
+    await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));
+  }
+});
