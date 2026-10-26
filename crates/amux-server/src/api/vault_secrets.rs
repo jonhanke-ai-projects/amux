@@ -758,6 +758,15 @@ fn holders(ledger: &serde_json::Map<String, Value>, running: &std::collections::
 // HTTP
 // ---------------------------------------------------------------------------
 
+/// The admin member making this request, if it is one and speaks as itself:
+/// a request carrying any other session (a lane on this machine holding an
+/// admin's cookie) is not that person.
+fn admin_member(headers: &HeaderMap) -> Option<String> {
+    let actor = super::org::local_member_actor(headers)?;
+    let own = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).is_none_or(|s| s.trim() == actor);
+    (super::org::local_member_is_admin(headers) && own && !headers.contains_key("x-amux-worker")).then(|| actor.to_string())
+}
+
 fn worker_origin(headers: &HeaderMap) -> Option<String> {
     ["x-amux-session", "x-amux-worker"].iter().find_map(|h| {
         headers
@@ -790,6 +799,17 @@ fn refuse_worker(home: &Path, who: &str, action: &str) -> Response {
 fn owner_only(state: &super::AppState, headers: &HeaderMap, uri: &Uri, home: &Path, action: &str) -> Result<(), Box<Response>> {
     if let Some(w) = super::session_verbs::admin_origin(headers, "vault_secrets") {
         audit(home, json!({"ts": now_f64(), "event": "secret_admin_access", "action": action, "by": w}));
+        return Ok(());
+    }
+    // A person the owner made an admin, signed in as themselves (a verified
+    // member cookie; the middleware stamps their session as member:<email>, which
+    // the worker check below would otherwise read as a lane). A request that
+    // names any other session is a lane, admin cookie or not: only the member's
+    // own stamped session passes.
+    if let Some(who) = admin_member(headers) {
+        audit(home, json!({"ts": now_f64(), "event": "secret_admin_member_access", "action": action, "by": who}));
+        tracing::info!(action, who = %who, measured = true, n_considered = 1, verdict = "vault_admin_member",
+            "vault: an admin member managed secrets");
         return Ok(());
     }
     if let Some(w) = worker_origin(headers) {
@@ -1440,6 +1460,26 @@ pub fn routes() -> Router<super::AppState> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_an_admin_speaking_as_itself_passes_the_admin_gate() {
+        use axum::http::HeaderValue;
+        let admin = crate::api::org::test_member_headers("e@x.co", true);
+        assert_eq!(super::admin_member(&admin).as_deref(), Some("member:e@x.co"));
+        let mut own = admin.clone();
+        own.insert("x-amux-session", HeaderValue::from_static("member:e@x.co"));
+        assert!(super::admin_member(&own).is_some(), "the member's own stamped session");
+        let mut lane = admin.clone();
+        lane.insert("x-amux-session", HeaderValue::from_static("rothco"));
+        assert_eq!(super::admin_member(&lane), None, "a lane holding an admin's cookie passed");
+        let mut worker = admin.clone();
+        worker.insert("x-amux-worker", HeaderValue::from_static("rothco"));
+        assert_eq!(super::admin_member(&worker), None);
+        assert_eq!(super::admin_member(&crate::api::org::test_member_headers("e@x.co", false)), None, "a plain member");
+        let mut forged = HeaderMap::new();
+        forged.insert("x-amux-local-member-admin", HeaderValue::from_static("1"));
+        assert_eq!(super::admin_member(&forged), None, "an admin marker without a verified member");
+    }
+
     use super::*;
 
     fn home() -> tempfile::TempDir {

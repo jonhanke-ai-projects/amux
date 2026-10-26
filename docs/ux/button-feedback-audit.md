@@ -1593,6 +1593,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Save | `saveNewServer` | onclick |
 | index.html | Edit | `schedCmdSwitchMode` | onclick |
 | index.html | Preview | `schedCmdSwitchMode` | onclick |
+| app.js | el.querySelector('a') | `setTimeout` | addEventListener |
 | app.js | this.parentElement.remove(),250)&gt; | `setTimeout` | onclick |
 | app.js | ⎇ ${esc(displayBranch)}${conflictWarn} | `showBranchPopover` | onclick |
 | index.html | Host pressure | `showHostPressure` | onclick |

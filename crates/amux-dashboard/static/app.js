@@ -53566,6 +53566,7 @@ async function loadTeamSection() {
             <span style="display:flex;align-items:center;gap:var(--space-1-5);color:var(--dim);font-size:var(--fs-xs);">
               ${esc(m.team_name || 'Legacy access')}
               <button class="btn" data-member-scope="${esc(m.id)}" data-email="${esc(m.email || '')}" data-team="${esc(m.team_id || '')}" onclick="openMemberScope(this.dataset.memberScope,this.dataset.email,this.dataset.team)" style="font-size:var(--fs-3xs);padding:1px var(--space-1-5);">change</button>
+              ${m.role === 'owner' ? '' : `<label class="ui-help" title="An admin manages this server's vault secrets, with their own name in the log. Needs Everyone (global) access." style="display:flex;align-items:center;gap:var(--space-0-5);"><input type="checkbox" data-member-admin="${esc(m.id)}" ${m.role === 'admin' ? 'checked' : ''} onchange="setMemberAdmin(this.dataset.memberAdmin,this.checked,this)">admin</label>`}
               ${m.role === 'owner' ? '' : `<button class="btn danger" data-member-remove="${esc(m.id)}" data-email="${esc(m.email || m.name || '')}" onclick="removeMember(this.dataset.memberRemove,this.dataset.email)" style="font-size:var(--fs-3xs);padding:1px var(--space-1-5);">remove</button>`}
             </span>
           </div>`).join('');
@@ -53581,6 +53582,14 @@ async function loadTeamSection() {
       list.innerHTML = html || '<span style="color:var(--dim);font-size:var(--fs-sm);">No members yet — invite someone!</span>';
     }
   } catch(e) {}
+}
+
+// The host owner makes a member an admin (PATCH role): an admin manages vault secrets.
+async function setMemberAdmin(id, on, box) {
+  const r = await fetch('/api/org/members/' + encodeURIComponent(id), {method: 'PATCH',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({role: on ? 'admin' : 'member'})}).catch(() => null);
+  if (!r || !r.ok) { if (box) box.checked = !on; showToast('Role not changed'); return; }
+  showToast(on ? 'Admin: can manage vault secrets' : 'No longer an admin');
 }
 
 async function deleteInvite(token) {

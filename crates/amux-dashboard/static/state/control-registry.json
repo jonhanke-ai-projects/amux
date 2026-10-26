@@ -6408,6 +6408,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "setMemberAdmin": {
+      "kind": "command.setMemberAdmin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "setOnline": {
       "kind": "command.setOnline",
       "feedback_required": true,
