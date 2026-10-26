@@ -3365,6 +3365,15 @@ async function _uiGuideDialog() {
   const output = document.getElementById('ui-guide-feedback');
   if (output) output.textContent = confirmed ? 'Example confirmed.' : 'Example cancelled.';
 }
+// A computed color's channels on a 0-255 scale, plus alpha when present.
+// getComputedStyle reports color-mix() and other modern colors as
+// color(srgb r g b / a) with channels 0-1; reading those as 0-255 made every
+// themed surface look black on black (680b0ecd3's CI red: upgrade-modal
+// "low-contrast" on a readable dialog).
+function _cssColorChannels(value) {
+  const n = (String(value || '').match(/-?[\d.]+(?:e-?\d+)?/g) || []).map(Number);
+  return /^\s*color\(srgb\b/.test(value || '') ? n.map((v, i) => i < 3 ? v * 255 : v) : n;
+}
 function _uiComponentCheck(root = document) {
   let considered = 0;
   const issues = [];
@@ -3377,7 +3386,7 @@ function _uiComponentCheck(root = document) {
     considered++;
     if (innerWidth <= 600 && rect.height < 43.5) issues.push((button.id || button.tagName.toLowerCase()) + ':small-control');
     if (!button.matches('.btn.primary:not(:disabled)')) return;
-    const rgb = value => (value.match(/[\d.]+/g) || []).map(Number);
+    const rgb = _cssColorChannels;
     const bg = rgb(style.backgroundColor), fg = rgb(style.color);
     if (bg.length < 3 || fg.length < 3 || (bg.length === 4 && bg[3] !== 1)) return;
     const a = luminance(bg), b = luminance(fg);
@@ -3445,7 +3454,7 @@ function _modalLayoutCheck() {
     }
     const surface = box.matches('.conn-picker') || root.matches('#team-scope-modal,#jrnl-config-overlay,.amux-workspace-dialog,#upgrade-modal') ? getComputedStyle(box) : null;
     if (surface) {
-      const rgb = value => (value.match(/[\d.]+/g) || []).map(Number);
+      const rgb = _cssColorChannels;
       const bg = rgb(surface.backgroundColor), fg = rgb(surface.color);
       const lum = color => color.slice(0,3).reduce((sum, v, i) => {
         v /= 255; return sum + [0.2126,0.7152,0.0722][i] * (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
@@ -17582,7 +17591,21 @@ function _peekAgentsPaint() {
   if (!nav) return;
   const state = _peekAgents;
   const isChat = _peekTab === 'chat' || (typeof _peekChatTarget === 'function' && !!_peekChatTarget());
+  // Showing or hiding the navigator changes #peek-body's top padding (CSS
+  // :has rule, 58px on phones), which moves the output under a fixed
+  // scrollTop. A selected search hit or message that this leaves out of view
+  // (pushed off the bottom, or under the navigator) is brought back the way a
+  // jump places it (680b0ecd3's CI red: the subagent list arriving pushed a
+  // search hit below a phone's visible output).
+  const wasHidden = nav.hidden;
   nav.hidden = isChat || (!state.items.length && !state.error);
+  if (wasHidden !== nav.hidden && !isChat) {
+    const sel = document.querySelector('#peek-body .peek-highlight.current, #peek-body .peek-msg-current');
+    if (sel && !_peekJumpGeometry(sel).visible) {
+      _peekJumpTo(sel);
+      try { amuxTrack('peek_agent_nav_selection_kept', {measured: true, n_considered: 1}); } catch (_) {}
+    }
+  }
   const index = state.selected ? state.items.findIndex(s=>s.id===state.selected.id && s.conversation===state.selected.conversation)+1 : 0;
   const label = document.getElementById('peek-agent-label');
   const silent = state.items.filter(s => s.state === 'silent').length;
@@ -55853,7 +55876,7 @@ function _hostStateColor(s) {
 // in local diagnostics instead of only in a screenshot (AMUX-4362).
 function _hostContrastCheck() {
   const luminance = color => {
-    const rgb = (color.match(/[\d.]+/g) || []).slice(0, 3).map(Number).map(v => {
+    const rgb = _cssColorChannels(color).slice(0, 3).map(v => {
       const c = v / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
     });
     return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
