@@ -18,6 +18,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_applyTheme": {
+      "kind": "command._applyTheme",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_applyYoloDefault": {
       "kind": "command._applyYoloDefault",
       "feedback_required": true,
@@ -4782,6 +4788,36 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_themeDelete": {
+      "kind": "command._themeDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_themeEditSave": {
+      "kind": "command._themeEditSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_themeSelectChanged": {
+      "kind": "command._themeSelectChanged",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_themeSyncCustom": {
+      "kind": "command._themeSyncCustom",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_themeUse": {
+      "kind": "command._themeUse",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_themesRefresh": {
       "kind": "command._themesRefresh",
       "feedback_required": true,
@@ -6456,6 +6492,30 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "themeActivate": {
+      "kind": "command.themeActivate",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "themeDeleteCustom": {
+      "kind": "command.themeDeleteCustom",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "themeSaveCustom": {
+      "kind": "command.themeSaveCustom",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "themeSyncPending": {
+      "kind": "command.themeSyncPending",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "toggle": {
       "kind": "command.toggle",
       "feedback_required": true,
@@ -6698,6 +6758,12 @@
     },
     "toggleTagGroup": {
       "kind": "command.toggleTagGroup",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "toggleTheme": {
+      "kind": "command.toggleTheme",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

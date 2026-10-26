@@ -657,6 +657,10 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | + | `_tasksToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Connect | `_termConnect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Disconnect | `_termDisconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Delete | `_themeDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Save | `_themeEditSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Save and use | `_themeEditSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | ${on ? In use : Use} | `_themeUse` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … Archived (…) | `_toggleArchivedSection` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | button | `_togglePin` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | div | `_toggleTmplSection` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1072,6 +1076,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Close connection history | `` | onclick |
 | app.js | Commit  | `` | onclick |
 | app.js | Drag to move | `` | onclick |
+| app.js | Import… | `` | onclick |
 | app.js | Off | `` | onclick |
 | app.js | On | `` | onclick |
 | app.js | Open | `` | onclick |
@@ -1418,6 +1423,11 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy link | `_tasksCopyLink` | onclick |
 | app.js | Message at  | `_tasksFocusMsg` | onclick |
 | index.html | Clear | `_termClear` | onclick |
+| app.js | Export | `_themeDownload` | onclick |
+| app.js | ${t.builtin ? Copy : Edit} | `_themeEdit` | onclick |
+| app.js | Cancel | `_themeEditClose` | onclick |
+| app.js | New theme | `_themeNew` | onclick |
+| app.js | ${prev ? End preview : Preview} | `_themePreviewToggle` | onclick |
 | index.html | + Add | `_toggleAddConnectionForm` | onclick |
 | index.html | Cancel | `_toggleAddConnectionForm` | onclick |
 | index.html | More actions | `_toggleFileMenu` | onclick |
@@ -1440,7 +1450,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Primary action | `_uiGuideAction` | onclick |
 | app.js | Secondary action | `_uiGuideAction` | onclick |
 | app.js | Try confirmation dialog | `_uiGuideDialog` | onclick |
-| app.js | Preview other theme | `_uiGuideTheme` | onclick |
+| app.js | Preview next theme | `_uiGuideTheme` | onclick |
 | app.js | ${_vaultIcon(plus)}Add Payment Method | `_vaultCardAdd` | onclick |
 | app.js | ${_vaultIcon(plus)}Add API Key | `_vaultEdit` | onclick |
 | app.js | ${_vaultIcon(plus)}Add Secret | `_vaultEdit` | onclick |
@@ -1541,6 +1551,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | + | `closeTTS` | onclick |
 | app.js | Cancel | `closeTTS` | onclick |
 | app.js | button | `closeTTS` | onclick |
+| app.js | Close themes | `closeThemes` | onclick |
 | index.html | Copy | `copyFileContent` | onclick |
 | index.html | Clear console | `dtClearConsole` | onclick |
 | index.html | Console | `dtSwitchTab` | onclick |
@@ -1570,6 +1581,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | + | `openCustomChipForm` | onclick |
 | index.html | Filters | `openFiltersModal` | onclick |
 | index.html | Style guide | `openStyleGuide` | onclick |
+| index.html | Themes… | `openThemes` | onclick |
 | app.js | All shown | `openVisibleWorkerActions` | onclick |
 | app.js | + | `peek-action:chat-toggle` | data-peek-action |
 | app.js | + | `peek-action:file-browser` | data-peek-action |
