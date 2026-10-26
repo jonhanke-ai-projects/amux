@@ -3394,7 +3394,10 @@ if [ -n "$fam" ]; then
   fam_pct=$(awk -v f="$fam_kb" -v p="$phys_kb" 'BEGIN{ printf "%.1f", (p>0)? f/p*100 : -1 }')
   fam_hours=$(awk -v s="$fam_age" 'BEGIN{ printf "%.1f", s/3600 }')
   if family_exceeds "$fam_kb" "$phys_kb" "$FAMILY_SHARE_PCT"; then
-    FAMILY_DESC="${fam_gb}G (${fam_pct}% of RAM, share ${FAMILY_SHARE_PCT}%) in ${fam_n} children of pid ${fam_ppid}, lane $(lane_for_pid "$fam_ppid" "$(pane_map)"): $(ps -o command= -p "$fam_ppid" 2>/dev/null | cut -c1-120)"
+    # The full command is read, then shortened for the line: a cut on ps output
+    # is the truncation class test-mac-cleanup-tick.sh pins (AMUX-4686).
+    fam_cmd=$(ps -o command= -p "$fam_ppid" 2>/dev/null)
+    FAMILY_DESC="${fam_gb}G (${fam_pct}% of RAM, share ${FAMILY_SHARE_PCT}%) in ${fam_n} children of pid ${fam_ppid}, lane $(lane_for_pid "$fam_ppid" "$(pane_map)"): ${fam_cmd:0:120}"
     echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid}, oldest ${fam_hours}h — $(owner_label_for_pid "$fam_ppid") — reported, never killed"
   elif family_too_old "$fam_age" "$FAMILY_AGE_H"; then
     echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid} has run ${fam_hours}h, past the ${FAMILY_AGE_H}h ceiling — $(owner_label_for_pid "$fam_ppid")"
