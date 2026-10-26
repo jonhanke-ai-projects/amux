@@ -34,6 +34,12 @@ use tower::ServiceExt;
 /// the distinguishing text lives (`async move {` alone matches everything).
 const ALLOWED_BARE_SPAWNS: &[(&str, &str)] = &[
     (
+        "apps_origin_listening",
+        "the apps origin's HTTP listener (90d8f1215): a server bound once at boot that \
+         lives as long as the process, not a periodic job, so the job registry has \
+         nothing to schedule. Its bind failure is logged as apps_origin_bind_failed",
+    ),
+    (
         "_amux_conversations",
         "StoreConversationSink::save — a fire-and-forget DB write, not a loop",
     ),
