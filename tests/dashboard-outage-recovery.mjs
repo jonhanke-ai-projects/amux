@@ -1032,3 +1032,21 @@ test('a lock stolen before its work started waits its turn and runs once, instea
   assert.deepEqual(order, ['thief', 'first'], 'each work runs once, the robbed one after the thief');
   assert.ok(beacons.some(b => b.verdict === 'outbox_lock_stolen_before_run' && b.lock === 'amux-outbox-replay' && b.steal === 1), JSON.stringify(beacons));
 });
+
+test('a message delivery lock stolen before its work started yields: the thief delivers, the message goes once', async () => {
+  // The replay retry above must not reach a message's delivery lock: the thief
+  // is another window delivering that same message, and retrying sent it twice
+  // (outbox-stalled-window red on f47ddbe29: 2 posts of one msg_id).
+  const locks = queuedStealingLocks();
+  const {ctx} = fixture([], {locks});
+  ctx.fetch = async () => new Response('{}');
+  const sends = [];
+  const first = ctx._lockRequest('amux-outbox-delivery:q1', {steal: true}, async () => { sends.push('first'); return 'first-done'; })
+    .then(v => v, e => e);
+  const thief = ctx._lockRequest('amux-outbox-delivery:q1', {steal: true}, async () => { sends.push('thief'); return 'thief-done'; });
+  assert.equal(await thief, 'thief-done');
+  const robbed = await first;
+  assert.equal(robbed && robbed.name, 'AbortError', 'the robbed delivery yields to the window that took it over');
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(sends, ['thief'], 'the message is delivered once');
+});

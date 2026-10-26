@@ -1224,7 +1224,12 @@ function _lockRequest(name, opts, work, retried) {
       _outboxDiagnostic('outbox_lock_stolen_while_held', {lock:name.split(':')[0]});
       return ran;
     }
-    if (retried || opts?.signal?.aborted) throw e;
+    // A message's delivery lock stolen before its work ran means another window
+    // has taken that message over: yield, as before a4ebf0ba4. Retrying it ran
+    // the same delivery a second time (outbox-stalled-window red on f47ddbe29:
+    // 2 posts of one message). Storage and replay re-read the queue, so they may
+    // retry safely.
+    if (retried || opts?.signal?.aborted || /^amux-outbox-delivery:/.test(name)) throw e;
     _outboxDiagnostic('outbox_lock_stolen_before_run', {lock:name.split(':')[0], steal:opts?.steal ? 1 : 0});
     const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
     return _lockRequest(name, signal ? {signal} : {}, work, true);
