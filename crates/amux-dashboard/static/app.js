@@ -17613,15 +17613,17 @@ function _peekAgentsPaint() {
   // scrollTop. A selected search hit or message that this leaves out of view
   // (pushed off the bottom, or under the navigator) is brought back the way a
   // jump places it (680b0ecd3's CI red: the subagent list arriving pushed a
-  // search hit below a phone's visible output).
+  // search hit below a phone's visible output). A selection the user had
+  // already scrolled away from stays where they left it (8e96231f1's CI red).
   const wasHidden = nav.hidden;
-  nav.hidden = isChat || (!state.items.length && !state.error);
-  if (wasHidden !== nav.hidden && !isChat) {
-    const sel = document.querySelector('#peek-body .peek-highlight.current, #peek-body .peek-msg-current');
-    if (sel && !_peekJumpGeometry(sel).visible) {
-      _peekJumpTo(sel);
-      try { amuxTrack('peek_agent_nav_selection_kept', {measured: true, n_considered: 1}); } catch (_) {}
-    }
+  const willHide = isChat || (!state.items.length && !state.error);
+  const keepSel = wasHidden !== willHide && !isChat
+    ? document.querySelector('#peek-body .peek-highlight.current, #peek-body .peek-msg-current') : null;
+  const keepWasVisible = !!keepSel && _peekJumpGeometry(keepSel).visible;
+  nav.hidden = willHide;
+  if (keepWasVisible && !_peekJumpGeometry(keepSel).visible) {
+    _peekJumpTo(keepSel);
+    try { amuxTrack('peek_agent_nav_selection_kept', {measured: true, n_considered: 1}); } catch (_) {}
   }
   const index = state.selected ? state.items.findIndex(s=>s.id===state.selected.id && s.conversation===state.selected.conversation)+1 : 0;
   const label = document.getElementById('peek-agent-label');

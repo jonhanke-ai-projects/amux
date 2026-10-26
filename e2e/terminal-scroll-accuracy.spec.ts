@@ -159,6 +159,22 @@ for (const mode of ['message', 'search']) {
     await expect(page.locator('#peek-agent-nav')).toBeVisible();
     await readable(page, selector);
   });
+
+  // A user who scrolled away from the selection is not pulled back when the
+  // navigator appears (8e96231f1's CI red: the list arrived after the scroll).
+  test(`the navigator appearing leaves a user who scrolled away from the ${mode} in place`, async ({ page }) => {
+    await render(page, 'before\n'.repeat(45) + '› selected original text\nAssistant\n');
+    if (mode === 'search') {
+      await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
+      await page.getByRole('searchbox', { name: 'Find in terminal', exact: true }).fill('selected original text');
+    } else await page.getByRole('button', { name: 'Next message', exact: true }).click();
+    const selector = mode === 'search' ? '.peek-highlight.current' : '.peek-msg-current';
+    await readable(page, selector);
+    await page.locator('#peek-body').evaluate(el => { el.scrollTop = 0; });
+    await page.evaluate(() => { (window as any).eval("_peekAgents.error = 'unavailable'; _peekAgentsPaint();"); });
+    await expect(page.locator('#peek-agent-nav')).toBeVisible();
+    expect(await page.locator('#peek-body').evaluate(el => el.scrollTop)).toBe(0);
+  });
 }
 
 test('saved Codex input hints stay out of navigation while recorded messages remain', async ({ page }) => {
