@@ -29,6 +29,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
 HOME = Path.home()
@@ -46,11 +47,30 @@ INVENTORY = [s.strip().lower() for s in os.environ.get("SECURITY_WATCH_INVENTORY
     "github,npm,playwright,visual studio code,microsoft vscode,cloudflare,postgres,redis,nginx"
 )).split(",") if s.strip()]
 UA = {"User-Agent": "amux-security-watch"}
+# A shell schedule is killed at 600s (scheduler.rs SHELL_TIMEOUT_S), which
+# would lose the whole report. Every check shares this budget; one still
+# running at the deadline is reported unmeasured and the rest still go out.
+BUDGET_S = int(os.environ.get("SECURITY_WATCH_BUDGET_S", "480"))
+DEADLINE = time.time() + BUDGET_S
 
 
 def run(cmd, cwd=None, timeout=600):
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    left = DEADLINE - time.time()
+    if left <= 5:
+        raise TimeoutError("budget spent before this command started")
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=min(timeout, left))
     return p.returncode, p.stdout, p.stderr
+
+
+def each_file(files, fn):
+    """Run fn over files four at a time; collect findings and per-file errors."""
+    out, errors = [], []
+    with ThreadPoolExecutor(4) as pool:
+        for found, err in pool.map(fn, files):
+            out += found
+            if err:
+                errors.append(err)
+    return out, errors
 
 
 def fetch(url, timeout=30):
@@ -120,48 +140,56 @@ def src_cargo(repo):
 
 
 def src_npm(repo):
-    out, n, errors = [], 0, []
     _, so, _ = run(["git", "ls-files", "*package-lock.json"], cwd=repo, timeout=60)
-    for rel in [l for l in so.splitlines() if l and "node_modules" not in l]:
-        n += 1
-        d = repo / Path(rel).parent
-        _, j, se = run(["npm", "audit", "--json", "--package-lock-only"], cwd=d, timeout=300)
-        rep = json.loads(j or "{}")
+    files = [l for l in so.splitlines() if l and "node_modules" not in l]
+
+    def one(rel):
+        try:
+            _, j, se = run(["npm", "audit", "--json", "--package-lock-only"], cwd=repo / Path(rel).parent, timeout=300)
+            rep = json.loads(j or "{}")
+        except Exception as e:
+            return [], f"{rel}: {e}"[:200]
         if "vulnerabilities" not in rep:
-            errors.append(f"{rel}: {se.strip()[-160:]}")
-            continue
+            return [], f"{rel}: {se.strip()[-160:]}"
+        found = []
         for name, v in rep["vulnerabilities"].items():
             if v.get("severity") not in ("high", "critical"):
                 continue
             via = [x.get("title") for x in v.get("via", []) if isinstance(x, dict)]
-            out.append({"id": f"npm:{repo.name}/{rel}:{name}:{v.get('range')}", "source": "npm-audit",
-                        "severity": v["severity"], "repo": str(repo),
-                        "title": f"{name} ({v['severity']}) in {repo.name}/{rel}: {'; '.join(via)[:160]}",
-                        "action": "fix available" if v.get("fixAvailable") else "no fix yet"})
-    return out, n, errors
+            found.append({"id": f"npm:{repo.name}/{rel}:{name}:{v.get('range')}", "source": "npm-audit",
+                          "severity": v["severity"], "repo": str(repo),
+                          "title": f"{name} ({v['severity']}) in {repo.name}/{rel}: {'; '.join(via)[:160]}",
+                          "action": "fix available" if v.get("fixAvailable") else "no fix yet"})
+        return found, None
+
+    out, errors = each_file(files, one)
+    return out, len(files), errors
 
 
 def src_pip(repo):
     pa = shutil.which("pip-audit") or str(HOME / ".local/bin/pip-audit")
     if not Path(pa).exists():
         raise RuntimeError("pip-audit is not installed")
-    out, n, errors = [], 0, []
     _, so, _ = run(["git", "ls-files", "*requirements*.txt"], cwd=repo, timeout=60)
-    for rel in [l for l in so.splitlines() if l][:40]:
-        n += 1
-        _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=repo, timeout=600)
+    files = [l for l in so.splitlines() if l][:40]
+
+    def one(rel):
         try:
+            _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=repo, timeout=600)
             rep = json.loads(j)
-        except ValueError:
-            errors.append(f"{rel}: {se.strip().splitlines()[-1][:160] if se.strip() else 'no output'}")
-            continue
+        except Exception as e:
+            return [], f"{rel}: {e}"[:200]
+        found = []
         for dep in rep.get("dependencies", []):
             for v in dep.get("vulns", []):
-                out.append({"id": f"pip:{repo.name}/{rel}:{v['id']}:{dep['name']}", "source": "pip-audit",
-                            "severity": "advisory", "repo": str(repo),
-                            "title": f"{v['id']} {dep['name']} {dep.get('version')} in {repo.name}/{rel}",
-                            "action": "fixed in " + ", ".join(v.get("fix_versions") or ["no release"])})
-    return out, n, errors
+                found.append({"id": f"pip:{repo.name}/{rel}:{v['id']}:{dep['name']}", "source": "pip-audit",
+                              "severity": "advisory", "repo": str(repo),
+                              "title": f"{v['id']} {dep['name']} {dep.get('version')} in {repo.name}/{rel}",
+                              "action": "fixed in " + ", ".join(v.get("fix_versions") or ["no release"])})
+        return found, None
+
+    out, errors = each_file(files, one)
+    return out, len(files), errors
 
 
 def src_macos():
@@ -187,12 +215,21 @@ def main():
             sources += [(f"cargo:{repo.name}", lambda r=repo: src_cargo(r)) if (repo / "Cargo.lock").exists() else None,
                         (f"npm:{repo.name}", lambda r=repo: src_npm(r)),
                         (f"pip:{repo.name}", lambda r=repo: src_pip(r))]
-    report = {"ts": int(time.time()), "sources": {}, "findings": []}
-    for item in filter(None, sources):
-        name, fn = item
+    report = {"ts": int(time.time()), "sources": {}, "findings": [], "budget_s": BUDGET_S}
+
+    def measure(fn):
+        res = fn()
+        return res if len(res) == 3 else (*res, [])
+
+    pool = ThreadPoolExecutor(8)
+    futs = {name: pool.submit(measure, fn) for name, fn in filter(None, sources)}
+    wait(list(futs.values()), timeout=max(1, DEADLINE - time.time() + 10))
+    for name, fut in futs.items():
+        if not fut.done():
+            report["sources"][name] = {"measured": False, "why_unmeasured": f"still running at the {BUDGET_S}s budget"}
+            continue
         try:
-            res = fn()
-            found, considered, errors = res if len(res) == 3 else (*res, [])
+            found, considered, errors = fut.result()
             # Every file failing is a source that did not run, not a clean one.
             if considered and len(errors) >= considered:
                 raise RuntimeError(f"all {considered} file(s) failed, first: {errors[0]}")
@@ -201,6 +238,7 @@ def main():
             report["findings"] += found
         except Exception as e:  # a failed source is unmeasured, never clean
             report["sources"][name] = {"measured": False, "why_unmeasured": str(e)[:300]}
+    pool.shutdown(wait=False, cancel_futures=True)
     new = [f for f in report["findings"] if f["id"] not in state["reported"]]
     unmeasured = [n for n, s in report["sources"].items() if not s["measured"]]
     report["new"] = len(new)
