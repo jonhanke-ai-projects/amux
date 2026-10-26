@@ -56,9 +56,18 @@ ci_runs_json() {
   if [ -n "${AMUX_CI_FETCH_CMD:-}" ]; then "$AMUX_CI_FETCH_CMD" "$sha"; return; fi
   token=$(GH_TOKEN= "$HOME/.amux/github-app/get-token.sh" --min-remaining 300 2>/dev/null \
     | sed -n 's/^export GH_TOKEN=//p' | tr -d "'\"") || true
-  [ -n "$token" ] || return 1
-  curl -sf --max-time 15 -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/actions/runs?head_sha=$sha&event=push&per_page=100"
+  local url="https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/actions/runs?head_sha=$sha&event=push&per_page=100"
+  if [ -z "$token" ]; then
+    # No App token (an amux Cloud box has none): a public repo's runs read without
+    # one, 60 requests an hour per address. Without this the sandbox logged
+    # ci_gate_unmeasured on every pass and ran a build hours behind a green main
+    # (2026-10-26). AMUX_CI_ANON=0 keeps the old refusal.
+    [ "${AMUX_CI_ANON:-1}" = 1 ] || return 1
+    echo "ci gate: no App token, reading $sha's runs unauthenticated verdict=ci_gate_anonymous_read" >> "$LOG"
+    curl -sf --max-time 15 -H "Accept: application/vnd.github+json" "$url"
+    return
+  fi
+  curl -sf --max-time 15 -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" "$url"
 }
 # Judge by WORKFLOW RUNS, not check runs (2026-10-15): 6325024c7 went live
 # with its rust run cancelled by the next push before any job started, so it
@@ -164,7 +173,7 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
     if [ "$v" = unmeasured ]; then
       gate_state ci_gate_unmeasured "$tip" unmeasured "" "$passed"
       self_heal_launcher
-      refuse "CI-GATE unmeasured for $sha (no App token or GitHub unreachable); keeping the live image verdict=ci_gate_unmeasured"
+      refuse "CI-GATE unmeasured for $sha (no App token and no anonymous read, GitHub unreachable or rate-limited); keeping the live image verdict=ci_gate_unmeasured"
     fi
     passed=$((passed + 1))
   done
