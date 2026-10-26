@@ -200,6 +200,29 @@ def main():
         print("self-checkin: armed")
         return 0
 
+    if mode == "start":
+        # Go live now: arm and open the current cycle today, bypassing the 14-day
+        # gate (that gate gets its first anchor from this answer). Run on the
+        # owner's go-ahead after he has reviewed the first file.
+        st["armed"] = True
+        if st.get("open"):
+            print("self-checkin: a check-in is already open; not starting another")
+            save_state(st)
+            return 0
+        cyc = st.get("cycle", 1)
+        spot = (cyc - 1) % len(SPOTLIGHTS)
+        path = CHECKIN_DIR / f"{TODAY}.md"
+        if not path.exists():
+            path.write_text(render_file(cyc, TODAY, spot, st.get("last_file")))
+        baseline = path.stat().st_size
+        ok = send_imessage(open_text(cyc, str(path)))
+        st["open"] = {"file": path.name, "opened": TODAY, "cycle": cyc, "spotlight": spot,
+                      "baseline_bytes": baseline, "nudges_sent": 0, "escalated": False,
+                      "answered_detected": False}
+        save_state(st)
+        print(f"self-checkin: started cycle {cyc} ({'texted' if ok else 'TEXT FAILED'})")
+        return 0
+
     if mode == "answered":
         op = st.get("open")
         if op:
