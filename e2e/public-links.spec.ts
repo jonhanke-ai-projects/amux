@@ -165,10 +165,15 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
     await expect(pub).toBeVisible();
 
     // One row of controls per entry on a phone; cards fit the screen.
-    // (The list redraws itself while uploads land, so the box is re-read until present.)
+    // The list redraws itself while uploads land (2, 6 and 15 s refreshes), so
+    // each poll reads the box once: a second read can fall between two renders
+    // and find none (ios-safari CI, 2026-10-26).
+    const vw = page.viewportSize()!.width;
     for (const row of [pub, files]) {
-      await expect.poll(async () => (await row.boundingBox())?.width ?? -1).toBeGreaterThan(0);
-      expect((await row.boundingBox())!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+      await expect.poll(async () => {
+        const w = (await row.boundingBox())?.width ?? -1;
+        return w > 0 && w <= vw ? 'fits' : `width ${w} in a ${vw}px viewport`;
+      }).toBe('fits');
     }
 
     // Turned off from the card's menu (where it lives on a phone), gone for everyone.
