@@ -79,8 +79,33 @@ print("STALLED" if why else "ok", turn or "unknown", int(age//60), unread, ",".j
         echo "$ts worker=$w action=owner_alert" >> "$LOG"; date -u +%s > "$stamp"
       fi
     else
-      [ "${STALL_DRY_RUN:-}" = 1 ] || printf '%s\n' "Stall watchdog: no progress for ${age_min} min and $unread unread message(s). Read your queue and act on whatever is blocked; re-arm your wake." | amux send "$w" --stdin >/dev/null 2>&1
-      echo "$ts worker=$w action=wake_sent" >> "$LOG"
+      # Wake through the API with an explicit origin. A plain `amux send` from a
+      # scheduler shell carries no session identity, and the server refuses it for
+      # an isolated target ("amux automation is not delivered into it"), so on
+      # 2026-10-26 a shell schedule's wakes failed silently. STALL_WAKE_ORIGIN must
+      # be a session the target accepts (a paired peer); the result is checked.
+      code=000
+      if [ "${STALL_DRY_RUN:-}" = 1 ]; then
+        code=dry
+      else
+        body=$(python3 -c 'import json,sys;print(json.dumps({"text":sys.argv[1]}))' "Stall watchdog: no progress for ${age_min} min and $unread unread message(s). Read your queue and act on whatever is blocked; re-arm your wake.")
+        code=$(curl -sk --max-time 15 -o "$STATE_DIR/$w.wake.out" -w '%{http_code}' -X POST \
+          -H 'Content-Type: application/json' -H "X-Amux-Session: ${STALL_WAKE_ORIGIN:-${AMUX_SESSION:-}}" \
+          -d "$body" "$U/api/sessions/$w/send") || code=000
+        # A 2xx is not enough: require the server's own ok:true in the body.
+        case "$code" in 2??) grep -q '"ok":true' "$STATE_DIR/$w.wake.out" 2>/dev/null || code="${code}-not-ok" ;; esac
+      fi
+      case "$code" in
+        2??|dry) echo "$ts worker=$w action=wake_sent http=$code origin=${STALL_WAKE_ORIGIN:-${AMUX_SESSION:-none}}" >> "$LOG" ;;
+        *)
+          echo "$ts WARN worker=$w action=wake_failed http=$code origin=${STALL_WAKE_ORIGIN:-${AMUX_SESSION:-none}} body=$(head -c 200 "$STATE_DIR/$w.wake.out" 2>/dev/null | tr '\n' ' ')" >> "$LOG"
+          rc=2
+          # An idle worker nobody can wake is the owner's to know about, once per stall.
+          if [ ! -f "$stamp" ]; then
+            amux alert "Worker $w is idle and stalled (${age_min} min, $unread unread) and the watchdog could not wake it (http $code)." "stall watchdog wake failed" >/dev/null 2>&1
+            echo "$ts worker=$w action=owner_alert reason=wake_failed" >> "$LOG"; date -u +%s > "$stamp"
+          fi ;;
+      esac
     fi
   else
     rm -f "$stamp"   # recovered or healthy: the next stall alerts again
