@@ -17403,7 +17403,10 @@ function _peekSplitRenderPanes() {
       const prev = frame.dataset.src || '';
       let switched = false;
       if (view !== 'files' && prev.indexOf('peekEmbed=' + encodeURIComponent(peekSession) + '&') >= 0) {
-        try { frame.contentWindow.setPeekTab(view); switched = true; } catch (e) {}
+        // The pane's own address follows, or its next reload (a new dashboard
+        // version reloads every page) reopens the old tab while this pane's
+        // dropdown names the new one (Ethan, 2026-10-26: Chat over a terminal).
+        try { frame.contentWindow.setPeekTab(view); frame.contentWindow.history.replaceState(null, '', src); switched = true; } catch (e) {}
       }
       frame.dataset.src = src;
       if (!switched) frame.src = src;
@@ -29404,6 +29407,7 @@ async function _openXlsxPreview(path) {
   const subEl = document.getElementById('file-subpath');
   if (subEl) { const dir = path.slice(0, path.lastIndexOf('/')) || '/'; subEl.textContent = dir; subEl.title = path; }
   document.getElementById('file-overlay').dataset.path = path;
+  _fileHashSync(path);
   const body = document.getElementById('file-body');
   body.className = 'file-overlay-body';
   body.textContent = 'Loading spreadsheet…';
@@ -29538,6 +29542,22 @@ function _feRecordOpen(path) {
     })
     .catch(() => {});
 }
+// The address names the open file (#path=<file>), so any reload of the page
+// (a new dashboard version, a boot retry, the Mac app restoring a tab) reopens
+// it. Before, only folders were written (loadFiles), and a deep-linked file was
+// overwritten by its folder as the listing behind it loaded, so the next reload
+// showed the folder (Ethan, 2026-10-26: "when i close and re-open it doesnt open
+// the file"). A link to anything else (#peek=, #issue=) is left alone; closing
+// the file puts back the folder, or nothing when the Files view is not showing.
+function _fileHashSync(path) {
+  try {
+    const h = location.hash;
+    if (h && !h.startsWith('#path=') && h !== '#view=files') return;
+    const want = path ? '#path=' + _encodeHashPath(path)
+      : (activeView === 'files' && _filesPath && _filesPath !== '/' ? '#path=' + _encodeHashPath(_filesPath) : '');
+    if (h !== want) history.replaceState(history.state, '', location.pathname + location.search + want);
+  } catch (e) {}
+}
 async function openFilePreview(path, options = {}) {
   if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
   if (!/\.mdai$/i.test(path || '') || options.raw) _feRecordOpen(path);
@@ -29584,6 +29604,7 @@ async function openFilePreview(path, options = {}) {
   // The path the open file is saved under (Mac app restore, tab URLs): the
   // title can read as the markdown heading or carry a "cached" suffix.
   document.getElementById('file-overlay').dataset.path = path;
+  _fileHashSync(path);
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-view-tabs').style.display = 'none';
@@ -29795,6 +29816,7 @@ function closeFilePreview() {
   _cTitleEl.onkeydown = null;
   delete _cTitleEl.dataset.spEditable;
   document.getElementById('file-overlay').classList.remove('active');
+  _fileHashSync(null);
   document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   document.getElementById('file-save-btn').style.display = 'none';
   const tpTab = document.getElementById('file-tab-teleprompter');
