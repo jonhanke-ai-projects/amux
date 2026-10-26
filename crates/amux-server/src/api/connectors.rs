@@ -53,7 +53,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -876,7 +875,7 @@ fn pending_take(home: &std::path::Path, state: &str) -> Option<(String, String, 
 
 fn token_urlsafe(nbytes: usize) -> String {
     let mut bytes = vec![0u8; nbytes];
-    OsRng.fill_bytes(&mut bytes);
+    getrandom::fill(&mut bytes).expect("OS random source");
     base64url_nopad(&bytes)
 }
 

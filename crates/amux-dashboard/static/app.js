@@ -7826,9 +7826,20 @@ function _nudgeWorkersOnBoardChange() {
     // The needs-you bell counts board cards too, and refreshed only every 5
     // minutes: answering a card left it counted while the board had moved on.
     // It follows any board change now, a few seconds after the last one. This
-    // runs for live updates and for the polling fallback alike.
-    clearTimeout(window._needsYouSoonTimer);
-    window._needsYouSoonTimer = setTimeout(() => { try { _needsYouFetch(); } catch (_) {} }, 3000);
+    // runs for live updates and for the polling fallback alike. The fetch is
+    // due 3s after the FIRST change it has not covered: restarting the timer
+    // on every change let a steady stream of board updates hold the bell
+    // stale indefinitely (AMUX-6386). Changes inside the window are counted
+    // and reported with the fetch that covers them.
+    window._needsYouSoonPending = (window._needsYouSoonPending || 0) + 1;
+    if (!window._needsYouSoonTimer) {
+      window._needsYouSoonTimer = setTimeout(() => {
+        const covered = window._needsYouSoonPending || 0;
+        window._needsYouSoonTimer = null; window._needsYouSoonPending = 0;
+        try { amuxTrack('needsyou_soon_fetch', {changes: covered, measured: true, n_considered: covered}); } catch (_) {}
+        try { _needsYouFetch(); } catch (_) {}
+      }, 3000);
+    }
   } catch (e) { /* a render hiccup must not break the ingest that called us */ }
 }
 function _grpMembers(g) {
@@ -17392,7 +17403,10 @@ function _peekSplitRenderPanes() {
       const prev = frame.dataset.src || '';
       let switched = false;
       if (view !== 'files' && prev.indexOf('peekEmbed=' + encodeURIComponent(peekSession) + '&') >= 0) {
-        try { frame.contentWindow.setPeekTab(view); switched = true; } catch (e) {}
+        // The pane's own address follows, or its next reload (a new dashboard
+        // version reloads every page) reopens the old tab while this pane's
+        // dropdown names the new one (Ethan, 2026-10-26: Chat over a terminal).
+        try { frame.contentWindow.setPeekTab(view); frame.contentWindow.history.replaceState(null, '', src); switched = true; } catch (e) {}
       }
       frame.dataset.src = src;
       if (!switched) frame.src = src;
@@ -29393,6 +29407,7 @@ async function _openXlsxPreview(path) {
   const subEl = document.getElementById('file-subpath');
   if (subEl) { const dir = path.slice(0, path.lastIndexOf('/')) || '/'; subEl.textContent = dir; subEl.title = path; }
   document.getElementById('file-overlay').dataset.path = path;
+  _fileHashSync(path);
   const body = document.getElementById('file-body');
   body.className = 'file-overlay-body';
   body.textContent = 'Loading spreadsheet…';
@@ -29527,6 +29542,22 @@ function _feRecordOpen(path) {
     })
     .catch(() => {});
 }
+// The address names the open file (#path=<file>), so any reload of the page
+// (a new dashboard version, a boot retry, the Mac app restoring a tab) reopens
+// it. Before, only folders were written (loadFiles), and a deep-linked file was
+// overwritten by its folder as the listing behind it loaded, so the next reload
+// showed the folder (Ethan, 2026-10-26: "when i close and re-open it doesnt open
+// the file"). A link to anything else (#peek=, #issue=) is left alone; closing
+// the file puts back the folder, or nothing when the Files view is not showing.
+function _fileHashSync(path) {
+  try {
+    const h = location.hash;
+    if (h && !h.startsWith('#path=') && h !== '#view=files') return;
+    const want = path ? '#path=' + _encodeHashPath(path)
+      : (activeView === 'files' && _filesPath && _filesPath !== '/' ? '#path=' + _encodeHashPath(_filesPath) : '');
+    if (h !== want) history.replaceState(history.state, '', location.pathname + location.search + want);
+  } catch (e) {}
+}
 async function openFilePreview(path, options = {}) {
   if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
   if (!/\.mdai$/i.test(path || '') || options.raw) _feRecordOpen(path);
@@ -29573,6 +29604,7 @@ async function openFilePreview(path, options = {}) {
   // The path the open file is saved under (Mac app restore, tab URLs): the
   // title can read as the markdown heading or carry a "cached" suffix.
   document.getElementById('file-overlay').dataset.path = path;
+  _fileHashSync(path);
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-view-tabs').style.display = 'none';
@@ -29784,6 +29816,7 @@ function closeFilePreview() {
   _cTitleEl.onkeydown = null;
   delete _cTitleEl.dataset.spEditable;
   document.getElementById('file-overlay').classList.remove('active');
+  _fileHashSync(null);
   document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   document.getElementById('file-save-btn').style.display = 'none';
   const tpTab = document.getElementById('file-tab-teleprompter');
@@ -53309,9 +53342,14 @@ async function _handleDeeplink(hash) {
     tryOpen(0);
     return;
   }
-  let dpath = null;
+  // #edit=<path> is #path= that lands a markdown file in Edit (Ethan,
+  // 2026-10-26: a texted check-in link opens the note ready to answer).
+  let dpath = null, edit = false;
   if (hash && hash.startsWith('#path=')) {
     dpath = decodeURIComponent(hash.slice(6));
+  } else if (hash && hash.startsWith('#edit=')) {
+    dpath = decodeURIComponent(hash.slice(6));
+    edit = true;
   } else {
     dpath = new URLSearchParams(location.search).get('path');
     // Migrate old ?path= links to hash format
@@ -53325,7 +53363,13 @@ async function _handleDeeplink(hash) {
       const parent = dpath.split('/').slice(0, -1).join('/') || '/';
       _filesPath = parent;
       switchView('files');
-      openFilePreview(dpath);
+      await openFilePreview(dpath);
+      if (edit) {
+        const ok = !!(_fileData && _fileData.path && _fileData.is_markdown && !_fileData.readOnly);
+        if (ok) setFileViewMode('edit');
+        amuxTrack('deeplink_edit', {verdict: ok ? 'deeplink_edit_opened' : 'deeplink_edit_not_editable',
+          measured: true, n_considered: 1});
+      }
     } else if (!d.error) {
       _filesPath = dpath;
       switchView('files');
@@ -53355,7 +53399,7 @@ function _restoreScreen(bootHash) {
   // peek over the view the link named. In the Mac app, where every window
   // shares localStorage, that peek was another window's worker (2026-10-21).
   const _bootHash = typeof bootHash === 'string' ? bootHash : location.hash;
-  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(_bootHash)
+  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(_bootHash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -53402,7 +53446,7 @@ function _restoreScreen(bootHash) {
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
       if (peekSession || _peekOpenGeneration !== restoreGeneration
-          || /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)) {
+          || /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(location.hash)) {
         amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
         return;
       }
