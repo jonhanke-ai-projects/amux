@@ -406,6 +406,8 @@ jobs:
           set -uo pipefail
           ./scripts/test-disk-reclaim-tick.sh
           ./scripts/test-pkill-guard-shim.sh
+      - name: a red main rust run is re-run once only for a flaky e2e spec or a truncated test archive
+        run: ./scripts/test-rust-flake-rerun-classify.sh
       - name: orch-pace projects the proof rate to its checkpoint
         run: |
           ./scripts/test-orch-pace-proof.sh
