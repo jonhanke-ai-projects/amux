@@ -33,11 +33,10 @@ test('long dialogs keep their actions visible and content scrollable at phone an
 });
 
 // The orchestrator overlay was retired with the orchestration view (c5601217).
-test('connection history has a visible close control; proxy opens interactively',async({page})=>{
+test('connection history has a visible close control',async({page})=>{
  await page.setViewportSize({width:375,height:667});
  for(const [open,root,close] of [
   ['showConnHistory()','#conn-hist-modal','#conn-modal-close'],
-  ["switchView('proxies');_proxyOpenForm()",'#proxy-form-overlay','button[onclick="_proxyCloseForm()"]'],
  ]){
   await page.evaluate(code=>(0,eval)(code),open);
   const control=page.locator(root).locator(close);await expect(control).toBeVisible();
@@ -68,16 +67,18 @@ test('scope discard cancellation preserves edits and explicit discard closes bot
  await expect(page.locator('#scope-edit-backdrop')).not.toBeVisible();
 });
 
-test('calendar subscription remains dismissible while status hangs and reports the timeout',async({page})=>{
- const held: import('@playwright/test').Route[]=[];
- await page.route('**/api/tunnel/status',r=>{held.push(r);});
- const beacon=page.waitForRequest(r=>r.url().endsWith('/api/client-debug')&&r.postDataJSON()?.kind==='tunnel-status-unavailable');
+// The general tunnel is retired (MSG-95893): the subscribe dialog renders at
+// once, offers the download, and asks the tunnel for nothing.
+test('calendar subscription renders without the retired tunnel and stays dismissible',async({page})=>{
+ const tunnelCalls:string[]=[];
+ page.on('request',r=>{if(r.url().includes('/api/tunnel/'))tunnelCalls.push(r.url());});
  await page.evaluate(()=>{(window as any).showIcalInfo();});
- const close=page.locator('[data-ical-modal] button[onclick*="remove()"]');await expect(close).toBeVisible();
- const data=(await beacon).postDataJSON();expect(data.reason).toBe('timeout');expect(data.measured).toBe(true);expect(data.n_considered).toBe(1);
- await expect(page.locator('[data-ical-box]')).toContainText('Tunnel status is unavailable');
+ const box=page.locator('[data-ical-box]');
+ await expect(box.locator('a[download="amux.ics"]')).toBeVisible();
+ await expect(box).not.toContainText(/tunnel/i);
+ const close=page.locator('[data-ical-modal] button[onclick*="remove()"]').first();await expect(close).toBeVisible();
  await close.click();await expect(page.locator('[data-ical-modal]')).toHaveCount(0);
- for(const r of held)await r.abort().catch(()=>{});
+ expect(tunnelCalls).toEqual([]);
 });
 
 test('dialog surfaces are opaque and readable in both themes and report theme regressions',async({page})=>{

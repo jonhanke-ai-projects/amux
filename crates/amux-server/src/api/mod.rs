@@ -106,7 +106,6 @@ pub mod planning;
 pub mod policy;
 pub mod prefs;
 pub mod projects;
-pub mod proxies;
 pub mod py_proxy;
 pub mod reclaim;
 pub(crate) mod reclaim_owner;
@@ -399,7 +398,6 @@ pub fn router_with_connector_transport(
         .merge(chatgpt_app::routes())
         .merge(chat_delegate::routes())
         .merge(self_update::routes())
-        .nest("/api/proxies", proxies::routes())
         // AMUX-2888: the client controls the SPA and CLI already call. Status
         // answers 200 with ported:false; start/stop answer an honest 501.
         .nest("/api/tunnel", tunnel::routes())

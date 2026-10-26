@@ -805,6 +805,8 @@ async fn async_main() {
     // spawned further down (after the listener is up) and now needs the store to
     // tell a lane its browser was released (AF-497).
     let reaper_store = state.store.clone();
+    // Read once at boot for the retired-Proxies note (MSG-95893).
+    let proxies_store = state.store.clone();
     api::board_intake::initialize();
     api::history_ask::initialize();
     boot_watch::step("router");
@@ -1177,19 +1179,29 @@ async fn async_main() {
     // reaper nor disk_watch covers these.
     drop(runtime_jobs::mac_health::spawn());
 
-    // AUTO-START THE TUNNEL RELAY, and only with an explicit target port
-    // (AMUX-2888, py:78089). Both halves are required: a token alone would
-    // default the target to amux's OWN port, and this port has no request auth
-    // — publishing it is unauthenticated RCE on a YOLO lane. `maybe_boot_start`
-    // owns that decision and returns what it did, so the log records a fact
-    // rather than an intention.
+    // AUTO-START THE CHATGPT APP RELAY when the owner published the connector
+    // (AMUX-5396). `maybe_boot_start` owns that decision and returns what it
+    // did, so the log records a fact rather than an intention.
     //
     // Not a `spawn_loop`: it is a one-shot that ADOPTS the relay's own task
     // under `ids::TUNNEL` if it manages to start one.
-    tokio::spawn(async {
+    //
+    // The same shot notes saved Proxies-tab rows. That tab is retired
+    // (MSG-95893) and nothing reads the table any more; the rows are the
+    // owner's data, so they stay on disk and get one line saying so.
+    tokio::spawn(async move {
         let outcome = runtime_jobs::tunnel::maybe_boot_start().await;
-        if outcome != "no token" && outcome != "no AMUX_TUNNEL_PORT" {
+        if outcome != "no token" && outcome != "not published" {
             tracing::info!(outcome, "tunnel: boot autostart");
+        }
+        let saved = proxies_store
+            .read()
+            .ok()
+            .and_then(|c| c.query_row("SELECT COUNT(*) FROM proxies", [], |r| r.get::<_, i64>(0)).ok())
+            .unwrap_or(0);
+        if saved > 0 {
+            tracing::info!(saved, verdict = "retired_proxies_data_present",
+                "proxies: the Proxies tab is retired; its saved rows are kept on disk and no longer read (use Pages)");
         }
     });
 

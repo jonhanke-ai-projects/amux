@@ -5847,7 +5847,7 @@ if d.get("error"): print("error:", d["error"], file=sys.stderr); sys.exit(1)
 print("logged", d.get("id", ""))'
       ;;
     followups|fu)
-      # Read the body defensively, like `tunnel status` and `alert` already do.
+      # Read the body defensively, like `alert` already does.
       # Unparseable input used to reach `json.load` directly and print a raw
       # Python traceback — loud, but naming json/__init__.py rather than the
       # server, so "amux is down" and "amux crm is broken" looked identical.
@@ -6576,12 +6576,6 @@ ${BOLD}Pages links (apps and files, managed in the Pages tab):${RESET}
   amux publish [--internal] PORT [TITLE]   An app: public, or inside amux only
   amux publish --file PATH [TITLE]         A public file or folder; --list, --revoke ID
 
-${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${RESET}
-  amux tunnel status             Show tunnel state and public URL
-  amux tunnel url                Print just the public URL
-  amux tunnel start [PORT]       Expose a port (default: the amux server)
-  amux tunnel stop               Stop the tunnel
-
 ${BOLD}Boundaries and resources:${RESET}
   amux boundaries [--json]       The worker boundaries (boundaries.toml), their guard, 24h firings
   amux resources [--worker W]    Machine capacity and pressure, and what this worker uses
@@ -6842,122 +6836,14 @@ if d.get("submitted") is False: print("  nothing was submitted")' 2>/dev/null ||
 }
 
 cmd_tunnel() {
-  local AMUX_API="${AMUX_API:-https://localhost:8824}"
-  local subcmd="${1:-status}"; shift 2>/dev/null || true
-
-  # PREFLIGHT (AF-63). /api/tunnel/* is NOT routed in the rust server -- the
-  # endpoints were never ported at the python cutover, so every verb here hits a
-  # 404. Without this guard the CLI lies in two different directions:
-  #   status: the 404 body has no "configured" key, so `not d.get(configured)`
-  #           was true and it printed "not configured -- set AMUX_TUNNEL_TOKEN
-  #           in ~/.amux/server.env", exit 0. That sends the reader to add a
-  #           CREDENTIAL for a route that does not exist; they would edit
-  #           server.env, restart the server, and be exactly as broken.
-  #   stop:   `curl ... >/dev/null && echo "tunnel stopped"` -- curl exits 0 on
-  #           an HTTP 404 without -f, so it reported success for an operation
-  #           that reached no handler at all.
-  # Found by the 2026-08-16 log sweep via route.callers_have_routes, which names
-  # all 7 call sites; nothing else could see it, because a CLI that exits 0 is
-  # invisible to every check that looks at exit codes.
-  local _tunnel_code
-  _tunnel_code=$(_curl -sk -o /dev/null -w '%{http_code}' "$AMUX_API/api/tunnel/status" 2>/dev/null || echo 000)
-  if [[ "$_tunnel_code" == "404" ]]; then
-    echo "amux tunnel: not available in this server build (HTTP 404 -- /api/tunnel/* is not routed)." >&2
-    echo "  The verb exists in this CLI but the endpoints were never ported to the rust server." >&2
-    echo "  Setting AMUX_TUNNEL_TOKEN will NOT help; that is a different failure." >&2
-    echo "  Tracked as AF-63." >&2
-    return 1
-  fi
-
-  case "$subcmd" in
-    start)
-      local port="${1:-}"
-      local payload='{}'
-      [[ -n "$port" ]] && payload="{\"port\":$port}"
-      _curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
-        "$AMUX_API/api/tunnel/start" | python3 -c "
-import sys, json
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-except ValueError:
-    # amux-server restarts on save; a mid-restart request returns nothing.
-    sys.exit('amux server not responding (restarting?) — retry in a moment')
-if d.get('error'):
-    sys.exit('error: ' + str(d['error']))
-print(('already running → ' if d.get('already') else 'tunnel up → ') + (d.get('url') or '(registering)'))
-"
-      ;;
-    stop)
-      # Check the STATUS, not curl's exit code: curl returns 0 for a 404/500
-      # unless -f is passed, which is how this printed "tunnel stopped" against
-      # a route that does not exist (AF-63).
-      local _stop_code
-      _stop_code=$(_curl -sk -o /dev/null -w '%{http_code}' -X POST "$AMUX_API/api/tunnel/stop" 2>/dev/null || echo 000)
-      if [[ "$_stop_code" == 2* ]]; then
-        echo "tunnel stopped"
-      else
-        echo "amux tunnel stop: server returned HTTP $_stop_code -- tunnel NOT stopped" >&2
-        return 1
-      fi
-      ;;
-    status|"")
-      _curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
-import sys, json
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-except ValueError:
-    sys.exit('amux server not responding (restarting?) — retry in a moment')
-if not d.get('configured'):
-    print('not configured — set AMUX_TUNNEL_TOKEN in ~/.amux/server.env')
-    print('(the tunnel needs an active amux cloud subscription)')
-    sys.exit(0)
-print('running :', d.get('running'))
-print('url     :', d.get('url') or '-')
-print('target  :', d.get('target') or '-')
-print('requests:', d.get('requests', 0))
-if d.get('error'): print('error   :', d['error'])
-"
-      ;;
-    url)
-      _curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
-import sys, json
-raw = sys.stdin.read()
-try:
-    u = json.loads(raw).get('url')
-except ValueError:
-    sys.exit('amux server not responding (restarting?) — retry in a moment')
-print(u) if u else sys.exit('tunnel not running')
-"
-      ;;
-    help|-h|--help)
-      _tunnel_help
-      ;;
-    *)
-      # Same exit-0-on-unknown trap as `amux board` had: fail loudly instead,
-      # so a caller can distinguish "ran" from "silently printed help".
-      echo "${RED}unknown tunnel subcommand:${RESET} $subcmd" >&2
-      _tunnel_help >&2
-      exit 2
-      ;;
-  esac
-}
-
-_tunnel_help() {
-  cat <<EOF
-${BOLD}amux tunnel${RESET} — expose a local port at a public HTTPS URL
-
-  amux tunnel status          Show tunnel state and public URL
-  amux tunnel url             Print just the public URL
-  amux tunnel start [PORT]    Start the tunnel (default: the amux server itself)
-  amux tunnel stop            Stop the tunnel
-
-Any localhost port works: ${BOLD}amux tunnel start 3000${RESET} publishes your dev server.
-Requires an active amux cloud subscription; set AMUX_TUNNEL_TOKEN in
-~/.amux/server.env, then restart the server to reload:
-\`launchctl kickstart -k gui/\$(id -u)/com.amux.server-rs\`.
-EOF
+  # Retired with the Proxies tab and /proxy (MSG-95893): Pages is the one way
+  # to share a local app. The ChatGPT app's connector relay is published from
+  # its panel in the dashboard, not here. Exit non-zero so a script that still
+  # calls this learns it did nothing.
+  echo "amux tunnel is retired. Share a local app from the Pages tab, or:" >&2
+  echo "  amux publish --internal PORT [TITLE]   inside amux only" >&2
+  echo "  amux publish PORT [TITLE]              anyone with the link" >&2
+  return 2
 }
 
 cmd_publish() {

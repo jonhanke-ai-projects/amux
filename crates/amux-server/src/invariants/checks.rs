@@ -1244,6 +1244,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("standing_approvals", "expires_at", false),
     ("standing_approvals", "revoked_at", false),
     ("standing_approval_uses", "ts", false),
+    // The Proxies tab is retired (MSG-95893); its table stays as the owner's data.
     ("proxies", "created_at", false),
     ("reclaim_quarantine", "created_at", false),
     // SECONDS, and MEASURED rather than assumed from the sibling convention:

@@ -3756,30 +3756,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_proxyDelete": {
-      "kind": "command._proxyDelete",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_proxyStart": {
-      "kind": "command._proxyStart",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_proxyStartOnce": {
-      "kind": "command._proxyStartOnce",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_proxyStop": {
-      "kind": "command._proxyStop",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_psfAcceptResponse": {
       "kind": "command._psfAcceptResponse",
       "feedback_required": true,
@@ -4076,12 +4052,6 @@
     },
     "_renderGroupsTab": {
       "kind": "command._renderGroupsTab",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_renderIcalBody": {
-      "kind": "command._renderIcalBody",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4886,36 +4856,6 @@
     },
     "_ttsSpeak": {
       "kind": "command._ttsSpeak",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelSettingsStart": {
-      "kind": "command._tunnelSettingsStart",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelSettingsStop": {
-      "kind": "command._tunnelSettingsStop",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelStartUI": {
-      "kind": "command._tunnelStartUI",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelStatus": {
-      "kind": "command._tunnelStatus",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelStopUI": {
-      "kind": "command._tunnelStopUI",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5862,12 +5802,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "loadTunnelSettings": {
-      "kind": "command.loadTunnelSettings",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "modelLogin": {
       "kind": "command.modelLogin",
       "feedback_required": true,
@@ -6446,12 +6380,6 @@
     },
     "shareSession": {
       "kind": "command.shareSession",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "showIcalInfo": {
-      "kind": "command.showIcalInfo",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

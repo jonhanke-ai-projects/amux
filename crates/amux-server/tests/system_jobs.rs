@@ -49,9 +49,9 @@ const ALLOWED_BARE_SPAWNS: &[(&str, &str)] = &[
     ),
     (
         "tunnel::maybe_boot_start",
-        "one-shot boot decision, not a loop: it starts nothing unless BOTH a token and an \
-         explicit AMUX_TUNNEL_PORT are set, and the relay task it may create registers itself \
-         under ids::TUNNEL via registry::spawn_loop inside tunnel::start. Registering this shot \
+        "one-shot boot decision, not a loop: it starts nothing unless a token is set and the \
+         owner published the ChatGPT connector, and the relay task it may create registers itself \
+         under ids::TUNNEL via registry::spawn_loop inside tunnel::start_mcp. Registering this shot \
          would put a job on /api/system-jobs that exits immediately by design (AMUX-2888)",
     ),
     (

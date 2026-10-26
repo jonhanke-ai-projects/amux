@@ -575,8 +575,8 @@ pub const CATALOG: &[Doc] = &[
     },
     Doc {
         id: ids::TUNNEL,
-        name: "Tunnel relay",
-        purpose: "Long-polls the amux cloud gateway and serves each public request from a local port, so a localhost app is reachable without an inbound port. Registered only while a tunnel is running — absent here means no tunnel is up, which is also the default.",
+        name: "ChatGPT app relay",
+        purpose: "Long-polls the amux cloud gateway and serves the ChatGPT app's OAuth and /mcp requests from amux, refusing every other path. Registered only while the connector is published; absent here means it is not, which is also the default.",
         env: &[
             EnvControl {
                 var: "AMUX_TUNNEL_TOKEN",
@@ -584,8 +584,8 @@ pub const CATALOG: &[Doc] = &[
                 off: Some(OFF_WHEN_UNSET),
             },
             EnvControl {
-                var: "AMUX_TUNNEL_PORT",
-                effect: "the local port to auto-target at boot. UNSET means no auto-start: defaulting to amux's own port would publish an unauthenticated control plane",
+                var: "AMUX_TUNNEL_MCP",
+                effect: "1 starts the relay at boot even without the dashboard's Publish marker",
                 off: Some(OFF_WHEN_UNSET),
             },
             EnvControl {
@@ -601,11 +601,6 @@ pub const CATALOG: &[Doc] = &[
             EnvControl {
                 var: "AMUX_TUNNEL_MAX_CONCURRENT",
                 effect: "simultaneous local fetches; excess waits 8s then gets a 503 (default 8)",
-                off: None,
-            },
-            EnvControl {
-                var: "AMUX_TUNNEL_ALLOW_SELF",
-                effect: "1 = permit tunnelling amux's OWN port. Refused by default: this port has no request auth and /api/sessions/<n>/send is ungated",
                 off: None,
             },
         ],

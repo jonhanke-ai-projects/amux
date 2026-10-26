@@ -175,7 +175,6 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/tmux-sessions", "tmux sessions amux does not already own, for Connect (api/worker_create.rs)"),
     ("/api/iterm2", "open iTerm2 panes, for Connect-a-pane (api/worker_create.rs)"),
     ("/api/saved-messages", "peek composer's reusable snippets, per worker (api/saved_messages.rs, AMUX-2871)"),
-    ("/api/proxies", "Proxies tab CRUD; start/stop drive the tunnel relay (api/proxies.rs, AMUX-2887 + AMUX-2888)"),
     ("/api/pull", "self-update button; routes brew/pip installs, allows ahead-only no-op pulls, and refuses shared-checkout edits or non-fast-forward history (api/self_update.rs, AMUX-2891)"),
     ("/api/observability", "Cost tab rollup over token_ledger; does NOT index on request — the periodic job owns that (api/observability.rs, AMUX-2893)"),
     ("/api/habits", "Habits tab state — one JSON array in ~/.amux/habits.json (api/habits.rs, AMUX-2871)"),

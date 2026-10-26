@@ -508,10 +508,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Retry intake | `_projectRetryIntake` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Retry now | `_projectRetryNow` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Submit outcome | `_projectSend` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | Delete | `_proxyDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | Save | `_proxySaveForm` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
-| app.js | Start | `_proxyStart` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | Stop | `_proxyStop` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | / | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ← back | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -678,10 +674,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | + | `_trendsToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Read aloud | `_ttsSpeak` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | index.html | Read Aloud | `_ttsSpeak` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js | Start tunnel | `_tunnelSettingsStart` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | Stop | `_tunnelSettingsStop` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | Start public tunnel | `_tunnelStartUI` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | Stop tunnel | `_tunnelStopUI` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Talk to us  get started | `_upgradeCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Upgrade | `_upgradeCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${_vaultIcon(audit)}View Audit Log | `_vaultAudit` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
@@ -989,7 +981,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | tab-metrics | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-pages | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-projects | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | tab-proxies | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-record | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-scheduler | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-scratchpad | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1371,11 +1362,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | _projectSelectTask(\…\),0)&gt;Open current task → | `_projectSetTab` | onclick |
 | app.js | _projectSelectTask(\…\),0)&gt;Open … → | `_projectSetTab` | onclick |
 | app.js | Cancel | `_projectSettingsCancel` | onclick |
-| index.html | Cancel | `_proxyCloseForm` | onclick |
-| index.html | proxy-form-overlay | `_proxyCloseForm` | onclick |
-| app.js | Copy | `_proxyCopy` | onclick |
-| app.js | Edit | `_proxyEdit` | onclick |
-| index.html | + New proxy | `_proxyOpenForm` | onclick |
 | app.js | Delete | `_raDelete` | onclick |
 | app.js | Replay | `_raReplay` | onclick |
 | app.js | Copy script | `_reclaimCopyScript` | onclick |
@@ -1447,9 +1433,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | tp-play | `_tpToggle` | onclick |
 | index.html | Mirror | `_tpToggleMirror` | onclick |
 | app.js | … | `_ttsCancel` | onclick |
-| app.js | Copy URL | `_tunnelCopy` | onclick |
 | app.js | Copy | `_tunnelCopyURL` | onclick |
-| app.js | Copy URL | `_tunnelCopyURL` | onclick |
 | app.js | Destructive example | `_uiGuideAction` | onclick |
 | app.js | Example notifications | `_uiGuideAction` | onclick |
 | app.js | Example settings | `_uiGuideAction` | onclick |

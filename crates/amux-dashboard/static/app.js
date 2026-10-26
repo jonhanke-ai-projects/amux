@@ -2914,9 +2914,6 @@ function _modalLayoutCheck() {
   document.querySelectorAll(_dialogSelector).forEach(root => {
     if (root.id === 'psf-body' && !root.classList.contains('psf-file-view')) return;
     const style = getComputedStyle(root);
-    if (root.id === 'proxy-form-overlay' && root.style.display === 'flex' && !root.classList.contains('active')) {
-      n++; clipped.push('proxy-form-overlay:inactive'); return;
-    }
     if (style.display === 'none' || style.opacity === '0' || style.pointerEvents === 'none') return;
     // File overlays are themselves the flex frame. Their first child is only
     // the header; measuring that missed a scrollport ending below the window.
@@ -10162,12 +10159,12 @@ function _embedFitZoom() {
 // notes: removed with the subsystem (AMUX-2389's last splinter — the dead key
 // let ?embed=notes pass the allowlist and set a view with no element, inside
 // the very allowlist meant to contain it; found by amux-frustrations with an
-// 18-entries/17-resolve control). groups/proxies/messages/sql/mcp added the
+// 18-entries/17-resolve control). groups/messages/sql/mcp added the
 // same day for the mirror this comment promises — every entry verified
 // against a real id= in this file.
 const _EMBED_VIEW_EL = {
   sessions:'session-view', board:'board-view', groups:'groups-view', calendar:'calendar-view',
-  scheduler:'scheduler-view', files:'files-view', proxies:'proxies-view', logs:'logs-view',
+  scheduler:'scheduler-view', files:'files-view', logs:'logs-view',
   messages:'messages-view', map:'map-view', metrics:'metrics-view', cost:'cost-view',
   torrents:'torrents-view', terminal:'terminal-view', browser:'browser-view', sql:'sql-view',
   graph:'graph-view', journal:'journal-view', habits:'habits-view', skills:'skills-view',
@@ -20390,7 +20387,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // browser tab left open on a deleted session produced 5,382 peek + 1,737
     // tasks 404s in 15h (~8/min), 95% of every error in the window, and the UI
     // said "(no output)" rather than "this session is gone".
-    // Same r.json()-without-r.ok shape as _tunnelStatus (AF-63). Stop the poll
+    // The r.json()-without-r.ok shape (AF-63). Stop the poll
     // and SAY what happened; a poller that cannot fail is how a dead tab bills
     // the server forever.
     if (r.status === 404) {
@@ -37758,6 +37755,9 @@ function _chromeSave() {
 }
 
 function switchView(view) {
+  // The Proxies tab is retired (MSG-95893); a saved #view=proxies lands on
+  // Pages, where a local app is now shared.
+  if (view === 'proxies') view = 'pages';
   // Explicit navigation supersedes a pending restore of an older worker.
   if (typeof _peekOpenGeneration !== 'undefined' && !peekSession) _peekOpenGeneration++;
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
@@ -37780,7 +37780,7 @@ function switchView(view) {
   const _svViews = [
     ['projects', 'projects', ''], ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
     ['calendar', 'calendar', 'flex'], ['scheduler', 'scheduler', ''],
-    ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
+    ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
@@ -37832,7 +37832,6 @@ function switchView(view) {
   if (view === 'connectors') _connectorsTabLoad();
   if (view !== 'map' && typeof _mapMeStop === 'function') _mapMeStop();   // live location only while the map is open
   else if (typeof _connOpenId !== 'undefined' && _connOpenId) _connClose();
-  if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
     if (view === 'sessions') _exploreSession = null;
@@ -47946,243 +47945,29 @@ async function deleteEvent(id) {
   await fetchCalEvents();
 }
 
-async function _tunnelStatus() {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  try {
-    const r = await fetch(API + '/api/tunnel/status', {signal:controller.signal});
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return await r.json();
-  } catch(e) {
-    const reason = controller.signal.aborted ? 'timeout' : 'request_failed';
-    console.warn('[amux] tunnel status unavailable', reason);
-    fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({kind:'tunnel-status-unavailable',measured:true,n_considered:1,reason,ver:APP_VER})}).catch(() => {});
-    return {error:'Tunnel status unavailable — try again.', why_unmeasured:reason};
-  } finally { clearTimeout(timer); }
-}
-
-// Tunnel panel in the Settings dropdown (the discoverable home for the proxy).
-// ── Proxies tab ──────────────────────────────────────────────────────────
-let _proxiesTimer = null;
-function _startProxiesTimer() { if (!_proxiesTimer) _proxiesTimer = setInterval(loadProxies, 3000); }
-function _stopProxiesTimer() { if (_proxiesTimer) { clearInterval(_proxiesTimer); _proxiesTimer = null; } }
-// The list reloads every 3s; an older, slower answer must not repaint a
-// started tunnel as stopped, and a start in flight keeps its button disabled.
-let _proxiesGen = 0;
-async function loadProxies() {
-  const wrap = document.getElementById('proxies-list');
-  if (!wrap) return;
-  const gen = ++_proxiesGen;
-  try {
-    const r = await fetch(API + '/api/proxies', { headers: _authHeaders() });
-    const d = await r.json();
-    if (gen !== _proxiesGen) { _olderAnswerDropped('proxies'); return; }
-    document.getElementById('proxies-unconfigured').style.display = d.configured ? 'none' : 'inline';
-    const rl = document.getElementById('proxies-rate');
-    if (rl && d.rate_per_min) rl.textContent = ' Limit: ' + d.rate_per_min + ' req/min, ' + d.max_concurrent + ' concurrent.';
-    const list = d.proxies || [];
-    if (!list.length) {
-      wrap.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 0;text-align:center;">No proxies yet. Create one to expose a local server publicly.</div>';
-      return;
-    }
-    wrap.innerHTML = list.map(p => {
-      const live = p.live;
-      const dot = live ? '<span style="color:var(--green);">●</span>' : '<span style="color:var(--dim);">○</span>';
-      const status = live ? '<span style="color:var(--green);font-weight:600;">Live</span>' : '<span style="color:var(--dim);">Stopped</span>';
-      const urlRow = (live && p.url)
-        ? '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">'
-          + '<a href="' + esc(p.url) + '" target="_blank" style="color:var(--accent);font-size:0.8rem;word-break:break-all;">' + esc(p.url) + '</a>'
-          + '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_proxyCopy(this,\'' + esc(p.url) + '\')">Copy</button>'
-          + '<span style="color:var(--dim);font-size:0.72rem;">' + (p.requests || 0) + ' req'
-          + (p.dropped ? ' &middot; <span style="color:#f0a020;">' + p.dropped + ' rate-limited</span>' : '') + '</span></div>'
-        : '';
-      const errRow = (live && p.error) ? '<div style="color:var(--red);font-size:0.74rem;margin-top:6px;">' + esc(p.error) + '</div>' : '';
-      return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;">'
-        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">'
-        +   '<div style="min-width:0;">'
-        +     '<div style="font-weight:600;font-size:0.9rem;">' + dot + ' ' + esc(p.name) + '</div>'
-        +     '<div style="color:var(--dim);font-size:0.76rem;margin-top:2px;">' + esc(p.scheme) + '://localhost:' + p.port + ' &middot; ' + status + '</div>'
-        +   '</div>'
-        +   '<div style="display:flex;gap:6px;flex-shrink:0;">'
-        +     (live
-              ? '<button class="btn" onclick="_proxyStop(\'' + p.id + '\')">Stop</button>'
-              : _onlyOnceRuns.has('proxy-start:' + p.id)   // a start in flight stays disabled across the 3s redraw
-                ? '<button class="btn primary" disabled>Starting…</button>'
-                : '<button class="btn primary" onclick="_proxyStart(\'' + p.id + '\',this)">Start</button>')
-        +     '<button class="btn" onclick="_proxyEdit(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\',' + p.port + ',\'' + esc(p.scheme) + '\')">Edit</button>'
-        +     '<button class="btn" style="color:var(--red);" onclick="_proxyDelete(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\')">Delete</button>'
-        +   '</div>'
-        + '</div>' + urlRow + errRow + '</div>';
-    }).join('');
-  } catch (e) {
-    wrap.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;">Could not load proxies</div>';
-  }
-}
-function _proxyCopy(btn, url) {
-  navigator.clipboard?.writeText(url); const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = t, 1200);
-}
-function _proxyOpenForm() {
-  document.getElementById('proxy-form-id').value = '';
-  document.getElementById('proxy-form-name').value = '';
-  document.getElementById('proxy-form-port').value = '';
-  document.getElementById('proxy-form-scheme').value = 'http';
-  document.getElementById('proxy-form-title').textContent = 'New proxy';
-  document.getElementById('proxy-form-overlay').style.display = 'flex';
-  document.getElementById('proxy-form-overlay').classList.add('active');
-  setTimeout(() => document.getElementById('proxy-form-name').focus(), 50);
-}
-function _proxyEdit(id, name, port, scheme) {
-  document.getElementById('proxy-form-id').value = id;
-  document.getElementById('proxy-form-name').value = name;
-  document.getElementById('proxy-form-port').value = port;
-  document.getElementById('proxy-form-scheme').value = scheme || 'http';
-  document.getElementById('proxy-form-title').textContent = 'Edit proxy';
-  document.getElementById('proxy-form-overlay').style.display = 'flex';
-  document.getElementById('proxy-form-overlay').classList.add('active');
-}
-function _proxyCloseForm() { const overlay = document.getElementById('proxy-form-overlay'); overlay.classList.remove('active'); overlay.style.display = 'none'; }
-async function _proxySaveForm(btn) {
-  const id = document.getElementById('proxy-form-id').value;
-  const name = document.getElementById('proxy-form-name').value.trim();
-  const port = parseInt(document.getElementById('proxy-form-port').value, 10);
-  const scheme = document.getElementById('proxy-form-scheme').value;
-  if (!name || !(port >= 1 && port <= 65535)) { showToast('Name and a valid port (1-65535) required'); return; }
-  btn.disabled = true;
-  try {
-    const url = id ? (API + '/api/proxies/' + id) : (API + '/api/proxies');
-    const r = await fetch(url, { method: id ? 'PATCH' : 'POST',
-      headers: _authHeaders({'Content-Type':'application/json'}), body: JSON.stringify({ name, port, scheme }) });
-    const d = await r.json();
-    if (d.ok || d.id) { _proxyCloseForm(); loadProxies(); }
-    else showToast(d.error || 'Save failed');
-  } catch (e) { showToast('Save failed'); }
-  finally { btn.disabled = false; }
-}
-function _proxyStart(id, btn) { return _onlyOnce('proxy-start:' + id, () => _proxyStartOnce(id, btn)); }
-async function _proxyStartOnce(id, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
-  try {
-    const r = await fetch(API + '/api/proxies/' + id + '/start', { method: 'POST', headers: _authHeaders() });
-    const d = await r.json();
-    if (d.error) showToast(d.error);
-    else showToast('Proxy started');
-  } catch (e) { showToast('Start failed'); }
-  loadProxies();
-}
-async function _proxyStop(id) {
-  try { await fetch(API + '/api/proxies/' + id + '/stop', { method: 'POST', headers: _authHeaders() }); } catch (e) {}
-  showToast('Proxy stopped'); loadProxies();
-}
-async function _proxyDelete(id, name) {
-  if (!await showConfirm('Delete proxy "' + name + '"?', 'Delete', false)) return;
-  try { await fetch(API + '/api/proxies/' + id, { method: 'DELETE', headers: _authHeaders() }); } catch (e) {}
-  loadProxies();
-}
-async function loadTunnelSettings() {
-  const box = document.getElementById('settings-tunnel-body');
-  if (!box) return;
-  const s = await _tunnelStatus();
-  if (s.error) { box.innerHTML = '<span style="color:var(--dim);">status unavailable</span>'; return; }
-  if (!s.configured) {
-    box.innerHTML = '<div style="color:var(--dim);line-height:1.5;">'
-      + 'Off. Two ways to turn it on:'
-      + '<div style="margin:6px 0 0;"><b style="color:var(--fg);">amux cloud</b> (easiest): set <code>AMUX_TUNNEL_TOKEN</code> in <code>~/.amux/server.env</code> from your paid amux cloud account, then reload.</div>'
-      + '<div style="margin:6px 0 0;"><b style="color:var(--fg);">Self-host (OSS, free):</b> run the gateway in <code>cloud/gateway/</code> on your own box + domain, then point <code>AMUX_TUNNEL_GATEWAY</code> at it (plus a token it accepts).</div>'
-      + '</div>';
-    return;
-  }
-  if (s.running && s.url) {
-    const target = (s.target || '').replace(/^https?:\/\//, '');
-    box.innerHTML =
-      '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;"><span style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex-shrink:0;"></span><b style="color:var(--fg);">Live</b><span style="color:var(--dim);margin-left:auto;font-size:0.72rem;">' + (s.requests || 0) + ' reqs</span></div>' +
-      '<div style="font-size:0.72rem;color:var(--dim);margin-bottom:4px;">serving <code>' + target + '</code></div>' +
-      '<a href="' + s.url + '" target="_blank" style="display:block;word-break:break-all;color:var(--accent);font-size:0.8rem;margin-bottom:8px;">' + s.url + '</a>' +
-      '<div style="display:flex;gap:6px;">' +
-      '<button class="btn" style="flex:1;font-size:0.76rem;" onclick="_tunnelCopyURL(this,\'' + s.url.replace(/'/g, "\\'") + '\')">Copy URL</button>' +
-      '<button class="btn" style="flex:1;font-size:0.76rem;" onclick="_tunnelSettingsStop(this)">Stop</button></div>';
-  } else {
-    box.innerHTML =
-      '<div style="color:var(--dim);margin-bottom:8px;">Off — the tunnel serves the amux dashboard when started, or any port via the CLI (<code>amux tunnel start 3000</code>).</div>' +
-      '<button class="btn primary" style="width:100%;font-size:0.78rem;" onclick="_tunnelSettingsStart(this)">Start tunnel</button>';
-  }
-}
 function _tunnelCopyURL(btn, url) {
   navigator.clipboard.writeText(url).then(() => { const t = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = t, 1200); }).catch(() => showToast('Copy failed'));
 }
-async function _tunnelSettingsStart(btn) {
-  btn.disabled = true; btn.textContent = 'Starting…';
-  try { await fetch(API + '/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch(e) {}
-  for (let i = 0; i < 16; i++) { const s = await _tunnelStatus(); if (s.url || s.error) break; await new Promise(r => setTimeout(r, 500)); }
-  loadTunnelSettings();
-}
-async function _tunnelSettingsStop(btn) {
-  btn.disabled = true; btn.textContent = 'Stopping…';
-  try { await fetch(API + '/api/tunnel/stop', { method: 'POST' }); } catch(e) {}
-  await new Promise(r => setTimeout(r, 600));
-  loadTunnelSettings();
-}
-function _tunnelCopy(btn, url) {
-  navigator.clipboard.writeText(url).then(() => {
-    const t = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = t, 1200);
-  }).catch(() => showToast('Copy failed'));  // user action: surface clipboard denial
-}
-async function _tunnelStartUI(box) {
-  const btn = box.querySelector('#tun-toggle'); if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
-  try { await fetch(API + '/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch(e) {}
-  for (let i = 0; i < 14; i++) { const s = await _tunnelStatus(); if (s.url || s.error) break; await new Promise(r => setTimeout(r, 500)); }
-  _renderIcalBody(box);
-}
-async function _tunnelStopUI(box) {
-  const btn = box.querySelector('#tun-toggle'); if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
-  try { await fetch(API + '/api/tunnel/stop', { method: 'POST' }); } catch(e) {}
-  _renderIcalBody(box);
-}
-async function _renderIcalBody(box) {
+function _renderIcalBody(box) {
   const esc_url = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const s3Url = window._AMUX_S3_ICAL_URL || '';
   const origin = window.location.origin;
   const localUrl = origin + '/api/calendar.ics';
   const isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
-  const tun = await _tunnelStatus();
-  const tunUrl = (tun && tun.running && tun.url) ? (tun.url.replace(/\/$/, '') + '/api/calendar.ics') : '';
-  const subUrl = tunUrl || s3Url || localUrl;
+  const subUrl = s3Url || localUrl;
   const googleUrl = 'https://calendar.google.com/calendar/r/settings/addbyurl?url=' + encodeURIComponent(subUrl);
   const appleUrl = /^https?:/.test(subUrl) ? ('webcal://' + subUrl.replace(/^https?:\/\//, '')) : subUrl;
 
   let html = '<div style="font-size:0.9rem;line-height:1.6;">';
   html += '<p style="margin:0 0 0.9rem;font-weight:600;font-size:1rem;">Subscribe to amux calendar</p>';
 
-  // ── Public tunnel (amux cloud) ──
-  html += '<div style="border:1px solid var(--border);border-radius:8px;padding:0.7rem 0.8rem;margin-bottom:0.9rem;background:var(--card,rgba(255,255,255,0.02));">';
-  if (tun?.error) {
-    html += '<p role="status" style="color:var(--dim);font-size:0.82rem;">Tunnel status is unavailable. Download the calendar below, or close and try again.</p>';
-  } else if (tun && tun.running && tun.url) {
-    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:0.45rem;"><span style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex-shrink:0;"></span><strong style="font-size:0.85rem;">Public tunnel active</strong><span style="color:var(--dim);font-size:0.72rem;margin-left:auto;">' + (tun.requests || 0) + ' reqs</span></div>';
-    html += '<code style="display:block;background:var(--bg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.73rem;word-break:break-all;margin-bottom:0.5rem;">' + esc_url(tunUrl) + '</code>';
-    html += '<div style="display:flex;gap:0.4rem;">';
-    html += '<button class="btn" style="font-size:0.76rem;" onclick="_tunnelCopy(this,\'' + tunUrl.replace(/'/g, "\\'") + '\')">Copy URL</button>';
-    html += '<button id="tun-toggle" class="btn" style="font-size:0.76rem;" onclick="_tunnelStopUI(this.closest(\'[data-ical-box]\'))">Stop tunnel</button>';
-    html += '</div>';
-  } else if (tun && tun.configured) {
-    html += '<div style="margin-bottom:0.35rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— off</span></div>';
-    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0 0 0.5rem;">Expose this calendar at a public cloud URL you can subscribe to from anywhere.</p>';
-    if (tun.error) html += '<p style="color:var(--red);font-size:0.72rem;margin:0 0 0.4rem;word-break:break-word;">' + esc_url(tun.error) + '</p>';
-    html += '<button id="tun-toggle" class="btn" style="font-size:0.78rem;" onclick="_tunnelStartUI(this.closest(\'[data-ical-box]\'))">Start public tunnel</button>';
-  } else {
-    html += '<div style="margin-bottom:0.3rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— off</span></div>';
-    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0 0 0.35rem;">Expose this calendar at a public URL, no port forwarding. Set <code>AMUX_TUNNEL_TOKEN</code> from <b>amux cloud</b> (paid), or self-host the gateway (OSS) and point <code>AMUX_TUNNEL_GATEWAY</code> at it.</p>';
-    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0;">No public URL? <b>Download .ics</b> below and import it — static, but works everywhere with zero infra.</p>';
-  }
-  html += '</div>';
-
   // ── Subscription URL + actions ──
-  const label = tunUrl ? 'public tunnel' : (s3Url ? 'public S3' : (isLocal ? '' : 'server'));
+  const label = s3Url ? 'public S3' : (isLocal ? '' : 'server');
   if (label) html += '<p style="margin:0 0 0.4rem;font-size:0.8rem;color:var(--muted);">Subscription URL (' + label + '):</p>';
-  if (tunUrl || s3Url || !isLocal) {
+  if (s3Url || !isLocal) {
     html += '<code style="display:block;background:var(--card,rgba(255,255,255,0.02));padding:0.5rem 0.7rem;border-radius:6px;font-size:0.75rem;word-break:break-all;margin-bottom:0.9rem;">' + esc_url(subUrl) + '</code>';
   } else {
-    html += '<p style="margin:0 0 0.9rem;color:var(--muted);font-size:0.8rem;">Local only — start the tunnel above (or set <code>AMUX_S3_BUCKET</code>) for a publicly reachable URL.</p>';
+    html += '<p style="margin:0 0 0.9rem;color:var(--muted);font-size:0.8rem;">Local only. Set <code>AMUX_S3_BUCKET</code> for a publicly reachable URL, or download the .ics below and import it.</p>';
   }
   html += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;">';
   html += '<a href="' + googleUrl + '" target="_blank" class="btn" style="font-size:0.8rem;">Add to Google Calendar</a>';
@@ -53354,7 +53139,9 @@ async function _handleDeeplink(hash) {
   if (hash && hash.startsWith('#view=')) {
     // The view is up to the first '&': the rest are that view's own parameters
     // (#view=pages&open=<id>, &add-internal=<port>), read by the view itself.
-    const v = decodeURIComponent(hash.slice(6).split('&')[0]);
+    let v = decodeURIComponent(hash.slice(6).split('&')[0]);
+    // The Proxies tab is retired (MSG-95893): its old links open Pages.
+    if (v === 'proxies') v = 'pages';
     // switchView rewrites the hash to #view=<v> before the view reads it, so the
     // view's parameters are handed over here.
     window._viewParams = hash;

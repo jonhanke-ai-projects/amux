@@ -771,7 +771,6 @@
   <button id="tab-record" onclick="switchView('record')"><span class="tab-ico">🎙</span><span class="tab-lbl">Record</span></button>
   <button id="tab-mdai" onclick="switchView('mdai')"><span class="tab-ico">&#x2726;</span><span class="tab-lbl">MDAI</span></button>
   <button id="tab-pages" onclick="switchView('pages')"><span class="tab-ico">&#x25A4;</span><span class="tab-lbl">Pages</span></button>
-  <button id="tab-proxies" onclick="switchView('proxies')"><span class="tab-ico">⇄</span><span class="tab-lbl">Proxies</span></button>
   <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
   <button id="tab-vault" onclick="switchView('vault')"><span class="tab-ico">&#x1F510;</span><span class="tab-lbl">Vault</span></button>
@@ -1248,43 +1247,6 @@
       <div class="mdai-row-end"><button class="btn" onclick="_mdaiCreateCancel()">Cancel</button>
         <button class="btn mdai-create-go" onclick="_mdaiCreateSubmit(false)">Create</button>
         <button class="btn primary mdai-create-go" onclick="_mdaiCreateSubmit(true)">Create and run</button></div>
-    </div>
-  </div>
-</div>
-
-<div id="proxies-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
-  <div style="max-width:760px;width:100%;margin:0 auto;padding:16px 16px 40px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">
-      <div style="font-size:1.05rem;font-weight:700;">Public proxies</div>
-      <button class="btn primary" onclick="_proxyOpenForm()">+ New proxy</button>
-    </div>
-    <div style="font-size:0.78rem;color:var(--dim);line-height:1.5;margin-bottom:14px;">
-      Expose a local server at a public HTTPS URL through amux cloud — no inbound port or router config.
-      Anything you start here is <b>public</b>, but rate-limited to protect the target. One proxy is live at a time (the gateway maps one URL per account).
-      <span id="proxies-rate" style="color:var(--dim);"></span>
-      <span id="proxies-unconfigured" style="display:none;color:#f0a020;">No tunnel token configured — set <code>AMUX_TUNNEL_TOKEN</code> to enable.</span>
-    </div>
-    <div id="proxies-list"></div>
-  </div>
-  <div id="proxy-form-overlay" class="board-edit-overlay" style="display:none;" onclick="if(event.target===this)_proxyCloseForm()">
-    <div class="board-edit-box" style="max-width:420px;">
-      <div style="padding:14px 16px;">
-        <div style="font-weight:600;font-size:0.95rem;margin-bottom:12px;" id="proxy-form-title">New proxy</div>
-        <input type="hidden" id="proxy-form-id">
-        <label class="field-label">Name</label>
-        <input id="proxy-form-name" type="text" placeholder="e.g. Local Flask app" autocomplete="off" style="width:100%;margin-bottom:10px;">
-        <label class="field-label">Local port</label>
-        <input id="proxy-form-port" type="number" min="1" max="65535" placeholder="5000" autocomplete="off" style="width:100%;margin-bottom:10px;">
-        <label class="field-label">Scheme</label>
-        <select id="proxy-form-scheme" style="width:100%;margin-bottom:14px;">
-          <option value="http">http</option>
-          <option value="https">https</option>
-        </select>
-        <div style="display:flex;gap:8px;justify-content:flex-end;">
-          <button class="btn" onclick="_proxyCloseForm()">Cancel</button>
-          <button class="btn primary" onclick="_proxySaveForm(this)">Save</button>
-        </div>
-      </div>
     </div>
   </div>
 </div>

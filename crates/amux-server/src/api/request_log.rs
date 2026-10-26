@@ -3210,22 +3210,6 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/pull",
         methods: &["GET", "POST"],
     },
-    RouteEntry {
-        path: "/api/proxies",
-        methods: &["GET", "POST"],
-    },
-    RouteEntry {
-        path: "/api/proxies/{id}",
-        methods: &["PATCH", "DELETE"],
-    },
-    RouteEntry {
-        path: "/api/proxies/{id}/start",
-        methods: &["POST"],
-    },
-    RouteEntry {
-        path: "/api/proxies/{id}/stop",
-        methods: &["POST"],
-    },
     // AMUX-2888: mounted ahead of the tunnel client port so the SPA panel and
     // `amux tunnel` stop getting a 404 (status) and a 405 (the POSTs, from the
     // GET-only SPA catch-all) — neither of which a caller can tell from "amux
