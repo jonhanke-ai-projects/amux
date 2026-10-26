@@ -1965,6 +1965,21 @@ prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1> [budge
   cands=$(mktemp "${TMPDIR:-/tmp}/sup-cands.XXXXXX"); lsofsnap=$(mktemp "${TMPDIR:-/tmp}/sup-lsof.XXXXXX")
   stats=$(mktemp "${TMPDIR:-/tmp}/sup-stats.XXXXXX"); picks=$(mktemp "${TMPDIR:-/tmp}/sup-picks.XXXXXX"); open_out=$(mktemp "${TMPDIR:-/tmp}/sup-open.XXXXXX")
   find_cargo_targets "$roots" "$TARGET_DEPTH" "$TARGET_SCAN_S" | sort -u > "$cands"
+  # THE SHARED TARGETS, WHETHER OR NOT THE SCAN FINDS THEM (disk RCA
+  # 20261025-190143). find_cargo_targets keys on CACHEDIR.TAG, and
+  # ~/.amux/rust-build-target has none, so this arm never saw it: 31.4G of
+  # orphaned amux-crate .rcgu.o sat in its debug/deps, the profile passed
+  # cargo-budget's 40G cap and every lane's cargo and pre-commit was refused.
+  # TARGET_KEEP protects a target from being REAPED whole; pruning what it
+  # holds that no build will read is this arm's job, kept targets included.
+  local kept_added=0 k
+  local IFS_OLD=$IFS; IFS=':'
+  for k in $TARGET_KEEP; do
+    IFS=$IFS_OLD
+    [ -n "$k" ] && [ -d "$k" ] || continue
+    grep -qxF -- "$k" "$cands" || { printf '%s\n' "$k" >> "$cands"; kept_added=$((kept_added+1)); }
+  done
+  IFS=$IFS_OLD
   if ! { $LSOF_CMD > "$lsofsnap" 2>/dev/null && [ -s "$lsofsnap" ]; }; then
     echo "mac-cleanup: superseded artifacts: open handles UNMEASURED (lsof produced nothing): pruned 0, nothing is deleted without it"
     rm -f -- "${cands:?}" "${lsofsnap:?}" "${stats:?}" "${picks:?}" "${open_out:?}"; return 0
@@ -2015,7 +2030,7 @@ prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1> [budge
     while IFS=$'\t' read -r _ _ f; do [ -e "$f" ] && n_fail=$((n_fail+1)); done < "$stats"
   fi
   SUPERSEDED_PRUNED=$((n_exe+n_obj)); SUPERSEDED_PRUNED_KB=$kb
-  echo "mac-cleanup: superseded artifacts: targets ${n_targets}, complete=${complete}, $( [ "$dry" = 1 ] && echo 'would prune' || echo pruned ) ${n_exe} superseded executable(s) + ${n_obj} orphaned .rcgu.o ($(fmt_kb "$kb")), kept: newest ${keep} per stem, younger than ${age}m ${k_recent}, open ${k_open}, failed ${n_fail}, elapsed $(( $(date +%s) - now ))s"
+  echo "mac-cleanup: superseded artifacts: targets ${n_targets} (${kept_added} shared without CACHEDIR.TAG), complete=${complete}, $( [ "$dry" = 1 ] && echo 'would prune' || echo pruned ) ${n_exe} superseded executable(s) + ${n_obj} orphaned .rcgu.o ($(fmt_kb "$kb")), kept: newest ${keep} per stem, younger than ${age}m ${k_recent}, open ${k_open}, failed ${n_fail}, elapsed $(( $(date +%s) - now ))s"
   rm -f -- "${cands:?}" "${lsofsnap:?}" "${stats:?}" "${picks:?}" "${open_out:?}"
 }
 
