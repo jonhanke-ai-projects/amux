@@ -216,9 +216,11 @@ extension DashboardWindowController {
     /// The deep link this window reopens: the page it is on (or was on, while
     /// the server restarts and it shows the connect page) and its view.
     func savedURL() -> String? {
-        let page = webView.url.flatMap { app?.isServerURL($0) == true ? $0 : nil } ?? lastServerURL
+        // The tab's own server, so a tab on sandbox reopens on sandbox, not on the
+        // default connection.
+        let page = webView.url.flatMap { ($0.scheme == "https" || $0.scheme == "http") ? $0 : nil } ?? lastServerURL
         guard let base = page else { return nil }
-        if !viewHash.isEmpty, let u = app?.url(withHash: viewHash) { return u.absoluteString }
+        if !viewHash.isEmpty, let u = app?.url(withHash: viewHash, on: serverOrigin) { return u.absoluteString }
         return base.absoluteString
     }
 }
@@ -999,7 +1001,8 @@ extension AppDelegate {
                 guard let w = c.window, w.isVisible else { return nil }
                 var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow, "number": w.windowNumber,
                                         "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w,
-                                        "connection": w.tab.accessoryView?.toolTip ?? ""]
+                                        "connection": w.tab.accessoryView?.toolTip ?? "",
+                                        "server": c.serverOrigin?.absoluteString ?? "", "saved": c.savedURL() ?? ""]
                 if let g = c.grid {
                     d["grid"] = g.readingOrder
                     d["panes"] = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }

@@ -664,7 +664,9 @@ extension AppDelegate {
         guard let host = g.host else { return }
         let n = DashboardWindowController(app: self, frame: host.window?.frame, configuration: nil)
         controllers.append(n)
-        if let u = url(withHash: "#view=sessions") { n.load(u) } else { n.showConnectPage() }
+        // On the server of the tab showing in that pane, like any new tab.
+        let from = g.members[id]?.serverOrigin ?? host.serverOrigin
+        if let u = url(withHash: "#view=sessions", on: from) { n.load(u) } else { n.showConnectPage() }
         dockPane(n, into: host, at: id, edge: .center, zone: "new_tab")
     }
 

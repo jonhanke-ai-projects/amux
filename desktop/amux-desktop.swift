@@ -368,6 +368,15 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     var lastMemoryReload = Date.distantPast
     // The last amux page this window showed, kept while it shows the connect page.
     var lastServerURL: URL?
+
+    /// The amux server this tab is on (scheme, host and port): the page it shows,
+    /// or the last one it showed while it sits on the connect page.
+    var serverOrigin: URL? {
+        let page = webView.url.flatMap { ($0.scheme == "https" || $0.scheme == "http") ? $0 : nil } ?? lastServerURL
+        guard let u = page, let scheme = u.scheme, let host = u.host else { return nil }
+        let h = host.contains(":") ? "[\(host)]" : host
+        return URL(string: "\(scheme)://\(h)" + (u.port.map { ":\($0)" } ?? ""))
+    }
     /// A restored tab that is not showing waits to load (launch speed, 2026-10-25):
     /// the shown tabs load first, then these one at a time, or at once when picked.
     var deferredURL: URL?
@@ -568,7 +577,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     func windowDidExitFullScreen(_ notification: Notification) { normalFrame = nil; app?.windowPlaced(self) }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if let u = webView.url, app?.isServerURL(u) == true { lastServerURL = u }
+        // Any amux server this tab shows, not only the default connection: a tab on
+        // sandbox.amux.io must remember sandbox, or its new tabs and its saved place
+        // fall back to the default server (Ethan, 2026-10-26).
+        if let u = webView.url, u.scheme == "https" || u.scheme == "http" { lastServerURL = u }
         app?.loadNextDeferred(after: self)
     }
 
@@ -892,10 +904,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     /// A new tab opens on the worker list (Ethan, 2026-10-22). The bare server
     /// address restores the page's last view, which is usually the worker the
     /// tab beside it already shows.
+    /// A new tab opens on the server of the tab it was opened from (Ethan,
+    /// 2026-10-26: "if i open a new tab from an active one that has a certain
+    /// connection (like sandbox) it should open the tab in that"); only a tab on
+    /// no server falls back to the default connection.
     func newTab(nextTo c: DashboardWindowController) {
         let n = DashboardWindowController(app: self, frame: c.window?.frame, configuration: nil)
         controllers.append(n)
-        if let u = url(withHash: "#view=sessions") { n.load(u) } else { n.showConnectPage() }
+        let u = url(withHash: "#view=sessions", on: c.serverOrigin)
+        dlog("verdict=new_tab_server server=\(u.flatMap { $0.host } ?? "-") from_tab=\(c.serverOrigin != nil)")
+        if let u = u { n.load(u) } else { n.showConnectPage() }
         if let w = c.window, let nw = n.window {
             w.addTabbedWindow(nw, ordered: .above)
             nw.makeKeyAndOrderFront(nil)
@@ -921,8 +939,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         return c
     }
 
-    func url(withHash hash: String) -> URL? {
-        guard let s = serverURL else { return nil }
+    /// `hash` on server `base`, or on the default connection when `base` is nil.
+    func url(withHash hash: String, on base: URL? = nil) -> URL? {
+        guard let s = base ?? serverURL else { return nil }
         return URL(string: normalized(s.absoluteString) + "/" + hash)
     }
 
@@ -1490,7 +1509,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         c.webView.evaluateJavaScript(currentViewJS) { [weak self] result, _ in
             guard let self = self else { return }
             let hash = (result as? String) ?? ""
-            self.openWindow(url: hash.isEmpty ? c.webView.url : self.url(withHash: hash), frame: nil)
+            self.openWindow(url: hash.isEmpty ? c.webView.url : self.url(withHash: hash, on: c.serverOrigin), frame: nil)
         }
     }
 
