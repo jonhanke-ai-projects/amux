@@ -293,6 +293,9 @@ def main():
         except Exception as e:  # a failed source is unmeasured, never clean
             report["sources"][name] = {"measured": False, "why_unmeasured": str(e)[:300]}
     pool.shutdown(wait=False, cancel_futures=True)
+    # pip-audit can list one advisory twice for a package (2026-10-26:
+    # PYSEC-2026-3552 on cryptography); a finding is its id.
+    report["findings"] = list({f["id"]: f for f in report["findings"]}.values())
     new = [f for f in report["findings"] if f["id"] not in state["reported"]]
     unmeasured = [n for n, s in report["sources"].items() if not s["measured"]]
     report["new"] = len(new)
