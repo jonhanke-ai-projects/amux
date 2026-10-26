@@ -196,7 +196,8 @@ async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Resp
     let Some(link): Option<Link> = public_links::approved_internal(&id) else {
         return refuse(StatusCode::NOT_FOUND, "This app is not in Pages", open_from_pages, "not_approved", &id);
     };
-    if public_links::refused_port(link.port).is_some() {
+    let is_file = !link.path.is_empty();
+    if !is_file && public_links::refused_port(link.port).is_some() {
         return refuse(StatusCode::FORBIDDEN, "amux does not open this port", open_from_pages, "refused_port", &id);
     }
     if let Some(t) = token {
@@ -220,12 +221,78 @@ async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Resp
     if !has_session(&id, &headers) {
         return refuse(StatusCode::FORBIDDEN, "Open this app from Pages", open_from_pages, "no_session", &id);
     }
+    if is_file {
+        if uri.path() == format!("/app/{id}") {
+            return axum::response::Redirect::permanent(&format!("/app/{id}/")).into_response();
+        }
+        let r = public_links::serve_link_file(&link, uri.path(), &tail, &method, &headers).await;
+        return frameable_by_dashboard(r, &headers, &uri, &id);
+    }
     let Some(local) = app_relay::local_listener(link.port).await else {
         return refuse(StatusCode::BAD_GATEWAY, "This app is not running",
             &format!("<p>Nothing is listening on port {} on this machine. Ask the worker that runs it to start it again.</p>", link.port),
             "not_running", &id);
     };
-    app_relay::relay(local, link.port, &format!("/app/{id}"), &tail, method, &headers, body).await
+    let r = app_relay::relay(local, link.port, &format!("/app/{id}"), &tail, method, &headers, body).await;
+    frameable_by_dashboard(r, &headers, &uri, &id)
+}
+
+/// The dashboard origins that open apps: the configured or learned public
+/// address, and the apps origin's host on amux's own port.
+fn dashboard_origins(headers: &HeaderMap, uri: &Uri) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(u) = public_links::public_url(&crate::config::amux_home()) {
+        out.push(u);
+    }
+    // HTTP/2 carries the host as :authority, in the URI, with no Host header.
+    let authority = uri.authority().map(|a| a.as_str().to_string());
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).map(str::to_string).or(authority).unwrap_or_default();
+    let host = app_relay::host_only(&host);
+    if !host.is_empty() && host.bytes().all(|b| b.is_ascii_alphanumeric() || b".-[]:".contains(&b)) {
+        out.push(format!("https://{host}:{}", crate::config::canonical_port()));
+    }
+    out
+}
+
+/// Pages shows an app in a frame on the dashboard's origin, a different port
+/// from this one. An app that forbids framing (`X-Frame-Options: SAMEORIGIN`,
+/// or a CSP `frame-ancestors`) rendered as a blank box in Pages (sandbox,
+/// 2026-10-26: mtp-demo's sign-in page). The owner chose to open it inside
+/// amux, so the dashboard may frame it, and nothing else may.
+fn frameable_by_dashboard(mut r: Response, headers: &HeaderMap, uri: &Uri, id: &str) -> Response {
+    let h = r.headers_mut();
+    let had_xfo = h.remove(header::X_FRAME_OPTIONS).is_some();
+    let csp: Vec<HeaderValue> = h.get_all(header::CONTENT_SECURITY_POLICY).iter().cloned().collect();
+    h.remove(header::CONTENT_SECURITY_POLICY);
+    let mut had_ancestors = false;
+    for v in csp {
+        let Ok(v) = v.to_str() else { continue };
+        let kept: Vec<&str> = v
+            .split(';')
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .filter(|d| {
+                let fa = d.to_ascii_lowercase().starts_with("frame-ancestors");
+                had_ancestors |= fa;
+                !fa
+            })
+            .collect();
+        if let Ok(v) = HeaderValue::from_str(&kept.join("; ")) {
+            if !kept.is_empty() {
+                h.append(header::CONTENT_SECURITY_POLICY, v);
+            }
+        }
+    }
+    let origins = dashboard_origins(headers, uri);
+    let ancestors = if origins.is_empty() { "frame-ancestors 'self'".to_string() } else { format!("frame-ancestors {}", origins.join(" ")) };
+    if let Ok(v) = HeaderValue::from_str(&ancestors) {
+        h.append(header::CONTENT_SECURITY_POLICY, v);
+    }
+    if had_xfo || had_ancestors {
+        tracing::info!(id = %id, had_xfo, had_ancestors, measured = true, n_considered = 1, verdict = "app_origin_framing_replaced",
+            "an app inside amux forbade framing; only the dashboard may frame it now");
+    }
+    r
 }
 
 #[cfg(test)]
@@ -269,6 +336,22 @@ mod tests {
         // HTTP/2: no Host header, the authority is in the URI.
         let u = apps_url(&HeaderMap::new(), &Uri::from_static("https://sandbox.example:8824/api/page-links/x/open"));
         assert!(u.as_deref().is_ok_and(|u| u.starts_with("https://sandbox.example:")), "{u:?}");
+    }
+
+    #[test]
+    fn only_the_dashboard_may_frame_an_app_whatever_the_app_said() {
+        let mut r = Response::new(Body::empty());
+        r.headers_mut().insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+        r.headers_mut().insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'"));
+        // HTTP/2: no Host header, the authority is in the URI (the e2e browser).
+        let u = Uri::from_static("https://sandbox.example:8443/app/x/");
+        let r = frameable_by_dashboard(r, &HeaderMap::new(), &u, "x");
+        assert!(r.headers().get(header::X_FRAME_OPTIONS).is_none(), "X-Frame-Options kept: Pages shows a blank box");
+        let csp: Vec<&str> = r.headers().get_all(header::CONTENT_SECURITY_POLICY).iter().filter_map(|v| v.to_str().ok()).collect();
+        assert!(csp.contains(&"default-src 'self'"), "the app's own policy was dropped: {csp:?}");
+        assert!(!csp.iter().any(|c| c.contains("'none'")), "the app's frame-ancestors kept: {csp:?}");
+        let fa = csp.iter().find(|c| c.starts_with("frame-ancestors")).expect("no frame-ancestors: any site may frame it");
+        assert!(fa.contains("https://sandbox.example:") && !fa.contains('*'), "{fa}");
     }
 
     #[test]

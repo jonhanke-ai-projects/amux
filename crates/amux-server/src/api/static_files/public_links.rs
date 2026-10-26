@@ -45,7 +45,8 @@ fn default_kind() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Link {
     pub id: String,
-    /// `internal`, `app` or `file`.
+    /// `internal`, `app` or `file`. An `internal` link names a port (an app)
+    /// or a `path` (a file or folder shown inside amux).
     #[serde(default = "default_kind")]
     pub kind: String,
     #[serde(default)]
@@ -286,6 +287,10 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
          Pages and opens inside the amux UI; its link is {base}/#view=pages&open=<id>, with the id \
          `amux publish` prints. Never hand the owner localhost or a port. A Page is \
          {base}/pages/<name>.\n\
+         - A file or folder for the owner, inside amux (an HTML deck, a report, a static demo): \
+         `amux publish --internal --file <absolute path> [title]`. Publish the file itself, not the \
+         folder around it, and never start a web server (such as `python3 -m http.server`) just to \
+         show static files: that serves every file beside it, scripts and data included.\n\
          - An app for anyone with the link (no amux sign-in), only when the owner wants it shared: \
          `amux publish <port> [title]`, which prints {base}/pub/<id>/.\n\
          - A file or folder for anyone with the link, only when the owner wants it shared: \
@@ -338,7 +343,7 @@ pub(crate) async fn list(State(_): State<AppState>) -> Response {
             if l.port > 0 {
                 v["running"] = json!(up);
             }
-            if l.kind == "file" {
+            if !l.path.is_empty() {
                 let (bytes, files) = shared_size(Path::new(&l.path));
                 v["size_bytes"] = json!(bytes);
                 v["files"] = json!(files);
@@ -401,7 +406,7 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     let Some(Json(body)) = body else { return bad(StatusCode::BAD_REQUEST, "send {\"kind\": ..., \"port\" or \"path\": ...}") };
     let kind = body.kind.clone().unwrap_or_else(|| if body.path.is_some() { "file".into() } else { "app".into() });
     let (port, path) = match kind.as_str() {
-        "app" | "internal" => {
+        "app" | "internal" if !(kind == "internal" && body.path.is_some()) => {
             let Some(port) = body.port else { return bad(StatusCode::BAD_REQUEST, "port is required") };
             if let Some(why) = refused_port(port) {
                 tracing::warn!(port, kind = %kind, measured = true, n_considered = 1, verdict = "public_link_refused", why, "link refused");
@@ -409,7 +414,11 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
             }
             (port, String::new())
         }
-        "file" => {
+        // A file or folder: public ("file"), or for the owner inside amux
+        // ("internal" with a path), served from the apps origin with no server
+        // to start (2026-10-26: rothco ran `python3 -m http.server` over a
+        // whole folder of build scripts to show the owner one HTML file).
+        "file" | "internal" => {
             let raw = body.path.as_deref().unwrap_or("").trim();
             let Ok(canon) = Path::new(raw).canonicalize() else {
                 return bad(StatusCode::BAD_REQUEST, "no such file or folder");
@@ -629,6 +638,32 @@ fn access_log(id: &str, status: StatusCode, headers: &HeaderMap, path: &str) {
     }
 }
 
+/// A file link's file, or a file inside its folder (an index.html, else a
+/// listing). Shared by public file links (/pub/) and files inside amux (the
+/// apps origin's /app/), so both refuse exactly the same paths.
+pub(crate) async fn serve_link_file(link: &Link, uri_path: &str, tail: &str, method: &Method, headers: &HeaderMap) -> Response {
+    if method != Method::GET && method != Method::HEAD {
+        return not_found();
+    }
+    let Some(root) = Path::new(&link.path).canonicalize().ok().filter(|r| file_refused(r).is_none()) else {
+        tracing::warn!(id = %link.id, kind = %link.kind, measured = true, n_considered = 1, verdict = "public_link_file_gone",
+            "file link opened while its file is gone or no longer allowed");
+        return not_found();
+    };
+    let Some(target) = resolve_shared(&root, tail) else { return not_found() };
+    if target.is_dir() {
+        if !tail.split('?').next().unwrap_or("").ends_with('/') {
+            return axum::response::Redirect::permanent(&format!("{uri_path}/")).into_response();
+        }
+        let index = target.join("index.html");
+        if index.is_file() {
+            return crate::api::file_viewer::serve_file(&index, headers).await;
+        }
+        return folder_listing(link, &target, tail);
+    }
+    crate::api::file_viewer::serve_file(&target, headers).await
+}
+
 /// Anyone with the link: no amux sign-in. Apps are relayed from loopback,
 /// never redirected to the raw port (a cloud box's firewall closes those).
 pub(crate) async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Response {
@@ -661,26 +696,7 @@ async fn serve_inner(method: Method, headers: &HeaderMap, uri: &Uri, body: Body)
         return axum::response::Redirect::permanent(&format!("/pub/{id}/{}", uri.query().map(|q| format!("?{q}")).unwrap_or_default())).into_response();
     }
     if link.kind == "file" {
-        if method != Method::GET && method != Method::HEAD {
-            return not_found();
-        }
-        let Some(root) = Path::new(&link.path).canonicalize().ok().filter(|r| file_refused(r).is_none()) else {
-            tracing::warn!(measured = true, n_considered = 1, verdict = "public_link_file_gone",
-                "public file link opened while its file is gone or no longer allowed");
-            return not_found();
-        };
-        let Some(target) = resolve_shared(&root, &tail) else { return not_found() };
-        if target.is_dir() {
-            if !tail.split('?').next().unwrap_or("").ends_with('/') {
-                return axum::response::Redirect::permanent(&format!("{}/", uri.path())).into_response();
-            }
-            let index = target.join("index.html");
-            if index.is_file() {
-                return crate::api::file_viewer::serve_file(&index, &headers).await;
-            }
-            return folder_listing(&link, &target, &tail);
-        }
-        return crate::api::file_viewer::serve_file(&target, &headers).await;
+        return serve_link_file(&link, uri.path(), &tail, &method, &headers).await;
     }
     if refused_port(link.port).is_some() {
         return not_found();

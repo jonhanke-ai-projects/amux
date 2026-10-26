@@ -176,3 +176,64 @@ async fn the_dashboard_no_longer_serves_proxy_links() {
     let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
     assert!(!String::from_utf8_lossy(&body).contains("internal app"), "/proxy/ relayed an app");
 }
+
+/// A file inside amux (`amux publish --internal --file`): the owner sees one
+/// HTML file in Pages with no server started, and only that file. Before this a
+/// worker served a whole folder with `python3 -m http.server` to show one deck
+/// (sandbox rothco, 2026-10-26), which listed its build scripts beside it.
+#[tokio::test]
+async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
+    let port = echo_app().await;
+    write_links(port);
+    let home_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+    let base = tempfile::Builder::new().prefix("appfile-").tempdir_in(&home_dir).unwrap();
+    let deck = base.path().join("deck.html");
+    std::fs::write(&deck, "<h1>the deck</h1>").unwrap();
+    std::fs::write(base.path().join("build_deck.py"), "SECRET_SCRIPT").unwrap();
+
+    // A worker asks: it is pending, and a person's request is live.
+    let make = |cookie: bool| {
+        let mut b = Request::builder().method("POST").uri("/api/page-links").header(header::HOST, "sandbox.amux.io")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}")).header(header::CONTENT_TYPE, "application/json")
+            .header("x-amux-session", "rothco");
+        if cookie {
+            b = b.header(header::COOKIE, owner_cookie());
+        }
+        b.body(Body::from(serde_json::json!({"kind": "internal", "path": deck, "title": "Deck"}).to_string())).unwrap()
+    };
+    let res = dashboard().oneshot(make(false)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!((v["kind"].as_str(), v["pending"].as_bool(), v["public"].as_bool()), (Some("internal"), Some(true), Some(false)), "{v}");
+    let (st, _) = open(v["id"].as_str().unwrap(), true).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "a worker's file opened without approval");
+
+    let res = dashboard().oneshot(make(true)).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let id = v["id"].as_str().unwrap().to_string();
+    assert_eq!(v["pending"].as_bool(), Some(false), "{v}");
+    let (st, h) = open(&id, true).await;
+    assert_eq!(st, StatusCode::OK, "{h}");
+    let path = h["url"].as_str().unwrap().trim_start_matches("https://apps.test:8443").to_string();
+    let (_, _, set, _) = app_get(&path, None).await;
+    let session = set.split(';').next().unwrap().to_string();
+
+    let res = apps_router()
+        .oneshot(Request::builder().uri(format!("/app/{id}/")).header(header::HOST, "apps.test:8443")
+            .header(header::COOKIE, &session).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let csp: Vec<String> = res.headers().get_all(header::CONTENT_SECURITY_POLICY).iter().filter_map(|v| v.to_str().ok().map(str::to_string)).collect();
+    assert!(res.headers().get(header::X_FRAME_OPTIONS).is_none(), "Pages could not frame it");
+    assert!(csp.iter().any(|c| c.starts_with("frame-ancestors https://apps.test:")), "anyone may frame it: {csp:?}");
+    let body = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).to_string();
+    assert!(body.contains("the deck"), "{body}");
+    for p in ["build_deck.py", "../build_deck.py", "%2e%2e/build_deck.py"] {
+        let (st, _, _, body) = app_get(&format!("/app/{id}/{p}"), Some(&session)).await;
+        assert!(st != StatusCode::OK && !body.contains("SECRET_SCRIPT"), "a file beside the deck was served at {p}: {st}");
+    }
+    // Without its session: nothing.
+    let (st, _, _, body) = app_get(&format!("/app/{id}/"), None).await;
+    assert!(st == StatusCode::FORBIDDEN && !body.contains("the deck"), "{st}");
+}

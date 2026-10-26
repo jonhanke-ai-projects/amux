@@ -6574,7 +6574,7 @@ ${BOLD}Browser:${RESET}
 
 ${BOLD}Pages links (apps and files, managed in the Pages tab):${RESET}
   amux publish [--internal] PORT [TITLE]   An app: public, or inside amux only
-  amux publish --file PATH [TITLE]         A public file or folder; --list, --revoke ID
+  amux publish [--internal] --file PATH    A file or folder: public, or inside amux only; --list, --revoke ID
 
 ${BOLD}Boundaries and resources:${RESET}
   amux boundaries [--json]       The worker boundaries (boundaries.toml), their guard, 24h firings
@@ -6857,10 +6857,14 @@ cmd_publish() {
       cat <<EOF
 ${BOLD}amux publish${RESET} — apps and files in the Pages tab
 
-  amux publish --internal PORT [TITLE]   An app for you, opened inside amux (signed in)
-  amux publish PORT [TITLE]              An app for anyone with the link, no amux sign-in
-  amux publish --file PATH [TITLE]       A file or folder for anyone with the link
-  amux publish --list                    List them
+  amux publish --internal PORT [TITLE]         An app for you, opened inside amux (signed in)
+  amux publish --internal --file PATH [TITLE]  A file or folder for you, inside amux; no server needed
+  amux publish PORT [TITLE]                    An app for anyone with the link, no amux sign-in
+  amux publish --file PATH [TITLE]             A file or folder for anyone with the link
+  amux publish --list                          List them
+
+To show an HTML file, publish the file itself with --file. Do not start a web
+server for static files: it serves every file beside them.
   amux publish --revoke ID               Remove one (a public link stops working)
 
 Anything a worker adds stays PENDING (a public link serves nobody, an app
@@ -6883,7 +6887,7 @@ if not d.get("public_url"):
 if not links:
     print("nothing published")
 for l in links:
-    what = l["file"] if l["kind"] == "file" else "port %s" % l["port"]
+    what = l["file"] if l.get("file") else "port %s" % l["port"]
     state = "PENDING" if l.get("pending") else ("public" if l.get("public") else "inside")
     print(l["id"], l["kind"], state, what, l.get("url") or l["path"], ("  " + l["title"]) if l.get("title") else "")
 '
@@ -6901,9 +6905,12 @@ for l in links:
     --internal) kind=internal; shift ;;
     --file) kind="file"; shift ;;
   esac
+  local is_path=0
+  [[ "$kind" == file ]] && is_path=1
+  if [[ "$kind" == internal && "${1:-}" == --file ]]; then is_path=1; shift; fi
   target="${1:-}"; title="${2:-}"
-  if [[ "$kind" == file ]]; then
-    [[ -n "$target" ]] || die "usage: amux publish --file PATH [TITLE]"
+  if [[ "$is_path" == 1 ]]; then
+    [[ -n "$target" ]] || die "usage: amux publish [--internal] --file PATH [TITLE]"
     [[ -e "$target" ]] || die "no such file or folder: $target"
     target="$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
   else
@@ -6912,13 +6919,13 @@ for l in links:
   local body
   body=$(python3 -c '
 import json, sys
-kind, target, title = sys.argv[1:4]
+kind, target, title, is_path = sys.argv[1:5]
 d = {"kind": kind, "title": title}
-if kind == "file":
+if is_path == "1":
     d["path"] = target
 else:
     d["port"] = int(target)
-print(json.dumps(d))' "$kind" "$target" "$title")
+print(json.dumps(d))' "$kind" "$target" "$title" "$is_path")
   _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
     -d "$body" "$AMUX_API/api/page-links" | python3 -c '
 import json, sys
@@ -6929,7 +6936,7 @@ except ValueError:
 if "error" in d:
     sys.exit("not published: " + str(d["error"]))
 print(d.get("url") or d["path"] + "   (address unknown: set AMUX_PUBLIC_URL in server.env)")
-if d["kind"] != "file" and not d.get("listening"):
+if not d.get("file") and not d.get("listening"):
     print("note: nothing listens on port %s yet; the link works once the app runs" % d["port"], file=sys.stderr)
 if d.get("pending"):
     print("PENDING: it does not open until the owner approves it in the Pages tab. Tell the owner it is waiting there.", file=sys.stderr)

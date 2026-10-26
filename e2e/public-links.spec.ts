@@ -10,9 +10,10 @@ import * as os from 'os';
 import * as path from 'path';
 import type { AddressInfo } from 'net';
 
-test('Pages provisions an app inside amux, a public app and a public folder', async ({ page, playwright }, testInfo) => {
+test('Pages provisions an app and a file inside amux, a public app and a public folder', async ({ page, playwright }, testInfo) => {
   const app = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
+    // Like mtp-demo's sign-in page: an app that forbids framing still shows in Pages.
+    res.writeHead(200, { 'Content-Type': 'text/html', 'X-Frame-Options': 'SAMEORIGIN' });
     res.end(`<h1>shared app</h1><p id="cookie">${(req.headers.cookie || '').replace(/</g, '')}</p>`);
   });
   await new Promise<void>(r => app.listen(0, '127.0.0.1', () => r()));
@@ -21,6 +22,10 @@ test('Pages provisions an app inside amux, a public app and a public folder', as
   const dir = fs.mkdtempSync(path.join(os.homedir(), 'pagesfiles-'));
   fs.writeFileSync(path.join(dir, 'report.txt'), 'quarterly report');
   fs.writeFileSync(path.join(dir, '.secret'), 'never public');
+  // A deck in its own folder, beside its build script (sandbox rothco, 2026-10-26).
+  const deckDir = fs.mkdtempSync(path.join(os.homedir(), 'pagesdeck-'));
+  fs.writeFileSync(path.join(deckDir, 'deck.html'), '<h1>the deck</h1>');
+  fs.writeFileSync(path.join(deckDir, 'build_deck.py'), 'print(1)');
   const tag = testInfo.project.name;
   const modalBtn = (name: string) => page.locator('#modal-btns').getByRole('button', { name });
   const base = () => new URL(page.url()).origin;
@@ -62,6 +67,21 @@ test('Pages provisions an app inside amux, a public app and a public folder', as
     await expect(page.frameLocator('.pub-app-frame').locator('h1')).toHaveText('shared app');
     const gone = await anon.get(`${base()}/proxy/${port}/`);
     expect(await gone.text()).not.toContain('shared app');
+    await page.getByRole('button', { name: 'Back to all pages' }).click();
+
+    // 1b. A file inside amux, added by path: shown in the amux UI with no
+    // server started, and only that file.
+    await page.getByRole('button', { name: 'Add app' }).click();
+    await page.locator('#pub-new-target').fill(path.join(deckDir, 'deck.html'));
+    await page.locator('#pub-new-title').fill(`deck ${tag}`);
+    await modalBtn('Add').click();
+    const deck = page.locator('#pub-internal .pub-card', { hasText: `deck ${tag}` });
+    await expect(deck).toContainText('deck.html');
+    // Previews load as their card scrolls into view (a phone shows one at a time).
+    await deck.scrollIntoViewIfNeeded();
+    await expect(deck.frameLocator('.pub-preview iframe').locator('h1')).toHaveText('the deck');
+    await deck.click();
+    await expect(page.frameLocator('.pub-app-frame').locator('h1')).toHaveText('the deck');
     await page.getByRole('button', { name: 'Back to all pages' }).click();
 
     // 2. A public app: anyone, no amux credential reaches it, and its card
@@ -175,6 +195,7 @@ test('Pages provisions an app inside amux, a public app and a public folder', as
     await cleanup('dispose the anonymous request context', () => anon.dispose());
     app.close();
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(deckDir, { recursive: true, force: true });
     if (sharedDir && sharedDir.includes('/Shared/upload-')) fs.rmSync(sharedDir, { recursive: true, force: true });
   }
 });

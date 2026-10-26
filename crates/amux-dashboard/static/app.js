@@ -58687,7 +58687,7 @@ const _PUB_EMPTY = {
   file: _pagesEmptyBox('&#x1F4C1;', 'No public files.', 'Only a file or folder you add here can be opened by others.'),
 };
 function _pubName(l) {
-  return l.title || (l.kind === 'file' ? (l.file || '').split('/').pop() : 'Port ' + l.port);
+  return l.title || (l.file ? l.file.split('/').pop() : 'Port ' + l.port);
 }
 // What a worker (not you) asked for carries its name as a chip.
 function _pubWorker(l) {
@@ -58712,12 +58712,14 @@ function _pubCard(l) {
   const internal = l.kind === 'internal';
   const link = internal ? (l.app_path || '') : (l.url || l.path);
   const linkHtml = internal ? esc(link) : '<a class="pub-url" href="' + esc(link) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + esc(link) + '</a>';
-  const meta = linkHtml + ' &middot; port ' + esc(String(l.port)) + by;
+  // An app names its port; a file inside amux names its path.
+  const where = l.file ? esc(l.file) : 'port ' + esc(String(l.port));
+  const meta = linkHtml + ' &middot; ' + where + by;
   if (l.pending) {
     return `<div class="pub-card pub-pending" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}">
       <div class="pub-card-head"><div class="pub-card-text"><b>${name}${chip}</b>
         <span class="ui-help pub-pending-note">Waiting for your approval: ${internal ? 'it does not open yet.' : 'nobody can open it yet.'}</span>
-        <span class="ui-help pub-card-meta">port ${esc(String(l.port))}${by}</span></div></div>
+        <span class="ui-help pub-card-meta">${where}${by}</span></div></div>
       <div class="pages-head-actions"><button class="btn primary" onclick="_pubApprove('${id}')">Approve</button>
         <button class="btn danger" onclick="_pubRevoke('${id}')">Decline</button></div></div>`;
   }
@@ -58811,9 +58813,10 @@ function _pagesFilter(q) {
 }
 async function _pubApprove(id) {
   const l = _pubLinks.find(x => x.id === id);
-  const what = l && l.kind === 'file' ? 'the file or folder ' + (l.file || '') : 'the app on port ' + (l ? l.port : '');
+  const what = l && l.file ? 'the file or folder ' + l.file : 'the app on port ' + (l ? l.port : '');
   const ask = l && l.kind === 'internal'
-    ? 'Open ' + what + ' inside amux? It runs with your amux access, so approve only an app you trust.'
+    ? (l.file ? 'Show ' + what + ' inside amux? Only you, signed in, can open it.'
+      : 'Open ' + what + ' inside amux? It runs with your amux access, so approve only an app you trust.')
     : 'Make ' + what + ' public? Anyone with the link can open it, without signing in, until you turn it off.';
   if (!(await showConfirm(ask, 'Approve', true))) return;
   try { await _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' }); showToast('Public link approved'); }
@@ -58855,7 +58858,9 @@ async function _pubNew(kind, prefill) {
       + '<input id="pub-share-files" type="file" multiple hidden onchange="_pubPick(this.files)">'
       + '<input id="pub-share-dir" type="file" webkitdirectory multiple hidden onchange="_pubPick(this.files)"></div>'
       + '<label class="ui-field">Or add by path<input id="pub-new-target" class="input" placeholder="/home/you/project/report.html" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="ui-help">A file, or a folder whose files are all shared. Hidden files and anything that looks like a key or a secret never are.</span></label>'
-    : '<label class="ui-field">Port<input id="pub-new-target" class="input" inputmode="numeric" placeholder="e.g. 8891" autocomplete="off"></label>';
+    : kind === 'internal'
+      ? '<label class="ui-field">Port or file path<input id="pub-new-target" class="input" placeholder="8891, or /home/you/project/report.html" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="ui-help">A port shows the app running there. A path shows that file or folder, with no server to start.</span></label>'
+      : '<label class="ui-field">Port<input id="pub-new-target" class="input" inputmode="numeric" placeholder="e.g. 8891" autocomplete="off"></label>';
   const note = kind === 'internal' ? 'Only you can open it, signed in, and it opens inside amux. It runs with your amux access, so add only an app you trust.'
     : 'Anyone with the link can open it, without signing in to amux, until you turn it off.';
   if (prefill) setTimeout(() => { const t = document.getElementById('pub-new-target'); if (t && !t.value) t.value = String(prefill); }, 0);
@@ -58870,14 +58875,16 @@ async function _pubNew(kind, prefill) {
   if (kind === 'file') {
     if (!raw.startsWith('/')) { showToast('Not shared: drop files, or give the full path starting with /.'); return; }
     body.path = raw;
+  } else if (kind === 'internal' && raw.startsWith('/')) {
+    body.path = raw;
   } else {
     const port = parseInt(raw, 10);
-    if (!(port > 0 && port < 65536)) { showToast('Not added: enter a port from 1 to 65535.'); return; }
+    if (!(port > 0 && port < 65536)) { showToast(kind === 'internal' ? 'Not added: enter a port from 1 to 65535, or a path starting with /.' : 'Not added: enter a port from 1 to 65535.'); return; }
     body.port = port;
   }
   try {
     const l = await _pubFetch('', { method: 'POST', body: JSON.stringify(body) });
-    showToast(kind === 'file' ? 'Public link created' : (l.listening ? (kind === 'internal' ? 'App added' : 'Public link created') : 'Saved. Nothing runs on port ' + body.port + ' yet.'));
+    showToast(kind === 'file' ? 'Public link created' : body.path ? 'Added to Pages' : (l.listening ? (kind === 'internal' ? 'App added' : 'Public link created') : 'Saved. Nothing runs on port ' + body.port + ' yet.'));
     _pubList();
   } catch (e) { showToast('Not saved: ' + e.message); }
 }
@@ -58934,7 +58941,7 @@ async function _pubOpenInternal(id) {
   document.getElementById('pages-list-wrap').style.display = 'none';
   document.getElementById('pages-open').style.display = 'flex';
   document.getElementById('pages-page-actions').style.display = 'none';
-  document.getElementById('pages-title').textContent = l.title || ('Port ' + l.port);
+  document.getElementById('pages-title').textContent = _pubName(l);
   const standalone = document.getElementById('pages-standalone');
   standalone.href = '#';
   // Each handoff opens once, so a new tab asks for its own.
@@ -58944,11 +58951,11 @@ async function _pubOpenInternal(id) {
     try { const u = await _pubHandoff(id); if (w) { w.opener = null; w.location = u; } }
     catch (err) { if (w) w.close(); showToast('Could not open: ' + err.message); }
   };
-  document.getElementById('pages-status').textContent = 'port ' + l.port;
+  document.getElementById('pages-status').textContent = l.file ? l.file : 'port ' + l.port;
   const host = document.getElementById('pages-frame');
   const f = document.createElement('iframe');
   f.className = 'pub-app-frame';
-  f.title = l.title || ('App on port ' + l.port);
+  f.title = _pubName(l);
   f.src = url;
   host.replaceChildren(f);
   _pagesMounted = { destroy() { f.remove(); } };
