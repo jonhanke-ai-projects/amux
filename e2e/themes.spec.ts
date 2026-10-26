@@ -10,6 +10,15 @@ import { readFileSync } from 'node:fs';
 test.use({ colorScheme: 'dark' });
 // Several tests here load the whole app two or three times.
 test.describe.configure({ timeout: 90_000 });
+// A theme activated here is saved to the server so a new device gets it. The
+// e2e server is shared by every spec in a project, so clear it after each test:
+// left set, it booted settings.spec's next fresh page in Atom One Light (CI
+// ce3589473, settings_theme_toggle on ios-safari).
+test.afterEach(async ({ page }) => {
+  await page.evaluate(() => Promise.all(['ui_theme', 'ui_themes'].map(key => fetch('/api/prefs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, value: '' }) }))))
+    .catch(() => {});
+});
 
 const VIEWS = ['sessions', 'board', 'tasks', 'groups', 'calendar', 'scheduler', 'files', 'scratchpad',
   'mdai', 'pages', 'email', 'connectors', 'vault', 'logs', 'messages'];
