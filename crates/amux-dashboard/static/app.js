@@ -47663,18 +47663,27 @@ function _fcInit() {
   if (!el) return;
   if (!window.FullCalendar) { _lazyLib('fullcalendar').then(_fcInit, () => {}); return; }
   if (_fcInstance) { _fcInstance.destroy(); _fcInstance = null; }
-  // Map old view names to FullCalendar view names
-  let savedView = localStorage.getItem('amux_cal_view') || 'dayGridMonth';
-  const _viewMap = { month: 'dayGridMonth', week: 'timeGridWeek', day: 'timeGridDay' };
-  if (_viewMap[savedView]) savedView = _viewMap[savedView];
-  if (!['dayGridMonth','timeGridWeek','timeGridDay'].includes(savedView)) savedView = 'dayGridMonth';
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.body.classList.contains('light'));
   const isMobile = window.innerWidth <= 600;
-  if (!['dayGridMonth','timeGridWeek','timeGridDay','timeGrid3Day','listWeek'].includes(localStorage.getItem('amux_cal_view') || '')) savedView = 'timeGridWeek';
-  const mobileViews = ['timeGridDay','timeGrid3Day','listWeek','dayGridMonth'];
-  const mobileDefault = mobileViews.includes(localStorage.getItem('amux_cal_view')) ? localStorage.getItem('amux_cal_view') : 'timeGridDay';
+  // Reopen on the view last used, on any device (Ethan, 2026-10-26: "make sure
+  // whatever view i last used is saved local. for cal"). Desktop used to keep
+  // only month/week/day and dropped 3-day and Agenda; phones dropped Week.
+  // The date being looked at comes back too while it is fresh (8h), so a
+  // calendar opened the next day starts on today.
+  const _viewMap = { month: 'dayGridMonth', week: 'timeGridWeek', day: 'timeGridDay' };
+  const _known = ['dayGridMonth', 'timeGridWeek', 'timeGridDay', 'timeGrid3Day', 'listWeek'];
+  let savedView = localStorage.getItem('amux_cal_view') || '';
+  if (_viewMap[savedView]) savedView = _viewMap[savedView];
+  if (!_known.includes(savedView)) savedView = isMobile ? 'timeGridDay' : 'timeGridWeek';
+  let savedDate;
+  try {
+    const d = JSON.parse(localStorage.getItem('amux_cal_date') || 'null');
+    if (d && d.date && Date.now() - d.at < 8 * 3600 * 1000) savedDate = d.date;
+  } catch (_) {}
+  try { amuxTrack('cal_view_restored', {view: savedView, date_restored: !!savedDate, measured: true, n_considered: 1}); } catch (_) {}
   _fcInstance = new FullCalendar.Calendar(el, {
-    initialView: isMobile ? mobileDefault : savedView,
+    initialView: savedView,
+    ...(savedDate ? { initialDate: savedDate } : {}),
     headerToolbar: isMobile ? {
       left: 'today',
       center: 'title',
@@ -47747,6 +47756,14 @@ function _fcInit() {
     select: function(info) { openEventModal(null, info.startStr, info.endStr, info.allDay); },
     viewDidMount: function(info) {
       localStorage.setItem('amux_cal_view', info.view.type);
+    },
+    datesSet: function(info) {
+      try {
+        localStorage.setItem('amux_cal_view', info.view.type);
+        const d = info.view.calendar.getDate();
+        const local = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        localStorage.setItem('amux_cal_date', JSON.stringify({ date: local, at: Date.now() }));
+      } catch (_) {}
     },
     eventDidMount: function(info) {
       const p = info.event.extendedProps;
