@@ -56,6 +56,11 @@ jobs:
         run: python3 scripts/site-funnel.py --self-test
       - name: browser methods registry and agent adapters
         run: node --test tests/browser-methods.test.mjs
+      # The stall watchdog pages the owner only for a wake that is absent from
+      # the worker's history after a retry, and counts a worker's own sends as
+      # progress (2026-10-26 13:47Z false page).
+      - name: worker stall watchdog wake confirmation
+        run: node --test tests/worker-stall-watch.test.mjs
       # AMUX-5397: the ChatGPT front door's tenant rules (a grant reaches only
       # its own workspace; a tunnel answer only from its own org). The real
       # gateway handler against fake workspaces: no cloud, Clerk or Docker.
