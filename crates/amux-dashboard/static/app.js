@@ -53309,9 +53309,14 @@ async function _handleDeeplink(hash) {
     tryOpen(0);
     return;
   }
-  let dpath = null;
+  // #edit=<path> is #path= that lands a markdown file in Edit (Ethan,
+  // 2026-10-26: a texted check-in link opens the note ready to answer).
+  let dpath = null, edit = false;
   if (hash && hash.startsWith('#path=')) {
     dpath = decodeURIComponent(hash.slice(6));
+  } else if (hash && hash.startsWith('#edit=')) {
+    dpath = decodeURIComponent(hash.slice(6));
+    edit = true;
   } else {
     dpath = new URLSearchParams(location.search).get('path');
     // Migrate old ?path= links to hash format
@@ -53325,7 +53330,13 @@ async function _handleDeeplink(hash) {
       const parent = dpath.split('/').slice(0, -1).join('/') || '/';
       _filesPath = parent;
       switchView('files');
-      openFilePreview(dpath);
+      await openFilePreview(dpath);
+      if (edit) {
+        const ok = !!(_fileData && _fileData.path && _fileData.is_markdown && !_fileData.readOnly);
+        if (ok) setFileViewMode('edit');
+        amuxTrack('deeplink_edit', {verdict: ok ? 'deeplink_edit_opened' : 'deeplink_edit_not_editable',
+          measured: true, n_considered: 1});
+      }
     } else if (!d.error) {
       _filesPath = dpath;
       switchView('files');
@@ -53355,7 +53366,7 @@ function _restoreScreen(bootHash) {
   // peek over the view the link named. In the Mac app, where every window
   // shares localStorage, that peek was another window's worker (2026-10-21).
   const _bootHash = typeof bootHash === 'string' ? bootHash : location.hash;
-  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(_bootHash)
+  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(_bootHash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -53402,7 +53413,7 @@ function _restoreScreen(bootHash) {
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
       if (peekSession || _peekOpenGeneration !== restoreGeneration
-          || /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)) {
+          || /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(location.hash)) {
         amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
         return;
       }
