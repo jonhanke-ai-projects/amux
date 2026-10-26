@@ -10086,6 +10086,35 @@ fn stranded_expire_secs() -> i64 {
 /// unreadable, or the part read starts after `since`, which covers both a file
 /// too large for the tail read and a conversation that began after the
 /// reservation (the prompt could be in an older transcript).
+/// Whether the lane's pane shows a turn in progress right now.
+async fn lane_generating_now(name: &str) -> bool {
+    #[cfg(test)]
+    if let Some(g) = test_generating::get(name) {
+        return g;
+    }
+    detect_claude_status(&tmux_capture(name, 0).await) == "active"
+}
+
+#[cfg(test)]
+pub(crate) mod test_generating {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static LANES: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+    pub(crate) fn set(name: &str, generating: bool) {
+        LANES.lock().unwrap().get_or_insert_with(HashMap::new).insert(name.to_string(), generating);
+    }
+    pub(crate) fn get(name: &str) -> Option<bool> {
+        LANES.lock().unwrap().as_ref().and_then(|m| m.get(name).copied())
+    }
+}
+
+/// Whether a message missing from the transcript may be released for a resend.
+/// Never while the lane is generating: a message delivered mid-turn reaches the
+/// transcript only when the turn ends, so its absence proves nothing yet.
+fn stranded_release_allowed(generating: bool) -> bool {
+    !generating
+}
+
 fn transcript_has_prompt_since(path: &std::path::Path, text: &str, since: i64, clock_skew_s: i64) -> Option<bool> {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 16 * 1024 * 1024;
@@ -10318,7 +10347,21 @@ async fn send_receipt_resolving(
                 json!({"ok": true, "accepted": true, "reconciled": true, "id": id, "msg_id": msg_id}),
             )
         }
-        Some((Some(false), path)) if aged => {
+        Some((Some(false), path)) if aged && {
+            // ABSENCE IS NOT EVIDENCE WHILE THE LANE IS MID-TURN. Claude Code holds a
+            // message typed during a turn and writes it to the transcript only when
+            // the turn ends: on sandbox.amux.io (2026-10-26) "password protect it" was
+            // released at 15:56:18.098, the transcript recorded it at 15:56:18.577, and
+            // the owner was shown "may already be with the worker" with a resend
+            // invitation that would have delivered it twice.
+            let generating = lane_generating_now(name).await;
+            if generating {
+                tracing::info!(target: "amux::message_acceptance", session = name, measured = true, n_considered = 1,
+                    verdict = "stranded_reservation_deferred_mid_turn",
+                    "a reservation's text is not in the transcript yet, but the lane is mid-turn; not released");
+            }
+            stranded_release_allowed(generating)
+        } => {
             send_dedup_forget(state, name, msg_id).await;
             tracing::warn!(
                 target: "amux::message_acceptance", session = name, verdict = "stranded_reservation_released",
@@ -45807,6 +45850,15 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             (json!(true), json!(true)),
             "{v}"
         );
+        // Mid-turn, a missing message is not yet evidence: Claude Code writes a
+        // message typed during a turn to the transcript when the turn ends.
+        test_generating::set(name, true);
+        let (_, v) =
+            read(send_receipt_resolving(&state, name, "lost-id", "[03:17 PM] never typed").await)
+                .await;
+        assert!(v.get("released").is_none(), "released while the lane was mid-turn: {v}");
+        assert!(send_dedup_gate(&state, name, "lost-id").await.is_some(), "still reserved: no resend while mid-turn");
+        test_generating::set(name, false);
         let (_, v) =
             read(send_receipt_resolving(&state, name, "lost-id", "[03:17 PM] never typed").await)
                 .await;
