@@ -7826,9 +7826,20 @@ function _nudgeWorkersOnBoardChange() {
     // The needs-you bell counts board cards too, and refreshed only every 5
     // minutes: answering a card left it counted while the board had moved on.
     // It follows any board change now, a few seconds after the last one. This
-    // runs for live updates and for the polling fallback alike.
-    clearTimeout(window._needsYouSoonTimer);
-    window._needsYouSoonTimer = setTimeout(() => { try { _needsYouFetch(); } catch (_) {} }, 3000);
+    // runs for live updates and for the polling fallback alike. The fetch is
+    // due 3s after the FIRST change it has not covered: restarting the timer
+    // on every change let a steady stream of board updates hold the bell
+    // stale indefinitely (AMUX-6386). Changes inside the window are counted
+    // and reported with the fetch that covers them.
+    window._needsYouSoonPending = (window._needsYouSoonPending || 0) + 1;
+    if (!window._needsYouSoonTimer) {
+      window._needsYouSoonTimer = setTimeout(() => {
+        const covered = window._needsYouSoonPending || 0;
+        window._needsYouSoonTimer = null; window._needsYouSoonPending = 0;
+        try { amuxTrack('needsyou_soon_fetch', {changes: covered, measured: true, n_considered: covered}); } catch (_) {}
+        try { _needsYouFetch(); } catch (_) {}
+      }, 3000);
+    }
   } catch (e) { /* a render hiccup must not break the ingest that called us */ }
 }
 function _grpMembers(g) {
