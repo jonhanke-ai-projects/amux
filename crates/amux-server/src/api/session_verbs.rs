@@ -15068,10 +15068,11 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
 }
 
 /// py:25815 send_keys — allowed control keys only.
-const ALLOWED_TMUX_KEYS: [&str; 47] = [
+// "C-s": the second half of the Send Now chip (Ctrl+X, release, Ctrl+S).
+const ALLOWED_TMUX_KEYS: [&str; 48] = [
     "Enter", "Escape", "Tab", "BTab", "Space", "BSpace", "Up", "Down", "Left", "Right", "Home",
     "End", "PageUp", "PageDown", "IC", "DC", "C-c", "C-d", "C-z", "C-l", "C-a", "C-e", "C-k",
-    "C-u", "C-r", "C-p", "C-n", "C-b", "C-f", "C-w", "C-o", "C-x", "M-b", "M-f", "M-d", "F1", "F2",
+    "C-u", "C-r", "C-p", "C-n", "C-b", "C-f", "C-w", "C-o", "C-x", "C-s", "M-b", "M-f", "M-d", "F1", "F2",
     "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
 ];
 // "1": the resume-mode auto-answer selects BY DIGIT (see resume_mode_action —

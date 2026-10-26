@@ -780,6 +780,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_chipKeySequence": {
+      "kind": "command._chipKeySequence",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_clearBlockedOps": {
       "kind": "command._clearBlockedOps",
       "feedback_required": true,

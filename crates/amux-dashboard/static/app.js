@@ -23883,6 +23883,9 @@ function _slashAcRow(c) {
 const DEFAULT_CHIPS = [
   { id: 'continue', label: 'Continue', action: 'send', value: 'continue' },
   { id: 'enter', label: 'Enter', action: 'keys', value: 'Enter' },
+  // Ctrl+X, release, then Ctrl+S (Ethan, 2026-10-26). A keys value with spaces
+  // is a sequence: each key is pressed and released in turn.
+  { id: 'sendnow', label: 'Send Now', action: 'keys', value: 'C-x C-s' },
   { id: 'up', label: '\u2191 Up', action: 'keys', value: 'Up' },
   { id: 'down', label: '\u2193 Down', action: 'keys', value: 'Down' },
   { id: 'space', label: 'Space', action: 'keys', value: 'Space' },
@@ -23897,6 +23900,9 @@ const DEFAULT_CHIPS = [
 ];
 // Prior built-in default sets \u2014 users still on one of these (never customized)
 // are migrated to the current DEFAULT_CHIPS; genuine customizations are untouched.
+// Defaults added after people had customized their chips; each is added to a
+// customized set once (_getChips).
+const _NEW_DEFAULT_CHIPS = ['sendnow'];
 const _OLD_DEFAULT_CHIP_SETS = [
   'continue,enter,up,down,push,status,model,mcp,ctrlc,ctrlo,clear,compact,esc',
   'continue,enter,up,down,space,ctrlc,esc',
@@ -23906,6 +23912,7 @@ const _OLD_DEFAULT_CHIP_SETS = [
 const _ACTION_CHIPS = [
     { id: 'continue', label: 'continue', action: 'send', value: 'continue', desc: 'Send "continue"' },
     { id: 'enter', label: 'Enter', action: 'keys', value: 'Enter', desc: 'Press Enter' },
+    { id: 'sendnow', label: 'Send Now', action: 'keys', value: 'C-x C-s', desc: 'Ctrl+X, release, then Ctrl+S' },
     { id: 'up', label: '\u2191', action: 'keys', value: 'Up', desc: 'Arrow Up' },
     { id: 'down', label: '\u2193', action: 'keys', value: 'Down', desc: 'Arrow Down' },
     { id: 'push', label: '\u2B06 Push', action: 'special', value: 'gitPush', desc: 'Git push' },
@@ -24302,6 +24309,22 @@ function _getChips() {
       _saveChips(nd);
       return nd;
     }
+    // A chip added to the defaults later joins a customized set once, after
+    // Enter (or at the front). Removing it afterwards sticks: it is offered once.
+    let offered = [];
+    try { offered = JSON.parse(localStorage.getItem('amux_chips_offered') || '[]'); } catch (e) {}
+    const fresh = _NEW_DEFAULT_CHIPS.filter(id => !offered.includes(id) && !saved.some(c => c.id === id));
+    if (fresh.length) {
+      const next = saved.slice();
+      for (const id of fresh) {
+        const chip = DEFAULT_CHIPS.find(c => c.id === id);
+        const at = next.findIndex(c => c.id === 'enter');
+        next.splice(at >= 0 ? at + 1 : 0, 0, { ...chip });
+      }
+      try { localStorage.setItem('amux_chips_offered', JSON.stringify(offered.concat(_NEW_DEFAULT_CHIPS))); } catch (e) {}
+      _saveChips(next);
+      return next;
+    }
     return saved;
   }
   return DEFAULT_CHIPS.map(c => ({...c}));
@@ -24324,6 +24347,14 @@ function _chipChatAction(chip, target) {
   if (k === 'up' && inp) return cmdHistoryUp(inp, target);
   if (k === 'down' && inp) return cmdHistoryDown(inp, target);
 }
+async function _chipKeySequence(name, keys, isPeek) {
+  for (let i = 0; i < keys.length; i++) {
+    const r = await doKeys(name, keys[i]);
+    if (!r || !r.accepted) { showToast('Not sent: ' + keys[i] + ' (' + ((r && r.message) || 'refused') + ')'); break; }
+    if (i < keys.length - 1) await new Promise(res => setTimeout(res, 80));
+  }
+  if (isPeek && typeof _refreshPeekSoon === 'function') _refreshPeekSoon();
+}
 function _chipAction(chip, sessionName, isPeek) {
   const chatTarget = isPeek && (chip.action === 'send' || chip.action === 'keys')
     && typeof _peekChatTarget === 'function' && _peekChatTarget();
@@ -24339,6 +24370,10 @@ function _chipAction(chip, sessionName, isPeek) {
       return;
     }
     if (typeof _stopKeyBeacon === 'function') _stopKeyBeacon(isPeek ? peekSession : sessionName, chip.value, isPeek ? 'peek-chip' : 'card-chip');
+    // "C-x C-s": press and release each key in order, a moment apart, and stop
+    // at the first one the terminal does not take.
+    const seq = String(chip.value).split(/\s+/).filter(Boolean);
+    if (seq.length > 1) { _chipKeySequence(isPeek ? peekSession : sessionName, seq, isPeek); return; }
     if (isPeek) peekQuickKeys(chip.value);
     else doKeys(sessionName, chip.value);
   } else if (chip.action === 'slash') {
