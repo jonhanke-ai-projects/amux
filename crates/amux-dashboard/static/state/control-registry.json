@@ -3090,6 +3090,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pagesEnter": {
+      "kind": "command._pagesEnter",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_pagesWorker": {
       "kind": "command._pagesWorker",
       "feedback_required": true,
@@ -3800,6 +3806,24 @@
     },
     "_psfViewFile": {
       "kind": "command._psfViewFile",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pubMenu": {
+      "kind": "command._pubMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pubNew": {
+      "kind": "command._pubNew",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pubUploadShare": {
+      "kind": "command._pubUploadShare",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

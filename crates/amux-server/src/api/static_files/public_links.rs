@@ -324,12 +324,66 @@ fn bad(status: StatusCode, msg: &str) -> Response {
 pub(crate) async fn list(State(_): State<AppState>) -> Response {
     let home = crate::config::amux_home();
     let links = load(&home);
+    // Whether each app answers right now (Pages shows a live preview, or a
+    // placeholder for an app that is not running), checked together.
+    let running = futures::future::join_all(links.iter().map(|l| async move {
+        l.port > 0 && app_relay::local_listener(l.port).await.is_some()
+    }))
+    .await;
+    let rows: Vec<Value> = links
+        .iter()
+        .zip(running)
+        .map(|(l, up)| {
+            let mut v = link_json(&home, l);
+            if l.port > 0 {
+                v["running"] = json!(up);
+            }
+            if l.kind == "file" {
+                let (bytes, files) = shared_size(Path::new(&l.path));
+                v["size_bytes"] = json!(bytes);
+                v["files"] = json!(files);
+            }
+            v
+        })
+        .collect();
     Json(json!({
-        "links": links.iter().map(|l| link_json(&home, l)).collect::<Vec<_>>(),
+        "links": rows,
         "public_url": public_url(&home),
         "measured": true, "n_considered": links.len(),
     }))
     .into_response()
+}
+
+/// What a file link shares: its size and file count, counting only what
+/// /pub/ would serve (visible, inside, allowed), and bounded so a huge folder
+/// cannot stall the list. Missing reads as zero.
+fn shared_size(path: &Path) -> (u64, u64) {
+    let Ok(root) = path.canonicalize() else { return (0, 0) };
+    if root.is_file() {
+        return (std::fs::metadata(&root).map(|m| m.len()).unwrap_or(0), 1);
+    }
+    let (mut bytes, mut files, mut seen) = (0u64, 0u64, 0usize);
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 5000 {
+                return (bytes, files);
+            }
+            let Ok(c) = e.path().canonicalize() else { continue };
+            if !c.starts_with(&root) || file_refused(&c).is_some() {
+                continue;
+            }
+            if c.is_dir() {
+                stack.push(c);
+            } else if let Ok(m) = std::fs::metadata(&c) {
+                bytes += m.len();
+                files += 1;
+            }
+        }
+    }
+    (bytes, files)
 }
 
 #[derive(Deserialize)]

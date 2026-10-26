@@ -58253,38 +58253,137 @@ async function _pubFetch(path, init) {
   return d;
 }
 let _pubLinks = [];
+// Empty states: a dashed box with what goes here and how it gets here.
+function _pagesEmptyBox(icon, title, text) {
+  return '<div class="pages-empty-box"><div class="pages-empty-icon" aria-hidden="true">' + icon + '</div><b>' + title + '</b>' + text + '</div>';
+}
 const _PUB_EMPTY = {
-  internal: 'No apps yet. A worker adds one with <code>amux publish --internal &lt;port&gt;</code>, or use Add app.',
-  app: 'Nothing shared. A worker shares an app with <code>amux publish &lt;port&gt;</code> when you ask it to.',
-  file: 'No public files. Only a file or folder you add here can be opened by others.',
+  internal: '',
+  app: _pagesEmptyBox('&#x1F310;', 'Nothing shared.', 'A worker shares an app with <code>amux publish &lt;port&gt;</code> when you ask it to.'),
+  file: _pagesEmptyBox('&#x1F4C1;', 'No public files.', 'Only a file or folder you add here can be opened by others.'),
 };
-function _pubRow(l) {
-  const href = l.url || l.path;
-  const name = l.title || (l.kind === 'file' ? (l.file || '').split('/').pop() : 'Port ' + l.port);
-  const what = l.kind === 'file' ? esc(l.file) : 'port ' + esc(String(l.port));
-  const by = l.created_by ? ' · by ' + esc(l.created_by) : '';
-  if (l.kind === 'internal' && !l.pending) {
-    return `<div class="pages-row pub-row" role="button" tabindex="0" data-pub="${esc(l.id)}"
-      onclick="_pubOpenInternal('${escJs(l.id)}')" onkeydown="if(event.key==='Enter'){event.preventDefault();_pubOpenInternal('${escJs(l.id)}')}">
-      <div class="pages-row-main"><b>${esc(name)}</b><span class="ui-help">${esc(l.app_path || '')} · ${what}${by}</span></div>
-      <button class="btn danger" onclick="event.stopPropagation();_pubRevoke('${escJs(l.id)}')">Remove</button></div>`;
-  }
-  // A link a worker asked for does nothing until you approve it here: a public
-  // one serves nobody, and an app inside amux does not open.
+function _pubName(l) {
+  return l.title || (l.kind === 'file' ? (l.file || '').split('/').pop() : 'Port ' + l.port);
+}
+// What a worker (not you) asked for carries its name as a chip.
+function _pubWorker(l) {
+  const c = l.created_by || '';
+  return c && c !== 'owner' && !c.startsWith('member:') ? c : '';
+}
+function _pubSearchText(l) {
+  return [_pubName(l), l.file, l.port, l.created_by, l.kind].filter(Boolean).join(' ').toLowerCase();
+}
+function _pubSize(n) {
+  if (!(n > 0)) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : String(n)) + ' ' + u[i];
+}
+// An app (inside amux or public) is a card with a live preview; a pending one
+// keeps Approve / Decline, since it opens nothing until you approve it.
+function _pubCard(l) {
+  const id = escJs(l.id), name = esc(_pubName(l)), worker = _pubWorker(l);
+  const chip = worker ? '<span class="pub-chip">' + esc(worker) + '</span>' : '';
+  const by = ' &middot; by ' + (worker ? esc(worker) : 'you');
+  const internal = l.kind === 'internal';
+  const link = internal ? (l.app_path || '') : (l.url || l.path);
+  const linkHtml = internal ? esc(link) : '<a class="pub-url" href="' + esc(link) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + esc(link) + '</a>';
+  const meta = linkHtml + ' &middot; port ' + esc(String(l.port)) + by;
   if (l.pending) {
-    return `<div class="pages-row pub-row pub-pending" data-pub="${esc(l.id)}">
-    <div class="pages-row-main"><b>${esc(name)}</b>
-      <span class="ui-help pub-pending-note">Waiting for your approval: ${l.kind === 'internal' ? 'it does not open yet.' : 'nobody can open it yet.'}</span>
-      <span class="ui-help">${what}${by}</span></div>
-    <button class="btn primary" onclick="_pubApprove('${escJs(l.id)}')">Approve</button>
-    <button class="btn danger" onclick="_pubRevoke('${escJs(l.id)}')">Decline</button></div>`;
+    return `<div class="pub-card pub-pending" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}">
+      <div class="pub-card-head"><div class="pub-card-text"><b>${name}${chip}</b>
+        <span class="ui-help pub-pending-note">Waiting for your approval: ${internal ? 'it does not open yet.' : 'nobody can open it yet.'}</span>
+        <span class="ui-help pub-card-meta">port ${esc(String(l.port))}${by}</span></div></div>
+      <div class="pages-head-actions"><button class="btn primary" onclick="_pubApprove('${id}')">Approve</button>
+        <button class="btn danger" onclick="_pubRevoke('${id}')">Decline</button></div></div>`;
   }
-  return `<div class="pages-row pub-row" data-pub="${esc(l.id)}">
-    <div class="pages-row-main"><b>${esc(name)}</b>
+  const open = internal ? ` role="button" tabindex="0" onclick="_pubOpenInternal('${id}')" onkeydown="if(event.key==='Enter'&&event.target===this){event.preventDefault();_pubOpenInternal('${id}')}"` : '';
+  return `<div class="pub-card" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}"${open}>
+    <div class="pub-card-head"><div class="pub-card-text"><b>${name}${chip}</b><span class="ui-help pub-card-meta">${meta}</span></div>
+      <button class="btn pub-more" aria-label="More actions for ${name}" onclick="event.stopPropagation();_pubMenu(event,'${id}')">&#x22EE;</button>
+      <button class="btn danger pub-remove" onclick="event.stopPropagation();_pubRevoke('${id}')">${internal ? 'Remove' : 'Turn off'}</button></div>
+    <div class="pub-preview" data-preview="${esc(l.id)}" aria-hidden="true">${l.running === false
+      ? '<div class="pub-preview-note">Not running. The preview appears when the app on port ' + esc(String(l.port)) + ' is up.</div>'
+      : '<div class="pub-preview-note">Loading preview&hellip;</div>'}</div></div>`;
+}
+function _pubFileRow(l) {
+  const id = escJs(l.id), href = l.url || l.path, folder = (l.files || 0) !== 1 || !/\.[^/]+$/.test(l.file || '');
+  if (l.pending) {
+    return `<div class="pub-file pub-pending" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}">
+      <span class="pub-file-icon" aria-hidden="true">${folder ? '&#x1F4C1;' : '&#x1F4C4;'}</span>
+      <div class="pages-row-main"><b>${esc(_pubName(l))}</b><span class="ui-help pub-pending-note">Waiting for your approval: nobody can open it yet.</span>
+        <span class="ui-help">${esc(l.file)}</span></div>
+      <button class="btn primary" onclick="_pubApprove('${id}')">Approve</button>
+      <button class="btn danger" onclick="_pubRevoke('${id}')">Decline</button></div>`;
+  }
+  const size = _pubSize(l.size_bytes) + (folder ? ' &middot; ' + (l.files || 0) + ' file' + (l.files === 1 ? '' : 's') : '');
+  return `<div class="pub-file" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}">
+    <span class="pub-file-icon" aria-hidden="true">${folder ? '&#x1F4C1;' : '&#x1F4C4;'}</span>
+    <div class="pages-row-main"><b>${esc(_pubName(l))}</b>
       <a class="ui-help pub-url" href="${esc(href)}" target="_blank" rel="noopener">${esc(href)}</a>
-      <span class="ui-help">${what}${by}</span></div>
+      <span class="ui-help">${esc(l.file)} &middot; ${size}</span></div>
     <button class="btn" onclick="_copyTextWithToast('${escJs(href)}', 'Link copied')">Copy</button>
-    <button class="btn danger" onclick="_pubRevoke('${escJs(l.id)}')">Turn off</button></div>`;
+    <button class="btn danger" onclick="_pubRevoke('${id}')">Turn off</button></div>`;
+}
+// The card's ⋮ menu (the shared .card-menu): open, copy, remove. On a phone
+// Remove / Turn off live only here, keeping one row of controls.
+function _pubMenuClose() { document.getElementById('pub-menu')?.remove(); document.removeEventListener('click', _pubMenuClose); }
+function _pubMenu(e, id) {
+  _pubMenuClose();
+  const l = _pubLinks.find(x => x.id === id);
+  if (!l) return;
+  const internal = l.kind === 'internal';
+  const item = (act, icon, label) => '<div class="card-menu-item" role="menuitem" tabindex="0" data-act="' + act + '"><span class="mi">' + icon + '</span> ' + label + '</div>';
+  const m = document.createElement('div');
+  m.className = 'card-menu open'; m.id = 'pub-menu'; m.setAttribute('role', 'menu');
+  m.innerHTML = item('open', '&#x2197;', internal ? 'Open' : 'Open link')
+    + (internal ? '' : item('copy', '&#x2398;', 'Copy link'))
+    + '<div class="card-menu-sep"></div>' + item('remove', '&#x2715;', internal ? 'Remove from Pages' : 'Turn off');
+  m.addEventListener('click', ev => {
+    const it = ev.target.closest('[data-act]');
+    if (!it) return;
+    ev.stopPropagation(); _pubMenuClose();
+    if (it.dataset.act === 'open') { if (internal) _pubOpenInternal(id); else window.open(l.url || l.path, '_blank', 'noopener'); }
+    else if (it.dataset.act === 'copy') _copyTextWithToast(l.url || l.path, 'Link copied');
+    else if (it.dataset.act === 'remove') _pubRevoke(id);
+  });
+  document.body.appendChild(m);
+  _placeMenuAtPointer(m, e);
+  setTimeout(() => document.addEventListener('click', _pubMenuClose), 0);
+}
+// Live previews: a scaled-down, non-interactive frame of each running app,
+// loaded when its card scrolls into view. An app inside amux previews on the
+// apps origin through its own one-time handoff; a public one at /pub/<id>/,
+// sandboxed like every public page.
+let _pubPreviewObs = null;
+function _pubPreviews(root) {
+  if (_pubPreviewObs) _pubPreviewObs.disconnect();
+  const load = async (box) => {
+    const l = _pubLinks.find(x => x.id === box.dataset.preview);
+    if (!l || l.pending || l.running === false || box.dataset.loaded) return;
+    box.dataset.loaded = '1';
+    let src;
+    try { src = l.kind === 'internal' ? await _pubHandoff(l.id) : (l.path || ''); }
+    catch (e) { box.innerHTML = '<div class="pub-preview-note">No preview: ' + esc(e.message) + '</div>'; return; }
+    const f = document.createElement('iframe');
+    f.title = 'Preview of ' + _pubName(l); f.tabIndex = -1; f.loading = 'lazy';
+    if (l.kind !== 'internal') f.setAttribute('sandbox', 'allow-scripts');
+    f.src = src;
+    const fit = () => { f.style.transform = 'scale(' + (box.clientWidth / 1280) + ')'; };
+    box.replaceChildren(f); fit();
+    if (window.ResizeObserver) new ResizeObserver(fit).observe(box);
+  };
+  const boxes = root.querySelectorAll('.pub-preview[data-preview]');
+  if (!('IntersectionObserver' in window)) { boxes.forEach(load); return; }
+  _pubPreviewObs = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { _pubPreviewObs.unobserve(e.target); load(e.target); } }), { rootMargin: '200px' });
+  boxes.forEach(b => _pubPreviewObs.observe(b));
+}
+// Search across pages, apps and files: hides what does not match.
+function _pagesFilter(q) {
+  const t = String(q || '').trim().toLowerCase();
+  document.querySelectorAll('#pages-list-wrap [data-search]').forEach(el => {
+    el.classList.toggle('pages-hidden', !!t && !el.dataset.search.includes(t));
+  });
 }
 async function _pubApprove(id) {
   const l = _pubLinks.find(x => x.id === id);
@@ -58310,14 +58409,28 @@ async function _pubList() {
     const el = document.getElementById(id);
     if (!el) continue;
     const rows = _pubLinks.filter(l => l.kind === kind);
+    const draw = kind === 'file' ? _pubFileRow : _pubCard;
     el.innerHTML = (kind !== 'internal' && rows.length ? unknown : '')
-      + (rows.length ? rows.map(_pubRow).join('') : '<div class="pages-empty">' + _PUB_EMPTY[kind] + '</div>');
+      + (rows.length ? rows.map(draw).join('') : _PUB_EMPTY[kind]);
   }
+  _pubPreviews(document.getElementById('pages-list-wrap'));
+  const q = document.getElementById('pages-search');
+  if (q && q.value) _pagesFilter(q.value);
 }
 async function _pubNew(kind, prefill) {
   const titles = { internal: 'Add an app inside amux', app: 'Share an app', file: 'Share a file or folder' };
+  // Share a file: upload (dropped or picked files or a folder) OR a path already
+  // on this machine. Uploads go to a visible ~/Shared/<name> folder, outside
+  // amux's own files, which is shared as it fills.
+  _pubPicked = [];
   const target = kind === 'file'
-    ? '<label class="ui-field">Path<input id="pub-new-target" class="input" placeholder="/home/you/project/report.html" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="ui-help">A file, or a folder whose files are all shared. Hidden files never are.</span></label>'
+    ? '<div class="pub-share-drop" id="pub-share-drop" ondragover="event.preventDefault();this.classList.add(\'over\')" ondragleave="this.classList.remove(\'over\')" ondrop="_pubDrop(event)">'
+      + '<div id="pub-share-picked">Drop files or a folder here</div>'
+      + '<button type="button" class="btn" onclick="document.getElementById(\'pub-share-files\').click()">Choose files</button>'
+      + '<button type="button" class="btn" onclick="document.getElementById(\'pub-share-dir\').click()">Choose a folder</button>'
+      + '<input id="pub-share-files" type="file" multiple hidden onchange="_pubPick(this.files)">'
+      + '<input id="pub-share-dir" type="file" webkitdirectory multiple hidden onchange="_pubPick(this.files)"></div>'
+      + '<label class="ui-field">Or add by path<input id="pub-new-target" class="input" placeholder="/home/you/project/report.html" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="ui-help">A file, or a folder whose files are all shared. Hidden files and anything that looks like a key or a secret never are.</span></label>'
     : '<label class="ui-field">Port<input id="pub-new-target" class="input" inputmode="numeric" placeholder="e.g. 8891" autocomplete="off"></label>';
   const note = kind === 'internal' ? 'Only you can open it, signed in, and it opens inside amux. It runs with your amux access, so add only an app you trust.'
     : 'Anyone with the link can open it, without signing in to amux, until you turn it off.';
@@ -58329,8 +58442,9 @@ async function _pubNew(kind, prefill) {
   const raw = (document.getElementById('pub-new-target')?.value || '').trim();
   const title = document.getElementById('pub-new-title')?.value || '';
   const body = { kind, title };
+  if (kind === 'file' && _pubPicked.length && !raw) return _pubUploadShare(_pubPicked, title);
   if (kind === 'file') {
-    if (!raw.startsWith('/')) { showToast('Not shared: give the full path, starting with /.'); return; }
+    if (!raw.startsWith('/')) { showToast('Not shared: drop files, or give the full path starting with /.'); return; }
     body.path = raw;
   } else {
     const port = parseInt(raw, 10);
@@ -58342,6 +58456,41 @@ async function _pubNew(kind, prefill) {
     showToast(kind === 'file' ? 'Public link created' : (l.listening ? (kind === 'internal' ? 'App added' : 'Public link created') : 'Saved. Nothing runs on port ' + body.port + ' yet.'));
     _pubList();
   } catch (e) { showToast('Not saved: ' + e.message); }
+}
+let _pubPicked = [];
+function _pubPick(files) {
+  _pubPicked = Array.from(files || []);
+  const el = document.getElementById('pub-share-picked');
+  if (el) el.textContent = _pubPicked.length ? _pubPicked.length + ' file' + (_pubPicked.length === 1 ? '' : 's') + ' ready to share: ' + _pubPicked.slice(0, 3).map(f => f.name).join(', ') + (_pubPicked.length > 3 ? ', …' : '') : 'Drop files or a folder here';
+}
+function _pubDrop(e) {
+  e.preventDefault();
+  document.getElementById('pub-share-drop')?.classList.remove('over');
+  _pubPick(e.dataTransfer && e.dataTransfer.files);
+}
+// Upload into a new ~/Shared/<name> folder through the existing upload path
+// (/api/upload, durable and resumable), sharing the folder at once: you made
+// it, so it is live, and each file opens at the link as it arrives.
+async function _pubUploadShare(files, title) {
+  const first = files[0];
+  const base = ((first.webkitRelativePath || '').split('/')[0] || title || first.name.replace(/\.[^.]+$/, '') || 'shared')
+    .replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+/, '').slice(0, 60) || 'shared';
+  let dir = null;
+  for (let i = 0; i < 20 && !dir; i++) {
+    const r = await fetch(API + '/api/fs/mkdir', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ path: '~/Shared/' + base + (i ? '-' + (i + 1) : '') }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.path) dir = d.path;
+    else if (r.status !== 409) { showToast('Not shared: ' + (d.error || 'HTTP ' + r.status)); return; }
+  }
+  if (!dir) { showToast('Not shared: no free ~/Shared/' + base + ' folder name'); return; }
+  try {
+    await _pubFetch('', { method: 'POST', body: JSON.stringify({ kind: 'file', path: dir, title: title || base }) });
+  } catch (e) { showToast('Not shared: ' + e.message); return; }
+  const r = await _uploadOrQueue(files, dir, 'file');
+  showToast('Shared ~/Shared/' + dir.split('/').pop() + ': ' + r.queued + ' file' + (r.queued === 1 ? '' : 's') + ' uploading' + (r.failed ? ', ' + r.failed + ' not saved' : ''));
+  _pubList();
+  for (const ms of [2000, 6000, 15000]) setTimeout(() => { if (activeView === 'pages' && !_pagesCur) _pubList(); }, ms);
 }
 // An app inside amux: the Pages open view, framed on the apps origin.
 // A one-time link that opens app `id` on the apps origin (apps_origin.rs). The
@@ -58416,11 +58565,11 @@ async function _pagesList() {
   }
   const pages = d.pages || [];
   if (!pages.length) {
-    el.innerHTML = '<div class="pages-empty">No pages yet. A page is an HTML app whose backend is a worker and a database: the page saves to its database, and the worker does anything that needs judgment or outside data. Create one, then tell its worker what to build.</div>';
+    el.innerHTML = _pagesEmptyBox('&#x1F4C4;', 'Create your first page', 'A page is an HTML app whose backend is a worker and a database: the page saves to its database, and the worker does anything that needs judgment or outside data. Create one, then tell its worker what to build.');
     return;
   }
   const ago = iso => iso ? timeAgo(Date.parse(iso) / 1000) : '';
-  el.innerHTML = pages.map(p => `<div class="pages-row" role="button" tabindex="0" data-page="${esc(p.name)}"
+  el.innerHTML = pages.map(p => `<div class="pages-row" role="button" tabindex="0" data-page="${esc(p.name)}" data-search="${esc((p.title + ' ' + p.name + ' ' + p.worker).toLowerCase())}"
       onclick="_pagesOpen('${escJs(p.name)}')" onkeydown="if(event.key==='Enter'){event.preventDefault();_pagesOpen('${escJs(p.name)}')}">
       <div class="pages-row-main"><b>${esc(p.title)}</b><span class="ui-help">/pages/${esc(p.name)} · worker ${esc(p.worker)}</span></div>
       <span class="ui-help pages-row-when">${p.data_updated_at ? 'Data changed ' + esc(ago(p.data_updated_at)) : ''}</span></div>`).join('');

@@ -1829,17 +1829,30 @@
      database. The open page is mounted by pages-host.js in a sandboxed frame. -->
 <div id="pages-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <div id="pages-list-wrap" class="pages-list-wrap">
-    <div class="pages-head"><div><h2>Inside amux</h2><p class="ui-help">Pages (HTML apps whose backend is a worker and a database) and apps running on this machine. Only you, signed in.</p></div>
-      <span class="pages-head-actions"><button class="btn primary" onclick="_pagesNew()">New page</button>
-      <button class="btn" onclick="_pubNew('internal')">Add app</button></span></div>
-    <div id="pages-list" class="pages-list"></div>
-    <div id="pub-internal" class="pages-list pub-list"></div>
-    <div class="pages-head pub-head"><div><h2>Public apps</h2><p class="ui-help">An app on this machine for anyone with the link, no amux sign-in, until you turn it off.</p></div>
-      <button class="btn" onclick="_pubNew('app')">Share an app</button></div>
-    <div id="pub-apps" class="pages-list pub-list"></div>
-    <div class="pages-head pub-head"><div><h2>Public files</h2><p class="ui-help">A file or folder for anyone with the link. Only what you add here is public.</p></div>
-      <button class="btn" onclick="_pubNew('file')">Share a file</button></div>
-    <div id="pub-files" class="pages-list pub-list"></div>
+    <div class="pages-top">
+      <div class="pages-top-text"><h1 class="pages-h1">Pages</h1><p class="ui-help">Three ways to share and run apps on this machine.</p></div>
+      <input id="pages-search" class="input pages-search" type="search" placeholder="Search pages, apps, or files&hellip;"
+        aria-label="Search pages, apps, or files" autocomplete="off" oninput="_pagesFilter(this.value)">
+    </div>
+    <section class="pages-sec pages-sec-inside" aria-labelledby="pages-h-inside">
+      <div class="pages-head"><span class="pages-icon" aria-hidden="true">&#x25A4;</span>
+        <div class="pages-head-text"><h2 id="pages-h-inside">Inside amux</h2><p class="ui-help">Pages (HTML apps whose backend is a worker and a database) and apps running on this machine. Only you, signed in.</p></div>
+        <span class="pages-head-actions"><button class="btn primary" onclick="_pagesNew()">+ New page</button>
+        <button class="btn" onclick="_pubNew('internal')">+ Add app</button></span></div>
+      <div class="pages-grid"><div id="pages-list" class="pages-list"></div><div id="pub-internal" class="pub-cards"></div></div>
+    </section>
+    <section class="pages-sec pages-sec-public" aria-labelledby="pages-h-public">
+      <div class="pages-head"><span class="pages-icon" aria-hidden="true">&#x1F310;</span>
+        <div class="pages-head-text"><h2 id="pages-h-public">Public apps</h2><p class="ui-help">An app on this machine for anyone with the link, no amux sign-in, until you turn it off.</p></div>
+        <span class="pages-head-actions"><button class="btn primary" onclick="_pubNew('app')">Share an app</button></span></div>
+      <div id="pub-apps" class="pub-cards"></div>
+    </section>
+    <section class="pages-sec pages-sec-files" aria-labelledby="pages-h-files">
+      <div class="pages-head"><span class="pages-icon" aria-hidden="true">&#x1F4C1;</span>
+        <div class="pages-head-text"><h2 id="pages-h-files">Public files</h2><p class="ui-help">A file or folder for anyone with the link. Only what you add here is public.</p></div>
+        <span class="pages-head-actions"><button class="btn primary" onclick="_pubNew('file')">Share a file</button></span></div>
+      <div id="pub-files" class="pub-files"></div>
+    </section>
   </div>
   <div id="pages-open" class="pages-open" style="display:none;">
     <div class="pages-bar">

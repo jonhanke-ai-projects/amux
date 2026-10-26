@@ -455,7 +455,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Asks | `_pagesAsks` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Back to all pages | `_pagesClose` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Edit HTML | `_pagesEditHtml` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| index.html | New page | `_pagesNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| index.html | + New page | `_pagesNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | div | `_pagesOpen` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Restore | `_pagesRestore` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Save a version now | `_pagesSnapshotNow` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
@@ -520,12 +520,15 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Size | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | div | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Approve | `_pubApprove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| index.html | Add app | `_pubNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| index.html | Share a file | `_pubNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| index.html | Share an app | `_pubNew` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js | div | `_pubOpenInternal` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Approve | `_pubApprove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | More actions for ${name} | `_pubMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | + Add app | `_pubNew` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Share a file | `_pubNew` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Share an app | `_pubNew` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | ? | `_pubOpenInternal` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | ${internal ? Remove : Turn off} | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Decline | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js | Remove | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Decline | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Turn off | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Read aloud latest | `_readLatestMessage` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Stop scan | `_reclaimCancelScan` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1069,6 +1072,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | + | `` | onclick |
 | app.js | + (it.editable ? | `` | onclick |
 | app.js | Cancel | `` | onclick |
+| app.js | Choose a folder | `` | onclick |
+| app.js | Choose files | `` | onclick |
 | app.js | Clear history | `` | onclick |
 | app.js | Close | `` | onclick |
 | app.js | Close | `` | onclick |
@@ -1098,6 +1103,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | label | `` | onclick |
 | app.js | p.remove())&gt;Close | `` | onclick |
 | app.js | p.remove())&gt;✕ | `` | onclick |
+| app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
@@ -1560,6 +1566,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | draw-dir-pop | `e` | addEventListener |
 | app.js | grid | `e` | addEventListener |
 | app.js | el | `ev` | addEventListener |
+| app.js | m | `ev` | addEventListener |
 | app.js | m | `ev` | addEventListener |
 | app.js | m | `ev` | addEventListener |
 | index.html | Exit | `exitGridMode` | onclick |
