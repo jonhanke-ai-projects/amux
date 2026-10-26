@@ -9515,20 +9515,48 @@ function _renderTabCustomizerMenu() {
   // section). Destroy any prior instance first — the menu re-renders on every
   // toggle, and stacking a fresh Sortable each time left multiple drag handlers
   // bound to the same node.
-  if (window.Sortable) {
-    if (_tabMenuSortable) { try { _tabMenuSortable.destroy(); } catch(e) {} }
-    _tabMenuSortable = Sortable.create(menu, {
-      handle: '.tab-drag-handle',
-      draggable: '.tab-customizer-item',
-      animation: 100,
-      onEnd(evt) {
-        const ids = [...menu.querySelectorAll('.tab-customizer-item[data-tab-id]')].map(el => el.dataset.tabId);
-        tabOrder = [...new Set(ids)];
-        _saveTabOrder();
-        _applyTabVisibility();
-      }
-    });
+  if (_tabMenuSortable) { try { _tabMenuSortable.destroy(); } catch(e) {} }
+  _tabMenuSortable = _tabMenuSortableCreate(menu, 'global', '.tab-customizer-item', () => {
+    const ids = [...menu.querySelectorAll('.tab-customizer-item[data-tab-id]')].map(el => el.dataset.tabId);
+    tabOrder = [...new Set(ids)];
+    _saveTabOrder();
+    _applyTabVisibility();
+  });
+}
+
+// ONE DRAG FOR BOTH TAB MENUS, driven by the pointer (Ethan, 2026-10-25, the
+// Mac app's worker-view menu: "drag & tab not working or draggable"). Sortable's
+// default is the browser's native drag and drop, and in the Mac app that is an
+// AppKit drag session in the same window whose tab and pane drags the app
+// tracks itself (desktop/amux-workspace.swift, amux-panes.swift); the rows did
+// not move there while Chromium and Playwright's WebKit reordered them.
+// forceFallback moves the row with pointer events, which every engine and
+// web view delivers the same way, and a drop no longer swallows the click.
+// Each drag is beaconed as kind=tabcust-drag: verdict=reordered or unchanged,
+// and drag_not_started when a handle was pressed and moved with no drag, so a
+// menu that stops dragging again says so.
+function _tabMenuSortableCreate(menu, which, draggable, onReorder) {
+  const beacon = (verdict, extra) => { try { window._clientDebug && window._clientDebug('tabcust-drag',
+    { which, verdict, measured: true, n_considered: menu.querySelectorAll(draggable).length, ...(extra || {}) }); } catch (_) {} };
+  if (!window.Sortable) {
+    if (!menu._tabDragNoSortable) { menu._tabDragNoSortable = true; beacon('sortable_missing'); }
+    return null;
   }
+  let press = null, started = false;
+  menu.onpointerdown = e => { press = e.target.closest && e.target.closest('.tab-drag-handle') ? {x: e.clientX, y: e.clientY} : null; started = false; };
+  menu.onpointerup = e => {
+    if (press && !started && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 12) beacon('drag_not_started', {moved: Math.round(Math.hypot(e.clientX - press.x, e.clientY - press.y))});
+    press = null;
+  };
+  return Sortable.create(menu, {
+    handle: '.tab-drag-handle', draggable, animation: 100,
+    forceFallback: true, fallbackTolerance: 3,
+    onStart() { started = true; },
+    onEnd(evt) {
+      beacon(evt.oldIndex === evt.newIndex ? 'unchanged' : 'reordered', {from: evt.oldIndex, to: evt.newIndex});
+      if (evt.oldIndex !== evt.newIndex) onReorder();
+    }
+  });
 }
 
 function _filterTabCustomizer(q) {
@@ -9901,11 +9929,11 @@ function _renderPeekTabCustomizer() {
   menu.innerHTML = html;
   requestAnimationFrame(() => { const s = document.getElementById('peek-tab-cust-search'); if (s) s.focus(); });
   _loadLayoutPresetList('peek');
-  if (window.Sortable) {
-    if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
-    _peekTabMenuSortable = Sortable.create(menu, { handle: '.tab-drag-handle', draggable: '.tab-customizer-item[data-ptab-id]', animation: 100,
-      onEnd() { peekTabOrder = [...new Set([...menu.querySelectorAll('.tab-customizer-item[data-ptab-id]')].map(el => el.dataset.ptabId))]; _savePeekTabPrefs(); _applyPeekTabVisibility(); } });
-  }
+  if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
+  _peekTabMenuSortable = _tabMenuSortableCreate(menu, 'peek', '.tab-customizer-item[data-ptab-id]', () => {
+    peekTabOrder = [...new Set([...menu.querySelectorAll('.tab-customizer-item[data-ptab-id]')].map(el => el.dataset.ptabId))];
+    _savePeekTabPrefs(); _applyPeekTabVisibility();
+  });
 }
 function togglePeekTabVisibility(id, show) {
   if (PEEK_REQUIRED_TABS.has(id)) show = true;
