@@ -679,7 +679,9 @@ systemctl reload caddy 2>/dev/null || systemctl restart caddy
 # No control plane reaches these servers, so each one keeps itself current: every two minutes it
 # follows main's newest image and the checkout, rolls back (and holds) a build that fails /health,
 # and restarts a dead server (cloud/desktop/update.sh). AMUX_AUTO_UPDATE=0 turns it off.
-if [[ "$FLEET" == 0 && "$UPDATES" == image && "${AMUX_AUTO_UPDATE:-1}" == 1 ]]; then
+# Source mode too: its server is built by the builder, but the door, Caddy snippets and CLIs come
+# from this script, so a source-mode host left without it never got their fixes.
+if [[ "$FLEET" == 0 && "${AMUX_AUTO_UPDATE:-1}" == 1 ]]; then
   cat > /etc/systemd/system/amux-update.service <<UNIT
 [Unit]
 Description=amux: follow the newest CI-green amux and keep the server up (cloud/desktop/update.sh)

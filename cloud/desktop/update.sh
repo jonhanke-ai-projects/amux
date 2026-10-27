@@ -232,7 +232,13 @@ if [[ -s $CS ]] && ! jq -e '.env.DISABLE_AUTOUPDATER == "1"' "$CS" >/dev/null 2>
     && say "verdict=claude_self_update_off the agent CLIs are updated by this script"
 fi
 
-# 2. Newest image of main.
+# 2. Newest image of main. A source-mode server (bootstrap.sh AMUX_UPDATES=source, which sets
+# AMUX_REPO_DIR) builds main itself with rust-auto-build.sh and has no image to follow; this script
+# still keeps its checkout, door, Caddy snippets and agent CLIs current (sandbox, 2026-10-27: the
+# public-links Caddy change never reached it because nothing ran this script there).
+if grep -q '^AMUX_REPO_DIR=' "$HOME_DIR/.amux/server.env" 2>/dev/null; then
+  VERDICT="source_mode"; DETAIL="the builder follows main here (scripts/rust-auto-build.sh); no image to install"
+else
 TOKEN=$(curl -fsS --max-time 20 "https://ghcr.io/token?scope=repository:$IMAGE_REPO:pull" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])' 2>/dev/null)
 digest_of() {
   curl -fsSI --max-time 20 -H "Authorization: Bearer $TOKEN" \
@@ -286,6 +292,8 @@ else
     VERDICT="failed_pull"; DETAIL="docker could not pull ${LATEST:7:12}"
   fi
   docker image prune -af >/dev/null 2>&1 || true
+fi
+
 fi
 
 # 4. Recovery, whatever happened above.
