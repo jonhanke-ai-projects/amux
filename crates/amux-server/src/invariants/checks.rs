@@ -1099,6 +1099,8 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("land_queue", "done_at", false), // land_queue.rs: now_f64(); live 1791295108.5
     ("land_queue", "queued_at", false),
     ("schedules", "locked_at", false), // api/schedules.rs: Utc::now().timestamp()
+    ("schedules", "pass_next_at", false), // runtime_jobs/schedule_check.rs: Utc::now().timestamp()
+    ("schedules", "pass_checked_at", false), // runtime_jobs/schedule_check.rs: Utc::now().timestamp()
     ("land_queue", "started_at", false),
     ("card_contracts", "frozen_at", false), // measured: 1791242852.2 on 2026-10-06
     ("card_contracts", "review_at", false),
