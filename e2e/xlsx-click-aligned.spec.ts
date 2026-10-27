@@ -123,12 +123,98 @@ test('a General number in a narrow column rounds like Excel before going scienti
     await page.evaluate(p => (window as any).openFilePreview(p), join(dir, 'workbook.xlsx'));
     await page.waitForFunction(() => _xlsxEd && _xlsxEd.api && _xlsxEd.api.getActiveWorkbook(), null, { timeout: 90_000 });
     // The renderer the page loaded is the patched one, so the rule below is live.
-    expect(await page.evaluate(() => (0, eval)('_univerGeneralPatched'))).toBe(true);
+    expect(await page.evaluate(() => (0, eval)('_univerPatched'))).toEqual({ general_fmt: true, find_dialog_pos: true });
     const fit = (chars: number) => page.evaluate(c => (window as any)._xlsxGeneralFit(96670.39, '96670.39', (s: string) => s.length <= c), chars);
     expect(await fit(8)).toBe('96670.39');
     expect(await fit(7)).toBe('96670.4');
     expect(await fit(5)).toBe('96670');
     expect(await fit(4)).toBe(null);   // the whole part does not fit: scientific, as in Excel
+    await page.evaluate(() => (window as any).closeFilePreview());
+  } finally {
+    await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));
+  }
+});
+
+// A workbook's filter, data validation and conditional formats (Ethan,
+// 2026-10-26, parity with Excel): shown in the editor from the file, and an
+// edit to them is what gets saved. Before, the editor showed none of them and
+// a rule added in it was lost on save.
+test('a workbook opens with its filter, validations and conditional formats, and saves an edit to them', async ({ page }) => {
+  test.setTimeout(150_000);
+  const dir = await mkdtemp(join(tmpdir(), 'amux-xlsx-features-'));
+  try {
+    const file = join(dir, 'features.xlsx');
+    execFileSync('python3', [join(__dirname, 'xlsx-features-fixture.py'), file]);
+    await page.goto('/');
+    await page.evaluate(p => (window as any).openFilePreview(p), file);
+    await page.waitForFunction(() => _xlsxEd && _xlsxEd.api && _xlsxEd.api.getActiveWorkbook(), null, { timeout: 90_000 });
+    const shown = await page.evaluate(() => {
+      const ws = _xlsxEd.api.getActiveWorkbook().getActiveSheet();
+      return {
+        dirty: _xlsxEd.dirty,
+        filter: ws.getFilter() && ws.getFilter().getRange().getA1Notation(),
+        dv: ws.getDataValidations().map((d: any) => d.getCriteriaType() + ' ' + d.getRanges().map((r: any) => r.getA1Notation()).join(' ')).sort(),
+        cf: ws.getConditionalFormattingRules().map((c: any) => c.rule.type + ':' + (c.rule.subType || '') + ':' + (c.rule.operator || '') + ':' + JSON.stringify(c.rule.value ?? null)),
+      };
+    });
+    expect(shown).toEqual({
+      dirty: false,
+      filter: 'A1:C21',
+      dv: ['decimal B2:B21', 'list C2:C21'],
+      cf: ['highlightCell:number:greaterThan:500', 'colorScale:::null', 'highlightCell:text:containsText:"Paid"', 'highlightCell:formula::"=$B2>300"'],
+    });
+    // An edit: a new rule on top, and the filter taken off.
+    await page.evaluate(() => {
+      const ws = _xlsxEd.api.getActiveWorkbook().getActiveSheet();
+      ws.addConditionalFormattingRule(ws.newConditionalFormattingRule().whenNumberLessThan(100).setBackground('#C6EFCE')
+        .setRanges([ws.getRange('B2:B21').getRange()]).build());
+      ws.getFilter().remove();
+    });
+    await expect.poll(() => page.evaluate(() => _xlsxEd.dirty)).toBe(true);
+    await page.locator('#file-save-btn').click();
+    await expect(page.locator('#file-save-btn')).toHaveText(/Saved|Save$/);
+    const xml = execFileSync('python3', ['-c', 'import sys,zipfile;print(zipfile.ZipFile(sys.argv[1]).read("xl/worksheets/sheet1.xml").decode())', file]).toString();
+    expect(xml).not.toContain('<autoFilter');
+    const rules = [...xml.matchAll(/<cfRule [^>]*>/g)].map(m => m[0]);
+    expect(rules.length).toBe(5);
+    expect(rules.find(r => /priority="1"/.test(r))).toMatch(/operator="lessThan"/);
+    // Each validation once, as one range: ExcelJS alone wrote B2:B21 as two overlapping ranges.
+    expect([...xml.matchAll(/<dataValidation [^>]*sqref="([^"]+)"/g)].map(m => m[1]).sort()).toEqual(['B2:B21', 'C2:C21']);
+    await page.evaluate(() => (window as any).closeFilePreview());
+  } finally {
+    await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));
+  }
+});
+
+// Cmd+F (Ctrl+F) finds in the sheet, as in Excel, and the Find dialog opens
+// over the sheet. It opened 64px from the top of the window, over amux's file
+// header, covering Save and close.
+test('Cmd+F opens Find over the sheet and leaves Save and close uncovered', async ({ page }) => {
+  test.setTimeout(150_000);
+  const dir = await mkdtemp(join(tmpdir(), 'amux-xlsx-find-'));
+  try {
+    const file = join(dir, 'features.xlsx');
+    execFileSync('python3', [join(__dirname, 'xlsx-features-fixture.py'), file]);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/');
+    await page.evaluate(p => (window as any).openFilePreview(p), file);
+    await page.waitForFunction(() => _xlsxEd && _xlsxEd.api && _xlsxEd.api.getActiveWorkbook(), null, { timeout: 90_000 });
+    await page.waitForTimeout(1000);
+    await page.locator('#xlsx-univer canvas[id^="univer-sheet-main-canvas"]').click({ position: { x: 150, y: 80 } });
+    // Univer takes Cmd on a Mac and Ctrl elsewhere, by navigator.appVersion (the
+    // emulated devices report Windows or iOS whatever host runs them).
+    const mod = await page.evaluate(() => /Mac/.test(navigator.appVersion) ? 'Meta' : 'Control');
+    await page.keyboard.press(mod + '+f');
+    const find = page.getByText('Advanced Searching & Replace');
+    await expect(find).toBeVisible();
+    const placed = await page.evaluate(() => {
+      const grid = document.querySelector('#xlsx-univer canvas[id^="univer-sheet-main-canvas"]')!.getBoundingClientRect();
+      let d = [...document.querySelectorAll('*')].find(e => e.children.length === 0 && e.textContent!.trim() === 'Advanced Searching & Replace') as HTMLElement;
+      while (d.parentElement && getComputedStyle(d).position !== 'absolute') d = d.parentElement;
+      const at = (sel: string) => { const el = document.querySelector(sel)!, b = el.getBoundingClientRect(); const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!hit && el.contains(hit); };
+      return { belowHeader: d.getBoundingClientRect().top >= grid.top, save: at('#file-save-btn'), menu: at('#file-menu-btn'), close: at('#file-overlay button[onclick="closeFilePreview()"]') };
+    });
+    expect(placed).toEqual({ belowHeader: true, save: true, menu: true, close: true });
     await page.evaluate(() => (window as any).closeFilePreview());
   } finally {
     await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));

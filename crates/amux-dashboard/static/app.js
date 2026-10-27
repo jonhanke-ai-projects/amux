@@ -29599,7 +29599,7 @@ function _xlsxGeneralFit(v, text, fits) {
   return null;
 }
 // Matched by shape, not by its minified name. A miss loads Univer unpatched and
-// says so in the xlsx-editor beacon (general_fmt_unpatched).
+// says so in the xlsx-editor beacon (univer_unpatched).
 const _UNIVER_GENERAL_FN = /(function \w+\((\w+),(\w+),(\w+),(\w+)\)\{if\(\5<=0\)return \3;let (\w+)=(\w+)\.getMeasureText\(`0`,\4\)\.width;)(?=if\(\7\.getMeasureText\(\3,\4\)\.width\+\6<=\5\)return \3;)/;
 function _univerPatchGeneral(src) {
   let hit = false;
@@ -29610,17 +29610,34 @@ function _univerPatchGeneral(src) {
   });
   return hit ? out : null;
 }
-let _univerGeneralPatched = null;
-async function _univerRendererSrc(url) {
+// The Find dialog opens 64px from the top of the window, which in a full-page
+// spreadsheet is just under its toolbar. Here that is amux's file header, so
+// the dialog covered Save and close. It opens over the sheet instead.
+const _UNIVER_FIND_POS = /return\{x:(\w+)===`rtl`\?20:(\w+)-350-20,y:64\}/;
+function _univerPatchFindPos(src) {
+  return _UNIVER_FIND_POS.test(src)
+    ? src.replace(_UNIVER_FIND_POS, (all, dir, w) => 'return{x:' + dir + '===`rtl`?20:' + w + '-350-20,y:(typeof _xlsxDialogTop==`function`?_xlsxDialogTop():64)}')
+    : null;
+}
+function _xlsxDialogTop() {
+  const grid = document.querySelector('#xlsx-univer canvas[id^="univer-sheet-main-canvas"]');
+  return grid ? Math.round(grid.getBoundingClientRect().top) + 8 : 64;
+}
+// Package -> [patch name, patch]. Each package's text is fetched, patched and
+// loaded from a blob in its usual slot; a failure loads the original.
+const _UNIVER_PATCHES = { 'engine-render': ['general_fmt', _univerPatchGeneral], 'find-replace': ['find_dialog_pos', _univerPatchFindPos] };
+const _univerPatched = {};
+async function _univerPatchedSrc(url, pkg) {
+  const [name, patch] = _UNIVER_PATCHES[pkg];
   try {
     const r = await fetch(url, { mode: 'cors' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const patched = _univerPatchGeneral(await r.text());
-    if (!patched) throw new Error('the General-format function was not found');
-    _univerGeneralPatched = true;
+    const patched = patch(await r.text());
+    if (!patched) throw new Error('the code to patch was not found');
+    _univerPatched[name] = true;
     return URL.createObjectURL(new Blob([patched], { type: 'text/javascript' }));
   } catch (e) {
-    _univerGeneralPatched = String(e && e.message || e);
+    _univerPatched[name] = String(e && e.message || e);
     return url;
   }
 }
@@ -29654,15 +29671,14 @@ function _loadUniver() {
         + (_UNIVER_LOAD_BUDGET_MS / 1000) + 's: ' + [...pending].map(x => x.replace(U, '')).join(', '))), _UNIVER_LOAD_BUDGET_MS);
     });
     try {
-      const renderUrl = U + '@univerjs/engine-render@' + _UNIVER_V + '/lib/umd/index.js';
-      const renderSrc = _univerRendererSrc(renderUrl);
+      const pkgUrl = p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/index.js';
+      const patchedSrc = Object.fromEntries(Object.keys(_UNIVER_PATCHES).map(p => [p, _univerPatchedSrc(pkgUrl(p), p)]));
       await Promise.race([track(U + 'react@18.3.1/umd/react.production.min.js'), stall]);
       await Promise.race([track(U + 'react-dom@18.3.1/umd/react-dom.production.min.js'), stall]);
       _univerShimReact();
       const rest = [U + 'rxjs@7.8.1/dist/bundles/rxjs.umd.min.js', U + 'echarts@5.6.0/dist/echarts.min.js',
         U + '@wendellhu/redi@1.1.2/dist/umd/index.js', U + '@wendellhu/redi@1.1.2/dist/umd/react-bindings/index.js',
-        ...await (async () => { const r = await Promise.race([renderSrc, stall]);
-          return _UNIVER_PKGS.map(p => p === 'engine-render' ? r : U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/index.js'); })(),
+        ...await Promise.race([Promise.all(_UNIVER_PKGS.map(p => patchedSrc[p] || pkgUrl(p))), stall]),
         ..._UNIVER_FACADES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/facade.js'),
         ..._UNIVER_LOCALES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/locale/en-US.js'),
         U + 'exceljs@4.4.0/dist/exceljs.min.js'];
@@ -29831,6 +29847,322 @@ function _xlToUniver(wb, defaultFont) {
   return { data: { id: 'wb', name: 'workbook', appVersion: '1.0.0', locale: 'enUS', styles, sheetOrder: order, sheets }, active };
 }
 
+// -- Filters, conditional formats and data validation ------------------------
+// Univer keeps these in the workbook snapshot's resources, one entry per
+// plugin keyed by sheet id. They go in at open (no command runs, so opening is
+// not an edit) and come back out of save(). A rule Univer has no form for
+// (an icon set) is never imported; it stays in the file, and a save that
+// rewrites that sheet's rules keeps it.
+const _XL_CF_RES = 'SHEET_CONDITIONAL_FORMATTING_PLUGIN', _XL_DV_RES = 'SHEET_DATA_VALIDATION_PLUGIN', _XL_FILTER_RES = 'SHEET_FILTER_PLUGIN';
+function _xlColNum(s) { let n = 0; for (const ch of s.toUpperCase()) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; }
+function _xlColName(n) { let s = ''; for (n++; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; }
+function _xlRange(ref) {
+  const m = /^\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?$/i.exec(String(ref).trim());
+  if (!m) return null;
+  const r = { startRow: +m[2] - 1, startColumn: _xlColNum(m[1]), endRow: +(m[4] || m[2]) - 1, endColumn: _xlColNum(m[3] || m[1]), rangeType: 0 };
+  return r;
+}
+function _xlRef(r) {
+  const a = _xlColName(r.startColumn) + (r.startRow + 1), b = _xlColName(r.endColumn) + (r.endRow + 1);
+  return a === b ? a : a + ':' + b;
+}
+function _xlRanges(sqref) { return String(sqref || '').split(/\s+/).map(_xlRange).filter(Boolean); }
+// Univer writes colors as #RRGGBB or rgb(r,g,b); Excel wants ARGB.
+function _uvArgb(c) {
+  if (!c) return null;
+  const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/i.exec(c);
+  const hex = m ? [m[1], m[2], m[3]].map(x => (+x).toString(16).padStart(2, '0')).join('') : String(c).replace('#', '').slice(-6);
+  return 'FF' + hex.toUpperCase();
+}
+function _xlDxfToUniver(st) {
+  const s = {}, f = (st && st.font) || {}, fill = st && st.fill;
+  if (f.bold) s.bl = 1;
+  if (f.italic) s.it = 1;
+  if (f.underline) s.ul = { s: 1 };
+  if (f.strike) s.st = { s: 1 };
+  const fc = _xlHex(f.color); if (fc) s.cl = { rgb: fc };
+  if (fill && fill.type === 'pattern') { const bg = _xlHex(fill.bgColor || fill.fgColor); if (bg) s.bg = { rgb: bg }; }
+  return s;
+}
+function _uvStyleToDxf(s) {
+  const st = {};
+  if (!s) return st;
+  const font = {};
+  if (s.bl) font.bold = true;
+  if (s.it) font.italic = true;
+  if (s.ul && s.ul.s) font.underline = true;
+  if (s.st && s.st.s) font.strike = true;
+  if (s.cl && s.cl.rgb) font.color = { argb: _uvArgb(s.cl.rgb) };
+  if (Object.keys(font).length) st.font = font;
+  if (s.bg && s.bg.rgb) st.fill = { type: 'pattern', pattern: 'solid', bgColor: { argb: _uvArgb(s.bg.rgb) } };
+  return st;
+}
+const _XL_CF_OPS = { equal: '=', notEqual: '<>', greaterThan: '>', lessThan: '<', greaterThanOrEqual: '>=', lessThanOrEqual: '<=' };
+const _XL_TEXT_OPS = ['containsText', 'notContainsText', 'beginsWith', 'endsWith'];
+const _xlNum = s => (s !== '' && s != null && /^-?\d+(\.\d+)?(e[-+]?\d+)?$/i.test(String(s).trim())) ? Number(s) : null;
+const _xlCfvo = v => ({ type: v && v.type || 'min', ...(v && v.value != null ? { value: v.value } : {}) });
+
+// One Excel rule as a Univer rule, or null when Univer has no form for it.
+function _xlCfRule(r, ranges) {
+  const style = _xlDxfToUniver(r.style);
+  const f = r.formulae || [];
+  const tl = _xlColName(ranges[0].startColumn) + (ranges[0].startRow + 1);
+  switch (r.type) {
+    case 'cellIs': {
+      const a = _xlNum(f[0]), b = _xlNum(f[1]);
+      if (r.operator === 'between' || r.operator === 'notBetween') {
+        if (a !== null && b !== null) return { type: 'highlightCell', subType: 'number', operator: r.operator, value: [a, b], style };
+        const expr = 'AND(' + tl + '>=' + f[0] + ',' + tl + '<=' + f[1] + ')';
+        return { type: 'highlightCell', subType: 'formula', value: '=' + (r.operator === 'between' ? expr : 'NOT(' + expr + ')'), style };
+      }
+      if (!_XL_CF_OPS[r.operator]) return null;
+      if (a !== null) return { type: 'highlightCell', subType: 'number', operator: r.operator, value: a, style };
+      const q = /^"(.*)"$/.exec(String(f[0] || ''));
+      if (q && (r.operator === 'equal' || r.operator === 'notEqual')) return { type: 'highlightCell', subType: 'text', operator: r.operator, value: q[1], style };
+      return { type: 'highlightCell', subType: 'formula', value: '=' + tl + _XL_CF_OPS[r.operator] + f[0], style };
+    }
+    case 'expression': return f[0] ? { type: 'highlightCell', subType: 'formula', value: '=' + String(f[0]).replace(/^=/, ''), style } : null;
+    case 'containsText': case 'notContainsText': case 'beginsWith': case 'endsWith': {
+      // ExcelJS drops the rule's text attribute; the formula Excel writes carries it.
+      const text = r.text != null ? r.text : ((/"((?:[^"]|"")*)"/.exec(String(f[0] || '')) || [])[1] || '').replace(/""/g, '"');
+      const op = _XL_TEXT_OPS.includes(r.operator) ? r.operator : r.type;
+      return { type: 'highlightCell', subType: 'text', operator: op, value: text, style };
+    }
+    case 'duplicateValues': case 'uniqueValues': return { type: 'highlightCell', subType: r.type, style };
+    case 'top10': return { type: 'highlightCell', subType: 'rank', isBottom: !!r.bottom, isPercent: !!r.percent, value: r.rank || 10, style };
+    case 'aboveAverage': return { type: 'highlightCell', subType: 'average',
+      operator: r.aboveAverage === false ? (r.equalAverage ? 'lessThanOrEqual' : 'lessThan') : (r.equalAverage ? 'greaterThanOrEqual' : 'greaterThan'), style };
+    case 'colorScale': {
+      const cfvo = r.cfvo || [], colors = r.color || [];
+      if (cfvo.length < 2) return null;
+      return { type: 'colorScale', config: cfvo.map((v, i) => ({ index: i, color: _xlHex(colors[i]) || '#FFFFFF', value: _xlCfvo(v) })) };   // design-tokens: allow (Excel cell data needs hex)
+    }
+    case 'dataBar': {
+      const cfvo = r.cfvo || [], color = _xlHex(r.color) || '#638EC6';   // design-tokens: allow (Excel's default data bar color)
+      return { type: 'dataBar', isShowValue: r.showValue !== false,
+        config: { min: _xlCfvo(cfvo[0]), max: _xlCfvo(cfvo[1] || { type: 'max' }), isGradient: r.gradient !== false, positiveColor: color, nativeColor: '#FF0000' } };   // design-tokens: allow (Excel's negative bar color)
+    }
+    default: return null;
+  }
+}
+
+// One Univer rule as an Excel rule (ExcelJS's model), or null.
+function _uvCfRule(rule, ranges, priority) {
+  const dxf = _uvStyleToDxf(rule.style);
+  const tl = _xlColName(ranges[0].startColumn) + (ranges[0].startRow + 1);
+  if (rule.type === 'colorScale') {
+    const cfg = (rule.config || []).slice().sort((a, b) => a.index - b.index);
+    return { type: 'colorScale', priority, cfvo: cfg.map(c => ({ type: c.value.type, ...(c.value.value != null ? { value: c.value.value } : {}) })),
+      color: cfg.map(c => ({ argb: _uvArgb(c.color) })) };
+  }
+  if (rule.type === 'dataBar') {
+    const c = rule.config || {};
+    const v = x => ({ type: (x && x.type) || 'min', ...(x && x.value != null ? { value: x.value } : {}) });
+    return { type: 'dataBar', priority, cfvo: [v(c.min), v(c.max || { type: 'max' })], color: { argb: _uvArgb(c.positiveColor) }, gradient: !!c.isGradient, showValue: rule.isShowValue !== false };
+  }
+  if (rule.type !== 'highlightCell') return null;
+  switch (rule.subType) {
+    case 'number': {
+      const op = rule.operator;
+      const formulae = Array.isArray(rule.value) ? rule.value.map(String) : [String(rule.value)];
+      return { type: 'cellIs', operator: op, priority, formulae, style: dxf };
+    }
+    case 'text': {
+      const t = String(rule.value == null ? '' : rule.value), q = t.replace(/"/g, '""');
+      if (rule.operator === 'equal' || rule.operator === 'notEqual') return { type: 'cellIs', operator: rule.operator, priority, formulae: ['"' + q + '"'], style: dxf };
+      const formula = { containsText: 'NOT(ISERROR(SEARCH("' + q + '",' + tl + ')))', notContainsText: 'ISERROR(SEARCH("' + q + '",' + tl + '))',
+        beginsWith: 'LEFT(' + tl + ',LEN("' + q + '"))="' + q + '"', endsWith: 'RIGHT(' + tl + ',LEN("' + q + '"))="' + q + '"' }[rule.operator];
+      if (!formula) return null;
+      // ExcelJS models every text rule as containsText with the kind in operator.
+      return { type: 'containsText', operator: rule.operator, text: t, priority, formulae: [formula], style: dxf };
+    }
+    case 'formula': return { type: 'expression', priority, formulae: [String(rule.value || '').replace(/^=/, '')], style: dxf };
+    case 'duplicateValues': case 'uniqueValues': return { type: rule.subType, priority, style: dxf };
+    case 'rank': return { type: 'top10', priority, rank: rule.value || 10, bottom: !!rule.isBottom, percent: !!rule.isPercent, style: dxf };
+    case 'average': return { type: 'aboveAverage', priority, aboveAverage: /greater/.test(rule.operator || 'greaterThan'), equalAverage: /OrEqual/.test(rule.operator || ''), style: dxf };
+    default: return null;
+  }
+}
+
+const _XL_DV_TYPES = new Set(['whole', 'decimal', 'list', 'date', 'textLength', 'custom']);
+function _xlDvFormula(v, type) {
+  if (v == null) return undefined;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v);
+  if (type === 'list') {
+    const q = /^"(.*)"$/.exec(s);
+    return q ? JSON.stringify(q[1].split(',').map(x => x.trim()).filter(Boolean)) : '=' + s.replace(/^=/, '');
+  }
+  return _xlNum(s) !== null || type === 'date' && /^\d{4}-\d\d-\d\d/.test(s) ? s : '=' + s.replace(/^=/, '');
+}
+function _uvDvFormula(s, type) {
+  if (s == null || s === '') return undefined;
+  s = String(s);
+  if (s.startsWith('=')) return s.slice(1);
+  if (type === 'list') {
+    let items; try { items = JSON.parse(s); } catch (e) { items = null; }
+    if (!Array.isArray(items)) items = s.split(',').map(x => x.trim()).filter(Boolean);
+    return '"' + items.join(',') + '"';
+  }
+  return s;
+}
+// ExcelJS hands validations back one cell at a time; Univer and Excel both
+// want ranges. Runs of a column with the same rule, then runs of columns.
+function _xlCellsToRanges(cells) {
+  const byCol = new Map();
+  for (const { r, c } of cells) (byCol.get(c) || byCol.set(c, []).get(c)).push(r);
+  const runs = [];
+  for (const [c, rows] of [...byCol].sort((a, b) => a[0] - b[0])) {
+    rows.sort((a, b) => a - b);
+    let s = rows[0], p = rows[0];
+    for (const r of rows.slice(1).concat([Infinity])) {
+      if (r === p + 1) { p = r; continue; }
+      runs.push({ startRow: s, endRow: p, startColumn: c, endColumn: c, rangeType: 0 });
+      s = p = r;
+    }
+  }
+  const out = [];
+  for (const r of runs) {
+    const prev = out.find(o => o.startRow === r.startRow && o.endRow === r.endRow && o.endColumn + 1 === r.startColumn);
+    if (prev) prev.endColumn = r.startColumn; else out.push(r);
+  }
+  return out;
+}
+
+function _xlFeaturesToUniver(wb, unitId) {
+  const cf = {}, dv = {}, filter = {}, skipped = {}, counts = { cf: 0, dv: 0, filter: 0, skipped: 0 };
+  let uid = 0;
+  wb.eachSheet((ws, sid) => {
+    const id = 'sheet-' + sid;
+    const skip = skipped[id] = { cf: [] };
+    const af = ws.autoFilter;
+    const afRef = typeof af === 'string' ? af : af && af.from ? (typeof af.from === 'string' ? af.from + ':' + af.to
+      : _xlColName(af.from.column - 1) + af.from.row + ':' + _xlColName(af.to.column - 1) + af.to.row) : null;
+    const fr = afRef && _xlRange(afRef);
+    if (fr) { filter[id] = { ref: fr, filterColumns: [] }; counts.filter++; }
+    const rules = [];
+    for (const entry of ws.conditionalFormattings || []) {
+      const ranges = _xlRanges(entry.ref);
+      if (!ranges.length) { skip.cf.push(entry); continue; }
+      const kept = [];
+      for (const r of entry.rules || []) {
+        const rule = _xlCfRule(r, ranges);
+        if (!rule) { kept.push(r); counts.skipped++; continue; }
+        rules.push({ priority: r.priority || 0, item: { cfId: 'xl' + (uid++), ranges: ranges.map(x => ({ ...x, unitId, sheetId: id })), rule, stopIfTrue: !!r.stopIfTrue } });
+      }
+      if (kept.length) skip.cf.push({ ref: entry.ref, rules: kept });
+    }
+    if (rules.length) { cf[id] = rules.sort((a, b) => a.priority - b.priority).map(x => x.item); counts.cf += rules.length; }
+    const groups = new Map();
+    const model = (ws.dataValidations && ws.dataValidations.model) || {};
+    for (const [addr, v] of Object.entries(model)) {
+      if (!v || !_XL_DV_TYPES.has(v.type)) { if (v) counts.skipped++; continue; }
+      const key = JSON.stringify(v);
+      const g = groups.get(key) || groups.set(key, { v, cells: [] }).get(key);
+      const rg = _xlRange(String(addr).replace(/^range:/, ''));
+      if (!rg) continue;
+      for (let r = rg.startRow; r <= rg.endRow; r++) for (let c = rg.startColumn; c <= rg.endColumn; c++) g.cells.push({ r, c });
+    }
+    const dvs = [];
+    for (const { v, cells } of groups.values()) {
+      const f = v.formulae || [];
+      dvs.push({ uid: 'xl' + (uid++), type: v.type, ranges: _xlCellsToRanges(cells).map(x => ({ ...x, unitId, sheetId: id })),
+        ...(v.type !== 'list' && v.type !== 'custom' ? { operator: v.operator || 'between' } : {}),
+        formula1: _xlDvFormula(f[0], v.type), ...(f[1] != null ? { formula2: _xlDvFormula(f[1], v.type) } : {}),
+        allowBlank: v.allowBlank !== false, showDropDown: v.type === 'list' ? true : undefined,
+        // Plain text, as Excel draws a list cell; the arrow is for the selected cell.
+        ...(v.type === 'list' ? { renderMode: 0 } : {}),   // DataValidationRenderMode.TEXT
+        showErrorMessage: !!v.showErrorMessage, error: v.error, errorTitle: v.errorTitle,
+        showInputMessage: !!v.showInputMessage, prompt: v.prompt, promptTitle: v.promptTitle,
+        ...(v.errorStyle ? { errorStyle: { stop: 0, warning: 1, information: 2 }[v.errorStyle] } : {}) });
+    }
+    if (dvs.length) { dv[id] = dvs; counts.dv += dvs.length; }
+  });
+  const resources = [];
+  if (Object.keys(cf).length) resources.push({ name: _XL_CF_RES, data: JSON.stringify(cf) });
+  if (Object.keys(dv).length) resources.push({ name: _XL_DV_RES, data: JSON.stringify(dv) });
+  if (Object.keys(filter).length) resources.push({ name: _XL_FILTER_RES, data: JSON.stringify(filter) });
+  return { resources, skipped, counts };
+}
+
+// ExcelJS merges per-cell validations into ranges itself, but sorts the
+// addresses as text (B10 before B2) and does not skip cells it already used,
+// so a rule on B2:B21 was written as B10:B21 and B2:B21, overlapping. Range
+// keys bypass that, so every sheet's validations are written as ranges.
+function _xlCompactValidations(ws) {
+  const dv = ws.dataValidations;
+  if (!dv || !dv.model) return 0;
+  const groups = new Map(), out = {};
+  for (const [addr, v] of Object.entries(dv.model)) {
+    if (!v) continue;
+    const rg = _xlRange(String(addr).replace(/^range:/, ''));
+    if (!rg) { out[addr] = v; continue; }
+    const key = JSON.stringify(v);
+    const g = groups.get(key) || groups.set(key, { v, cells: [] }).get(key);
+    for (let r = rg.startRow; r <= rg.endRow; r++) for (let c = rg.startColumn; c <= rg.endColumn; c++) g.cells.push({ r, c });
+  }
+  let n = 0;
+  for (const { v, cells } of groups.values()) for (const r of _xlCellsToRanges(cells)) {
+    const ref = _xlRef(r);
+    out[ref.includes(':') ? ref : ref + ':' + ref] = v; n++;
+  }
+  dv.model = out;
+  return n;
+}
+
+function _uvResource(snap, name) {
+  const r = (snap.resources || []).find(x => x.name === name);
+  try { return r && r.data ? JSON.parse(r.data) : {}; } catch (e) { return {}; }
+}
+// Rewrite a sheet's filter, rules or validations only where the editor
+// changed them, so a file's own XML is left alone otherwise.
+function _uvPatchFeatures(wb, before, after, skipped) {
+  const changed = { cf: 0, dv: 0, filter: 0 };
+  const byId = {};
+  wb.eachSheet((ws, sid) => { byId['sheet-' + sid] = ws; });
+  const bare = list => JSON.stringify((list || []).map(x => ({ ...x, ranges: (x.ranges || []).map(_xlRef) })));
+  const [cfA, cfB] = [_uvResource(after, _XL_CF_RES), _uvResource(before, _XL_CF_RES)];
+  const [dvA, dvB] = [_uvResource(after, _XL_DV_RES), _uvResource(before, _XL_DV_RES)];
+  const [fA, fB] = [_uvResource(after, _XL_FILTER_RES), _uvResource(before, _XL_FILTER_RES)];
+  for (const [id, ws] of Object.entries(byId)) {
+    if (JSON.stringify((fA[id] || {}).ref || null) !== JSON.stringify((fB[id] || {}).ref || null)) {
+      ws.autoFilter = fA[id] && fA[id].ref ? _xlRef(fA[id].ref) : undefined;
+      changed.filter++;
+    }
+    if (bare(cfA[id]) !== bare(cfB[id])) {
+      // The editor's rules in its order, then the ones it could not show.
+      const out = [];
+      for (const item of cfA[id] || []) {
+        const rule = _uvCfRule(item.rule, item.ranges, 0);
+        if (rule) { if (item.stopIfTrue) rule.stopIfTrue = true; out.push({ ref: item.ranges.map(_xlRef).join(' '), rules: [rule] }); }
+      }
+      for (const e of (skipped[id] || {}).cf || []) out.push({ ref: e.ref, rules: e.rules.map(r => ({ ...r })) });
+      let p = 0;
+      for (const e of out) for (const r of e.rules) r.priority = ++p;
+      ws.conditionalFormattings = out;
+      changed.cf++;
+    }
+    if (bare(dvA[id]) !== bare(dvB[id])) {
+      const model = {};
+      for (const [addr, v] of Object.entries((ws.dataValidations && ws.dataValidations.model) || {})) if (v && !_XL_DV_TYPES.has(v.type)) model[addr] = v;
+      for (const d of dvA[id] || []) {
+        const v = { type: d.type, allowBlank: d.allowBlank !== false, formulae: [_uvDvFormula(d.formula1, d.type)] };
+        if (d.formula2 != null && d.formula2 !== '') v.formulae.push(_uvDvFormula(d.formula2, d.type));
+        v.formulae = v.formulae.filter(x => x !== undefined);
+        if (d.operator && d.type !== 'list' && d.type !== 'custom') v.operator = d.operator;
+        if (d.showErrorMessage) { v.showErrorMessage = true; if (d.error) v.error = d.error; if (d.errorTitle) v.errorTitle = d.errorTitle; }
+        if (d.showInputMessage) { v.showInputMessage = true; if (d.prompt) v.prompt = d.prompt; if (d.promptTitle) v.promptTitle = d.promptTitle; }
+        if (d.errorStyle != null) v.errorStyle = ['stop', 'warning', 'information'][d.errorStyle] || 'stop';
+        if (!_XL_DV_TYPES.has(v.type)) continue;
+        for (const r of d.ranges || []) for (let row = r.startRow; row <= r.endRow; row++) for (let c = r.startColumn; c <= r.endColumn; c++) model[_xlColName(c) + (row + 1)] = { ...v };
+      }
+      ws.dataValidations.model = model;
+      changed.dv++;
+    }
+  }
+  return changed;
+}
+
 // -- Univer -> ExcelJS (patch only what changed) -----------------------------
 function _uvStyle(snap, s) { return !s ? {} : (typeof s === 'string' ? (snap.styles || {})[s] || {} : s); }
 
@@ -29969,6 +30301,8 @@ async function _openXlsxEditor(path, body) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(raw);
   const { data, active } = _xlToUniver(wb, defaultFont);
+  const features = _xlFeaturesToUniver(wb, data.id);
+  data.resources = features.resources;
   if (!data.sheetOrder.length) { body.innerHTML = '<div class="xlsx-empty">No sheets in this workbook.</div>'; return; }
   body.className = 'file-overlay-body file-xlsx-editor';
   body.innerHTML = '<div id="xlsx-univer" class="xlsx-univer"></div>';
@@ -29998,8 +30332,13 @@ async function _openXlsxEditor(path, body) {
     if (!plugin) { tools.missing.push(g); continue; }
     try { univer.registerPlugin(plugin); tools.loaded.push(g); } catch (e) { tools.missing.push(g + ':' + (e && e.message || e)); }
   }
-  if (_univerGeneralPatched !== true) fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
-    body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'general_fmt_unpatched', why: _univerGeneralPatched, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+  const unpatched = Object.entries(_univerPatched).filter(([, v]) => v !== true);
+  if (unpatched.length) fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'univer_unpatched', unpatched: Object.fromEntries(unpatched), measured: true,
+      n_considered: Object.keys(_univerPatched).length, ver: APP_VER }) }).catch(() => {});
+  if (features.counts.skipped) fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'features_not_shown', ...features.counts, measured: true,
+      n_considered: features.counts.cf + features.counts.dv + features.counts.skipped, ver: APP_VER }) }).catch(() => {});
   if (tools.missing.length) fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
     body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'tools_missing', missing: tools.missing, loaded: tools.loaded.length,
       measured: true, n_considered: _UNIVER_TOOL_PLUGINS.length, ver: APP_VER }) }).catch(() => {});
@@ -30008,10 +30347,29 @@ async function _openXlsxEditor(path, body) {
   const fwb = api.getActiveWorkbook();
   const sheets = fwb.getSheets();
   if (sheets[active]) fwb.setActiveSheet(sheets[active]);
-  _xlsxEd = { univer, api, wb, defaultFont, initial: JSON.parse(JSON.stringify(fwb.save())), path, etag, dirty: false, sub: null };
+  _xlsxEd = { univer, api, wb, defaultFont, initial: JSON.parse(JSON.stringify(fwb.save())), path, etag, dirty: false, sub: null,
+    skipped: features.skipped, features: features.counts };
   _xlsxEd.sub = api.addEvent(api.Event.CommandExecuted, e => {
     if (_xlsxEd && !_xlsxEd.saving && _xlsxIsEdit(e)) _xlsxSetDirty(true);
   });
+  // Cmd+F (Ctrl+F) opens Find, as in Excel. Univer starts Find, like its other
+  // secondary tools, only when it settles 3 s after the sheet draws, so an
+  // early press did nothing. Asking for Find settles it now.
+  const host = document.getElementById('xlsx-univer');
+  if (host) host.addEventListener('keydown', async e => {
+    if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || String(e.key).toLowerCase() !== 'f' || !_xlsxEd) return;
+    e.preventDefault(); e.stopPropagation();
+    const ed = _xlsxEd;
+    try {
+      const { LifecycleService, LifecycleStages } = UniverCore;
+      const life = ed.univer.__getInjector().get(LifecycleService);
+      if (life.stage === LifecycleStages.Rendered) { life.stage = LifecycleStages.Steady; await new Promise(r => setTimeout(r, 0)); }
+      await ed.api.executeCommand('ui.operation.open-find-dialog');
+    } catch (err) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'find_failed', error: String(err && err.message || err), measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+    }
+  }, true);
   const btn = document.getElementById('file-save-btn');
   if (btn) { btn.style.display = ''; btn.textContent = 'Save'; }
 }
@@ -30043,12 +30401,14 @@ async function _xlsxSave() {
     const after = fwb.save();
     after.__activeId = fwb.getActiveSheet().getSheetId();
     const changed = _uvPatchWorkbook(ed.wb, ed.initial, after);
+    Object.assign(changed, _uvPatchFeatures(ed.wb, ed.initial, after, ed.skipped || {}));
     if (ed.defaultFont) {
       ed.wb.eachSheet(ws => ws.eachRow({ includeEmpty: false }, row => row.eachCell({ includeEmpty: false }, cell => {
         const f = cell.font;
         if (!f || (!f.name && !f.size)) cell.font = { ...ed.defaultFont, ...(f || {}) };
       })));
     }
+    ed.wb.eachSheet(ws => { _xlCompactValidations(ws); });
     const buf = await ed.wb.xlsx.writeBuffer();
     let bin = ''; const bytes = new Uint8Array(buf);
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
