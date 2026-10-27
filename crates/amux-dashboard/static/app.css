@@ -10599,3 +10599,6 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .hk-row .btn[role="switch"] { font-size: 0; gap: 0; padding-right: var(--space-1-5); min-height: 44px; }
   .hk-row .hk-text b { font-size: var(--fs-sm); }
 }
+
+/* Mac app: Split is one click (a new pane), so it has no menu caret. */
+body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }

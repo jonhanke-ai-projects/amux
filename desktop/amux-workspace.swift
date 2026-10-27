@@ -995,6 +995,26 @@ extension AppDelegate {
                let c = controllers.first(where: { isShown($0) }) ?? controllers.first {
                 c.webView.evaluateJavaScript(code) { _, err in if let err = err { dlog("verdict=test_js_failed error=\(err.localizedDescription)") } }
             }
+        // Run JS in pane `i` of the key window's grid (or its only page) and
+        // write what it returns, as a string, to <state file>.js.
+        case "/js-pane":
+            let i = Int(q.first { $0.name == "i" }?.value ?? "") ?? 0
+            let host = controllers.first { $0.grid != nil && isShown($0) } ?? controllers.first { isShown($0) }
+            let target = host?.grid.flatMap { g in i >= 0 && i < g.tree.leaves.count ? g.members[g.tree.leaves[i]] : nil } ?? host
+            if let code = q.first(where: { $0.name == "code" })?.value, let c = target,
+               let path = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST_STATE"] {
+                c.webView.callAsyncJavaScript(code, arguments: [:], in: nil, in: .page) { r in
+                    let out: String
+                    switch r { case .success(let v): out = "\(v)"; case .failure(let e): out = "error: " + e.localizedDescription }
+                    try? out.data(using: .utf8)?.write(to: URL(fileURLWithPath: path + ".js"), options: .atomic)
+                }
+            }
+        // A click on the Split button of the focused pane (or the only page).
+        case "/split":
+            let host = controllers.first { $0.grid != nil && isShown($0) } ?? controllers.first { isShown($0) }
+            if let c = host?.grid.flatMap({ g in g.focused.flatMap { g.members[$0] } }) ?? host {
+                c.webView.evaluateJavaScript("document.getElementById('peek-split-toggle').click()")
+            }
         // Show the tab whose page is on #<view> (perf-bench.py times the switch).
         case "/select-view":
             let want = "#" + (q.first { $0.name == "view" }?.value ?? "")

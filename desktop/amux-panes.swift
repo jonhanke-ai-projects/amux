@@ -659,6 +659,20 @@ extension AppDelegate {
     /// for one call from the test hook, whose window is never key.
     var keyGrid: PaneGrid? { actionGrid ?? keyController?.grid }
 
+    /// The Split button: the page `c` shows, a second time, in a new pane to
+    /// the right of `c`'s pane, as if a tab of it were dropped on that edge.
+    /// A full grid takes it as a tab of the pane instead (dockPane).
+    func splitPane(_ c: DashboardWindowController, url: URL?) {
+        let host = c.paneHost ?? c
+        let paneId = host.grid?.id(of: c)
+        let n = DashboardWindowController(app: self, frame: host.window?.frame, configuration: nil)
+        controllers.append(n)
+        if let u = url { n.load(u) } else { n.showConnectPage() }
+        let ok = dockPane(n, into: host, at: paneId, edge: .right, zone: "split_button")
+        dlog("verdict=\(ok ? "split_button_pane" : "split_button_refused") panes=\(host.grid?.tree.leaves.count ?? 1) view=\(url?.fragment ?? "")")
+        if !ok { n.window?.makeKeyAndOrderFront(nil) }
+    }
+
     /// A new tab in pane `id`, on the worker list like any new tab.
     func newTab(inPane id: Int, of g: PaneGrid) {
         guard let host = g.host else { return }

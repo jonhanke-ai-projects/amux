@@ -455,6 +455,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         window.delegate = self
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxWindowLabel")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxWindowLabel")
+        // The page's Split button (app.js _nativeSplit): this page again in a
+        // new pane on the right half.
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxPane")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxPane")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
@@ -468,6 +472,18 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "amuxPane" {
+            let d = message.body as? [String: Any]
+            guard (d?["op"] as? String) == "split" else { return }
+            // Only a page on this tab's own server; anything else splits the
+            // page this tab is showing.
+            let asked = (d?["url"] as? String).flatMap(URL.init(string:))
+            let same = asked.map { u in
+                u.scheme == webView.url?.scheme && u.host == webView.url?.host && u.port == webView.url?.port
+            } ?? false
+            app?.splitPane(self, url: same ? asked : webView.url)
+            return
+        }
         guard message.name == "amuxWindowLabel" else { return }
         if let d = message.body as? [String: Any] {
             pageLabel = (d["label"] as? String) ?? ""

@@ -2733,7 +2733,8 @@ async function _connectionSignIn() {
     input.value='';
     // Cookie is HttpOnly. Refresh through the existing SW-safe bootstrap;
     // never put the token in a URL, storage, connection export or debug event.
-    location.assign('/api/_clear_sw');
+    // The deep link this page is on comes along (the landing keeps the hash).
+    location.assign('/api/_clear_sw' + location.hash);
   } catch(e) {
     _connectionSecurityError('Sign-in did not complete. '+e.message+' Your input is retained in this open form only; retry explicitly.');
   } finally { _connectionSecurityPending(false); }
@@ -18117,6 +18118,7 @@ function _peekSplitSetActive(active, path) {
   return active;
 }
 function togglePeekSplit(ev, force) {
+  if (ev && !force && _nativeSplit()) return;
   if (window.innerWidth <= 600) {
     openExplore(peekSessionDir, peekSession);
     return;
@@ -38709,6 +38711,24 @@ if (_isInTab) document.body.classList.add('in-tab');
 // 2026-10-19: "this is much cleaner, you can get rid of this now").
 const _nativeTabs = /Amux-Desktop/.test(navigator.userAgent || '');
 if (_nativeTabs) document.body.classList.add('native-tabs');
+// The Mac app splits a window into panes (drag a tab onto a pane's edge). There
+// Split does that in one click: this page, a second time, in a new pane on the
+// right half (Ethan, 2026-10-26: "make it a quick button which takes the
+// current active window and splits it"). An older app without the bridge, and
+// every browser, keep the in-page split.
+function _nativePaneBridge() {
+  return (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxPane) || null;
+}
+function _nativeSplit() {
+  const h = _nativePaneBridge();
+  if (!h) return false;
+  try { h.postMessage({ op: 'split', url: location.href }); return true; } catch (e) { return false; }
+}
+if (_nativePaneBridge()) {
+  document.body.classList.add('native-panes');
+  const b = document.getElementById('peek-split-toggle');
+  if (b) { b.title = 'Split: this page again in a new pane on the right'; b.removeAttribute('aria-haspopup'); }
+}
 
 let _chromeTabs = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null') || [{id:1, name:'Tab 1'}];
 let _chromeActiveId = (_nativeTabs ? null : parseInt(localStorage.getItem('amux_chrome_active2'))) || _chromeTabs[0]?.id || 1;
