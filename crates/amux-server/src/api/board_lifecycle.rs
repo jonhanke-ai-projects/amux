@@ -1618,7 +1618,23 @@ async fn hand_intake_to_worker(
             telemetry["cache"] = json!("worker_intake_recovery");
             telemetry["recovery_model_calls"] = json!(0);
             telemetry["prior_interpretation"] = previous;
-            let out = apply(conn, id, &session, &text, &plan, &[], &telemetry)?;
+            // ONE OPEN INTAKE CARD PER WORKER. Where interpretation keeps
+            // failing, every message used to become its own "Structure
+            // request:" card, "Updated now try" included: six in a row on the
+            // NetSuite worker's board (2026-10-26). A later message joins the
+            // worker's open intake card, as a request line on it, instead.
+            let mut plan = plan.clone();
+            let mut rows = vec![];
+            if !session.starts_with("project:") {
+                if let Some(open) = open_intake_card(conn, &session)? {
+                    tracing::info!(message_id = id, session, card = %open.id, measured = true, n_considered = 1,
+                        verdict = "command_intake_folded", "a failed interpretation joined the worker's open intake card");
+                    plan.tasks[0].existing_id = Some(open.id.clone());
+                    plan.tasks[0].action = "append".into();
+                    rows.push(open);
+                }
+            }
+            let out = apply(conn, id, &session, &text, &plan, &rows, &telemetry)?;
             if out.applied {
                 tracing::warn!(
                     message_id = id,
@@ -1633,6 +1649,32 @@ async fn hand_intake_to_worker(
         })
         .await?;
     Ok(())
+}
+
+/// The worker's newest open intake card (a "Structure request:" not yet
+/// picked up), which a later failed interpretation joins.
+fn open_intake_card(conn: &Connection, session: &str) -> rusqlite::Result<Option<Candidate>> {
+    conn.query_row(
+        "SELECT id,COALESCE(session,''),title,substr(desc,1,700),status,COALESCE(type,'code'),rev,evidence,acceptance_criteria FROM issues \
+         WHERE deleted IS NULL AND archived=0 AND owner_type='agent' AND project_group IS NULL AND session=?1 \
+         AND title LIKE 'Structure request:%' AND status IN ('todo','backlog') ORDER BY updated DESC LIMIT 1",
+        [session],
+        |r| {
+            Ok(Candidate {
+                id: r.get(0)?,
+                session: r.get(1)?,
+                workspace: String::new(),
+                title: r.get(2)?,
+                description: r.get(3)?,
+                status: r.get(4)?,
+                item_type: r.get(5)?,
+                rev: r.get(6)?,
+                evidence: r.get::<_, Option<String>>(7)?,
+                acceptance_criteria: r.get::<_, Option<String>>(8)?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default(),
+            })
+        },
+    )
+    .optional()
 }
 
 pub(crate) async fn capture_inner(
@@ -2244,6 +2286,48 @@ mod tests {
         for value in ["0", "false", "no", "OFF", " off "] {
             assert!(!policy_enabled(Some(value)));
         }
+    }
+
+    /// NetSuite worker, 2026-10-26: where interpretation kept failing, every
+    /// message became its own "Structure request:" card ("Updated now try"
+    /// among them, WORKF-7 to 12). Two unrelated failed messages from one
+    /// worker now land on ONE open intake card, both requests on it.
+    #[tokio::test]
+    async fn failed_intakes_from_one_worker_share_one_open_intake_card() {
+        struct Never;
+        impl mdai::ModelClient for Never {
+            fn complete(&self, _: &str, _: &str) -> Result<String, String> {
+                panic!("exhausted receipt bought another interpretation")
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::db::Store::open(&temp.path().join("fold.db")).unwrap());
+        store.write_async(|c| {
+            receipt(c, 1, "Pull the A/R aging report for October");
+            receipt(c, 2, "Updated now try");
+            for id in [1, 2] {
+                c.execute("UPDATE cmd_history SET intake_attempts=2,intake_retry_at=0,intake_result=?1 WHERE id=?2",
+                    rusqlite::params![json!({"state":"received","error":"model unavailable"}).to_string(), id])?;
+            }
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).await.unwrap();
+        let state = AppState {
+            store,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        for id in [1, 2] {
+            capture_inner(&state, id, "fixture", Arc::new(Never)).await.unwrap();
+        }
+        let c = state.store.read().unwrap();
+        let cards: Vec<(String, String)> = c
+            .prepare("SELECT title, desc FROM issues WHERE title LIKE 'Structure request:%'").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert_eq!(cards.len(), 1, "one intake card, not one per message: {cards:?}");
+        assert!(cards[0].1.contains("MSG-1") && cards[0].1.contains("MSG-2"), "both requests are on it: {}", cards[0].1);
     }
 
     #[tokio::test]
