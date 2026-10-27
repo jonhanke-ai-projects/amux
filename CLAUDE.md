@@ -575,3 +575,7 @@ Scope refusals remain refusals. Login-cookie evidence is not live auth proof.
 from `browser-methods.toml` (OpAgent first; disabled until its model is served),
 which drives the route and returns its answer and a trajectory.
 Standalone `/chrome-cdp` remains available for explicit tab work.
+
+## This fork
+
+Read `FORK-NOTES.md` first: local paths, the multi-account feature, and why fork work uses branches and PRs, not the "everything on main" rule above.
