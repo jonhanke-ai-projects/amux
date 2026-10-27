@@ -175,6 +175,26 @@ HEALTH_VERDICTS=""; check_crash_reports 0 >/dev/null
 check "the crashes line carries what the reports say" yes "$(has "$HEALTH_VERDICTS" '^crashes bash crashed 12 times in 24h (at or over 10) (reports: coalition com.amux.tmux-watchdog x11; parent bash x11; signal SIGSEGV x11; 11/11 under Rosetta; 11 raised by the process itself; 11 alive under 1s (the watchdog started the tmux server: this means a process under tmux, a worker.s shell))$')"
 check "a report with no body adds no context"         ""    "$(crash_context "$FIX/crash" Looper)"
 
+# Mac crashes RCA 20261026-225543: a fault signal a process sends itself with
+# kill() (a test fixture's `kill -SEGV $$`) is not a crash. Frames as macOS
+# writes them: __kill on top and no _sigtramp. A handler re-raising a real
+# fault has _sigtramp, and stays a crash.
+CRASH_DIR="$FIX/crash-self"; mkdir -p "$CRASH_DIR"
+mkrep() { # <file> <pid> <with sigtramp 0|1>
+  python3 -c 'import json,sys
+pid=int(sys.argv[1]); st=sys.argv[2]=="1"
+fr=[{"symbol":"__kill"}]+([{"symbol":"_sigtramp"}] if st else [])+[{"imageIndex":0},{"symbol":"start"}]
+print(json.dumps({"bug_type":"309"}))
+print(json.dumps({"pid":pid,"parentProc":"bash","exception":{"type":"EXC_CRASH","signal":"SIGSEGV"},"termination":{"byPid":pid},"threads":[{"triggered":True,"frames":fr}]}))' "$2" "$3" > "$1"
+}
+for i in $(seq 1 12); do mkrep "$CRASH_DIR/bash-$(stamp $((i * 60))).ips" $((200 + i)) 0; done
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash-self.out"; out=$(cat "$FIX/crash-self.out")
+check "12 self-sent SIGSEGVs are not a crash constraint" no "$(has "$HEALTH_VERDICTS" '^crashes bash')"
+check "the line counts them, with a verdict"           yes "$(has "$out" '12 in 48h are a fault signal the process sent itself.*bash x12.*verdict=crash_reports_self_signaled')"
+for i in $(seq 1 12); do mkrep "$CRASH_DIR/bash-$(stamp $((i * 60 + 30))).ips" $((300 + i)) 1; done
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash-self.out"
+check "a handler re-raising a real fault (_sigtramp) still counts" yes "$(has "$HEALTH_VERDICTS" '^crashes bash crashed 12 times in 24h')"
+
 echo "4b. a loop that stopped crashing 6h+ ago is reported, not escalated (RCA crashes 20261017-022150)"
 CRASH_DIR="$FIX/crash-ended"; mkdir -p "$CRASH_DIR"
 for i in $(seq 10 21); do : > "$CRASH_DIR/git-$(stamp $((8 * 3600 + i * 60))).ips"; done

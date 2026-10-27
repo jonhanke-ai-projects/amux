@@ -1302,6 +1302,41 @@ check_limits() {
   echo "mac-cleanup: limits: open files ${f}/${mf}, user processes ${p}/${mp}, inodes ${ip}% used, zombies ${z}$( [ -n "$zname" ] && echo " (most under $zname pid $zpid: $zn)")$( [ -z "$out" ] && echo ", none at a limit" || echo ", $(printf '%s\n' "$out" | grep -c .) constraint(s)")"
 }
 
+# Reports of a fault signal the process sent ITSELF, not a fault: the crashing
+# thread called kill() (a __kill frame) with no signal handler on the stack
+# (no _sigtramp), for SIGSEGV, SIGBUS, SIGILL or SIGFPE, and macOS says the
+# process raised it. Mac crashes RCA 20261026-225543: "bash crashed 14 times"
+# was a test fixture, `kill -SEGV $$` in a fake psql that a lane's test suite
+# runs (customers/tubescience/dropin/tests/test_tspg_conn_retry.py, "crash"
+# mode), once per run, in each of its worktrees. A real fault is
+# EXC_BAD_ACCESS, and a handler re-raising one carries _sigtramp, so neither
+# is matched. A report without thread frames is NOT matched: no evidence, it
+# stays a crash. Prints one report name per line.
+crash_simulated() { # <dir>
+  python3 - "$1" <<'PY' 2>/dev/null
+import json, os, sys, time
+d = sys.argv[1]
+cut = time.time() - 2 * 86400
+for n in os.listdir(d):
+    p = os.path.join(d, n)
+    if not n.endswith(".ips") or not os.path.isfile(p) or os.stat(p).st_mtime < cut:
+        continue
+    try:
+        b = json.loads(open(p, errors="replace").read().split("\n", 1)[1])
+    except Exception:
+        continue
+    if (b.get("exception") or {}).get("signal") not in ("SIGSEGV", "SIGBUS", "SIGILL", "SIGFPE"):
+        continue
+    t = b.get("termination") or {}
+    if t.get("byPid") is None or t.get("byPid") != b.get("pid"):
+        continue
+    th = [x for x in b.get("threads") or [] if x.get("triggered")]
+    syms = [f.get("symbol") or "" for f in (th[0].get("frames") or [])] if th else []
+    if "__kill" in syms and not any("sigtramp" in s for s in syms):
+        print(n)
+PY
+}
+
 # Crash counts per app over the last <minutes>, as "<count> <app>" lines, most
 # first. A report's crash time is the EARLIER of the stamp macOS puts in its
 # name (-YYYY-MM-DD-HHMMSS, local) and its mtime: macOS rewrites a report long
@@ -1312,10 +1347,13 @@ check_limits() {
 crash_counts() { # <dir> <minutes> [app]
   python3 - "$1" "$2" "${3:-}" <<'PY' 2>/dev/null
 import collections, os, re, sys, time
+SKIP = set(os.environ.get("CRASH_SKIP", "").split())
 d, mins, only = sys.argv[1], float(sys.argv[2]), sys.argv[3]
 cut = time.time() - mins * 60
 c = collections.Counter()
 for n in os.listdir(d):
+    if n in SKIP:
+        continue
     p = os.path.join(d, n)
     if not os.path.isfile(p):
         continue
@@ -1346,11 +1384,14 @@ PY
 crash_context() { # <dir> <app>
   python3 - "$1" "$2" <<'PY' 2>/dev/null
 import collections, json, os, re, sys, time
+SKIP = set(os.environ.get("CRASH_SKIP", "").split())
 d, app = sys.argv[1], sys.argv[2]
 cut = time.time() - 86400
 coal, par, sig = collections.Counter(), collections.Counter(), collections.Counter()
 n = tr = selfk = short = 0
 for name in os.listdir(d):
+    if name in SKIP:
+        continue
     if re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", name) != app or not name.endswith(".ips"):
         continue
     p = os.path.join(d, name)
@@ -1385,8 +1426,11 @@ PY
 crash_newest() { # <dir> <app>: epoch of the app's newest crash, dated as crash_counts dates it
   python3 - "$1" "$2" <<'PY' 2>/dev/null
 import os, re, sys, time
+SKIP = set(os.environ.get("CRASH_SKIP", "").split())
 d, only, best = sys.argv[1], sys.argv[2], 0
 for n in os.listdir(d):
+    if n in SKIP:
+        continue
     p = os.path.join(d, n)
     if not os.path.isfile(p) or re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", n) != only:
         continue
@@ -1405,9 +1449,12 @@ PY
 crash_episode() { # <dir> <app> <gap minutes>: crashes since the app's last quiet gap of at least <gap>
   python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null
 import os, re, sys, time
+SKIP = set(os.environ.get("CRASH_SKIP", "").split())
 d, only, gap = sys.argv[1], sys.argv[2], float(sys.argv[3]) * 60
 ts = []
 for n in os.listdir(d):
+    if n in SKIP:
+        continue
     p = os.path.join(d, n)
     if not os.path.isfile(p) or re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", n) != only:
         continue
@@ -1430,8 +1477,11 @@ PY
 crash_since() { # <dir> <app> <epoch>: the app's crashes dated after <epoch>, dated as crash_counts dates them
   python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null
 import os, re, sys, time
+SKIP = set(os.environ.get("CRASH_SKIP", "").split())
 d, only, since, n_after = sys.argv[1], sys.argv[2], float(sys.argv[3]), 0
 for n in os.listdir(d):
+    if n in SKIP:
+        continue
     p = os.path.join(d, n)
     if not os.path.isfile(p) or re.sub(r"[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*", "", n) != only:
         continue
@@ -1479,6 +1529,7 @@ PY
 check_respawn_loops() {
   local rows cnt name resp rpid key esc_key esc_at n=0
   RESPAWN_LOOPS=""; RESPAWN_ESC_KEY=""
+  export CRASH_SKIP; CRASH_SKIP=$( [ -d "$CRASH_DIR" ] && crash_simulated "$CRASH_DIR" )
   rows=$($RESPAWN_CMD 2>/dev/null || true)
   while read -r cnt name; do
     [ -n "${name:-}" ] && [ "${cnt:-0}" -ge "$RESPAWN_N" ] 2>/dev/null || continue
@@ -1511,6 +1562,13 @@ check_respawn_loops() {
 check_crash_reports() { # <dry:0|1>
   local DRY=${1:-0} top name cnt pruned=0 old newest esc episode since_esc
   if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
+  # A process that sends itself SIGSEGV with kill() did not crash (see
+  # crash_simulated): every count below leaves those reports out, and this
+  # line says how many and whose, so a test fixture never reads as a crash loop.
+  export CRASH_SKIP; CRASH_SKIP=$(crash_simulated "$CRASH_DIR")
+  if [ -n "$CRASH_SKIP" ]; then
+    echo "mac-cleanup: crash reports: $(printf '%s\n' "$CRASH_SKIP" | grep -c .) in 48h are a fault signal the process sent itself with kill(), not a crash, and are not counted ($(printf '%s\n' "$CRASH_SKIP" | sed -E 's/[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*//' | sort | uniq -c | sort -rn | awk '{printf "%s%s x%s", (NR>1 ? ", " : ""), $2, $1}')) (verdict=crash_reports_self_signaled)"
+  fi
   # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
   top=$(crash_counts "$CRASH_DIR" 1440 | head -3)
   local recent
