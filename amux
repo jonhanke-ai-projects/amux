@@ -9051,17 +9051,32 @@ cmd_claude_accounts() {
       python3 -c '
 import json, sys
 d = json.load(sys.stdin)
+def use(u):
+    if not u: return "no usage reading yet"
+    l = u.get("latest") or {}
+    def pct(v): return "?" if v is None else "%d%%" % round(v)
+    s = "5h %s · wk %s" % (pct(l.get("five_hour_pct")), pct(l.get("seven_day_pct")))
+    if u.get("seven_day_resets_in_h") is not None: s += " · wk resets in %.0fh" % u["seven_day_resets_in_h"]
+    if u.get("seven_day_hours_to_full") is not None: s += " · full in ~%.0fh at this pace" % u["seven_day_hours_to_full"]
+    if u.get("latest_age_s") is not None: s += " (read %dm ago)" % (u["latest_age_s"] // 60)
+    return s
+first = d.get("spend_first")
+def mark(email): return "  <- spend surplus here first" if first and email == first else ""
 df = d.get("default") or {}
-print("default (~/.claude): %s" % (df.get("email") or ("signed in" if df.get("signed_in") else "signed out")))
+print("default (~/.claude): %s" % (df.get("email") or ("signed in" if df.get("signed_in") else "signed out")) + mark(df.get("email")))
+print("    " + use(df.get("usage")))
 accts = d.get("accounts") or []
 if not accts:
     print("no named accounts yet: amux claude-accounts add <name>")
 for a in accts:
     who = a.get("email") or ("signed in" if a.get("signed_in") else "SIGNED OUT")
-    print("%-16s %s" % (a["name"], who))
+    print("%-16s %s" % (a["name"], who) + mark(a.get("email")))
+    print("    " + use(a.get("usage")))
     if a.get("groups"): print("    groups:  " + ", ".join(a["groups"]))
     if a.get("workers"): print("    workers: " + ", ".join(a["workers"]))
     if not a.get("signed_in"): print("    sign in: amux claude-accounts login " + a["name"])
+if not d.get("measured"): print("usage not measured: %s" % d.get("why_unmeasured"))
+if not d.get("tracking"): print("per-account usage is off: amux claude-accounts track on")
 ' <<<"$resp" ;;
     add)
       local name="${1:-}"; [[ -n "$name" ]] || die "usage: amux claude-accounts add <name>"
@@ -9103,6 +9118,16 @@ print("%s %s -> %s" % (d["level"], d["target"], d.get("account") or "default log
 for r in d.get("relaunched") or []:
     print("  %s: %s" % (r["worker"], "relaunched on the same conversation" if r.get("relaunched") else r.get("why") or r.get("detail")))
 ' <<<"$resp" ;;
+    track)
+      local on; case "${1:-}" in on) on=true ;; off) on=false ;; *) die "usage: amux claude-accounts track on|off" ;; esac
+      resp=$(_curl -sk -m 15 -X POST -H 'Content-Type: application/json' -d "{\"on\": $on}" "$AMUX_API/api/claude-accounts/track") || die "could not reach server"
+      python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): sys.exit("amux claude-accounts track: " + str(d.get("error")))
+print("per-account usage tracking: " + ("on" if d["tracking"] else "off"))
+print("your status line: " + (d.get("your_status_line") or "(none)"))
+' <<<"$resp" ;;
     -h|--help|help)
       cat <<'USAGE'
 amux claude-accounts list [--json]          Accounts, who is signed in, what is bound to each
@@ -9111,6 +9136,8 @@ amux claude-accounts login <name>           Sign that account in (opens the brow
 amux claude-accounts assign <worker> <name> Move a worker to an account; it relaunches on the same conversation
 amux claude-accounts assign --group <group> <name>   Bind a whole group/project
 amux claude-accounts assign <worker> --default       Back to the default ~/.claude login
+amux claude-accounts track on|off           Record each account's 5h/weekly usage from Claude Code's
+                                            status line (your own status line keeps running)
 USAGE
       ;;
     *) die "amux claude-accounts: unknown subcommand $sub (try --help)" ;;

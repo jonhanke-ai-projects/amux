@@ -78,9 +78,44 @@ API:
   `stop_verified_worker` gate the subscription relaunch job uses). A busy worker keeps
   running and picks up the new account at its next start.
 
+## Per-account usage
+
+```bash
+amux claude-accounts track on     # once
+amux claude-accounts list         # 5h / weekly %, reset times, pace, and where to spend surplus
+```
+
+Claude Code gives its status-line command each session's `rate_limits`: the 5-hour and
+weekly used percentage and reset time for the account that session is signed in to.
+`track on` writes `scripts/claude-account-usage-tap.py` (compiled into the server) to
+`~/.amux/bin/` and puts it in front of your existing status line:
+
+```text
+statusLine.command = '~/.amux/bin/claude-account-usage-tap.py' -- <your previous command>
+```
+
+Every account shares `settings.json`, so the tap runs for every account's sessions.
+`CLAUDE_CONFIG_DIR` tells it which account a session belongs to. It posts at most one
+reading per account every 30 s to `POST /api/usage/accounts/readings` (the
+`claude_account_usage` history the upstream rotator also uses), then runs your own status
+line with the same input. `track on` changes only `statusLine`, after a timestamped backup
+(`settings.json.bak-amux-tap-*`). `track off` puts your command back.
+
+The tap reads no credential and calls no Anthropic endpoint. The numbers are the ones
+Claude Code already shows. An account only gets readings while one of its sessions is
+running, and `list` shows how old each reading is.
+
+`GET /api/claude-accounts` adds `usage` per account (latest reading, burn rate, hours
+to full, hours to the weekly reset) and `spend_first`. That is the account with weekly
+and 5-hour headroom whose weekly window resets soonest. Its unused share is lost at that
+reset, so it is where surplus work should go:
+
+```bash
+amux claude-accounts assign --group surplus <that account>
+```
+
 ## Not yet
 
-- Usage readings (`/api/usage`, `claude-rotate.py`) still probe the default login only.
-- No automatic per-worker rotation yet. The binding is the primitive it would drive:
-  pick the account with headroom, then `assign`.
+- Moving the surplus group to `spend_first` is still a manual `assign`. It could run on a
+  schedule, but that is a policy decision for the owner.
 - No dashboard panel. The CLI, the API and the Scope env editor cover it for now.

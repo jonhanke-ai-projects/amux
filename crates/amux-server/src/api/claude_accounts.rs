@@ -269,6 +269,143 @@ pub fn launch_exports(dir: &Path) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Per-account usage (the status-line tap)
+// ---------------------------------------------------------------------------
+
+/// The tap Claude Code runs as its status line: records `rate_limits` for the
+/// account that session is signed in to, then runs the owner's own status line.
+/// One copy, compiled in, written out by [`track_on`]. It reads no credential.
+pub const TAP_SOURCE: &str = include_str!("../../../../scripts/claude-account-usage-tap.py");
+const TAP_FILE: &str = "claude-account-usage-tap.py";
+
+pub fn tap_path(amux_home: &Path) -> PathBuf {
+    amux_home.join("bin").join(TAP_FILE)
+}
+
+fn settings_path(user_home: &Path) -> PathBuf {
+    let p = user_home.join(".claude").join("settings.json");
+    // Write the real file, never replace a symlink with a copy.
+    std::fs::canonicalize(&p).unwrap_or(p)
+}
+
+fn load_settings(path: &Path) -> Result<Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => serde_json::from_str::<Value>(&t)
+            .ok()
+            .filter(Value::is_object)
+            .ok_or_else(|| format!("{} is not a JSON object; left untouched", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
+        Err(e) => Err(format!("read {}: {e}", path.display())),
+    }
+}
+
+/// Only `statusLine` ever changes; every other key (hooks included) is written
+/// back exactly as read, after a timestamped backup.
+fn write_settings(path: &Path, doc: &Value) -> Result<(), String> {
+    if path.exists() {
+        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let bak = path.with_file_name(format!("settings.json.bak-amux-tap-{stamp}"));
+        std::fs::copy(path, &bak).map_err(|e| format!("backup {}: {e}", bak.display()))?;
+    }
+    let body = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?;
+    let tmp = session_verbs::unique_tmp_path(path);
+    std::fs::write(&tmp, body)
+        .and_then(|_| std::fs::rename(&tmp, path))
+        .map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// The status-line command, split into (tap installed, the owner's own command).
+fn split_command(cmd: &str, tap: &Path) -> (bool, String) {
+    let prefix = format!("{} --", session_verbs::sh_quote(&tap.to_string_lossy()));
+    match cmd.trim().strip_prefix(&prefix) {
+        Some(rest) => (true, rest.trim().to_string()),
+        None => (false, cmd.trim().to_string()),
+    }
+}
+
+/// (tap installed, the owner's own status-line command) as the settings have it now.
+pub fn tracking(amux_home: &Path, user_home: &Path) -> (bool, String) {
+    let doc = load_settings(&settings_path(user_home)).unwrap_or_else(|_| json!({}));
+    split_command(doc["statusLine"]["command"].as_str().unwrap_or(""), &tap_path(amux_home))
+}
+
+/// Install the tap in front of the existing status line. Idempotent; the
+/// script is rewritten each time so it tracks the server's copy.
+pub fn track_on(amux_home: &Path, user_home: &Path) -> Result<(), String> {
+    let path = settings_path(user_home);
+    let mut doc = load_settings(&path)?;
+    let tap = tap_path(amux_home);
+    if let Some(dir) = tap.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(&tap, TAP_SOURCE).map_err(|e| format!("write {}: {e}", tap.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tap, std::fs::Permissions::from_mode(0o755));
+    }
+    let (on, own) = split_command(doc["statusLine"]["command"].as_str().unwrap_or(""), &tap);
+    if on {
+        return Ok(());
+    }
+    let cmd = format!("{} -- {own}", session_verbs::sh_quote(&tap.to_string_lossy()));
+    let line = doc
+        .as_object_mut()
+        .expect("load_settings returns an object")
+        .entry("statusLine")
+        .or_insert_with(|| json!({}));
+    if !line.is_object() {
+        *line = json!({});
+    }
+    line["type"] = json!("command");
+    line["command"] = json!(cmd.trim());
+    write_settings(&path, &doc)
+}
+
+/// Put the owner's own status line back (or none, if there was none).
+pub fn track_off(amux_home: &Path, user_home: &Path) -> Result<(), String> {
+    let path = settings_path(user_home);
+    let mut doc = load_settings(&path)?;
+    let (on, own) = split_command(doc["statusLine"]["command"].as_str().unwrap_or(""), &tap_path(amux_home));
+    if !on {
+        return Ok(());
+    }
+    let o = doc.as_object_mut().expect("load_settings returns an object");
+    if own.is_empty() {
+        o.remove("statusLine");
+    } else {
+        o["statusLine"]["command"] = json!(own);
+    }
+    write_settings(&path, &doc)
+}
+
+fn epoch_of(ts: &Value) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(ts.as_str()?.trim()).ok().map(|d| d.timestamp())
+}
+
+/// Which account's spare capacity expires first: among accounts whose latest
+/// reading has weekly headroom (under `full_pct`), a usable 5-hour window and a
+/// weekly reset still ahead, the one that resets soonest. Its unused share is
+/// lost at that reset, so it is the one to spend on surplus work. `usage` rows
+/// are `usage_accounts::summary` accounts. Returns the account email.
+pub fn spend_first(usage: &[Value], now: i64, full_pct: f64) -> Option<String> {
+    usage
+        .iter()
+        .filter_map(|a| {
+            let latest = &a["latest"];
+            let reset = epoch_of(&latest["seven_day_resets_at"]).filter(|r| *r > now)?;
+            let pct = latest["seven_day_pct"].as_f64()?;
+            let five_ok = latest["five_hour_pct"].as_f64().is_none_or(|p| {
+                p < full_pct || epoch_of(&latest["five_hour_resets_at"]).is_some_and(|r| r <= now)
+            });
+            (pct < full_pct && five_ok).then(|| (reset, a["account"].as_str().map(str::to_string)))
+        })
+        .filter_map(|(reset, email)| Some((reset, email?)))
+        .min()
+        .map(|(_, email)| email)
+}
+
+// ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
 
@@ -281,8 +418,23 @@ fn err(code: StatusCode, msg: impl Into<String>) -> Response {
 }
 
 /// `GET /api/claude-accounts`
-pub async fn get_accounts() -> Response {
+pub async fn get_accounts(State(state): State<AppState>) -> Response {
     let home = session_verbs::home();
+    let now = super::usage_accounts::now();
+    let usage = state
+        .store
+        .read_async(move |c| Ok(super::usage_accounts::summary(c, 8.0 * 86400.0, None, 0, now)?))
+        .await;
+    let (usage_measured, usage_rows, usage_why) = match usage {
+        Ok(v) => (true, v["accounts"].as_array().cloned().unwrap_or_default(), None),
+        Err(e) => (false, vec![], Some(e.to_string())),
+    };
+    let usage_of = |email: Option<&str>| -> Value {
+        email
+            .and_then(|e| usage_rows.iter().find(|a| a["account"] == e))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
     let (default_signed_in, default_email) = {
         let v = std::fs::read_to_string(user_home().join(".claude.json"))
             .ok()
@@ -290,13 +442,48 @@ pub async fn get_accounts() -> Response {
             .unwrap_or(Value::Null);
         (super::py_truthy(&v["oauthAccount"]), v["oauthAccount"]["emailAddress"].as_str().map(str::to_string))
     };
+    let mut accounts = list(&home);
+    for a in &mut accounts {
+        a["usage"] = usage_of(a["email"].as_str());
+    }
+    let (tracking_on, _) = tracking(&home, &user_home());
     Json(json!({
         "ok": true,
         "key": KEY,
-        "default": {"signed_in": default_signed_in, "email": default_email},
-        "accounts": list(&home),
+        "default": {"signed_in": default_signed_in, "email": default_email,
+                    "usage": usage_of(default_email.as_deref())},
+        "accounts": accounts,
+        "spend_first": spend_first(&usage_rows, now as i64, 95.0),
+        "tracking": tracking_on,
+        "measured": usage_measured,
+        "n_considered": usage_rows.len(),
+        "why_unmeasured": usage_why,
     }))
     .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrackBody {
+    pub on: bool,
+}
+
+/// `POST /api/claude-accounts/track {on}`: put the usage tap in front of the
+/// Claude Code status line (or take it out). The owner's explicit step: it
+/// changes `statusLine` in ~/.claude/settings.json, after a timestamped backup.
+pub async fn post_track(Json(b): Json<TrackBody>) -> Response {
+    let (home, user) = (session_verbs::home(), user_home());
+    let res = if b.on { track_on(&home, &user) } else { track_off(&home, &user) };
+    match res {
+        Ok(()) => {
+            let (on, own) = tracking(&home, &user);
+            tracing::info!(on, measured = true, n_considered = 1, verdict = "claude_usage_tap_set",
+                "Claude account usage tap changed");
+            Json(json!({"ok": true, "tracking": on, "your_status_line": own,
+                        "tap": tap_path(&home).to_string_lossy()}))
+            .into_response()
+        }
+        Err(e) => err(StatusCode::BAD_REQUEST, e),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -493,6 +680,74 @@ mod tests {
         assert_eq!(listed[0]["workers"], json!(["w1"]));
         assert_eq!(listed[1]["groups"], json!(["proj"]));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn track_wraps_the_owners_status_line_and_restores_it() {
+        let base = tmp("track");
+        let (amux, user) = (base.join("amux"), base.join("user"));
+        std::fs::create_dir_all(user.join(".claude")).unwrap();
+        let settings = user.join(".claude").join("settings.json");
+        let own = "python3 /x/overhead.py statusline";
+        std::fs::write(
+            &settings,
+            json!({"statusLine": {"type": "command", "command": own, "padding": 1}, "hooks": {"a": 1}}).to_string(),
+        )
+        .unwrap();
+        track_on(&amux, &user).unwrap();
+        track_on(&amux, &user).unwrap(); // idempotent: wrapped once
+        assert_eq!(tracking(&amux, &user), (true, own.to_string()));
+        assert_eq!(std::fs::read_to_string(tap_path(&amux)).unwrap(), TAP_SOURCE);
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(doc["statusLine"]["padding"], 1);
+        assert_eq!(doc["hooks"]["a"], 1, "every other key survives");
+        assert_eq!(doc["statusLine"]["command"].as_str().unwrap().matches(" -- ").count(), 1);
+        track_off(&amux, &user).unwrap();
+        assert_eq!(tracking(&amux, &user), (false, own.to_string()));
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(doc["hooks"]["a"], 1);
+        let backups = std::fs::read_dir(user.join(".claude"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("settings.json.bak-amux-tap-"))
+            .count();
+        assert!(backups >= 1);
+
+        // No status line before: none after.
+        std::fs::write(&settings, "{}").unwrap();
+        track_on(&amux, &user).unwrap();
+        track_off(&amux, &user).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(doc.get("statusLine").is_none());
+
+        // A settings file that is not JSON is never overwritten.
+        std::fs::write(&settings, "not json").unwrap();
+        assert!(track_on(&amux, &user).is_err());
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), "not json");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn spend_first_picks_the_soonest_reset_with_headroom() {
+        let now = 1_793_000_000_i64;
+        let at = |h: i64| chrono::DateTime::from_timestamp(now + h * 3600, 0).unwrap().to_rfc3339();
+        let acct = |email: &str, wk: f64, wk_reset_h: i64, five: f64, five_reset_h: i64| {
+            json!({"account": email, "latest": {
+                "seven_day_pct": wk, "seven_day_resets_at": at(wk_reset_h),
+                "five_hour_pct": five, "five_hour_resets_at": at(five_reset_h)}})
+        };
+        let rows = vec![
+            acct("late@x", 10.0, 120, 0.0, 2),
+            acct("soon@x", 40.0, 20, 10.0, 2),
+            acct("full@x", 99.0, 5, 0.0, 2),     // no weekly headroom
+            acct("past@x", 10.0, -1, 0.0, 2),    // weekly reset already passed: stale, skipped
+            acct("burst@x", 10.0, 10, 100.0, 3), // 5-hour window full until it resets
+        ];
+        assert_eq!(spend_first(&rows, now, 95.0).as_deref(), Some("soon@x"));
+        // Once its 5-hour window has reset, it is usable again and resets first.
+        let rows2 = vec![acct("soon@x", 40.0, 20, 0.0, 2), acct("burst@x", 10.0, 10, 100.0, -1)];
+        assert_eq!(spend_first(&rows2, now, 95.0).as_deref(), Some("burst@x"));
+        assert_eq!(spend_first(&[], now, 95.0), None);
     }
 
     #[test]

@@ -272,6 +272,7 @@ pub fn router_with_connector_transport(
             axum::routing::get(claude_accounts::get_accounts).post(claude_accounts::post_account),
         )
         .route("/api/claude-accounts/assign", axum::routing::post(claude_accounts::post_assign))
+        .route("/api/claude-accounts/track", axum::routing::post(claude_accounts::post_track))
         .nest("/api/review", review::routes())
         .nest("/api/channels", channels::routes())
         .nest("/api/alert", alerts::routes())
