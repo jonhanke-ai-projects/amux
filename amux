@@ -238,7 +238,47 @@ _curl() {
   # Kept out of "$@" so the transport breadcrumb below never writes it to disk.
   local _id=()
   [[ -n "${AMUX_WORKER_TOKEN:-}" ]] && _id=(-H "X-Amux-Worker-Token: ${AMUX_WORKER_TOKEN}")
-  command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} "$@" || rc=$?
+  # RIDE OUT A RESTART (NetSuite worker, 2026-10-26: while the server
+  # restarted, the CLI handed back empty output and the caller's JSON parse
+  # failed with nothing saying why). A refused connection (exit 7) never sent
+  # the request, so any method retries it. An empty reply or a dropped
+  # connection (52, 56) may have been processed, so only a GET retries those.
+  # Up to AMUX_CURL_RESTART_WAIT seconds (30; 0 turns this off), said on stderr.
+  local method="GET" a prev="" waited=0 wait_max="${AMUX_CURL_RESTART_WAIT:-30}" step=1 told=0
+  for a in "$@"; do
+    [[ "$prev" == "-X" || "$prev" == "--request" ]] && method="$a"
+    [[ "$a" == -X* && ${#a} -gt 2 ]] && method="${a#-X}"
+    [[ "$prev" != "-X" && ( "$a" == "-d" || "$a" == "--data"* || "$a" == "--data-binary" ) && "$method" == "GET" ]] && method="POST"
+    prev="$a"
+  done
+  # Only the attempt that counts reaches stdout: a failed attempt's -w output
+  # ("000") would otherwise land in the caller's capture ahead of the real one.
+  local out; out=$(mktemp "${TMPDIR:-/tmp}/amux-curl.XXXXXX") || out=""
+  while :; do
+    rc=0
+    if [[ -n "$out" ]]; then
+      command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} "$@" >"$out" || rc=$?
+    else
+      command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} "$@" || rc=$?
+      break
+    fi
+    case "$rc" in
+      7) ;;
+      52|56) [[ "$method" == "GET" ]] || break ;;
+      *) break ;;
+    esac
+    (( waited >= wait_max )) && break
+    if (( told == 0 )); then
+      echo "amux: the server is not answering (restarting?); retrying for up to ${wait_max}s" >&2
+      told=1
+    fi
+    sleep "$step"; waited=$((waited + step)); (( step < 4 )) && step=$((step * 2))
+  done
+  if [[ -n "$out" ]]; then cat "$out"; rm -f "$out"; fi
+  if (( told == 1 )); then
+    if [[ "$rc" -eq 0 ]]; then echo "amux: the server is back after ${waited}s" >&2
+    else echo "amux: the server did not answer within ${waited}s (curl exit $rc); it may still be restarting: retry, or check amux server status" >&2; fi
+  fi
   if [[ "$rc" -ne 0 ]]; then _transport_breadcrumb "$rc" "$@"; fi
   return "$rc"
 }
