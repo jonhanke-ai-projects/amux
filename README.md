@@ -1,3 +1,5 @@
+> **Fork note:** this is `jonhanke-ai-projects/amux`, a fork of mixpeek/amux. For where it lives locally, the multi-account feature and fork conventions, read [FORK-NOTES.md](FORK-NOTES.md).
+
 <img src="site/github-header.svg" alt="amux: the agent control plane" width="1280"/>
 
 <p align="center">
