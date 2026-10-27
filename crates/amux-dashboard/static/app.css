@@ -10404,7 +10404,10 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pub-chip { display:inline-block; font-size:var(--fs-sm); font-weight:500; padding:1px var(--space-2); margin-left:var(--space-1-5); border-radius:var(--radius-pill); border:1px solid var(--border); color:var(--dim); vertical-align:middle; }
 .pub-more { min-width:40px; padding:0 var(--space-2); }
 .pub-preview { position:relative; height:200px; border:1px solid var(--border); border-radius:var(--radius-control); overflow:hidden; background:var(--bg); }
-.pub-preview iframe { position:absolute; left:0; top:0; width:1280px; height:800px; border:0; transform-origin:0 0; pointer-events:none; background:var(--on-solid); }
+/* Frames of apps and files sit on a white backing, so they are light: under a
+   dark system theme Chrome drew a shared plain-text file in light text on that
+   white, and it read as a blank page (sandbox, 2026-10-27). */
+.pub-preview iframe { position:absolute; left:0; top:0; width:1280px; height:800px; border:0; transform-origin:0 0; pointer-events:none; background:var(--on-solid); color-scheme:light; }
 .pub-preview-note { position:absolute; inset:0; display:grid; place-items:center; text-align:center; padding:var(--space-3); color:var(--dim); font-size:var(--fs-lg); }
 .pub-files { display:flex; flex-direction:column; gap:var(--space-2); }
 .pub-file { display:flex; align-items:center; gap:var(--space-2-5); border:1px solid var(--border); border-radius:var(--radius-control); background:var(--card); padding:var(--space-2-5) var(--space-3); min-height:44px; }
@@ -10427,7 +10430,7 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pages-empty-box b { display:block; color:var(--text); font-size:var(--fs-2xl); margin:var(--space-1) 0; }
 .pages-empty-icon { font-size:var(--fs-5xl); }
 [data-search].pages-hidden { display:none !important; }
-.pub-app-frame { width:100%; height:100%; border:0; background:var(--on-solid); border-radius:var(--radius-lg); }
+.pub-app-frame { width:100%; height:100%; border:0; background:var(--on-solid); border-radius:var(--radius-lg); color-scheme:light; }
 .pub-row { cursor:default; }
 .pub-url { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pub-note { padding:var(--space-2-5) var(--space-3-5); grid-column:1 / -1; }

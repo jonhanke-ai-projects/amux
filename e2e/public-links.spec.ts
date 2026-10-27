@@ -26,6 +26,7 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
   const deckDir = fs.mkdtempSync(path.join(os.homedir(), 'pagesdeck-'));
   fs.writeFileSync(path.join(deckDir, 'deck.html'), '<h1>the deck</h1>');
   fs.writeFileSync(path.join(deckDir, 'build_deck.py'), 'print(1)');
+  fs.writeFileSync(path.join(deckDir, 'notes.txt'), 'plain notes\n');
   const tag = testInfo.project.name;
   const modalBtn = (name: string) => page.locator('#modal-btns').getByRole('button', { name });
   const base = () => new URL(page.url()).origin;
@@ -83,6 +84,26 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
     await deck.click();
     await expect(page.frameLocator('.pub-app-frame').locator('h1')).toHaveText('the deck');
     await page.getByRole('button', { name: 'Back to all pages' }).click();
+
+    // A plain-text file shows on the frame's white backing under a dark system
+    // theme: Chrome drew it in light text on white, a blank page (sandbox,
+    // 2026-10-27), until the frames were made light. Playwright's dark emulation
+    // overrides every frame's scheme, so this pins the frame's own scheme, which
+    // is what real Chrome follows (checked live on the sandbox). The dashboard
+    // must be dark for it to mean anything: a light one is inherited as light.
+    await page.evaluate(() => (window as any).themeActivate('amux-dark'));
+    await page.getByRole('button', { name: 'Add app' }).click();
+    await page.locator('#pub-new-target').fill(path.join(deckDir, 'notes.txt'));
+    await page.locator('#pub-new-title').fill(`notes ${tag}`);
+    await modalBtn('Add').click();
+    const notesCard = page.locator('#pub-internal .pub-card', { hasText: `notes ${tag}` });
+    await notesCard.scrollIntoViewIfNeeded();
+    await expect(notesCard.locator('.pub-preview iframe')).toHaveCSS('color-scheme', 'light');
+    await notesCard.click();
+    await expect(page.frameLocator('.pub-app-frame').locator('body')).toContainText('plain notes');
+    await expect(page.locator('.pub-app-frame')).toHaveCSS('color-scheme', 'light');
+    await page.getByRole('button', { name: 'Back to all pages' }).click();
+    await page.evaluate(() => (window as any).themeActivate('amux-light'));
 
     // 2. A public app: anyone, no amux credential reaches it, and its card
     // shows a live preview.
