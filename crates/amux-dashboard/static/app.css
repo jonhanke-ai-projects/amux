@@ -10557,15 +10557,15 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .hk-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); min-height: 52px; }
 .hk-sec h4 + .hk-row { border-top: 0; }
 .hk-ico { flex: 0 0 auto; width: 34px; height: 34px; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-md); background: var(--bg); }
-.hk-tone-purple { background: color-mix(in srgb, #8b5cf6 16%, transparent); }
-.hk-tone-blue { background: color-mix(in srgb, #3b82f6 16%, transparent); }
-.hk-tone-green { background: color-mix(in srgb, #22c55e 16%, transparent); color: #16a34a; }
-.hk-tone-red { background: color-mix(in srgb, #ef4444 14%, transparent); }
-.hk-tone-orange { background: color-mix(in srgb, #f97316 16%, transparent); }
+.hk-tone-purple { background: color-mix(in srgb, var(--purple) 16%, transparent); }
+.hk-tone-blue { background: color-mix(in srgb, var(--cyan) 16%, transparent); }
+.hk-tone-green { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+.hk-tone-red { background: color-mix(in srgb, var(--red) 14%, transparent); }
+.hk-tone-orange { background: color-mix(in srgb, var(--orange) 16%, transparent); }
 .hk-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .hk-text span { color: var(--dim); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; }
 .hk-keys { display: inline-flex; gap: var(--space-1); flex: 0 0 auto; }
-.hk-kbd { min-width: 26px; padding: 2px var(--space-1-5); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: var(--radius-sm); background: var(--bg); font: 600 var(--fs-xs) ui-monospace, Menlo, monospace; text-align: center; }
+.hk-kbd { min-width: 26px; padding: var(--space-0-5) var(--space-1-5); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: var(--radius-sm); background: var(--bg); font: 600 var(--fs-xs) ui-monospace, Menlo, monospace; text-align: center; }
 .hk-fixed { flex: 0 0 auto; color: var(--dim); font-size: var(--fs-xs); min-width: 72px; text-align: right; }
 .hk-more { min-width: 44px; min-height: 44px; }
 .hk-empty { padding: var(--space-3); color: var(--dim); font-size: var(--fs-sm); }
