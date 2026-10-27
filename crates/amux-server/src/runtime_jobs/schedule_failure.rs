@@ -419,6 +419,8 @@ pub async fn on_run_outcome_with(
     source: &str,
     probe: &dyn WorkerProbe,
 ) {
+    // Every recorded fire makes a pass/fail schedule's check due.
+    super::schedule_check::on_fired(store, sched, source).await;
     if let Err(e) = handle(store, sched, outcome, source, probe).await {
         tracing::warn!(schedule = %sched.id(), error = %e, verdict = "schedule_failure_notice_error",
             measured = true, n_considered = 1, "could not process a schedule run outcome for the failure notice");

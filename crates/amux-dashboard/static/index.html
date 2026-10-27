@@ -2797,6 +2797,15 @@
             </div>
             <div class="sx-preview" id="sched-preview" aria-live="polite"></div>
           </div>
+          <label class="sx-check">
+            <input type="checkbox" id="sched-pass-fail" onchange="_sxPassFailUI()">
+            <span><b>Pass/fail</b><span class="ui-help">After each run a check decides whether the work is done. A failing check re-runs the schedule until it passes (3 tries, then again every 12 hours) and tells the owner worker.</span></span>
+          </label>
+          <div class="ui-field" id="sched-pass-check-field" hidden style="display:none">
+            <label class="field-label" for="sched-pass-check">Passes when this command exits 0 <span class="sx-req">*</span></label>
+            <input id="sched-pass-check" class="input sx-mono" type="text" autocomplete="off" spellcheck="false" placeholder="test -s ~/reports/$(date +%F).md">
+            <span class="ui-help">A shell command run on this Mac as the schedule's worker. Exit 0 passes, anything else fails. Keep it a fact you can measure: a file exists, a URL answers 200, a count is zero.</span>
+          </div>
         </section>
         <!-- ADVANCED: only what the server stores AND reads. -->
         <section class="sx-sec" id="sched-sec-advanced" hidden>
@@ -2809,7 +2818,7 @@
             <input type="checkbox" id="sched-worktree">
             <span><b>Worktree isolation</b><span class="ui-help">Create an ephemeral worktree for each run, commit and push the result, then tear it down.</span></span>
           </label>
-          <div class="ui-help sx-unsupported">Retries, timeouts, environment variables and notifications are not settings this scheduler has, so they are not offered here. A shell command reports a failure to its owner worker on a non-zero exit.</div>
+          <div class="ui-help sx-unsupported">Timeouts, environment variables and notifications are not settings this scheduler has, so they are not offered here. A shell command reports a failure to its owner worker on a non-zero exit. To re-run a schedule until its work is done, turn on Pass/fail under Basic.</div>
         </section>
         <!-- TEMPLATES: client-side prefills; nothing is saved until Create. -->
         <section class="sx-sec" id="sched-sec-template" hidden>

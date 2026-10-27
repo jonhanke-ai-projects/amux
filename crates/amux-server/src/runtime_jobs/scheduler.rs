@@ -906,8 +906,9 @@ impl RetryPolicy {
 /// The seven fields whose changes are audited into `schedule_audit`
 /// (mirrors Python's `_AUDIT_FIELDS` exactly, so both servers' trails agree
 /// on what counts as an auditable mutation).
-pub const AUDIT_FIELDS: [&str; 7] = [
+pub const AUDIT_FIELDS: [&str; 8] = [
     "enabled",
+    "pass_check",
     "session",
     "command",
     "schedule_expr",
@@ -1114,7 +1115,7 @@ fn due_schedules(conn: &Connection, now_str: &str) -> rusqlite::Result<Vec<Durab
 /// is still written, and the only behavioural difference is that an unset
 /// defaulted column now gets its default instead of failing the insert.
 pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<()> {
-    const COLS: [&str; 34] = [
+    const COLS: [&str; 37] = [
         "id",
         "title",
         "session",
@@ -1150,6 +1151,10 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         "lock_reason",
         "locked_at",
         "disabled_reason",
+        // 0135 pass/fail (schedule_check.rs).
+        "pass_check",
+        "pass_state",
+        "pass_next_at",
     ];
     let present: Vec<&str> = COLS
         .iter()
@@ -1169,7 +1174,7 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
 
 /// Full-row UPDATE with Python's PATCH column list.
 pub fn update_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<usize> {
-    const COLS: [&str; 29] = [
+    const COLS: [&str; 30] = [
         "title",
         "session",
         "command",
@@ -1201,6 +1206,8 @@ pub fn update_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         "lock_reason",
         "locked_at",
         "disabled_reason",
+        // 0135. The sweep's state columns are written by schedule_check.rs.
+        "pass_check",
     ];
     let sets: Vec<String> = COLS
         .iter()
@@ -1533,7 +1540,7 @@ pub const SHELL_TIMEOUT_S: u64 = 600;
 /// bash: SCHED-783's `bash "$R" | tail -60` kept running after its 600s
 /// timeout (2026-10-22 04:00), finished at 04:15 and quarantined a file under
 /// a run already reported failed.
-fn shell_schedule_command(cmd: &str) -> tokio::process::Command {
+pub(crate) fn shell_schedule_command(cmd: &str) -> tokio::process::Command {
     let mut command = tokio::process::Command::new("/bin/bash");
     // A check piped into tail must report the check's failure.
     command.args(["-o", "pipefail", "-c"]).arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
@@ -3166,6 +3173,11 @@ pub async fn run_scheduler(
                     tokio::time::sleep(retry.delay(attempt)).await;
                 }
             }
+        }
+        // Pass/fail schedules: check the due ones, re-fire the failing ones
+        // (schedule_check.rs). Firing mode only: a re-fire is a fire.
+        if enabled {
+            super::schedule_check::spawn_sweep(store.clone(), deliverer.clone());
         }
     }
 }

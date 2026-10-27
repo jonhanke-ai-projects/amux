@@ -41662,10 +41662,29 @@ function _sxStatus(s, runs) {
   if (!s.enabled) return { key: 'paused', label: (s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused',
     why: s.locked_by ? ('Disabled by the owner and locked: a worker cannot re-enable it. ' + (s.lock_reason || '')) : (s.disabled_reason || '') };
   if (_sxClass(s) === 'unknown') return { key: 'unparsed', label: 'Unparsed' };
+  // Pass/fail (schedule_check.rs): the check, not the delivery, says whether
+  // the work is done, so a failing check outranks a delivered run.
+  const pc = _sxPassCheckState(s);
+  if (pc && pc.status) return pc.status;
   if (_sxIsFail(latest)) return { key: 'failing', label: 'Failing' };
   const nx = _sxNextMs(s);
   if (nx && nx < Date.now() - 5 * 60000) return { key: 'overdue', label: 'Overdue' };
   return { key: 'scheduled', label: 'Scheduled' };
+}
+// What a pass/fail schedule's check says, for the status pill and the detail row.
+function _sxPassCheckState(s) {
+  if (!String(s.pass_check || '').trim()) return null;
+  const why = String(s.pass_detail || '').split('\n')[0];
+  const st = s.pass_state || '';
+  const map = {
+    pass: { word: 'Passing', tone: 'ok' },
+    fail: { word: 'Failing', tone: 'bad', status: { key: 'failing', label: 'Check failing', why: 'The pass check fails: ' + why } },
+    unrunnable: { word: 'Check cannot run', tone: 'bad', status: { key: 'failing', label: 'Check broken', why: 'The pass check itself cannot run (' + why + '). Fix the check; re-running the schedule cannot.' } },
+    reconciling: { word: 'Re-running (attempt ' + (s.pass_attempts || 1) + ')', tone: 'warn', status: { key: 'running', label: 'Reconciling', why: 'The pass check failed, so the schedule was run again: ' + why } },
+    pending: { word: 'Waiting to check the last run', tone: 'dim' },
+    probe: { word: 'Checking now', tone: 'dim' },
+  };
+  return map[st] || { word: 'Not checked yet', tone: 'dim' };
 }
 function _sxStatusPill(st) {
   const why = {
@@ -42367,6 +42386,14 @@ function _sxRenderDetail() {
     if (s.last_delivery) rows.push(['Last delivery', esc(s.last_delivery)]);
     if (s.last_refusal_reason) rows.push(['Last refusal', `<span class="sx-bad">${esc(s.last_refusal_reason)}</span>`]);
     if (s.worktree) rows.push(['Isolation', 'Ephemeral worktree per run']);
+    const pc = _sxPassCheckState(s);
+    if (pc) {
+      const cls = pc.tone === 'bad' ? 'sx-bad' : pc.tone === 'dim' ? 'sx-dim' : '';
+      rows.push(['Pass check', `<code class="sx-expr">${esc(s.pass_check)}</code>`
+        + `<div class="sx-sub"><span class="${cls}">${esc(pc.word)}</span>`
+        + (s.pass_checked_at ? ` <span class="sx-dim">· checked ${_sxFmtWhen(s.pass_checked_at)}</span>` : '') + '</div>'
+        + (s.pass_detail && s.pass_state !== 'pass' ? `<pre class="sx-shell">${esc(s.pass_detail)}</pre>` : '')]);
+    }
     const cmdLabel = s.kind === 'shell' ? 'Shell command' : 'Message sent to the worker';
     const recent = (_sxDetailRuns && _sxDetailRuns.id === id)
       ? (_sxDetailRuns.error ? `<div class="ui-error">Could not load runs: ${esc(_sxDetailRuns.error)}</div>`
@@ -46292,6 +46319,9 @@ function _sxApplyToForm(src, opts) {
   _sxFillSessions(src.session || '', shell);
   setVal('sched-command', src.command || '');
   document.getElementById('sched-worktree').checked = !!src.worktree;
+  document.getElementById('sched-pass-fail').checked = !!String(src.pass_check || '').trim();
+  setVal('sched-pass-check', src.pass_check || '');
+  _sxPassFailUI();
   const pre = _sxPresetFromSchedule(src);
   if (pre.time) setVal('sched-time', pre.time);
   if (pre.n) setVal('sched-every-n', pre.n);
@@ -46479,6 +46509,14 @@ function _sxModalBeacon(event, extra) {
     }).catch(() => {});
   } catch (e) {}
 }
+// Pass/fail: the check field shows only with the switch on, and is required then.
+function _sxPassFailUI() {
+  const on = document.getElementById('sched-pass-fail').checked;
+  const field = document.getElementById('sched-pass-check-field');
+  // .ui-field sets display, which beats the hidden attribute.
+  field.hidden = !on;
+  field.style.display = on ? '' : 'none';
+}
 async function saveSchedModal() {
   document.querySelectorAll('#sched-overlay [aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
   const title = _sxVal('sched-title');
@@ -46493,6 +46531,9 @@ async function saveSchedModal() {
   if (!title) { _sxCreateSection('basic'); return _sxInvalid('sched-title', 'Name is required'); }
   if (!command) { _sxCreateSection('basic'); return _sxInvalid('sched-command', (shell ? 'Command' : 'Message') + ' is required'); }
   if (!shell && !worker) { _sxCreateSection('basic'); return _sxInvalid('sched-session', 'Pick the worker to send the message to'); }
+  const passFail = document.getElementById('sched-pass-fail').checked;
+  const passCheck = _sxVal('sched-pass-check');
+  if (passFail && !passCheck) { _sxCreateSection('basic'); return _sxInvalid('sched-pass-check', 'Pass/fail needs a check: a command that exits 0 when the work is done'); }
   const b = _sxBuildSchedule();
   if (b.error) { _sxCreateSection('basic'); showToast(b.error); return; }
 
@@ -46504,6 +46545,7 @@ async function saveSchedModal() {
   const payload = { title, kind, command, sched_type: b.stype, recurrence: null, run_at: b.run_at,
                     schedule_expr: b.schedExpr || null,
                     worktree, worker,
+                    pass_fail: passFail ? 1 : 0, pass_check: passFail ? passCheck : null,
                     by: 'dashboard' };
   const editId = _schedEditId;
   const gen = _sxModalGen;
@@ -46513,6 +46555,11 @@ async function saveSchedModal() {
   // with the parser's reason and forms that work. It used to surface only as
   // a "400: unparseable schedule_expr" toast (scheduler e2e, 2026-10-11).
   const onRefused = (status, j) => {
+    if (j && (j.code === 'pass_check_required' || j.code === 'pass_check_invalid')) {
+      _sxCreateSection('basic');
+      _sxInvalid('sched-pass-check', j.error);
+      return;
+    }
     if (!j || j.error !== 'unparseable schedule_expr') return;
     const field = ['sched-expr-adv', 'sched-expr'].find(id => _sxVal(id) && _sxVal(id) === j.schedule_expr) || 'sched-expr';
     if (field === 'sched-expr-adv') _sxCreateSection('advanced'); else _sxCreateSection('basic');
