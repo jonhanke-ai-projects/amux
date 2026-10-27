@@ -6579,6 +6579,7 @@ ${BOLD}Interaction:${RESET}
 
 ${BOLD}Coordination:${RESET}
   amux land [--branch main]      Rebase and push HEAD holding a per-repo lock, so lanes queue instead of racing
+  amux claude-accounts [list|add|login|assign]  Run workers on several Claude accounts at once
   amux sync-checkout [--check]   Bring this checkout's branch current with origin when that loses nothing; else name what blocks it
   amux sync-checkout --override  Make this checkout match origin exactly; local work is saved to a restore ref first
   amux memory [add --stdin]      Show, or append to, your worker memory (the Memory tab)
@@ -9037,6 +9038,112 @@ if summary.get("held_by_ci"):
 PY
 }
 
+# Several Claude Code accounts at once (fork issue #1; server: api/claude_accounts.rs).
+# Each account is its own CLAUDE_CONFIG_DIR under ~/.amux/claude-accounts/<name>;
+# a worker or group is bound with AMUX_CLAUDE_ACCOUNT in its scope env.
+cmd_claude_accounts() {
+  local sub="${1:-list}"; shift || true
+  local body resp
+  case "$sub" in
+    list|ls)
+      resp=$(_curl -sk -m 15 "$AMUX_API/api/claude-accounts") || die "could not reach server"
+      if [[ "${1:-}" == "--json" ]]; then echo "$resp"; return 0; fi
+      python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+def use(u):
+    if not u: return "no usage reading yet"
+    l = u.get("latest") or {}
+    def pct(v): return "?" if v is None else "%d%%" % round(v)
+    s = "5h %s · wk %s" % (pct(l.get("five_hour_pct")), pct(l.get("seven_day_pct")))
+    if u.get("seven_day_resets_in_h") is not None: s += " · wk resets in %.0fh" % u["seven_day_resets_in_h"]
+    if u.get("seven_day_hours_to_full") is not None: s += " · full in ~%.0fh at this pace" % u["seven_day_hours_to_full"]
+    if u.get("latest_age_s") is not None: s += " (read %dm ago)" % (u["latest_age_s"] // 60)
+    return s
+first = d.get("spend_first")
+def mark(email): return "  <- spend surplus here first" if first and email == first else ""
+df = d.get("default") or {}
+print("default (~/.claude): %s" % (df.get("email") or ("signed in" if df.get("signed_in") else "signed out")) + mark(df.get("email")))
+print("    " + use(df.get("usage")))
+accts = d.get("accounts") or []
+if not accts:
+    print("no named accounts yet: amux claude-accounts add <name>")
+for a in accts:
+    who = a.get("email") or ("signed in" if a.get("signed_in") else "SIGNED OUT")
+    print("%-16s %s" % (a["name"], who) + mark(a.get("email")))
+    print("    " + use(a.get("usage")))
+    if a.get("groups"): print("    groups:  " + ", ".join(a["groups"]))
+    if a.get("workers"): print("    workers: " + ", ".join(a["workers"]))
+    if not a.get("signed_in"): print("    sign in: amux claude-accounts login " + a["name"])
+if not d.get("measured"): print("usage not measured: %s" % d.get("why_unmeasured"))
+if not d.get("tracking"): print("per-account usage is off: amux claude-accounts track on")
+' <<<"$resp" ;;
+    add)
+      local name="${1:-}"; [[ -n "$name" ]] || die "usage: amux claude-accounts add <name>"
+      body=$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$name")
+      resp=$(_curl -sk -m 15 -X POST -H 'Content-Type: application/json' -d "$body" "$AMUX_API/api/claude-accounts") || die "could not reach server"
+      python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): sys.exit("amux claude-accounts add: " + str(d.get("error")))
+print("account %s at %s" % (d["name"], d["config_dir"]))
+print("signed in as " + d["email"] if d.get("signed_in") else "next: amux claude-accounts login " + d["name"])
+' <<<"$resp" ;;
+    login)
+      local name="${1:-}"; [[ "$name" =~ ^[a-z0-9_-]{1,40}$ ]] || die "usage: amux claude-accounts login <name>"
+      local dir="${AMUX_HOME:-$HOME/.amux}/claude-accounts/$name"
+      [[ -d "$dir" ]] || die "no account $name: amux claude-accounts add $name"
+      echo "Signing in account '$name' (CLAUDE_CONFIG_DIR=$dir). Use that account's browser profile."
+      CLAUDE_CONFIG_DIR="$dir" claude auth login "${@:2}" ;;
+    assign|use|move)
+      local target="" account="" level="worker" relaunch=true
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --group) level="group"; shift ;;
+          --no-relaunch) relaunch=false; shift ;;
+          --default) account=""; shift ;;
+          -*) die "amux claude-accounts assign: unknown flag $1" ;;
+          *) if [[ -z "$target" ]]; then target="$1"; else account="$1"; fi; shift ;;
+        esac
+      done
+      [[ -n "$target" ]] || die "usage: amux claude-accounts assign <worker> <account>|--default [--no-relaunch]
+       amux claude-accounts assign --group <group> <account>|--default"
+      body=$(python3 -c 'import json,sys; print(json.dumps({"target": sys.argv[1], "level": sys.argv[2], "account": sys.argv[3], "relaunch": sys.argv[4] == "true"}))' "$target" "$level" "$account" "$relaunch")
+      resp=$(_curl -sk -m 300 -X POST -H 'Content-Type: application/json' -d "$body" "$AMUX_API/api/claude-accounts/assign") || die "could not reach server"
+      python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): sys.exit("amux claude-accounts assign: " + str(d.get("error")))
+print("%s %s -> %s" % (d["level"], d["target"], d.get("account") or "default login"))
+for r in d.get("relaunched") or []:
+    print("  %s: %s" % (r["worker"], "relaunched on the same conversation" if r.get("relaunched") else r.get("why") or r.get("detail")))
+' <<<"$resp" ;;
+    track)
+      local on; case "${1:-}" in on) on=true ;; off) on=false ;; *) die "usage: amux claude-accounts track on|off" ;; esac
+      resp=$(_curl -sk -m 15 -X POST -H 'Content-Type: application/json' -d "{\"on\": $on}" "$AMUX_API/api/claude-accounts/track") || die "could not reach server"
+      python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): sys.exit("amux claude-accounts track: " + str(d.get("error")))
+print("per-account usage tracking: " + ("on" if d["tracking"] else "off"))
+print("your status line: " + (d.get("your_status_line") or "(none)"))
+' <<<"$resp" ;;
+    -h|--help|help)
+      cat <<'USAGE'
+amux claude-accounts list [--json]          Accounts, who is signed in, what is bound to each
+amux claude-accounts add <name>             Create an account (its own CLAUDE_CONFIG_DIR)
+amux claude-accounts login <name>           Sign that account in (opens the browser)
+amux claude-accounts assign <worker> <name> Move a worker to an account; it relaunches on the same conversation
+amux claude-accounts assign --group <group> <name>   Bind a whole group/project
+amux claude-accounts assign <worker> --default       Back to the default ~/.claude login
+amux claude-accounts track on|off           Record each account's 5h/weekly usage from Claude Code's
+                                            status line (your own status line keeps running)
+USAGE
+      ;;
+    *) die "amux claude-accounts: unknown subcommand $sub (try --help)" ;;
+  esac
+}
+
 cmd_sync_checkout() {
   local remote=origin branch="" check=0 override=0
   while [ $# -gt 0 ]; do
@@ -11149,6 +11256,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     land)             shift; cmd_land "$@" ;;
     ci)               shift; cmd_ci "$@" ;;
     sync-checkout)    shift; cmd_sync_checkout "$@" ;;
+    claude-accounts|ca) shift; cmd_claude_accounts "$@" ;;
     publish)          shift; cmd_publish "$@" ;;
     contribute)       shift; cmd_contribute "$@" ;;
     github)           shift; cmd_github "$@" ;;

@@ -156,6 +156,7 @@ pub(crate) mod turn_end;
 pub mod upload;
 pub mod usage;
 pub mod usage_accounts;
+pub mod claude_accounts;
 pub mod verify;
 pub mod why;
 pub mod worker_create;
@@ -265,6 +266,13 @@ pub fn router_with_connector_transport(
         .nest("/api/metrics", metrics::routes())
         .nest("/api/reclaim", reclaim::routes())
         .nest("/api/usage", usage::routes())
+        // Fork #1: several Claude accounts at once (claude_accounts.rs).
+        .route(
+            "/api/claude-accounts",
+            axum::routing::get(claude_accounts::get_accounts).post(claude_accounts::post_account),
+        )
+        .route("/api/claude-accounts/assign", axum::routing::post(claude_accounts::post_assign))
+        .route("/api/claude-accounts/track", axum::routing::post(claude_accounts::post_track))
         .nest("/api/review", review::routes())
         .nest("/api/channels", channels::routes())
         .nest("/api/alert", alerts::routes())
