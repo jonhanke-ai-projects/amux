@@ -24,6 +24,8 @@ Running Claude Code workers on several Claude accounts at once, and moving worke
 
 - Issue: [#1](https://github.com/jonhanke-ai-projects/amux/issues/1)
 - PR: [#2](https://github.com/jonhanke-ai-projects/amux/pull/2)
+- Terms-of-service analysis (two accounts, one person): [docs/fork/claude-accounts-terms.md](docs/fork/claude-accounts-terms.md)
+- Status 2026-10-27: PR #2 is a draft, not yet compiled (the laptop was overloaded). Next step: `cargo test -p amux-server --lib claude_accounts`, then a live test with both accounts.
 
 ## Workflow differences from upstream
 
