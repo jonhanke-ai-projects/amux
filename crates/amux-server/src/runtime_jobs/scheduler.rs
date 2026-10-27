@@ -366,6 +366,10 @@ pub struct ExprParseError(pub String);
 /// - `monthly on N at HH:MM` (N in 1..=28, like Python — day 29-31 is
 ///   rejected rather than silently drifting on short months)
 /// - 5-field cron `MIN HOUR DOM MON DOW` (standard DOW: 0 or 7 = Sunday)
+/// - `daily at sunset`, `every saturday at sunset+50m`, `weekly on friday at
+///   sunset-18m`, `every day at sunrise`, and `after shabbos` (Saturday,
+///   sunset + AMUX_SHABBAT_END_MIN, 50 by default), at AMUX_LATITUDE /
+///   AMUX_LONGITUDE -> [`ScheduleExpr::Sun`]
 ///
 /// `Cron` boxes the crate schedule: it is ~250 bytes against everyone
 /// else's 16, and this enum is cloned into write closures.
@@ -398,6 +402,56 @@ pub enum ScheduleExpr {
     /// 5-field cron, held as the `cron` crate's schedule (seconds pinned to
     /// 0, DOW translated — see [`translate_dow`]).
     Cron(Box<cron::Schedule>),
+    /// At sunset or sunrise, plus an offset, every day or on one weekday
+    /// (`daily at sunset`, `every saturday at sunset+50m`, `after shabbos`).
+    /// Where: AMUX_LATITUDE / AMUX_LONGITUDE, captured when parsed.
+    Sun {
+        weekday: Option<Weekday>,
+        sunset: bool,
+        offset_min: i64,
+        lat: f64,
+        lon: f64,
+    },
+}
+
+/// The server's place on Earth, for sun-based schedules.
+pub fn sun_location() -> Option<(f64, f64)> {
+    let get = |k: &str| std::env::var(k).ok().and_then(|v| v.trim().parse::<f64>().ok());
+    match (get("AMUX_LATITUDE"), get("AMUX_LONGITUDE")) {
+        (Some(la), Some(lo)) if (-90.0..=90.0).contains(&la) && (-180.0..=180.0).contains(&lo) => Some((la, lo)),
+        _ => None,
+    }
+}
+
+/// Minutes after sunset that "after Shabbos" means (nightfall). 50 by
+/// default; communities use 42 to 72, so AMUX_SHABBAT_END_MIN sets it.
+pub fn shabbat_end_offset_min() -> i64 {
+    std::env::var("AMUX_SHABBAT_END_MIN").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(50)
+}
+
+/// Sunset (or sunrise) on `date` at `lat`, `lon` (east positive), in UTC, by
+/// the sunrise equation (accurate to a minute or two away from the poles).
+/// None when the sun does not set or rise that day.
+pub fn sun_event_utc(date: NaiveDate, lat: f64, lon: f64, sunset: bool) -> Option<DateTime<chrono::Utc>> {
+    let rad = std::f64::consts::PI / 180.0;
+    let noon = date.and_hms_opt(12, 0, 0)?.and_utc().timestamp() as f64;
+    let jdate = noon / 86400.0 + 2440587.5;
+    // jdate is already at noon, so the day number rounds (ceil gives tomorrow).
+    let n = (jdate - 2451545.0 + 0.0008).round();
+    let jstar = n - lon / 360.0;
+    let m = (357.5291 + 0.98560028 * jstar).rem_euclid(360.0);
+    let c = 1.9148 * (m * rad).sin() + 0.02 * (2.0 * m * rad).sin() + 0.0003 * (3.0 * m * rad).sin();
+    let l = (m + c + 180.0 + 102.9372).rem_euclid(360.0);
+    let jtransit = 2451545.0 + jstar + 0.0053 * (m * rad).sin() - 0.0069 * (2.0 * l * rad).sin();
+    let decl = ((l * rad).sin() * (23.4397 * rad).sin()).asin();
+    let cos_w = ((-0.833 * rad).sin() - (lat * rad).sin() * decl.sin()) / ((lat * rad).cos() * decl.cos());
+    if !(-1.0..=1.0).contains(&cos_w) {
+        return None;
+    }
+    let w = cos_w.acos() / rad;
+    let j = if sunset { jtransit + w / 360.0 } else { jtransit - w / 360.0 };
+    let unix = (j - 2440587.5) * 86400.0;
+    DateTime::from_timestamp(unix.round() as i64, 0)
 }
 
 /// How many times a day this expression fires (AMUX-3546).
@@ -431,6 +485,7 @@ pub fn fires_per_day(expr: &ScheduleExpr) -> Option<f64> {
         // monthly schedule as firing 1.4% more often than it does, which is
         // invisible and wrong rather than approximate and honest.
         ScheduleExpr::Monthly { .. } => Some(12.0 / 365.2425),
+        ScheduleExpr::Sun { weekday, .. } => Some(if weekday.is_some() { 1.0 / 7.0 } else { 1.0 }),
         // COUNTED, not derived from the field pattern. A cron expression's
         // firing rate is not readable from its shape without reimplementing
         // cron, and the `cron` crate already owns that: walk the next 24 hours
@@ -465,6 +520,11 @@ static RE_WEEKDAY_AT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^every\s+weekday\s+at\s+(.+)$").unwrap());
 static RE_EVERY_DAY_AT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^every\s+(\w+)\s+at\s+(.+)$").unwrap());
+static RE_SUN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:(?:daily|every\s+day)|(?:every|weekly\s+on)\s+(\w+))\s+at\s+(sunset|sundown|sunrise)\s*(?:([+-])\s*(\d+)\s*(m|min|mins|minutes?|h|hrs?|hours?)?)?$").unwrap()
+});
+static RE_SHABBOS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:(?:every\s+week|weekly)\s+)?after\s+(?:shabbos|shabbat|shabbes|sabbath|havdalah)$").unwrap());
 static RE_DAILY_AT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^daily\s+at\s+(.+)$").unwrap());
 static RE_WEEKLY_ON: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^weekly\s+on\s+(\w+)\s+at\s+(.+)$").unwrap());
@@ -606,6 +666,38 @@ impl ScheduleExpr {
             return Ok(ScheduleExpr::Interval { every });
         }
 
+        // Sun-based: "after shabbos", "daily at sunset", "every saturday at
+        // sunset+50m" (NetSuite worker, 2026-10-26: the scheduler could not say
+        // "after Shabbos", which moves with the season). Needs a location.
+        let shabbos = RE_SHABBOS.is_match(&s);
+        if shabbos || RE_SUN.is_match(&s) {
+            let Some((lat, lon)) = sun_location() else {
+                return Err(ExprParseError(format!(
+                    "{orig} (sunset depends on where you are: set AMUX_LATITUDE and AMUX_LONGITUDE in ~/.amux/server.env)"
+                )));
+            };
+            if shabbos {
+                return Ok(ScheduleExpr::Sun { weekday: Some(Weekday::Sat), sunset: true, offset_min: shabbat_end_offset_min(), lat, lon });
+            }
+            let c = RE_SUN.captures(&s).ok_or_else(fail)?;
+            let weekday = match c.get(1) {
+                Some(d) => Some(day_from_name(d.as_str()).ok_or_else(fail)?),
+                None => None,
+            };
+            let sunset = &c[2] != "sunrise";
+            let mut offset_min: i64 = c.get(4).map(|n| n.as_str().parse().unwrap_or(0)).unwrap_or(0);
+            if c.get(5).is_some_and(|u| u.as_str().starts_with('h')) {
+                offset_min *= 60;
+            }
+            if c.get(3).is_some_and(|sign| sign.as_str() == "-") {
+                offset_min = -offset_min;
+            }
+            if offset_min.abs() > 12 * 60 {
+                return Err(fail());
+            }
+            return Ok(ScheduleExpr::Sun { weekday, sunset, offset_min, lat, lon });
+        }
+
         // every morning / evening / night (Python aliases: 9am / 18:00)
         if let Some(c) = RE_EVERY_WORD.captures(&s) {
             let hour = if &c[1] == "morning" { 9 } else { 18 };
@@ -718,6 +810,24 @@ impl ScheduleExpr {
                 None
             }
             ScheduleExpr::Cron(sched) => sched.after(&after).next(),
+            ScheduleExpr::Sun { weekday, sunset, offset_min, lat, lon } => {
+                // From the day before: a negative offset can put a fire on
+                // the previous evening's wall-clock date.
+                let mut d = after.date_naive().pred_opt()?;
+                for _ in 0..=372 {
+                    if weekday.is_none_or(|w| d.weekday() == w) {
+                        if let Some(t) = sun_event_utc(d, *lat, *lon, *sunset) {
+                            let t = t.with_timezone(&Local) + ChronoDuration::minutes(*offset_min);
+                            let t = t.with_second(0).unwrap_or(t);
+                            if t > after {
+                                return Some(t);
+                            }
+                        }
+                    }
+                    d = d.succ_opt()?;
+                }
+                None
+            }
         }
     }
 }
@@ -5912,5 +6022,62 @@ mod shell_in_flight_tests {
             "a run older than the cap no longer holds adoption");
         drop(g);
         assert!(!shell_runs_in_flight(hour).contains(&"SCHED-test-inflight".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod sun_schedule_tests {
+    use super::*;
+
+    fn near(t: DateTime<chrono::Utc>, want: &str, tol_min: i64) -> bool {
+        let w = DateTime::parse_from_rfc3339(want).unwrap().with_timezone(&chrono::Utc);
+        (t - w).num_minutes().abs() <= tol_min
+    }
+
+    /// New York's published sunsets: 20:31 EDT on the June solstice, 16:32
+    /// EST on the December one; sunrise 05:25 EDT in June.
+    #[test]
+    fn sunset_and_sunrise_match_published_times() {
+        let (lat, lon) = (40.7128, -74.0060);
+        let jun = NaiveDate::from_ymd_opt(2026, 6, 21).unwrap();
+        let dec = NaiveDate::from_ymd_opt(2026, 12, 21).unwrap();
+        assert!(near(sun_event_utc(jun, lat, lon, true).unwrap(), "2026-06-22T00:31:00Z", 3));
+        assert!(near(sun_event_utc(dec, lat, lon, true).unwrap(), "2026-12-21T21:32:00Z", 3));
+        assert!(near(sun_event_utc(jun, lat, lon, false).unwrap(), "2026-06-21T09:25:00Z", 3));
+        // No sunset at the pole in June.
+        assert!(sun_event_utc(jun, 89.0, 0.0, true).is_none());
+    }
+
+    #[test]
+    fn after_shabbos_is_saturday_night_and_the_forms_parse() {
+        // SAFETY: only this test reads these variables.
+        unsafe {
+            std::env::set_var("AMUX_LATITUDE", "40.7128");
+            std::env::set_var("AMUX_LONGITUDE", "-74.0060");
+        }
+        let e = ScheduleExpr::parse("after Shabbos").unwrap();
+        let ScheduleExpr::Sun { weekday, sunset, offset_min, .. } = e.clone() else { panic!("{e:?}") };
+        assert_eq!((weekday, sunset, offset_min), (Some(Weekday::Sat), true, shabbat_end_offset_min()));
+        let from = Local.from_local_datetime(&NaiveDate::from_ymd_opt(2026, 10, 26).unwrap().and_hms_opt(9, 0, 0).unwrap()).unwrap();
+        let next = e.next_run_after(from).unwrap();
+        assert_eq!(next.weekday(), Weekday::Sat);
+        assert!(next.with_timezone(&chrono_tz_ny()).hour() >= 18, "Saturday night: {next}");
+        for ok in ["daily at sunset", "every saturday at sunset+50m", "weekly on friday at sunset-18m", "every day at sunrise", "every sunday at sundown + 1h"] {
+            assert!(matches!(ScheduleExpr::parse(ok), Ok(ScheduleExpr::Sun { .. })), "{ok}");
+        }
+        let ScheduleExpr::Sun { offset_min, .. } = ScheduleExpr::parse("weekly on friday at sunset-18m").unwrap() else { unreachable!() };
+        assert_eq!(offset_min, -18);
+        assert!(ScheduleExpr::parse("daily at sunset+13h").is_err());
+        assert_eq!(fires_per_day(&ScheduleExpr::parse("after shabbat").unwrap()), Some(1.0 / 7.0));
+        unsafe {
+            std::env::remove_var("AMUX_LATITUDE");
+            std::env::remove_var("AMUX_LONGITUDE");
+        }
+        let e = ScheduleExpr::parse("after shabbos").unwrap_err();
+        assert!(e.0.contains("AMUX_LATITUDE"), "the refusal says what to set: {e}");
+    }
+
+    fn chrono_tz_ny() -> chrono::FixedOffset {
+        chrono::FixedOffset::west_opt(4 * 3600).unwrap()
     }
 }
