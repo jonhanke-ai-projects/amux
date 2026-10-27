@@ -2861,6 +2861,20 @@ pub const LARGE_READ_GUARD: InstalledScript = InstalledScript {
     noun: "large-read router",
 };
 
+/// The boundary guard (payments, email, credentials, resources, the subagent
+/// cap). Mac disk RCAs 20261025-190143, 20261026-140441 and 20261026-235522:
+/// its fix letting the per-worker disk budget measure a big scratch
+/// (f47ddbe29) sat uninstalled for two days. The installed guard kept timing
+/// out on mxp-gs12's scratch, so the 100 GB budget never applied while that
+/// scratch passed 800 GB and the disk filled, and /api/boundaries'
+/// `guard_matches_build: false` was a field nobody's health page showed.
+pub const BOUNDARY_GUARD: InstalledScript = InstalledScript {
+    id: "hooks.boundary_guard_matches_committed",
+    runtime_path: "~/.amux/hooks/boundary-guard.py",
+    committed_path: "scripts/hooks/boundary-guard.py",
+    noun: "boundary guard",
+};
+
 /// AF-132: the committed side must be read at CHECK time, not baked at build
 /// time. These scripts are not compiled into the binary's deploy unit — the
 /// builder rebuilds only on crates//Cargo.* commits — so a script-only commit
@@ -2925,8 +2939,9 @@ pub fn installed_script_matches_committed(
         } else {
             format!(
                 "runtime {} sha {} DRIFTED from {} at HEAD ({}) and matches the worktree \
-                 copy of neither — the fleet is running an unreviewed hand-edit. Reinstall \
-                 from source (install.sh) or fold the edit back into the committed copy.",
+                 copy of neither: an older install that missed later fixes, or an unreviewed \
+                 hand-edit. Reinstall from source (./install.sh, or scripts/install-hooks.sh \
+                 for the hooks alone) or fold the edit back into the committed copy.",
                 spec.noun,
                 &runtime_sha[..12],
                 spec.committed_path,
@@ -8381,6 +8396,15 @@ mod negative_controls {
             read_guard[0].invariant_id,
             "hooks.large_read_guard_matches_committed"
         );
+        let boundary = installed_script_matches_committed(
+            &BOUNDARY_GUARD,
+            committed,
+            Some(committed),
+            Some(committed),
+            Ok("# an older guard\n".into()),
+        );
+        assert_eq!(boundary[0].invariant_id, "hooks.boundary_guard_matches_committed");
+        assert_ne!(boundary[0].status, Status::Pass, "an older installed boundary guard is not a pass");
         // ...and the prose must follow the spec, not stay hardcoded to the guard.
         let rep_drift = installed_script_matches_committed(
             &REPORT_HOOK,

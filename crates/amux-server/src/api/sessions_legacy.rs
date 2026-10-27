@@ -3510,24 +3510,96 @@ impl FleetSignals {
 ///
 /// TTL-cached: FleetSignals::load runs per /api/sessions request AND the
 /// stuck-composer sweep reads the same map; the underlying answer cannot
-/// change faster than agents write, so 10s of staleness is free.
+/// change faster than agents write, so [`SUBAGENT_SCAN_TTL_S`] of staleness
+/// is free.
+///
+/// ONE SCAN AT A TIME (Mac hog RCA 20261026-235522). The walk covers every
+/// conversation under ~/.claude/projects: 8,217 project dirs and 12,747
+/// conversations on 2026-10-27, and under load one walk held a worker thread
+/// for the whole 5s sample. With a 10s TTL and no guard, every /api/sessions
+/// request that arrived after the cache expired started its own walk while
+/// the first was still running (1,446 calls an hour), and the server ran at
+/// 325% CPU on two cleanup ticks in a row. A caller that finds a scan in
+/// flight now returns the previous answer; [`subagent_cache_step`] decides.
 pub(crate) fn scan_subagent_activity() -> BTreeMap<String, f64> {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
     type Cache = (f64, BTreeMap<String, f64>);
     static C: OnceLock<Mutex<Cache>> = OnceLock::new();
+    static SCANNING: AtomicBool = AtomicBool::new(false);
     let now = chrono::Utc::now().timestamp() as f64;
     let cache = C.get_or_init(|| Mutex::new((0.0, BTreeMap::new())));
-    if let Ok(g) = cache.lock() {
-        if now - g.0 < 10.0 {
-            return g.1.clone();
+    let cached = cache.lock().map(|g| (g.0, g.1.clone())).unwrap_or((0.0, BTreeMap::new()));
+    match subagent_cache_step(now, cached.0, SCANNING.load(Ordering::SeqCst)) {
+        SubagentCacheStep::Fresh => return cached.1,
+        SubagentCacheStep::InFlight => {
+            SUBAGENT_SCAN_SKIPPED.fetch_add(1, Ordering::Relaxed);
+            return cached.1;
+        }
+        SubagentCacheStep::Scan => {}
+    }
+    // Lost the race to another caller between the load and here: same answer.
+    if SCANNING.swap(true, Ordering::SeqCst) {
+        SUBAGENT_SCAN_SKIPPED.fetch_add(1, Ordering::Relaxed);
+        return cached.1;
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            SCANNING.store(false, Ordering::SeqCst);
         }
     }
+    let _done = Done;
+    let started = std::time::Instant::now();
+    let (out, n_conv) = scan_subagent_activity_walk(now);
+    let ms = started.elapsed().as_millis();
+    if ms >= 1000 {
+        tracing::warn!(elapsed_ms = ms as u64, conversations = n_conv,
+            skipped_while_running = SUBAGENT_SCAN_SKIPPED.load(Ordering::Relaxed),
+            verdict = "subagent_scan_slow", measured = true, n_considered = n_conv,
+            "subagent activity scan was slow; callers in the meantime got the previous answer");
+    }
+    if let Ok(mut g) = cache.lock() {
+        *g = (now, out.clone());
+    }
+    out
+}
+
+/// How long a subagent activity scan is reused (was 10s).
+pub(crate) const SUBAGENT_SCAN_TTL_S: f64 = 30.0;
+/// Callers that got the previous answer because a scan was running.
+pub(crate) static SUBAGENT_SCAN_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SubagentCacheStep {
+    /// The cached answer is young enough.
+    Fresh,
+    /// Stale, but another caller is already scanning: reuse the old answer.
+    InFlight,
+    /// Stale and nobody is scanning: this caller scans.
+    Scan,
+}
+
+pub(crate) fn subagent_cache_step(now: f64, cached_at: f64, scanning: bool) -> SubagentCacheStep {
+    if now - cached_at < SUBAGENT_SCAN_TTL_S {
+        SubagentCacheStep::Fresh
+    } else if scanning {
+        SubagentCacheStep::InFlight
+    } else {
+        SubagentCacheStep::Scan
+    }
+}
+
+/// The walk itself: lane -> newest subagent mtime, and how many
+/// conversations it looked at.
+fn scan_subagent_activity_walk(now: f64) -> (BTreeMap<String, f64>, usize) {
     let projects = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
         .join(".claude/projects");
     let mut out: BTreeMap<String, f64> = BTreeMap::new();
+    let mut n_conv = 0usize;
     let claims = crate::api::session_verbs::conversation_claims();
     let Ok(projs) = std::fs::read_dir(&projects) else {
-        return out;
+        return (out, 0);
     };
     for proj in projs.flatten() {
         let Ok(entries) = std::fs::read_dir(proj.path()) else {
@@ -3538,6 +3610,7 @@ pub(crate) fn scan_subagent_activity() -> BTreeMap<String, f64> {
             if conv.extension().and_then(|x| x.to_str()) != Some("jsonl") {
                 continue;
             }
+            n_conv += 1;
             let subs = conv.with_extension("").join("subagents");
             let Ok(files) = std::fs::read_dir(&subs) else {
                 continue;
@@ -3569,10 +3642,7 @@ pub(crate) fn scan_subagent_activity() -> BTreeMap<String, f64> {
             }
         }
     }
-    if let Ok(mut g) = cache.lock() {
-        *g = (now, out.clone());
-    }
-    out
+    (out, n_conv)
 }
 
 /// The set of sessions currently `active` — the board's `stale` flag reads
@@ -11350,5 +11420,25 @@ mod config_overlay_tests {
         assert_eq!(v[0]["tags"], json!(["x"]));
         assert_eq!(v[0]["desc"], json!("d"));
         assert_eq!(v[1]["tags"], json!(["x"]));
+    }
+}
+
+#[cfg(test)]
+mod subagent_scan_cache_tests {
+    use super::{subagent_cache_step, SubagentCacheStep, SUBAGENT_SCAN_TTL_S};
+
+    /// Mac hog RCA 20261026-235522: callers that find the cache stale while a
+    /// scan is already running reuse the old answer instead of starting a
+    /// second walk of ~/.claude/projects.
+    #[test]
+    fn a_stale_cache_with_a_scan_in_flight_is_reused_not_rescanned() {
+        let t = 1_000_000.0;
+        assert_eq!(subagent_cache_step(t, t - 1.0, false), SubagentCacheStep::Fresh);
+        assert_eq!(subagent_cache_step(t, t - 1.0, true), SubagentCacheStep::Fresh);
+        assert_eq!(subagent_cache_step(t, t - SUBAGENT_SCAN_TTL_S - 1.0, true), SubagentCacheStep::InFlight);
+        assert_eq!(subagent_cache_step(t, t - SUBAGENT_SCAN_TTL_S - 1.0, false), SubagentCacheStep::Scan);
+        assert_eq!(subagent_cache_step(t, 0.0, false), SubagentCacheStep::Scan, "an empty cache scans");
+        // The walk takes seconds under load; a 10s TTL kept it running.
+        const { assert!(SUBAGENT_SCAN_TTL_S >= 30.0) };
     }
 }

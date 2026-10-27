@@ -470,6 +470,19 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             wt.as_deref(),
             runtime,
         ));
+        // The boundary guard, same rule (Mac disk RCA 20261026-235522: an
+        // installed-behind guard left the disk budget unmeasured for days).
+        let runtime = std::fs::read_to_string(amux_home.join("hooks/boundary-guard.py"))
+            .map_err(|e| e.to_string());
+        let head = read_head(checks::BOUNDARY_GUARD.committed_path);
+        let wt = read_worktree(checks::BOUNDARY_GUARD.committed_path);
+        out.extend(checks::installed_script_matches_committed(
+            &checks::BOUNDARY_GUARD,
+            crate::api::boundaries::DEFAULT_GUARD,
+            head.as_deref(),
+            wt.as_deref(),
+            runtime,
+        ));
     }
 
     tm.mark(&out, "6. shared-checkout git guard");
