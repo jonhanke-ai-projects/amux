@@ -2230,6 +2230,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/email/attachment",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/email/log",
         methods: &["GET"],
     },
@@ -2521,6 +2525,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/browser/keepalive",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/browser/hold",
         methods: &["POST"],
     },
     RouteEntry {
