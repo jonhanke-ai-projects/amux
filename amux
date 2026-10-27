@@ -5971,7 +5971,11 @@ amux browser route state
 amux browser route shot
 amux browser route action '{"action":"click","selector":"#observed-control"}'
 amux browser route action '{"action":"type","text":"exact text"}'
-Click the observed input before typing. Read back values before submitting.
+amux browser route action '{"action":"input","selector":"#email","text":"exact text"}'
+Click the observed input before typing. type inserts at the caret, so a
+pre-filled field keeps its text: input (or type with "replace":true) replaces
+it. Read back values before submitting. amux browser actions lists every action;
+eval runs JavaScript. amux browser hold <profile> --for 2h keeps it open.
 Native refs and CDP indices require a fresh state; CUA uses screenshot x,y.
 Verify the intended page effect after each action; ok means dispatch only.
 If the session cannot accomplish the goal:
@@ -6102,7 +6106,17 @@ amux browser delete <name>        : delete a saved profile
   their own and the two are visually identical.
 EOF
       ;;
-    create|new|start|stop|status|delete|rm)
+    actions|help-actions)
+      # Every action `amux browser route action` and /api/browser/action take
+      # (2026-10-26: "unknown action: help" listed nothing).
+      _curl -sk -m 20 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" \
+        -d '{"action":"help"}' "$AMUX_API/api/browser/action" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+for a in d.get("actions",[]): print("  %-9s %s" % (a["action"], a["takes"]))
+print("  " + d.get("eval_contract",""))'
+      return $?
+      ;;
+    create|new|start|stop|status|delete|rm|hold|keepalive)
       # Profile lifecycle from the CLI (Ethan, 2026-10-02: "store profiles").
       # Thin wrappers over /api/browser/*: the server owns the logic, and every
       # call carries X-Amux-Session so a stop is attributed (an unattributed
@@ -6123,6 +6137,28 @@ EOF
           [[ -n "${1:-}" ]] && body=$(P="$1" python3 -c 'import json,os;print(json.dumps({"profile":os.environ["P"]}))') ;;
         status)
           method="GET"; path="status"; body="" ;;
+        hold)
+          # Keep a browser open for a long task: no idle or age limit closes it
+          # until the hold ends (capped at 24h). `--for 0` releases it.
+          local hp="" hfor=""
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --for) hfor="${2:?--for needs a duration like 2h, 90m or 0}"; shift 2 ;;
+              --release) hfor="0"; shift ;;
+              -*) die "unknown hold option: $1" ;;
+              *) hp="$1"; shift ;;
+            esac
+          done
+          [[ -n "$hfor" ]] || die "usage: amux browser hold [<profile>] --for 2h   (--for 0 or --release ends it)"
+          path="hold"
+          body=$(P="$hp" F="$hfor" python3 -c 'import json,os,re,sys
+f=os.environ["F"].strip().lower()
+m=re.fullmatch(r"(\d+(?:\.\d+)?)\s*(s|m|h|d)?", f)
+if not m: sys.exit("hold: --for takes a duration like 2h, 90m, 3600 or 0")
+n=float(m.group(1))*{"s":1,"m":60,"h":3600,"d":86400}[m.group(2) or "s"]
+print(json.dumps({"profile":os.environ["P"],"for_s":int(n)}))') || die "hold: --for takes a duration like 2h, 90m, 3600 or 0" ;;
+        keepalive)
+          path="keepalive"; body='{}' ;;
         delete|rm)
           [[ -n "${1:-}" ]] || die "usage: amux browser delete <name>"
           method="DELETE"; path="profile/$(P="$1" python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["P"],safe=""))')"; body="" ;;
@@ -6152,7 +6188,7 @@ if not code.startswith("2") or d.get("ok") is False or d.get("error"):
 print(json.dumps(d, indent=2)[:2000])
 PYEOF
       ;;
-    *) die "amux browser: unknown subcommand '$sub' (try: profiles, identify, create, start, stop, status, delete)" ;;
+    *) die "amux browser: unknown subcommand '$sub' (try: profiles, identify, create, start, stop, status, hold, keepalive, actions, delete, route)" ;;
   esac
 }
 

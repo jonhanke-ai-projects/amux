@@ -456,6 +456,32 @@ async fn request(
             }
         }
     }
+    // One spelling of each action for every backend: `evaluate` is eval,
+    // `fill` is input, and `help` lists them (the same table as the native
+    // /api/browser/action).
+    if r.verb == "action" {
+        let canon = super::browser::normalize_action_body(&mut r.body);
+        if canon.is_empty() || canon == "help" {
+            return Json(super::browser::actions_help(&canon)).into_response();
+        }
+    }
+    // EVERY ROUTE VERB IS USE, `state` and `keepalive` included. The idle
+    // reaper read only amux's native verbs and the receipt's mtime, so a worker
+    // keeping its browser alive by polling `route state` every 2 minutes lost
+    // it after 5 (NetSuite, 2026-10-26). Touched before the verb runs: an
+    // attempt is use even when the verb then fails.
+    if r.verb != "stop" {
+        crate::integrations::browser::touch_verb_for_session(&r.session);
+        for p in ["profile", "selected_profile"] {
+            if let Some(p) = receipt.get(p).and_then(Value::as_str) {
+                crate::integrations::browser::touch_verb(p);
+            }
+        }
+        let path = root().join("sessions").join(format!("{}.json", &receipt_key[..24]));
+        if let Ok(f) = std::fs::File::options().append(true).open(&path) {
+            let _ = f.set_modified(std::time::SystemTime::now());
+        }
+    }
     if pending {
         tracing::info!(session=%r.session, measured=true, n_considered=1,
             verdict="browser_route_request_pending", "route status observed during an in-flight request");

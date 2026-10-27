@@ -1121,6 +1121,60 @@ fn persist_running(
     write_running_file(home, &map);
 }
 
+/// On a Linux host run by systemd, Chrome starts in its OWN scope unit, so
+/// nothing done to the server's unit reaches it. A process group (below) is
+/// not enough there: systemd stops a unit by its cgroup, and an amux.service
+/// installed before KillMode=process (INIT-1, 2026-08-31) SIGKILLs everything
+/// in it on every restart. That is the "found dead on adopt" a NetSuite worker
+/// hit twice on 2026-10-26, losing its login each time. `systemd-run --scope`
+/// execs Chrome in place, so the pid recorded is still Chrome's. Probed once;
+/// `AMUX_BROWSER_SYSTEMD_SCOPE=0` turns it off. Off a systemd host: None.
+async fn chrome_systemd_scope() -> Option<&'static [&'static str]> {
+    static SCOPE: tokio::sync::OnceCell<Option<&'static [&'static str]>> = tokio::sync::OnceCell::const_new();
+    *SCOPE
+        .get_or_init(|| async {
+            if !cfg!(target_os = "linux") || !Path::new("/run/systemd/system").exists() {
+                return None;
+            }
+            if std::env::var("AMUX_BROWSER_SYSTEMD_SCOPE").is_ok_and(|v| v == "0") {
+                tracing::info!(verdict = "browser_scope_off", reason = "AMUX_BROWSER_SYSTEMD_SCOPE=0", "browser: Chrome starts in the server's own cgroup");
+                return None;
+            }
+            // SAFETY: getuid has no preconditions and cannot fail.
+            let root = unsafe { libc::getuid() } == 0;
+            let prefix: &'static [&'static str] = if root {
+                &["systemd-run", "--scope", "--quiet", "--collect"]
+            } else {
+                &["systemd-run", "--user", "--scope", "--quiet", "--collect"]
+            };
+            let probe = tokio::process::Command::new(prefix[0])
+                .args(&prefix[1..])
+                .arg("true")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .output();
+            match tokio::time::timeout(Duration::from_secs(5), probe).await {
+                Ok(Ok(out)) if out.status.success() => {
+                    tracing::info!(verdict = "browser_scope_on", user = !root, "browser: Chrome starts in its own systemd scope, so a server restart cannot take it down");
+                    Some(prefix)
+                }
+                other => {
+                    let why = match other {
+                        Ok(Ok(out)) => String::from_utf8_lossy(&out.stderr).trim().chars().take(200).collect::<String>(),
+                        Ok(Err(e)) => e.to_string(),
+                        Err(_) => "timed out after 5s".to_string(),
+                    };
+                    tracing::warn!(verdict = "browser_scope_unavailable", why = %why, user = !root,
+                        "browser: systemd-run --scope did not work, so Chrome starts in the server's cgroup and a restart of an amux unit without KillMode=process kills it");
+                    None
+                }
+            }
+        })
+        .await
+}
+
 /// Drop ONE profile's record. The others must survive — clearing the whole file
 /// on a single browser's death is how the remaining ones become unadoptable
 /// orphans after a restart.
@@ -2057,7 +2111,15 @@ pub async fn start(
     }
 
     let port = ephemeral_port()?;
-    let mut cmd = tokio::process::Command::new(&binary);
+    let scope = chrome_systemd_scope().await;
+    let mut cmd = match scope {
+        Some(prefix) => {
+            let mut c = tokio::process::Command::new(prefix[0]);
+            c.args(&prefix[1..]).arg(&binary);
+            c
+        }
+        None => tokio::process::Command::new(&binary),
+    };
     // OWN PROCESS GROUP (AMUX-3414 root cause). Chrome inherited this server's
     // group, and the builder's self-adoption relaunch (`launchctl kickstart -k`)
     // kills the whole group — so every build adoption, several per hour on this
@@ -2668,6 +2730,81 @@ pub async fn keep_session_cookies(port: u16) -> anyhow::Result<usize> {
     let params = crate::integrations::computer::cookie_params(&keep);
     c.call("Storage.setCookies", serde_json::json!({ "cookies": params }), Duration::from_secs(10)).await?;
     Ok(keep.len())
+}
+
+/// What a browser's pages are doing, read from Chrome itself, for the reaper.
+///
+/// The activity clock only moved on amux's own verbs, so a worker driving
+/// Chrome over CDP directly, or keeping it alive by polling `route state`,
+/// read as idle and lost its browser mid-report (NetSuite, 2026-10-26). Three
+/// things Chrome does report are evidence someone is using it:
+/// `fingerprint` (each page's id, URL and title: a change since the last look
+/// is work), `attached` (pages a debugger client is attached to, which is a
+/// driver connected right now; `/json/list` cannot show this, Target.getTargets
+/// can), and `loading` (pages whose document has not finished loading, which
+/// must never be closed under someone).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageActivity {
+    pub pages: usize,
+    pub attached: usize,
+    pub loading: usize,
+    pub fingerprint: String,
+}
+
+pub async fn page_activity(port: u16) -> anyhow::Result<PageActivity> {
+    let version = cdp_json(
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/json/version"))
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await?,
+        &format!("CDP /json/version on port {port}"),
+    )
+    .await?;
+    let ws = version["webSocketDebuggerUrl"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("CDP /json/version on port {port} named no browser socket"))?;
+    let mut browser = CdpClient::connect(ws).await?;
+    let targets = browser.call("Target.getTargets", serde_json::json!({}), Duration::from_secs(5)).await?;
+    let mut out = PageActivity::default();
+    let mut keys = vec![];
+    for t in targets["targetInfos"].as_array().into_iter().flatten() {
+        if t["type"] != "page" {
+            continue;
+        }
+        out.pages += 1;
+        if t["attached"].as_bool() == Some(true) {
+            out.attached += 1;
+        }
+        keys.push(format!(
+            "{}|{}|{}",
+            t["targetId"].as_str().unwrap_or(""),
+            t["url"].as_str().unwrap_or(""),
+            t["title"].as_str().unwrap_or("")
+        ));
+    }
+    keys.sort();
+    out.fingerprint = keys.join("\n");
+    drop(browser);
+    // Load state needs the page itself; only real pages, and only a few.
+    let listed = cdp_list(port).await?;
+    for t in listed.as_array().into_iter().flatten().filter(|t| t["type"] == "page").take(8) {
+        let Some(ws) = t["webSocketDebuggerUrl"].as_str() else { continue };
+        let Ok(mut c) = CdpClient::connect(ws).await else { continue };
+        let state = c
+            .call(
+                "Runtime.evaluate",
+                serde_json::json!({ "expression": "document.readyState", "returnByValue": true }),
+                Duration::from_secs(3),
+            )
+            .await;
+        if let Ok(v) = state {
+            if v["result"]["value"].as_str().is_some_and(|s| s != "complete") {
+                out.loading += 1;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// CDP over plain HTTP: the tab list. (Command traffic — screenshot, eval,
@@ -7394,6 +7531,56 @@ mod tests {
         assert_eq!(safe_file_component("../../etc/passwd"), ".._.._etc_passwd");
         assert_eq!(safe_file_component(""), "amux");
         assert_eq!(safe_file_component(".."), "amux");
+    }
+
+    /// The reaper sees a driver amux never carried (NetSuite, 2026-10-26: a
+    /// worker drove Chrome over raw CDP and lost the browser mid-report). Real
+    /// Chrome, the real `tick`, a 5s activity window: a page navigated over a
+    /// raw CDP socket every second keeps the browser open past the window,
+    /// and once the driving stops it is released.
+    #[tokio::test]
+    #[ignore = "launches a real Chrome; run explicitly with -- --ignored"]
+    async fn live_raw_cdp_driving_keeps_the_browser_open() {
+        let _serial = LIVE_BROWSER.lock().await;
+        if chrome_binary().is_none() {
+            eprintln!("no Chrome binary on this machine; skipping");
+            return;
+        }
+        let home = fake_home();
+        let info = start(home.path(), "default", "about:blank", "raw-cdp", "raw-cdp", true).await.expect("start");
+        let list = cdp_list(info.cdp_port).await.expect("list");
+        let ws = list.as_array().unwrap().iter().find(|t| t["type"] == "page").unwrap()["webSocketDebuggerUrl"]
+            .as_str().unwrap().to_string();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = stop.clone();
+        let driver = tokio::spawn(async move {
+            let mut c = CdpClient::connect(&ws).await.expect("raw cdp");
+            let mut i = 0;
+            while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+                i += 1;
+                let _ = c.call("Page.navigate", serde_json::json!({"url": format!("data:text/html,step{i}")}), Duration::from_secs(5)).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        // 12s of raw driving against a 5s window: never released.
+        for _ in 0..6 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let reaped = crate::runtime_jobs::browser_reaper::tick_with_limits(home.path(), None, 0, 5, 0).await;
+            assert!(reaped.is_empty(), "released while a raw CDP driver was working: {reaped:?}");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = driver.await;
+        // Driving stopped (socket closed): released within a few windows.
+        let mut released = false;
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if !crate::runtime_jobs::browser_reaper::tick_with_limits(home.path(), None, 0, 5, 0).await.is_empty() {
+                released = true;
+                break;
+            }
+        }
+        assert!(released, "a browser nobody drives must still be released");
+        let _ = stop_profile_as(home.path(), "default", "raw-cdp").await;
     }
 
     /// Live-Chrome smoke test: launches a real Chrome on a THROWAWAY temp
