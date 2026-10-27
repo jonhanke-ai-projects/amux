@@ -2111,6 +2111,15 @@ pub async fn start(
     }
 
     let port = ephemeral_port()?;
+    // Chrome on Linux reads its certificate store from ~/.local/share/pki/nssdb
+    // and logs an error on every launch when the folder is missing (NetSuite
+    // worker, 2026-10-26: harmless, but it reads as a failure in the log the
+    // worker is debugging from). An empty folder is what Chrome expects.
+    if cfg!(target_os = "linux") {
+        if let Some(h) = std::env::var_os("HOME") {
+            let _ = std::fs::create_dir_all(PathBuf::from(h).join(".local/share/pki/nssdb"));
+        }
+    }
     let scope = chrome_systemd_scope().await;
     let mut cmd = match scope {
         Some(prefix) => {

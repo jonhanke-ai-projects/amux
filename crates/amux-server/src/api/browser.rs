@@ -3802,6 +3802,7 @@ pub(crate) const BROWSER_ACTIONS: &[(&str, &str)] = &[
     ("back", ""),
     ("viewport", "width+height, or device=iphone|iphone-se|ipad|desktop"),
     ("files", "selector + files[]: absolute paths for an <input type=file>"),
+    ("download", "url (absolute or relative), optional filename: fetched with the page's cookies, saved under ~/.amux/downloads/<session>/, path returned"),
 ];
 
 /// Names and parameter spellings a caller reasonably tries, mapped onto the
@@ -3828,6 +3829,22 @@ pub(crate) fn normalize_action_body(body: &mut Value) -> String {
     }
     o.insert("action".into(), json!(canon));
     canon
+}
+
+/// A safe file name for a download: the caller's, else Content-Disposition's,
+/// else the URL's last segment. No directories, no dot-files.
+pub(crate) fn download_file_name(asked: Option<&str>, disposition: &str, url: &str) -> String {
+    let from_cd = disposition.split(';').find_map(|p| {
+        let p = p.trim();
+        p.strip_prefix("filename*=UTF-8''").or_else(|| p.strip_prefix("filename=")).map(|v| v.trim_matches('"').to_string())
+    });
+    let from_url = url.split(['?', '#']).next().and_then(|u| u.rsplit('/').next()).map(str::to_string);
+    let raw = asked.map(str::to_string).filter(|s| !s.trim().is_empty()).or(from_cd).or(from_url).unwrap_or_default();
+    let raw = raw.replace("%20", " ");
+    let clean: String = raw.rsplit(['/', '\\']).next().unwrap_or("").chars()
+        .map(|c| if c.is_alphanumeric() || " ._-()".contains(c) { c } else { '_' }).collect();
+    let clean = clean.trim().trim_start_matches('.').to_string();
+    if clean.is_empty() { format!("download-{}", now_epoch()) } else { clean.chars().take(150).collect() }
 }
 
 /// Select element `e`'s contents (JS, `e` in scope), so typed text replaces them.
@@ -3974,6 +3991,11 @@ async fn action_inner(
                     "{error}"
                 );
                 return err(StatusCode::BAD_REQUEST, json!({ "error": error }));
+            }
+        }
+        "download" => {
+            if get_str("url").map(|u| u.trim().is_empty()).unwrap_or(true) {
+                return err(StatusCode::BAD_REQUEST, json!({ "error": "download needs url (absolute, or relative to the page)" }));
             }
         }
         "type" | "scroll" | "back" | "extract" => {}
@@ -4253,6 +4275,52 @@ async fn action_inner(
         // Consequence for the reader: this is the one action whose paths are
         // resolved on the machine running CHROME, not by the page. Both
         // validations above (absolute, exists) are about that seam.
+        "download" => {
+            // The page's own fetch, so the file comes with the profile's
+            // cookies and the page's origin, as a click on the link would
+            // (NetSuite, 2026-10-26: no way to download a file through a
+            // profile, so the worker wrote export scripts). The bytes go to
+            // disk; the reply carries the path, never the content.
+            let url = get_str("url").unwrap_or_default();
+            let max: usize = 50 * 1024 * 1024;
+            let js = format!(
+                "(async()=>{{const r=await fetch({u},{{credentials:'include'}});const b=new Uint8Array(await r.arrayBuffer());\
+                 if(b.length>{max})return {{error:'larger than 50 MB',size:b.length,status:r.status}};let s='';\
+                 for(let i=0;i<b.length;i+=32768)s+=String.fromCharCode.apply(null,b.subarray(i,i+32768));\
+                 return {{status:r.status,url:r.url,type:r.headers.get('content-type')||'',disposition:r.headers.get('content-disposition')||'',size:b.length,b64:btoa(s)}};}})()",
+                u = json!(url)
+            );
+            let r = match cdp.eval(&js, 120).await {
+                Ok(v) => v,
+                Err(e) => audited_return!(err(cdp_status(&e), json!({ "error": with_cause(&e) }))),
+            };
+            if let Some(e) = r.get("error") {
+                audited_return!(err(StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": e, "size": r.get("size") })));
+            }
+            use base64::Engine as _;
+            let bytes = match base64::engine::general_purpose::STANDARD.decode(r["b64"].as_str().unwrap_or("")) {
+                Ok(b) => b,
+                Err(e) => audited_return!(err(StatusCode::BAD_GATEWAY, json!({ "error": format!("the page returned unreadable bytes: {e}") }))),
+            };
+            let name = download_file_name(get_str("filename").as_deref(), r["disposition"].as_str().unwrap_or(""), r["url"].as_str().unwrap_or(&url));
+            let dir = chrome::amux_home().join("downloads").join(if session.is_empty() { "anonymous" } else { session.as_str() });
+            let path = dir.join(&name);
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &bytes)) {
+                audited_return!(err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("could not save {}: {e}", path.display()) })));
+            }
+            let status = r["status"].as_u64().unwrap_or(0);
+            tracing::info!(session = %session, bytes = bytes.len(), status, verdict = "browser_download_saved", "browser: saved a download from the page's session (content not logged)");
+            Json(json!({
+                "ok": (200..300).contains(&status),
+                "path": path,
+                "size": bytes.len(),
+                "http_status": status,
+                "content_type": r["type"],
+                "url": r["url"],
+                "note": if (200..300).contains(&status) { Value::Null } else { json!("the server answered with an error status; the saved file is that answer (often a sign-in page)") },
+            }))
+            .into_response()
+        }
         "files" => {
             let selector = get_str("selector").unwrap_or_default();
             let files: Vec<String> = body
@@ -6755,6 +6823,15 @@ mod action_names_tests {
         let u = actions_help("dance");
         assert_eq!(u["error"], "unknown action: dance");
         assert!(!u["actions"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_download_gets_a_safe_name() {
+        assert_eq!(download_file_name(None, "attachment; filename=\"AR Aging.csv\"", "https://x/y?z"), "AR Aging.csv");
+        assert_eq!(download_file_name(None, "", "https://x/reports/aging.csv?token=1"), "aging.csv");
+        assert_eq!(download_file_name(Some("../../etc/passwd"), "", ""), "passwd");
+        assert_eq!(download_file_name(Some(".bashrc"), "", ""), "bashrc");
+        assert!(download_file_name(None, "", "https://x/").starts_with("download-"));
     }
 
     #[test]

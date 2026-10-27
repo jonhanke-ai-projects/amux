@@ -6015,7 +6015,8 @@ amux browser route action '{"action":"input","selector":"#email","text":"exact t
 Click the observed input before typing. type inserts at the caret, so a
 pre-filled field keeps its text: input (or type with "replace":true) replaces
 it. Read back values before submitting. amux browser actions lists every action;
-eval runs JavaScript. amux browser hold <profile> --for 2h keeps it open.
+eval runs JavaScript; download '{"action":"download","url":"..."}' saves a file
+with the profile's sign-in. amux browser hold <profile> --for 2h keeps it open.
 Native refs and CDP indices require a fresh state; CUA uses screenshot x,y.
 Verify the intended page effect after each action; ok means dispatch only.
 If the session cannot accomplish the goal:
