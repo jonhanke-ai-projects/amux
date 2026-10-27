@@ -537,6 +537,15 @@ fi
     case "$failed_at" in ''|*[!0-9]*) failed_at=0 ;; esac
   fi
   retry_now=$(date +%s)
+  # ROLLED BACK (AMUX_ACTIVATION_ROLLBACK, below): that commit built but did not
+  # come up healthy. Retrying it on the failure cooldown would take the server
+  # down again every 15 minutes, so it is held until the build inputs move.
+  rolled_head=''
+  [ -r "${STAMP}.rolled_back" ] && read -r rolled_head _ < "${STAMP}.rolled_back" || true
+  if [ "${AMUX_RS_DISK_CLEAR_ONLY:-0}" != 1 ] && [ -n "$rolled_head" ] && [ "$rolled_head" = "$head" ]; then
+    echo "== activation_rollback_hold trigger=$head: rolled back as unhealthy; waiting for a newer commit verdict=activation_rollback_hold"
+    exit 0
+  fi
   if [ "${AMUX_RS_DISK_CLEAR_ONLY:-0}" != 1 ] && [ "$failed_head" = "$head" ] \
       && [ "$failed_at" -le "$retry_now" ] && [ "$((retry_now - failed_at))" -lt "$retry_s" ]; then
     echo "== cargo_build_backoff trigger=$head retry_in_s=$((retry_s - retry_now + failed_at))"
@@ -883,6 +892,13 @@ d=json.loads(sys.argv[2]); d.update(build=build, trigger=sys.argv[3])
 print(json.dumps(d))
 PYIDENTITY
 )
+    # AMUX_ACTIVATION_ROLLBACK=1 (amux Cloud, which deploys main's tip without
+    # waiting for CI): keep what is live, so a build that installs but does not
+    # come up healthy is put back below.
+    if [ "${AMUX_ACTIVATION_ROLLBACK:-0}" = 1 ] && [ -f "$INSTALL" ]; then
+      cp -p "$INSTALL" "${INSTALL}.rollback" 2>/dev/null || rm -f "${INSTALL}.rollback"
+      if [ -f "${INSTALL}.identity.json" ]; then cp -p "${INSTALL}.identity.json" "${INSTALL}.identity.json.rollback"; else rm -f "${INSTALL}.identity.json.rollback"; fi
+    fi
     # Publish identity before the executable. Readers require its hash to
     # match the candidate, so neither half of the rename pair can lie.
     printf '%s\n' "$PROV_JSON" > "${INSTALL}.identity.json.new.$$"
@@ -918,6 +934,28 @@ PYIDENTITY
     # failure branch below it is left alone, so it keeps naming the last good
     # build — which is exactly what that branch says is still running.
     echo "== installation action=$install_action; running server will verify identity before adoption"
+    if [ "${AMUX_ACTIVATION_ROLLBACK:-0}" = 1 ] && [ "$install_action" = replaced ] && [ -f "${INSTALL}.rollback" ]; then
+      limit="${AMUX_ACTIVATION_HEALTH_S:-300}"; waited=0; healthy=0
+      case "$limit" in ''|*[!0-9]*) limit=300 ;; esac
+      while [ "$waited" -lt "$limit" ]; do
+        if measure_live_identity && [ -n "$live" ]; then
+          case "$built_sha" in "$live"*) healthy=1; break ;; esac
+        fi
+        sleep 5; waited=$((waited + 5))
+      done
+      if [ "$healthy" = 1 ]; then
+        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s verdict=activation_healthy"
+        rm -f "${INSTALL}.rollback" "${INSTALL}.identity.json.rollback" "${STAMP}.rolled_back"
+      else
+        # Identity before the executable, the same order as the install.
+        if [ -f "${INSTALL}.identity.json.rollback" ]; then mv -f "${INSTALL}.identity.json.rollback" "${INSTALL}.identity.json"; else rm -f "${INSTALL}.identity.json"; fi
+        mv -f "${INSTALL}.rollback" "$INSTALL"
+        if [ -n "$last" ]; then echo "$last" > "$STAMP"; else rm -f "$STAMP"; fi
+        printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.rolled_back"
+        echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${limit}s" \
+             "(live: ${live:-unmeasured}); the previous binary is back and this commit is held until a newer one verdict=activation_rolled_back"
+      fi
+    fi
   else
     printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.failed"
     echo "== BUILD FAILED for $head — running server keeps the last good build"

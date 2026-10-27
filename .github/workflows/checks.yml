@@ -879,6 +879,9 @@ jobs:
           # persistent listener loss makes the external watchdog reload only the
           # exact configured launch agent.
           ./scripts/test-build-atomic-install.sh
+          # Cloud follows main's tip without the CI wait: an activation that does
+          # not come up healthy is put back and held.
+          ./scripts/test-build-activation-rollback.sh
           python3 ./scripts/test-watchdog-recovery.py
           # AEAB-36: a board write that never reached the server must say so,
           # and must never be confused with one the server refused. Its (c)/(d)
