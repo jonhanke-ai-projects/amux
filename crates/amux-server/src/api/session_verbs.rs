@@ -370,6 +370,14 @@ pub(crate) fn surviving_shell_scope_rc(name: &str) -> String {
     rc.push_str(&grpc_fork_safe_exports(name));
     rc.push_str(&worker_cpu_budget_exports(name));
     rc.push_str(&tmux_fleet_exports(name));
+    // A surviving shell may carry an earlier account's export; drop it, then
+    // apply the current binding (a move between accounts relaunches here).
+    rc.push_str(super::claude_accounts::UNDO_EXPORTS);
+    if provider_of(&parse_env(name)) == "claude" {
+        if let Some(dir) = super::claude_accounts::bound_dir(name) {
+            rc.push_str(&super::claude_accounts::launch_exports(&dir));
+        }
+    }
     rc
 }
 
@@ -418,15 +426,21 @@ pub(crate) fn headless_turn_prelude(name: &str, provider: &str, work_dir: &str) 
     let cfg = parse_env(name);
     let isolated = env_flag_on(cfg.get("CC_ISOLATED"));
     let mut rc = String::new();
+    let claude_account = (provider == "claude")
+        .then(|| super::claude_accounts::bound_dir(name))
+        .flatten();
     if provider == "claude" {
         rc.push_str("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ");
-        let has_oauth = std::fs::read_to_string(
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json"),
-        )
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .is_some_and(|v| !v["oauthAccount"].is_null() && v["oauthAccount"] != json!({}))
-            || claude_subscription_token_saved();
+        let has_oauth = match &claude_account {
+            Some(dir) => super::claude_accounts::login_of(dir).0,
+            None => std::fs::read_to_string(
+                PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json"),
+            )
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .is_some_and(|v| !v["oauthAccount"].is_null() && v["oauthAccount"] != json!({}))
+                || claude_subscription_token_saved(),
+        };
         if has_oauth {
             rc.push_str("unset ANTHROPIC_API_KEY; ");
         }
@@ -443,6 +457,9 @@ pub(crate) fn headless_turn_prelude(name: &str, provider: &str, work_dir: &str) 
     rc.push_str(&docker_vm_exports(name));
     rc.push_str(&grpc_fork_safe_exports(name));
     rc.push_str(&worker_cpu_budget_exports(name));
+    if let Some(dir) = &claude_account {
+        rc.push_str(&super::claude_accounts::launch_exports(dir));
+    }
     let local_cli_dir = home().join("bin");
     if local_cli_dir.join("amux").is_file() {
         rc.push_str(&format!(
@@ -15666,14 +15683,16 @@ pub(crate) fn session_op_lock(name: &str) -> std::sync::Arc<tokio::sync::Mutex<(
 /// is left ALONE rather than risk clobbering real state. No-op locally where the
 /// dir is already trusted and the diff sidebar is off, so this is a single-codebase
 /// no-op there, not an env branch.
-fn seed_dir_trust(work_dir: &str) {
+fn seed_dir_trust(work_dir: &str, claude_json: Option<&Path>) {
     if work_dir.is_empty() {
         return;
     }
     let Some(home) = std::env::var_os("HOME") else {
         return;
     };
-    let path = std::path::Path::new(&home).join(".claude.json");
+    // A worker bound to a Claude account reads that account's .claude.json
+    // (claude_accounts.rs), so the trust answer has to land there.
+    let path = claude_json.map(Path::to_path_buf).unwrap_or_else(|| std::path::Path::new(&home).join(".claude.json"));
     let doc: Value = match std::fs::read_to_string(&path) {
         Ok(s) => match serde_json::from_str(&s) {
             Ok(v) => v,
@@ -15715,11 +15734,11 @@ fn seed_dir_trust(work_dir: &str) {
 /// (amux Cloud e2e, 2026-10-19). Saving the key in amux is the customer's answer
 /// to the second prompt. A key they REJECTED in Claude itself stays rejected.
 /// Same fail-open, merge-preserving discipline as [`seed_dir_trust`].
-fn seed_claude_first_run(api_key: Option<&str>) {
+fn seed_claude_first_run(api_key: Option<&str>, claude_json: Option<&Path>) {
     let Some(home) = std::env::var_os("HOME") else {
         return;
     };
-    let path = std::path::Path::new(&home).join(".claude.json");
+    let path = claude_json.map(Path::to_path_buf).unwrap_or_else(|| std::path::Path::new(&home).join(".claude.json"));
     let doc: Value = match std::fs::read_to_string(&path) {
         Ok(s) => match serde_json::from_str(&s) {
             Ok(v) => v,
@@ -16543,7 +16562,17 @@ pub(crate) async fn start_session(
     // AC-346: seed per-directory folder-trust so the claude about to launch in
     // work_dir does not stop at the first-run "trust this folder?" dialog. Runs
     // BEFORE the pane starts claude; strictly fail-open (see seed_dir_trust).
-    seed_dir_trust(&work_dir);
+    // Fork #1: a Claude worker bound to a named account (AMUX_CLAUDE_ACCOUNT in
+    // its worker or group scope) runs under that account's CLAUDE_CONFIG_DIR.
+    let claude_account = (provider_of(&cfg) == "claude")
+        .then(|| super::claude_accounts::bound_dir(name))
+        .flatten();
+    let claude_account_json = claude_account.as_deref().map(super::claude_accounts::claude_json);
+    if let Some(dir) = &claude_account {
+        tracing::info!(session = name, config_dir = %dir.display(), measured = true, n_considered = 1,
+            verdict = "claude_account_bound", "Claude worker launches on its bound account");
+    }
+    seed_dir_trust(&work_dir, claude_account_json.as_deref());
     // AMUX-3159 seed direction (codex analog of AC-346): a codex/ollama worker
     // launches `codex`, which has its OWN "trust this directory?" dialog. Seed its
     // trust config up front so the worker starts at the composer instead of parking
@@ -16907,16 +16936,22 @@ pub(crate) async fn start_session(
         && provider != "opencode"
     {
         shell_rc.push_str("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ");
-        if let Ok(t) = std::fs::read_to_string(
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json"),
-        ) {
-            if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                has_oauth = py_truthy(&v["oauthAccount"]);
+        if let Some(dir) = &claude_account {
+            // The bound account's own login decides; the saved dashboard token
+            // is withheld from this worker (see the deferred secrets below).
+            has_oauth = super::claude_accounts::login_of(dir).0;
+        } else {
+            if let Ok(t) = std::fs::read_to_string(
+                PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json"),
+            ) {
+                if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                    has_oauth = py_truthy(&v["oauthAccount"]);
+                }
             }
+            // A subscription token saved by the dashboard's "Sign in with Claude"
+            // is a subscription sign-in too: the worker uses it, not an API key.
+            has_oauth = has_oauth || claude_subscription_token_saved();
         }
-        // A subscription token saved by the dashboard's "Sign in with Claude"
-        // is a subscription sign-in too: the worker uses it, not an API key.
-        has_oauth = has_oauth || claude_subscription_token_saved();
         if has_oauth {
             shell_rc.push_str("unset ANTHROPIC_API_KEY; ");
         }
@@ -16984,6 +17019,10 @@ pub(crate) async fn start_session(
         ));
     }
     shell_rc.push_str(&tmux_fleet_exports(name));
+    shell_rc.push_str(super::claude_accounts::UNDO_EXPORTS);
+    if let Some(dir) = &claude_account {
+        shell_rc.push_str(&super::claude_accounts::launch_exports(dir));
+    }
     if provider != "codex"
         && provider != "gemini"
         && provider != "ollama"
@@ -17076,9 +17115,14 @@ pub(crate) async fn start_session(
         let key = (!has_oauth)
             .then(|| provider_value("ANTHROPIC_API_KEY"))
             .flatten();
-        seed_claude_first_run(key.as_deref());
+        seed_claude_first_run(key.as_deref(), claude_account_json.as_deref());
     }
     for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
+        // An env token outranks CLAUDE_CONFIG_DIR, so a worker bound to an
+        // account must not be handed the dashboard's saved token.
+        if k == "CLAUDE_CODE_OAUTH_TOKEN" && claude_account.is_some() {
+            continue;
+        }
         if let Some(v) = provider_value(k) {
             deferred_secrets.push((k.to_string(), v));
         }

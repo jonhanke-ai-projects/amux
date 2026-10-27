@@ -2184,6 +2184,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/claude-accounts",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/claude-accounts/assign",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/alert/config",
         methods: &["GET", "PATCH"],
     },
