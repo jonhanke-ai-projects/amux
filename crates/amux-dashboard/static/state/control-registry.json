@@ -2208,6 +2208,48 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_hkBeacon": {
+      "kind": "command._hkBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_hkDelete": {
+      "kind": "command._hkDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_hkDictate": {
+      "kind": "command._hkDictate",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_hkRun": {
+      "kind": "command._hkRun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_hkSave": {
+      "kind": "command._hkSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_hkSaveDialog": {
+      "kind": "command._hkSaveDialog",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_hkToggle": {
+      "kind": "command._hkToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_hostContrastCheck": {
       "kind": "command._hostContrastCheck",
       "feedback_required": true,

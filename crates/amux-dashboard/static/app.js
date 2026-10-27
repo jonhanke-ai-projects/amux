@@ -27382,6 +27382,8 @@ function _dictClosePopup(cancel) {
   if (pop) pop.classList.remove('open');
   _dictPopupOpen = false;
   if (cancel && _dictRecording) { _dictCancelled = true; _dictStopRec(); }
+  if (cancel && typeof _hkDictTarget !== 'undefined') _hkDictTarget = null;
+  if (typeof _hkDictHome === 'function') _hkDictHome();
 }
 let _dictCancelled = false;
 
@@ -27685,6 +27687,8 @@ setInterval(() => { if (typeof online === 'undefined' || online) _dictFlushOffli
 
 // Put text in the composer (append, don't clobber) — never auto-send.
 function _dictInsert(text) {
+  // A hotkey started this from another input: the text goes back there.
+  if (typeof _hkDictDeliver === 'function' && _hkDictDeliver(text)) return;
   const inp = document.getElementById('peek-cmd-input');
   if (!inp) { navigator.clipboard?.writeText(text); showToast('Copied (composer not open)'); return; }
   inp.value = inp.value && inp.value.trim() ? (inp.value.replace(/\s+$/,'') + ' ' + text) : text;
@@ -38921,7 +38925,7 @@ function switchView(view) {
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
-    ['pages', 'pages', 'flex'],
+    ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -38951,6 +38955,7 @@ function switchView(view) {
   if (view === 'sql') _sqlInit();
   if (view === 'pages') _pagesEnter(); else if (typeof _pagesLeave === 'function' && _pagesCur) _pagesLeave();
   if (view === 'tasks') _tasksLoad('main', true);
+  if (view === 'hotkeys') _hkEnter();
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
   // so tapping Messages showed one session's history scoped by whichever peek
@@ -69928,3 +69933,408 @@ document.addEventListener('keydown', e => {
   e.preventDefault();
   if (document.getElementById('cmdk-overlay')?.classList.contains('active')) closeCmdk(); else openCmdk();
 }, true);
+
+// ── Hotkeys tab ─────────────────────────────────────────────────────────────
+// One place to set every shortcut amux answers (Ethan, 2026-10-26: "a global
+// tab called hotkeys"). Two kinds of trigger: a key combination, and a text
+// trigger typed into any input (## starts dictation into that input). The
+// list is the `hotkeys` pref, so the browser, the phone and the Mac app share
+// it. The built-in shortcuts amux already binds are listed read-only, and a
+// new hotkey that would collide with one, or with another hotkey, is refused.
+// Every fire is beaconed as kind=hotkey (verdict hotkey_fired or
+// hotkey_action_failed) so a dead binding shows up in server-rs.log.
+const _HK_ACTIONS = {
+  dictate: { label: 'Start dictation', desc: 'Dictate into the input you are typing in', ico: '🎤', tone: 'purple' },
+  search: { label: 'Search', desc: 'Open search', ico: '🔍', tone: 'blue', run: () => openCmdk() },
+  new_task: { label: 'New task', desc: 'Create a board card (uses the text you typed, if any)', ico: '+', tone: 'green' },
+  new_schedule: { label: 'New schedule', desc: 'Open the schedule editor', ico: '⏱', tone: 'blue', run: () => { switchView('scheduler'); openSchedModal(); } },
+  open_workers: { label: 'Open Workers', desc: 'Go to the Workers tab', ico: '▦', tone: 'gray', run: () => switchView('sessions') },
+  open_board: { label: 'Open Board', desc: 'Go to the Board tab', ico: '☷', tone: 'gray', run: () => switchView('board') },
+  open_messages: { label: 'Open Messages', desc: 'Go to the Messages tab', ico: '✉', tone: 'red', run: () => switchView('messages') },
+  open_draw: { label: 'Open Draw', desc: 'Open the drawing canvas', ico: '✎', tone: 'orange', run: () => switchView('draw') },
+  open_hotkeys: { label: 'Open Hotkeys', desc: 'Come back to this tab', ico: '⌘', tone: 'gray', run: () => switchView('hotkeys') },
+};
+// Shortcuts bound elsewhere in amux. Shown so this tab is the whole map, and
+// so a new hotkey cannot silently shadow one of them.
+const _HK_BUILTIN = [
+  { combo: 'Mod+K', label: 'Search', desc: 'Open search from anywhere' },
+  { combo: 'Mod+Enter', label: 'Send', desc: 'Send what you typed to the worker' },
+  { combo: 'Mod+S', label: 'Save', desc: 'Save in an editor (files, MDAI, card detail)' },
+  { combo: 'Mod+=', label: 'Zoom in', desc: 'Make the page larger' },
+  { combo: 'Mod+-', label: 'Zoom out', desc: 'Make the page smaller' },
+  { combo: 'Mod+0', label: 'Reset zoom', desc: 'Back to 100%' },
+  { combo: 'Ctrl+Alt+Space', label: 'Show amux', desc: 'Mac app, from any app on the Mac' },
+];
+const _HK_DEFAULTS = [
+  { id: 'hk-dictate-text', action: 'dictate', type: 'text', trigger: '##', enabled: true, remove: true, indicator: false },
+  { id: 'hk-dictate-keys', action: 'dictate', type: 'keys', trigger: 'Alt+Shift+M', enabled: true, remove: true, indicator: false },
+  { id: 'hk-new-task', action: 'new_task', type: 'keys', trigger: 'Alt+Shift+N', enabled: true, remove: true, indicator: false },
+  { id: 'hk-new-task-text', action: 'new_task', type: 'text', trigger: '!!', enabled: false, remove: true, indicator: true },
+  { id: 'hk-draw', action: 'open_draw', type: 'keys', trigger: 'Alt+Shift+D', enabled: true, remove: true, indicator: false },
+];
+let _hkList = _HK_DEFAULTS.map(h => Object.assign({}, h));
+let _hkLoaded = false;
+let _hkFilter = 'all';
+let _hkQuery = '';
+let _hkEditing = null;
+let _hkRecording = false;
+const _HK_IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+
+function _hkBeacon(verdict, extra) {
+  const fields = Object.assign({ kind: 'hotkey', verdict, measured: true, n_considered: 1,
+    ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }, extra || {});
+  try { amuxTrack(verdict, fields); } catch (e) {}
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true,
+      headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(fields) }).catch(() => {});
+  } catch (e) {}
+}
+
+async function _hkLoad() {
+  try {
+    const r = await fetch(API + '/api/prefs?key=hotkeys', { headers: _authHeaders() });
+    const d = r.ok ? await r.json() : null;
+    const saved = d && d.value ? JSON.parse(d.value) : null;
+    if (Array.isArray(saved)) _hkList = _hkMerge(saved);
+    _hkLoaded = true;
+  } catch (e) { _hkLoaded = false; }
+  return _hkList;
+}
+// Saved rows win; a built-in default the user never touched (a new default
+// shipped later) is added, so a new default reaches everyone.
+function _hkMerge(saved) {
+  const out = saved.filter(h => h && h.id && _HK_ACTIONS[h.action] && (h.type === 'keys' || h.type === 'text'));
+  const deleted = new Set(out.filter(h => h.deleted).map(h => h.id));
+  for (const d of _HK_DEFAULTS) if (!out.some(h => h.id === d.id) && !deleted.has(d.id)) out.push(Object.assign({}, d));
+  return out;
+}
+async function _hkSave() {
+  const r = await apiCall(API + '/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: 'hotkeys', value: JSON.stringify(_hkList) }) });
+  return !!r;
+}
+
+// A combination as a stable string: modifiers in a fixed order, then the key.
+// Mod is ⌘ on a Mac and Ctrl elsewhere, so one saved list works on both.
+function _hkComboFromEvent(e) {
+  const code = e.code || '';
+  let key = /^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? code.slice(5)
+    : code === 'Space' ? 'Space' : code === 'Equal' ? '=' : code === 'Minus' ? '-' : (e.key || '');
+  if (['Meta', 'Control', 'Alt', 'Shift', 'OS', ''].includes(key)) return '';
+  if (key.length === 1) key = key.toUpperCase();
+  const mods = [];
+  const mod = _HK_IS_MAC ? e.metaKey : e.ctrlKey;
+  if (mod) mods.push('Mod');
+  if (_HK_IS_MAC && e.ctrlKey) mods.push('Ctrl');
+  if (e.altKey) mods.push('Alt');
+  if (e.shiftKey) mods.push('Shift');
+  return mods.concat([key]).join('+');
+}
+function _hkKeyChips(combo) {
+  const glyph = { Mod: _HK_IS_MAC ? '⌘' : 'Ctrl', Ctrl: _HK_IS_MAC ? '⌃' : 'Ctrl', Alt: _HK_IS_MAC ? '⌥' : 'Alt', Shift: '⇧', Enter: '↵', Space: 'Space' };
+  return '<span class="hk-keys">' + String(combo || '').split('+').filter(Boolean)
+    .map(k => '<kbd class="hk-kbd">' + esc(glyph[k] || k) + '</kbd>').join('') + '</span>';
+}
+function _hkTriggerHtml(h) {
+  return h.type === 'text' ? '<span class="hk-keys"><kbd class="hk-kbd hk-kbd-text">' + esc(h.trigger) + '</kbd></span>' : _hkKeyChips(h.trigger);
+}
+// Why a trigger cannot be saved, or '' when it can.
+function _hkConflict(h, list) {
+  const t = String(h.trigger || '').trim();
+  if (!t) return h.type === 'text' ? 'Type the text that triggers it, for example ##' : 'Record a key combination';
+  if (h.type === 'text') {
+    if (t.length < 2) return 'A text trigger needs at least two characters, so ordinary typing does not set it off';
+    if (/\s/.test(t)) return 'A text trigger cannot contain spaces';
+  } else {
+    const parts = t.split('+');
+    if (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt'))
+      return 'A shortcut needs ⌘, ⌥ or ⌃ (⇧ alone is how capitals are typed)';
+    const b = _HK_BUILTIN.find(x => x.combo === t);
+    if (b) return 'amux already uses this for ' + b.label;
+  }
+  const dup = list.find(x => x !== h && x.id !== h.id && !x.deleted && x.enabled && x.type === h.type && x.trigger === t);
+  if (dup && h.enabled) return 'Already used by ' + _HK_ACTIONS[dup.action].label;
+  return '';
+}
+
+function _hkTextField(el) {
+  if (!el || el.disabled || el.readOnly) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  return el.tagName === 'INPUT' && /^(text|search|url|email|)$/i.test(el.type || '');
+}
+
+// Run an action. `el` is the input a text trigger was typed in, if any.
+function _hkRun(h, el) {
+  const a = _HK_ACTIONS[h.action];
+  try {
+    if (h.action === 'dictate') _hkDictate(el && document.contains(el) ? el : null);
+    else if (h.action === 'new_task') {
+      const text = el && el.value ? el.value.trim() : '';
+      openBoardAdd();
+      const t = document.getElementById('be-title');
+      if (t && text) t.value = text.slice(0, 200);
+    } else a.run();
+    if (h.indicator) showToast(a.label);
+    _hkBeacon('hotkey_fired', { action: h.action, trigger_type: h.type, trigger: h.trigger, in_input: !!el });
+  } catch (e) {
+    showToast(a.label + ' failed: ' + (e && e.message || e));
+    _hkBeacon('hotkey_action_failed', { action: h.action, trigger_type: h.type, error: String(e && e.message || e).slice(0, 200) });
+  }
+}
+
+// Dictation into the input that asked for it. The recorder and its popup are
+// the composer's; when the input is elsewhere the popup floats beside it and
+// goes home when it closes.
+let _hkDictTarget = null;
+function _hkDictate(el) {
+  const pop = document.getElementById('dict-popup');
+  if (!pop) throw new Error('dictation is unavailable');
+  const composer = document.getElementById('peek-cmd-input');
+  _hkDictTarget = el && el !== composer ? { el, at: el.selectionStart ?? el.value.length } : null;
+  if (_hkDictTarget || !peekSession) {
+    if (!pop._hkHome) pop._hkHome = pop.parentNode;
+    document.body.appendChild(pop);
+    pop.classList.add('dict-floating');
+    const r = (el || document.activeElement || document.body).getBoundingClientRect();
+    const w = Math.min(280, window.innerWidth - 16);
+    pop.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left)) + 'px';
+    pop.style.top = Math.max(8, Math.min(window.innerHeight - 160, r.bottom + 8)) + 'px';
+  }
+  _dictOpenPopup();
+}
+function _hkDictHome() {
+  const pop = document.getElementById('dict-popup');
+  if (pop && pop._hkHome && pop.parentNode !== pop._hkHome) {
+    pop.classList.remove('dict-floating');
+    pop.style.left = pop.style.top = '';
+    pop._hkHome.appendChild(pop);
+  }
+}
+// The text lands at the caret of the input that asked; false when there is
+// no such input, so the composer gets it as before.
+function _hkDictDeliver(text) {
+  const t = _hkDictTarget;
+  _hkDictTarget = null;
+  if (!t || !document.contains(t.el)) return false;
+  const v = t.el.value, at = Math.min(t.at, v.length);
+  const pre = v.slice(0, at), post = v.slice(at);
+  const gap = pre && !/\s$/.test(pre) ? ' ' : '';
+  t.el.value = pre + gap + text + post;
+  const caret = (pre + gap + text).length;
+  try { t.el.focus(); t.el.setSelectionRange(caret, caret); } catch (e) {}
+  t.el.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}
+
+document.addEventListener('keydown', e => {
+  if (_hkRecording || e.repeat || e.isComposing) return;
+  const combo = _hkComboFromEvent(e);
+  if (!combo || !/(^|\+)(Mod|Ctrl|Alt)\+/.test(combo)) return;
+  const h = _hkList.find(x => !x.deleted && x.enabled && x.type === 'keys' && x.trigger === combo);
+  if (!h) return;
+  e.preventDefault();
+  e.stopPropagation();
+  _hkRun(h, _hkTextField(document.activeElement) ? document.activeElement : null);
+}, true);
+
+let _hkInTrigger = false;
+document.addEventListener('input', e => {
+  if (_hkInTrigger || e.isComposing) return;
+  const el = e.target;
+  if (!_hkTextField(el) || el.closest('#hotkeys-view, #hk-dialog')) return;
+  if (e.inputType && !/^insert(Text|FromPaste|CompositionText)?$/.test(e.inputType)) return;
+  const at = el.selectionStart;
+  if (at == null) return;
+  const before = el.value.slice(0, at);
+  const h = _hkList.find(x => !x.deleted && x.enabled && x.type === 'text' && x.trigger && before.endsWith(x.trigger));
+  if (!h) return;
+  _hkInTrigger = true;
+  try {
+    if (h.remove) {
+      const cut = at - h.trigger.length;
+      el.value = el.value.slice(0, cut) + el.value.slice(at);
+      el.setSelectionRange(cut, cut);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  } finally { _hkInTrigger = false; }
+  _hkRun(h, el);
+}, true);
+
+function _hkEnter() {
+  _hkRender();
+  _hkLoad().then(_hkRender);
+}
+function _hkSetFilter(f) { _hkFilter = f; _hkRender(); }
+function _hkRow(h) {
+  const a = _HK_ACTIONS[h.action];
+  const sub = h.type === 'text' ? a.desc + (h.remove ? ' (removes ' + h.trigger + ')' : '') : a.desc;
+  return '<div class="hk-row" data-hk="' + esc(h.id) + '">'
+    + '<span class="hk-ico hk-tone-' + a.tone + '" aria-hidden="true">' + a.ico + '</span>'
+    + '<span class="hk-text"><b>' + esc(a.label) + '</b><span>' + esc(sub) + '</span></span>'
+    + _hkTriggerHtml(h)
+    + '<button class="btn" role="switch" aria-checked="' + (h.enabled ? 'true' : 'false') + '" aria-label="' + esc(a.label + ' ' + h.trigger) + ' on or off" onclick="_hkToggle(\'' + escJs(h.id) + '\')">' + (h.enabled ? 'On' : 'Off') + '</button>'
+    + '<button class="btn hk-more" aria-label="Edit ' + esc(a.label) + '" title="Edit" onclick="_hkOpenDialog(\'' + escJs(h.id) + '\')">&#x22EF;</button>'
+    + '</div>';
+}
+function _hkSection(title, rows, empty) {
+  return '<section class="hk-sec"><h4>' + esc(title) + '</h4>'
+    + (rows.length ? rows.join('') : '<div class="hk-empty">' + esc(empty) + '</div>') + '</section>';
+}
+function _hkRender() {
+  const view = document.getElementById('hotkeys-view');
+  if (!view || view.style.display === 'none') return;
+  const q = _hkQuery.toLowerCase();
+  const live = _hkList.filter(h => !h.deleted).filter(h => !q
+    || (_HK_ACTIONS[h.action].label + ' ' + _HK_ACTIONS[h.action].desc + ' ' + h.trigger).toLowerCase().includes(q));
+  const keys = live.filter(h => h.enabled && h.type === 'keys').map(_hkRow);
+  const text = live.filter(h => h.enabled && h.type === 'text').map(_hkRow);
+  const off = live.filter(h => !h.enabled).map(_hkRow);
+  const builtin = _HK_BUILTIN.filter(b => !q || (b.label + ' ' + b.desc + ' ' + b.combo).toLowerCase().includes(q))
+    .map(b => '<div class="hk-row hk-builtin"><span class="hk-ico hk-tone-gray" aria-hidden="true">⌘</span>'
+      + '<span class="hk-text"><b>' + esc(b.label) + '</b><span>' + esc(b.desc) + '</span></span>' + _hkKeyChips(b.combo)
+      + '<span class="hk-fixed">Built in</span></div>');
+  const f = _hkFilter;
+  let html = '';
+  if (f === 'all' || f === 'keys') html += _hkSection('Keyboard shortcuts', keys, 'No keyboard shortcuts on.');
+  if (f === 'all' || f === 'text') html += _hkSection('Text triggers', text, 'No text triggers on. Add one, like ## to dictate.');
+  if (f === 'all' || f === 'off') html += _hkSection('Off', off, 'Nothing is turned off.');
+  if (f === 'all' || f === 'keys') html += _hkSection('Built into amux', builtin, 'No match.');
+  document.getElementById('hk-body').innerHTML = html;
+  document.querySelectorAll('#hk-pills .hk-pill').forEach(p => p.setAttribute('aria-selected', p.dataset.f === f ? 'true' : 'false'));
+  const st = document.getElementById('hk-status');
+  if (st) st.textContent = _hkLoaded ? '' : 'Showing the defaults: your saved hotkeys could not be read.';
+}
+async function _hkToggle(id) {
+  const h = _hkList.find(x => x.id === id);
+  if (!h) return;
+  if (!h.enabled) {
+    const why = _hkConflict(Object.assign({}, h, { enabled: true }), _hkList);
+    if (why) { showToast(why); return; }
+  }
+  h.enabled = !h.enabled;
+  _hkRender();
+  if (!(await _hkSave())) { h.enabled = !h.enabled; _hkRender(); return; }
+  showToast(_HK_ACTIONS[h.action].label + ' ' + h.trigger + (h.enabled ? ' on' : ' off'));
+}
+
+function _hkOpenDialog(id) {
+  const src = id ? _hkList.find(x => x.id === id) : null;
+  _hkEditing = src ? Object.assign({}, src) : { id: 'hk-' + Date.now().toString(36), action: 'dictate', type: 'keys', trigger: '', enabled: true, remove: true, indicator: false, isNew: true };
+  let ov = document.getElementById('hk-dialog');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'hk-dialog';
+    ov.className = 'modal-overlay';
+    ov.addEventListener('mousedown', e => { if (e.target === ov) _hkCloseDialog(); });
+    ov.addEventListener('keydown', e => { if (e.key === 'Escape' && !_hkRecording) _hkCloseDialog(); });
+    document.body.appendChild(ov);
+  }
+  const opts = Object.entries(_HK_ACTIONS).map(([k, a]) => '<option value="' + k + '">' + esc(a.label) + '</option>').join('');
+  ov.innerHTML = '<div class="modal hk-modal" role="dialog" aria-labelledby="hk-dlg-title">'
+    + '<div class="hk-modal-head"><h3 id="hk-dlg-title">' + (src ? 'Edit hotkey' : 'Add hotkey') + '</h3>'
+    + '<button class="modal-close" onclick="_hkCloseDialog()" aria-label="Close">&#x2715;</button></div>'
+    + '<p class="ui-help">Choose an action and set a key combination or a text trigger.</p>'
+    + '<div class="ui-field"><label class="field-label" for="hk-action">Action</label><select id="hk-action" class="input">' + opts + '</select></div>'
+    + '<div class="ui-field"><span class="field-label">Trigger type</span><div class="hk-types" role="radiogroup">'
+    + '<label class="hk-type"><input type="radio" name="hk-type" value="keys"><span><b>⌘ Keyboard shortcut</b><span>Press a key combination</span></span></label>'
+    + '<label class="hk-type"><input type="radio" name="hk-type" value="text"><span><b>Aa Text trigger</b><span>Type a sequence in any input, like ##</span></span></label>'
+    + '</div></div>'
+    + '<div class="ui-field"><label class="field-label" for="hk-trigger" id="hk-trigger-label">Shortcut</label>'
+    + '<div class="hk-trigger-row"><input id="hk-trigger" class="input sx-mono" type="text" autocomplete="off" spellcheck="false">'
+    + '<button type="button" class="btn" id="hk-record" onclick="_hkRecord()">Record shortcut</button></div>'
+    + '<span class="ui-help" id="hk-trigger-help"></span></div>'
+    + '<label class="sx-check" id="hk-remove-row"><input type="checkbox" id="hk-remove"><span><b>Remove the trigger text</b><span class="ui-help">Delete the typed trigger (like ##) when it fires</span></span></label>'
+    + '<label class="sx-check"><input type="checkbox" id="hk-indicator"><span><b>Show a small indicator</b><span class="ui-help">A short toast when it fires</span></span></label>'
+    + '<div class="hk-modal-foot">'
+    + (src ? '<button class="btn danger" onclick="_hkDelete()">' + (_HK_DEFAULTS.some(d => d.id === src.id) ? 'Remove' : 'Delete') + '</button>' : '')
+    + '<span class="hk-grow"></span><button class="btn" onclick="_hkCloseDialog()">Cancel</button>'
+    + '<button class="btn primary" id="hk-save" onclick="_hkSaveDialog()">' + (src ? 'Save' : 'Add hotkey') + '</button></div></div>';
+  const e = _hkEditing;
+  ov.querySelector('#hk-action').value = e.action;
+  ov.querySelector('input[name="hk-type"][value="' + e.type + '"]').checked = true;
+  ov.querySelector('#hk-trigger').value = e.trigger;
+  ov.querySelector('#hk-remove').checked = !!e.remove;
+  ov.querySelector('#hk-indicator').checked = !!e.indicator;
+  ov.querySelectorAll('input[name="hk-type"]').forEach(r => r.addEventListener('change', _hkTypeUI));
+  _hkTypeUI();
+  ov.classList.add('active');
+  setTimeout(() => ov.querySelector('#hk-action').focus(), 0);
+}
+function _hkTypeUI() {
+  const text = document.querySelector('#hk-dialog input[name="hk-type"]:checked').value === 'text';
+  document.getElementById('hk-trigger-label').textContent = text ? 'Text trigger' : 'Shortcut';
+  document.getElementById('hk-record').hidden = text;
+  document.getElementById('hk-remove-row').style.display = text ? '' : 'none';
+  const act = _HK_ACTIONS[document.getElementById('hk-action').value];
+  document.getElementById('hk-action').title = act ? act.desc : '';
+  document.getElementById('hk-record').style.display = text ? 'none' : '';
+  const t = document.getElementById('hk-trigger');
+  t.readOnly = !text;
+  t.placeholder = text ? '##' : 'Press Record shortcut';
+  document.getElementById('hk-trigger-help').textContent = text
+    ? 'Fires the moment you finish typing it in any text box in amux.'
+    : 'Include ⌘, ⌥ or ⌃. Works anywhere in amux, including while typing.';
+}
+function _hkRecord() {
+  const btn = document.getElementById('hk-record');
+  const t = document.getElementById('hk-trigger');
+  _hkRecording = true;
+  btn.textContent = 'Press keys…';
+  t.value = '';
+  const onKey = ev => {
+    if (ev.key === 'Escape') { stop(); return; }
+    const c = _hkComboFromEvent(ev);
+    ev.preventDefault(); ev.stopPropagation();
+    if (!c) return;
+    t.value = c;
+    stop();
+  };
+  // On window, capture phase: ahead of every document-level shortcut (⌘K
+  // would otherwise open search instead of being recorded).
+  const stop = () => { _hkRecording = false; btn.textContent = 'Record shortcut'; window.removeEventListener('keydown', onKey, true); };
+  window.addEventListener('keydown', onKey, true);
+}
+function _hkCloseDialog() {
+  const ov = document.getElementById('hk-dialog');
+  if (ov) ov.classList.remove('active');
+  _hkRecording = false;
+  _hkEditing = null;
+}
+async function _hkSaveDialog() {
+  const e = _hkEditing;
+  if (!e) return;
+  const next = Object.assign({}, e, {
+    action: document.getElementById('hk-action').value,
+    type: document.querySelector('#hk-dialog input[name="hk-type"]:checked').value,
+    trigger: document.getElementById('hk-trigger').value.trim(),
+    remove: document.getElementById('hk-remove').checked,
+    indicator: document.getElementById('hk-indicator').checked,
+  });
+  delete next.isNew;
+  const why = _hkConflict(next, _hkList);
+  const t = document.getElementById('hk-trigger');
+  if (why) { t.setAttribute('aria-invalid', 'true'); document.getElementById('hk-trigger-help').textContent = why; return; }
+  t.removeAttribute('aria-invalid');
+  const prev = _hkList.map(h => Object.assign({}, h));
+  const i = _hkList.findIndex(h => h.id === next.id);
+  if (i >= 0) _hkList[i] = next; else _hkList.push(next);
+  if (!(await _hkSave())) { _hkList = prev; return; }
+  _hkCloseDialog();
+  _hkRender();
+  showToast((i >= 0 ? 'Saved ' : 'Added ') + _HK_ACTIONS[next.action].label + ' ' + next.trigger);
+}
+async function _hkDelete() {
+  const e = _hkEditing;
+  if (!e) return;
+  const prev = _hkList.map(h => Object.assign({}, h));
+  // A built-in default is kept as deleted, so the merge does not bring it back.
+  if (_HK_DEFAULTS.some(d => d.id === e.id)) {
+    const h = _hkList.find(x => x.id === e.id);
+    if (h) h.deleted = true;
+  } else _hkList = _hkList.filter(h => h.id !== e.id);
+  if (!(await _hkSave())) { _hkList = prev; return; }
+  _hkCloseDialog();
+  _hkRender();
+  showToast('Removed ' + _HK_ACTIONS[e.action].label + ' ' + e.trigger);
+}
+_hkLoad();

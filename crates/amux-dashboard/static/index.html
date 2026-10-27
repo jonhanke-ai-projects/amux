@@ -782,6 +782,7 @@
   <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
   <button id="tab-vault" onclick="switchView('vault')"><span class="tab-ico">&#x1F510;</span><span class="tab-lbl">Vault</span></button>
+  <button id="tab-hotkeys" onclick="switchView('hotkeys')"><span class="tab-ico">&#x2318;</span><span class="tab-lbl">Hotkeys</span></button>
   <button id="tab-logs" onclick="switchView('logs')"><span class="tab-ico">≡</span><span class="tab-lbl">Logs</span></button>
   <button id="tab-grid" onclick="enterGridMode()"><span class="tab-ico">▣</span><span class="tab-lbl">Workspace</span></button>
   <button id="tab-messages" onclick="switchView('messages')"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span></button>
@@ -894,6 +895,23 @@
   <div id="fc-container" style="width:100%;padding:0;"></div>
 </div>
 <!-- Scheduler view -->
+<div id="hotkeys-view" class="hk-all" style="display:none;">
+  <div class="hk-head">
+    <div><h2>Hotkeys</h2><p class="ui-help">Shortcuts and text triggers that control amux, on every device you use it on.</p></div>
+  </div>
+  <div class="hk-bar">
+    <div class="hk-pills" id="hk-pills" role="tablist" aria-label="Hotkey groups">
+      <button class="hk-pill" role="tab" data-f="all" onclick="_hkSetFilter('all')">All</button>
+      <button class="hk-pill" role="tab" data-f="keys" onclick="_hkSetFilter('keys')">Keyboard</button>
+      <button class="hk-pill" role="tab" data-f="text" onclick="_hkSetFilter('text')">Text triggers</button>
+      <button class="hk-pill" role="tab" data-f="off" onclick="_hkSetFilter('off')">Off</button>
+    </div>
+    <input id="hk-search" class="input hk-search" type="search" placeholder="Search" aria-label="Search hotkeys" autocomplete="off" oninput="_hkQuery=this.value;_hkRender()">
+    <button class="btn primary hk-add" id="hk-add" onclick="_hkOpenDialog()" aria-label="Add hotkey">+ <span class="hk-add-lbl">Add hotkey</span></button>
+  </div>
+  <div id="hk-status" class="ui-help" aria-live="polite"></div>
+  <div id="hk-body" class="hk-body"></div>
+</div>
 <div id="scheduler-view" class="sx-all" style="display:none;">
   <div class="sx-head">
     <div class="sx-head-title">
