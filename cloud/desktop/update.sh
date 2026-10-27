@@ -73,6 +73,14 @@ PY
 # 1. Checkout (fast-forward only; a diverged checkout is reported, never forced).
 SELF="$SRC/cloud/desktop/update.sh"
 before=$(sha256sum "$SELF" 2>/dev/null | cut -c1-64)
+# The builder's launcher self-heals by writing a version of itself from main into this checkout
+# (scripts/rust-auto-build-authority.sh). That left the checkout dirty, the pull below refused,
+# and this run went on with the old update.sh, whose image step then put an older server over a
+# source-mode build (sandbox, 2026-10-27). The file is main's either way, so take it back first.
+AUTH=scripts/rust-auto-build-authority.sh
+if ! as_user git -C "$SRC" diff --quiet -- "$AUTH" 2>/dev/null; then
+  as_user git -C "$SRC" checkout -- "$AUTH" && say "verdict=authority_selfheal_reset $AUTH taken back to the checkout's own before the pull"
+fi
 if ! as_user git -C "$SRC" pull -q --ff-only 2>/dev/null; then
   say "WARN checkout $SRC did not fast-forward; keeping its current scripts"
 fi
